@@ -1,0 +1,31 @@
+{
+  "id": "cancore",
+  "name": "Cancore",
+  "description": "Self-custody Canton wallet in the browser: keys stay on the user's device, the server prepares and submits but never signs. CIP-0103 remote profile over JSON-RPC + SSE, with a consent screen per dApp origin. Today it signs messages and reports transaction status for Cancore's own operations; it does not execute a dApp's own Daml command and does not proxy the Ledger API.",
+  "homepage": "https://cancore.io",
+  "icon": "https://registry.partylayer.xyz/wallets/cancore.png",
+  "supportedNetworks": ["devnet"],
+  "capabilities": {
+    "signMessage": true,
+    "signTransaction": false,
+    "submitTransaction": false,
+    "transactionStatus": false,
+    "switchNetwork": false,
+    "multiParty": false,
+    "mobileConnect": false,
+    "remoteSigner": false,
+    "events": true
+  },
+  "adapter": {
+    "type": "@cancore/dapp-connector",
+    "transport": "discovery-adapter",
+    "config": {
+      "providerId": "cancore"
+    },
+    "networkHosts": {
+      "devnet": "https://app-dev.cancore.app"
+    }
+  },
+  "sdkVersion": ">=0.9.0",
+  "beta": true
+}

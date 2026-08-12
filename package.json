@@ -1,0 +1,11 @@
+{
+  "name": "@cancore/dapp-connector",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "What a third-party dApp loads to reach a Cancore wallet: a CIP-0103 remote-profile provider over our JSON-RPC + SSE surface, and the PartyLayer discovery-adapter around it. No dependencies: the transport is fetch, EventSource and postMessage.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "sideEffects": false
+}
