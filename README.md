@@ -1,24 +1,49 @@
-# `@cancore/dapp-connector`
+# Cancore SDK
 
-What a third-party dApp loads to reach a Cancore wallet: a CIP-0103 provider (remote profile)
-over Cancore's JSON-RPC + SSE surface, the consent ceremony that obtains a grant, and a
-PartyLayer discovery adapter around both. No dependencies. **No keys are ever here.**
+The packages a third-party dApp — or a wallet build — installs from npm.
 
-```ts
-import { CancoreProvider } from '@cancore/dapp-connector';
+| Package | npm | What it is |
+| --- | --- | --- |
+| [`@cancore/dapp-connector`](packages/dapp-connector) | [`@cancore/dapp-connector`](https://www.npmjs.com/package/@cancore/dapp-connector) | A CIP-0103 provider (remote profile) that asks a Cancore wallet to sign. No keys, ever. |
+| `@cancore/wallet` | *not published yet* | The wallet core: key material, signing, storage contracts, the operations-envelope client. |
 
-const provider = new CancoreProvider({
-  host: 'https://app-dev.cancore.app',
-  appName: 'My dApp',
-  scopes: ['wallet:accounts', 'wallet:sign'],
-});
+**Full documentation: <https://docs.cancore.io/sdk/overview>.**
 
-await provider.request({ method: 'connect' });
-const accounts = await provider.request({ method: 'listAccounts' });
+## Why `@cancore/wallet` is not here yet
+
+It holds key material, and the key-storage-at-rest audit that gates its
+publication has not been done. Publishing a wallet core before that audit would
+mean other people's funds sitting behind a storage format nobody reviewed.
+
+It lives in the Cancore frontend repository until then, and moves here — same
+history, same treatment — when the audit clears. The connector never held a key,
+so nothing gated it.
+
+## Working in this repository
+
+```bash
+npm install          # npm workspaces, Node >= 20
+npm test             # jest, plain node — no jsdom anywhere
+npm run typecheck    # tsc --build, strict, noUncheckedIndexedAccess on
+npm run build        # tsup: ESM + .d.ts per package
 ```
 
-**Full documentation: <https://docs.cancore.io/sdk/dapp-connector>** — the ceremony and the
-three rules it owes, all thirteen methods with their scopes, the event stream and why the two
-vendor outcome lookups exist, the error codes, and what a dApp cannot do here.
+ESM only. The connector's whole transport is `fetch`, `EventSource` and
+`postMessage`; a runtime old enough to need CommonJS does not have them, so a CJS
+build would be a build nobody can use pretending otherwise.
 
-Source of that page: `docs/docs/sdk/dapp-connector.md` in this repo.
+## Releasing
+
+A package is published by pushing a tag, never by hand:
+
+```bash
+git tag dapp-connector-v0.1.1 && git push origin dapp-connector-v0.1.1
+```
+
+The `publish` workflow builds from that tag, runs the tests it publishes
+against, and publishes with npm provenance — so the tarball on npm is traceable
+to the commit and the workflow that produced it.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).

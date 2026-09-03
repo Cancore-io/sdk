@@ -1,0 +1,57 @@
+name: Publish
+
+# Tag-driven, never manual: the tarball on npm has to be traceable to a commit
+# somebody can read. `<package>-v<version>` so one repository can release two
+# packages on their own clocks.
+on:
+  push:
+    tags: ['*-v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required for npm provenance: the workflow signs a statement linking the
+      # tarball to this commit and this run, and npm shows it on the package page.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Resolve the package this tag releases
+        id: target
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          pkg="${tag%-v*}"
+          version="${tag##*-v}"
+          dir="packages/$pkg"
+          test -d "$dir" || { echo "no such package: $dir (from tag $tag)"; exit 1; }
+          # The tag and the manifest must agree, or the version on npm is not the
+          # version the tag claims — and nobody can tell afterwards.
+          manifest=$(node -p "require('./$dir/package.json').version")
+          test "$manifest" = "$version" || { echo "tag says $version, $dir/package.json says $manifest"; exit 1; }
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "name=$(node -p "require('./$dir/package.json').name")" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      - name: Publish to npm
+        working-directory: ${{ steps.target.outputs.dir }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
+
+      - name: Say what shipped
+        run: |
+          echo "### Published \`${{ steps.target.outputs.name }}@${{ steps.target.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://www.npmjs.com/package/${{ steps.target.outputs.name }}" >> "$GITHUB_STEP_SUMMARY"

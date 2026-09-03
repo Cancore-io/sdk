@@ -76,7 +76,19 @@ export interface CancoreProviderOptions {
 export class CancoreProvider implements Cip0103Provider {
   private readonly listeners = new Map<string, ProviderListener[]>();
   private readonly options: CancoreProviderOptions;
-  private session: CancoreSession | null;
+  #session: CancoreSession | null;
+
+  /**
+   * The grant this provider is holding, or null before one is obtained.
+   *
+   * Readable because persisting it is the documented way to skip the consent
+   * popup on the next visit — a `session` you can pass in and never read back
+   * is half a feature. It is a bearer credential: store it where the dApp
+   * stores its own session, never in a URL or a log.
+   */
+  get session(): CancoreSession | null {
+    return this.#session;
+  }
   private stream: StreamLike | null = null;
   private streaming = false;
   private closed = false;
@@ -84,7 +96,7 @@ export class CancoreProvider implements Cip0103Provider {
 
   constructor(options: CancoreProviderOptions) {
     this.options = options;
-    this.session = options.session ?? null;
+    this.#session = options.session ?? null;
   }
 
   async request(args: RequestArgs): Promise<unknown> {
@@ -95,8 +107,8 @@ export class CancoreProvider implements Cip0103Provider {
     if (method !== 'connect') return this.send(method, params);
 
     // Synchronous up to here: `window.open` must still be inside the click.
-    const ceremony = this.session ? null : this.beginCeremony();
-    if (ceremony) this.session = await ceremony;
+    const ceremony = this.#session ? null : this.beginCeremony();
+    if (ceremony) this.#session = await ceremony;
     // Before the RPC, never after: `connect` answers on the stream
     // (`statusChanged` + `connected`), and a stream opened afterwards has
     // already missed them.
@@ -147,7 +159,7 @@ export class CancoreProvider implements Cip0103Provider {
   }
 
   private async send(method: string, params: unknown): Promise<unknown> {
-    const session = this.session;
+    const session = this.#session;
     if (!session) {
       throw rpcError(RpcCode.DISCONNECTED, 'No Cancore grant yet — call connect first');
     }
@@ -195,7 +207,7 @@ export class CancoreProvider implements Cip0103Provider {
     try {
       const issued = (await this.send('cancore_streamTicket', undefined)) as { ticket?: unknown };
       if (typeof issued?.ticket !== 'string') return;
-      const url = `${this.session!.rpcUrl}/events?token=${encodeURIComponent(issued.ticket)}`;
+      const url = `${this.#session!.rpcUrl}/events?token=${encodeURIComponent(issued.ticket)}`;
       const stream = openStream(url);
       for (const name of STREAM_EVENTS) {
         stream.addEventListener(name, (event) => this.emit(name, parseFrame(event.data)));

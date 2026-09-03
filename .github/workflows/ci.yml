@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      # The check unit tests cannot do: pack the tarball and import it from a
+      # project that is not this repository. A broken `exports` map, a file left
+      # out of `files`, a missing type declaration — all of it passes every test
+      # in the suite and fails the first person who runs `npm install`.
+      - name: Install the tarball as a stranger would
+        run: |
+          set -euo pipefail
+          for pkg in packages/*/; do
+            name=$(node -p "require('./$pkg/package.json').name")
+            private=$(node -p "require('./$pkg/package.json').private === true")
+            if [ "$private" = "true" ]; then echo "skip $name (private)"; continue; fi
+            tarball=$(cd "$pkg" && npm pack --pack-destination "$RUNNER_TEMP" --silent)
+            rm -rf "$RUNNER_TEMP/consumer" && mkdir -p "$RUNNER_TEMP/consumer"
+            cd "$RUNNER_TEMP/consumer"
+            npm init -y >/dev/null
+            npm install "$RUNNER_TEMP/$tarball" --no-audit --no-fund
+            node --input-type=module -e "
+              import * as pkg from '$name';
+              const names = Object.keys(pkg);
+              if (names.length === 0) throw new Error('$name exports nothing');
+              console.log('$name exports:', names.join(', '));
+            "
+            test -f "node_modules/$name/dist/index.d.ts" || { echo "$name ships no types"; exit 1; }
+            cd "$GITHUB_WORKSPACE"
+          done

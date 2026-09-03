@@ -1,11 +1,32 @@
 {
-  "name": "@cancore/dapp-connector",
-  "version": "0.0.0",
+  "name": "cancore-sdk",
   "private": true,
-  "type": "module",
-  "description": "What a third-party dApp loads to reach a Cancore wallet: a CIP-0103 remote-profile provider over our JSON-RPC + SSE surface, and the PartyLayer discovery-adapter around it. No dependencies: the transport is fetch, EventSource and postMessage.",
-  "exports": {
-    ".": "./src/index.ts"
+  "description": "Cancore SDK \u2014 the packages a third-party dApp or a wallet build installs from npm.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cancore-io/sdk.git"
   },
-  "sideEffects": false
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "jest",
+    "typecheck": "tsc --build --force",
+    "clean": "rm -rf packages/*/dist"
+  },
+  "devDependencies": {
+    "@jest/globals": "^29.7.0",
+    "@swc/core": "^1.7.0",
+    "@swc/jest": "^0.2.36",
+    "@types/jest": "^29.5.12",
+    "jest": "^29.7.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.9.0"
+  }
 }

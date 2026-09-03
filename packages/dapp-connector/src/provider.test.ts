@@ -59,9 +59,9 @@ describe('CancoreProvider — the request surface', () => {
     await expect(provider.request({ method: 'getActiveNetwork' })).resolves.toEqual({
       networkId: 'canton:da-devnet',
     });
-    expect(calls[0].url).toBe(SESSION.rpcUrl);
-    expect(calls[0].init.headers.Authorization).toBe('Bearer cs_grant');
-    expect(JSON.parse(calls[0].init.body)).toMatchObject({ jsonrpc: '2.0', method: 'getActiveNetwork' });
+    expect(calls[0]!.url).toBe(SESSION.rpcUrl);
+    expect(calls[0]!.init.headers.Authorization).toBe('Bearer cs_grant');
+    expect(JSON.parse(calls[0]!.init.body)).toMatchObject({ jsonrpc: '2.0', method: 'getActiveNetwork' });
   });
 
   // The reason this package exists: upstream's HttpTransport throws the whole
@@ -226,8 +226,8 @@ describe('CancoreProvider — events', () => {
 
     await provider.request({ method: 'connect' });
 
-    expect(JSON.parse(calls[0].init.body).method).toBe('cancore_streamTicket');
-    expect(JSON.parse(calls[1].init.body).method).toBe('connect');
+    expect(JSON.parse(calls[0]!.init.body).method).toBe('cancore_streamTicket');
+    expect(JSON.parse(calls[1]!.init.body).method).toBe('connect');
     stream.fire('txChanged', '{"status":"pending","commandId":"c-1"}');
     expect(seen).toEqual([{ status: 'pending', commandId: 'c-1' }]);
   });
@@ -270,7 +270,7 @@ describe('CancoreProvider — events', () => {
     expect(first.closed).toBe(true);
 
     const before = calls.length;
-    scheduled[0]();
+    scheduled[0]!();
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(calls.length).toBeGreaterThan(before);
     expect(streams).toHaveLength(0);
@@ -294,5 +294,19 @@ describe('CancoreProvider — events', () => {
 
     expect(scheduled).toHaveLength(0);
     expect(stream.closed).toBe(true);
+  });
+  // Persisting the grant is the documented way to skip the popup next time, and
+  // a `session` a dApp can pass in but never read back is half a feature.
+  it('hands back the grant it is holding', () => {
+    const { fetchImpl } = transport([]);
+    const provider = new CancoreProvider({ host: 'https://app-dev.cancore.app', session: SESSION, fetchImpl });
+
+    expect(provider.session).toEqual(SESSION);
+  });
+
+  it('has no grant before one is obtained', () => {
+    const { fetchImpl } = transport([]);
+
+    expect(new CancoreProvider({ host: 'https://app-dev.cancore.app', fetchImpl }).session).toBeNull();
   });
 });

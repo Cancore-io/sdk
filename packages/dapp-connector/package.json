@@ -1,0 +1,49 @@
+{
+  "name": "@cancore/dapp-connector",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "What a third-party dApp loads to reach a Cancore wallet: a CIP-0103 remote-profile provider over our JSON-RPC + SSE surface, and the PartyLayer discovery-adapter around it. No dependencies: the transport is fetch, EventSource and postMessage.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cancore-io/sdk.git",
+    "directory": "packages/dapp-connector"
+  },
+  "homepage": "https://docs.cancore.io/sdk/dapp-connector",
+  "bugs": {
+    "url": "https://github.com/Cancore-io/sdk/issues"
+  },
+  "keywords": [
+    "canton",
+    "cip-0103",
+    "wallet",
+    "dapp",
+    "cancore",
+    "provider",
+    "partylayer"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "partylayer-registry-entry.json"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "npm run build"
+  }
+}
