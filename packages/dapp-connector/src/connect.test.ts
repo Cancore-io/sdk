@@ -167,7 +167,7 @@ describe('the dApp half of the consent ceremony', () => {
 
     jest.advanceTimersByTime(5 * 60 * 1000);
 
-    await expect(running).rejects.toMatchObject({ code: RpcCode.TIMED_OUT });
+    await expect(running).rejects.toMatchObject({ code: RpcCode.RESOURCE_UNAVAILABLE });
     expect(h.popup.closed).toBe(true);
   });
 

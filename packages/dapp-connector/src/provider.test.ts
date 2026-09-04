@@ -295,18 +295,41 @@ describe('CancoreProvider — events', () => {
     expect(scheduled).toHaveLength(0);
     expect(stream.closed).toBe(true);
   });
-  // Persisting the grant is the documented way to skip the popup next time, and
-  // a `session` a dApp can pass in but never read back is half a feature.
-  it('hands back the grant it is holding', () => {
-    const { fetchImpl } = transport([]);
-    const provider = new CancoreProvider({ host: 'https://app-dev.cancore.app', session: SESSION, fetchImpl });
+  // CAN-744, checked against the kernel's OpenRPC: a method the spec names and
+  // this provider declines must be REFUSED BY THE WALLET, with 4200. Answering
+  // -32601 here would tell a dApp author the name is wrong, when the name is
+  // right and the provider is simply not obliged.
+  it('lets the wallet refuse the methods it declines, rather than refusing them here', async () => {
+    const { fetchImpl, calls } = transport([
+      { body: { error: { code: 4200, message: 'Method prepareExecuteAndWait is not supported by this provider' } } },
+    ]);
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+    });
 
-    expect(provider.session).toEqual(SESSION);
+    const error = (await provider
+      .request({ method: 'prepareExecuteAndWait', params: {} })
+      .catch((e: ProviderRpcError) => e)) as ProviderRpcError;
+
+    expect(calls).toHaveLength(1);
+    expect(error.code).toBe(RpcCode.UNSUPPORTED_METHOD);
   });
 
-  it('has no grant before one is obtained', () => {
-    const { fetchImpl } = transport([]);
+  it('still refuses a name the spec does not have, without a round trip', async () => {
+    const { fetchImpl, calls } = transport([]);
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+    });
 
-    expect(new CancoreProvider({ host: 'https://app-dev.cancore.app', fetchImpl }).session).toBeNull();
+    const error = (await provider
+      .request({ method: 'canton_doTheThing' })
+      .catch((e: ProviderRpcError) => e)) as ProviderRpcError;
+
+    expect(calls).toHaveLength(0);
+    expect(error.code).toBe(RpcCode.METHOD_NOT_FOUND);
   });
 });

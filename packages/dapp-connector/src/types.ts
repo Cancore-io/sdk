@@ -77,13 +77,40 @@ export interface MessageEventLike {
   data: unknown;
 }
 
-/** CIP-0103 codes this connector produces on its own, without asking the wallet. */
+/**
+ * Every error code CIP-0103 defines, with the CIP's own names.
+ *
+ * All of them, not just the five this connector raises itself: a dApp switching
+ * on what the WALLET answered — `4200` for a method the provider declines,
+ * `4100` for one the user never authorised, `-32005` for a limit — otherwise
+ * writes the number by hand, and a number written by hand is a number nobody
+ * can grep for when the meaning changes.
+ *
+ * Raised locally by this library: `METHOD_NOT_FOUND` (a name outside the CIP's
+ * set, refused before the wire), `RESOURCE_UNAVAILABLE` (the consent window
+ * went unanswered), `INTERNAL` (a wallet reply that is not an RPC answer),
+ * `USER_REJECTED` and `DISCONNECTED`. The rest arrive from the wallet.
+ */
 export const RpcCode = {
-  METHOD_NOT_FOUND: -32601,
-  TIMED_OUT: -32002,
-  INTERNAL: -32603,
+  // EIP-1193 provider errors, as the CIP adopts them.
   USER_REJECTED: 4001,
+  UNAUTHORIZED: 4100,
+  UNSUPPORTED_METHOD: 4200,
   DISCONNECTED: 4900,
+  CHAIN_DISCONNECTED: 4901,
+  // JSON-RPC 2.0.
+  PARSE_ERROR: -32700,
+  INVALID_REQUEST: -32600,
+  METHOD_NOT_FOUND: -32601,
+  INVALID_PARAMS: -32602,
+  INTERNAL: -32603,
+  // CIP-0103's own reserved range.
+  INVALID_INPUT: -32000,
+  RESOURCE_NOT_FOUND: -32001,
+  RESOURCE_UNAVAILABLE: -32002,
+  TRANSACTION_REJECTED: -32003,
+  METHOD_NOT_SUPPORTED: -32004,
+  LIMIT_EXCEEDED: -32005,
 } as const;
 
 export function rpcError(code: number, message: string, data?: unknown): ProviderRpcError {

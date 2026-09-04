@@ -41,11 +41,22 @@ const KNOWN_METHODS: ReadonlySet<string> = new Set([
   'getPrimaryAccount',
   'signMessage',
   'prepareExecute',
-  // Answered `4200 Unsupported Method` by the wallet, on purpose (CAN-776 §2.2,
-  // CAN-842): a server-side provider MUST NOT proxy ledger reads per the CIP,
-  // and handing out an access token is worse. Kept in the list so the refusal
-  // comes from the wallet with the code the spec names, rather than from here.
+  // Both are answered `4200 Unsupported Method` BY THE WALLET, on purpose, and
+  // both are listed here so that refusal is what a dApp receives — `-32601` from
+  // this library would say the method does not exist, which is a different
+  // sentence: the name is right, the provider is not obliged.
+  //
+  //   ledgerApi           — a server-side provider MUST NOT proxy ledger reads
+  //                         per the CIP, and handing out an access token is
+  //                         worse (CAN-776 §2.2, CAN-842).
+  //   prepareExecuteAndWait — it answers only when the transaction is complete,
+  //                         and in the remote profile completion waits on a
+  //                         human in another tab. Blocking the response is also
+  //                         withholding the `userUrl` that sends them there, so
+  //                         the wait could only ever time out. Use
+  //                         `prepareExecute` and the `txChanged` event.
   'ledgerApi',
+  'prepareExecuteAndWait',
   'cancore_streamTicket',
   'cancore_getTxOutcome',
   'cancore_getMessageSignature',
@@ -76,19 +87,7 @@ export interface CancoreProviderOptions {
 export class CancoreProvider implements Cip0103Provider {
   private readonly listeners = new Map<string, ProviderListener[]>();
   private readonly options: CancoreProviderOptions;
-  #session: CancoreSession | null;
-
-  /**
-   * The grant this provider is holding, or null before one is obtained.
-   *
-   * Readable because persisting it is the documented way to skip the consent
-   * popup on the next visit — a `session` you can pass in and never read back
-   * is half a feature. It is a bearer credential: store it where the dApp
-   * stores its own session, never in a URL or a log.
-   */
-  get session(): CancoreSession | null {
-    return this.#session;
-  }
+  private session: CancoreSession | null;
   private stream: StreamLike | null = null;
   private streaming = false;
   private closed = false;
@@ -96,7 +95,7 @@ export class CancoreProvider implements Cip0103Provider {
 
   constructor(options: CancoreProviderOptions) {
     this.options = options;
-    this.#session = options.session ?? null;
+    this.session = options.session ?? null;
   }
 
   async request(args: RequestArgs): Promise<unknown> {
@@ -107,8 +106,8 @@ export class CancoreProvider implements Cip0103Provider {
     if (method !== 'connect') return this.send(method, params);
 
     // Synchronous up to here: `window.open` must still be inside the click.
-    const ceremony = this.#session ? null : this.beginCeremony();
-    if (ceremony) this.#session = await ceremony;
+    const ceremony = this.session ? null : this.beginCeremony();
+    if (ceremony) this.session = await ceremony;
     // Before the RPC, never after: `connect` answers on the stream
     // (`statusChanged` + `connected`), and a stream opened afterwards has
     // already missed them.
@@ -159,7 +158,7 @@ export class CancoreProvider implements Cip0103Provider {
   }
 
   private async send(method: string, params: unknown): Promise<unknown> {
-    const session = this.#session;
+    const session = this.session;
     if (!session) {
       throw rpcError(RpcCode.DISCONNECTED, 'No Cancore grant yet — call connect first');
     }
@@ -207,7 +206,7 @@ export class CancoreProvider implements Cip0103Provider {
     try {
       const issued = (await this.send('cancore_streamTicket', undefined)) as { ticket?: unknown };
       if (typeof issued?.ticket !== 'string') return;
-      const url = `${this.#session!.rpcUrl}/events?token=${encodeURIComponent(issued.ticket)}`;
+      const url = `${this.session!.rpcUrl}/events?token=${encodeURIComponent(issued.ticket)}`;
       const stream = openStream(url);
       for (const name of STREAM_EVENTS) {
         stream.addEventListener(name, (event) => this.emit(name, parseFrame(event.data)));

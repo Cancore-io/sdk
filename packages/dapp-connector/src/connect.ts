@@ -92,7 +92,7 @@ function awaitConsent(
 
     const expiry = setTimeout(() => {
       popup.close();
-      settle(() => reject(rpcError(RpcCode.TIMED_OUT, 'The consent window was not answered in time')));
+      settle(() => reject(rpcError(RpcCode.RESOURCE_UNAVAILABLE, 'The consent window was not answered in time')));
     }, CEREMONY_TIMEOUT_MS);
 
     function settle(finish: () => void) {
