@@ -41,8 +41,13 @@ git tag dapp-connector-v0.1.1 && git push origin dapp-connector-v0.1.1
 ```
 
 The `publish` workflow builds from that tag, runs the tests it publishes
-against, and publishes with npm provenance — so the tarball on npm is traceable
-to the commit and the workflow that produced it.
+against, and publishes through **npm trusted publishing**: GitHub Actions mints
+an OIDC token, npm exchanges it for a short-lived publish right, and attaches
+provenance by itself. There is no npm token in this repository — nothing to
+leak, rotate, or answer a 2FA prompt for.
+
+Each package's trusted publisher is configured once on npmjs.com against this
+repository and the `publish.yml` workflow filename.
 
 ## License
 

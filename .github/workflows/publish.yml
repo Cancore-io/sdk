@@ -12,14 +12,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Required for npm provenance: the workflow signs a statement linking the
-      # tarball to this commit and this run, and npm shows it on the package page.
+      # The whole credential. npm trusted publishing exchanges this OIDC token
+      # for a short-lived publish right, so there is no NPM_TOKEN in this
+      # repository to leak, rotate or forget — and no 2FA prompt a CI job cannot
+      # answer, which is exactly what stopped the first attempt.
       id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Trusted publishing needs Node >= 22.14 and npm >= 11.5.1; 24 ships
+          # both, and the version is printed below so a runner image that drifts
+          # says so in the log rather than failing at the last step.
+          node-version: 24
           cache: npm
           registry-url: https://registry.npmjs.org
 
@@ -47,9 +52,11 @@ jobs:
 
       - name: Publish to npm
         working-directory: ${{ steps.target.outputs.dir }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance --access public
+        # No token, and no `--provenance`: with trusted publishing npm mints the
+        # credential from the OIDC token and attaches provenance by itself.
+        run: |
+          echo "npm $(npm --version), node $(node --version)"
+          npm publish --access public
 
       - name: Say what shipped
         run: |
