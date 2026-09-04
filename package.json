@@ -19,7 +19,8 @@
     "build": "npm run build --workspaces --if-present",
     "test": "jest",
     "typecheck": "tsc --build --force",
-    "clean": "rm -rf packages/*/dist"
+    "clean": "rm -rf packages/*/dist",
+    "release:connector": "npm publish -w @cancore/dapp-connector --access public"
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",

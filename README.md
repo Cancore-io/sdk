@@ -49,6 +49,22 @@ leak, rotate, or answer a 2FA prompt for.
 Each package's trusted publisher is configured once on npmjs.com against this
 repository and the `publish.yml` workflow filename.
 
+### The exception: a package's very first version
+
+Trusted publishing cannot make the first release of a NEW package — the
+publisher is configured in the package's settings, and until something is
+published there is no package to configure. So version one goes out by hand:
+
+```bash
+npm run release:connector -- --otp=<code>
+```
+
+From the repository root, and note the package name in it. `npm publish` at the
+root publishes the ROOT — which is `private: true` and refuses, after printing a
+tarball listing of the whole repository that looks alarming and is not what
+would have been sent. Naming the workspace is what makes the command mean what
+it reads like.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
