@@ -1,7 +1,8 @@
 {
   "name": "cancore-sdk",
   "private": true,
-  "description": "Cancore SDK \u2014 the packages a third-party dApp or a wallet build installs from npm.",
+  "version": "0.0.0",
+  "description": "Cancore SDK — the packages a third-party dApp or a wallet build installs from npm.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
