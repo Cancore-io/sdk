@@ -167,8 +167,11 @@ export interface PersistedKeyPasswordWalletRecord {
   iterations: number;
   createdAt: string;
   /**
-   * The BIP39 recovery phrase wrapped under the SAME password KEK as the seed,
-   * so it can be re-revealed later (Profile > reveal recovery phrase). Optional:
+   * The BIP39 recovery phrase, wrapped so it can be re-revealed later (Profile >
+   * reveal recovery phrase). Since v2 it is wrapped under its OWN KEK, split
+   * from the same PBKDF2 output by HKDF — the phrase is the more dangerous of
+   * the two secrets to leak, and one key for both made that impossible to say.
+   * Optional:
    * legacy records and Profile-created wallets have only the seed — those reveal
    * the private-key hex instead. The mnemonic cannot be reconstructed from the
    * seed (mnemonic -> seed is a one-way HMAC), which is why it is persisted here.

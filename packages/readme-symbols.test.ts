@@ -17,14 +17,51 @@ import * as path from 'path';
  */
 const ROOT = path.join(__dirname, '..');
 
-/** module specifier -> the entry file that must export the names */
-const ENTRIES: Record<string, string> = {
-  '@cancore/dapp-connector': 'packages/dapp-connector/src/index.ts',
-};
-
-const DOCUMENTS = ['README.md', 'packages/dapp-connector/README.md'];
-
 const read = (relative: string) => fs.readFileSync(path.join(ROOT, relative), 'utf8');
+
+/**
+ * Every package, discovered — never a hand-written list.
+ *
+ * A list is not a check: it passes for the packages someone remembered to add,
+ * and says nothing about the one they did not. This repository already grew from
+ * one package to three; the second and third would have been silently
+ * undocumented-and-unchecked under a literal.
+ */
+const PACKAGE_DIRS = fs
+  .readdirSync(path.join(ROOT, 'packages'), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(ROOT, 'packages', entry.name, 'package.json')))
+  .map((entry) => entry.name)
+  .sort();
+
+/**
+ * module specifier -> the source entry that must export the names.
+ *
+ * Read off each manifest's `exports`, so a subpath entry (`@cancore/wallet/web`)
+ * is covered the day it is added. The map from a published path to a source file
+ * is the one tsup applies in reverse: ./dist/web/index.js came from src/web/index.ts.
+ */
+function entryPoints(): Record<string, string> {
+  const entries: Record<string, string> = {};
+  for (const dir of PACKAGE_DIRS) {
+    const manifest = JSON.parse(read(`packages/${dir}/package.json`)) as {
+      name: string;
+      exports?: Record<string, { import?: string; default?: string } | string>;
+    };
+    for (const [subpath, target] of Object.entries(manifest.exports ?? {})) {
+      const published = typeof target === 'string' ? target : (target.import ?? target.default);
+      if (!published) continue;
+      const source = published.replace(/^\.\/dist\//, 'src/').replace(/\.js$/, '.ts');
+      const specifier = subpath === '.' ? manifest.name : `${manifest.name}${subpath.slice(1)}`;
+      entries[specifier] = `packages/${dir}/${source}`;
+    }
+  }
+  return entries;
+}
+
+const ENTRIES = entryPoints();
+
+const DOCUMENTS = ['README.md', ...PACKAGE_DIRS.map((dir) => `packages/${dir}/README.md`)];
+
 
 /** Every name an entry exports, following `export * from './x'` one level down. */
 function exportedNames(entryRelative: string): Set<string> {
@@ -82,11 +119,15 @@ describe('published documentation', () => {
     expect(missing).toEqual([]);
   });
 
-  it('publishes the version its install line implies', () => {
-    // `npm install @cancore/dapp-connector` installs whatever `latest` is, and
-    // the README is what a reader compares it against — so the manifest name and
-    // the README's install line must agree, always.
-    const manifest = JSON.parse(read('packages/dapp-connector/package.json')) as { name: string };
-    expect(read('packages/dapp-connector/README.md')).toContain(`npm install ${manifest.name}`);
+  it.each(PACKAGE_DIRS)('packages/%s/README.md installs the package it documents', (dir) => {
+    // `npm install @cancore/x` installs whatever `latest` is, and the README is
+    // what a reader compares it against — so the manifest name and the README's
+    // install line must agree, always. A package installed by `npx` says so
+    // instead; what is not allowed is a README that names neither.
+    const manifest = JSON.parse(read(`packages/${dir}/package.json`)) as { name: string; bin?: unknown };
+    const readme = read(`packages/${dir}/README.md`);
+    const installs = readme.includes(`npm install ${manifest.name}`);
+    const runs = Boolean(manifest.bin) && readme.includes(`npx ${manifest.name}`);
+    expect(installs || runs).toBe(true);
   });
 });
