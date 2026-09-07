@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // `node` for the tests (a KAT vector reader uses `process`), not for the
+    // source: the core is headless and stays that way, which the plain-node
+    // jest project below is what actually proves.
+    "types": ["jest", "node"],
+    // The source passes with this on; only the tests index arrays freely, and
+    // they arrived from `frontend-swap`, where the flag is off. Tightening them
+    // means editing 48 lines that still exist in two live copies — it belongs
+    // in the same change that deletes the copy over there, not here.
+    "noUncheckedIndexedAccess": false
+  },
+  "include": ["src/**/*.ts"],
+  // The root config excludes this package (it is typechecked here instead);
+  // that exclude is inherited and would swallow these inputs too.
+  "exclude": []
+}
