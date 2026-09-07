@@ -1,36 +1,62 @@
 # Cancore SDK
 
-The packages a third-party dApp — or a wallet build — installs from npm.
+The packages a third-party dApp, an AI agent, or a wallet build installs from npm.
 
 | Package | npm | What it is |
 | --- | --- | --- |
 | [`@cancore/dapp-connector`](packages/dapp-connector) | [`@cancore/dapp-connector`](https://www.npmjs.com/package/@cancore/dapp-connector) | A CIP-0103 provider (remote profile) that asks a Cancore wallet to sign. No keys, ever. |
-| `@cancore/wallet` | *not published yet* | The wallet core: key material, signing, storage contracts, the operations-envelope client. |
+| [`@cancore/mcp`](packages/mcp) | *not published yet* | An MCP server that lets an AI agent ask a wallet owner for a trade. The agent queues a request; the owner signs it in their own wallet. |
+| [`@cancore/wallet`](packages/wallet) | *not published yet* | The wallet core: key material, signing, storage contracts, the operations-envelope client. |
 
 **Full documentation: <https://docs.cancore.io/sdk/overview>.**
 
-## Why `@cancore/wallet` is not here yet
+The three answer three different questions. A dApp that wants a signature from
+somebody else's wallet takes the **connector**. An agent that wants to propose a
+trade its owner will approve takes **mcp**. A build that owns the keys itself —
+a wallet, a CLI, a signer — takes **wallet**.
 
-It holds key material, and the key-storage-at-rest audit that gates its
-publication has not been done. Publishing a wallet core before that audit would
-mean other people's funds sitting behind a storage format nobody reviewed.
+## Why two of them are not on npm yet
 
-It lives in the Cancore frontend repository until then, and moves here — same
-history, same treatment — when the audit clears. The connector never held a key,
-so nothing gated it.
+`@cancore/wallet` holds key material, so its publication is gated on the
+key-storage-at-rest audit. That audit has been done: what it found is either
+fixed in the code or written down in the package README, which is the condition
+it set. What is left is the last of those fixes landing and the package's
+trusted publisher being configured.
+
+`@cancore/mcp` holds nothing and is gated only by never having had a first
+release — see the note at the end about what that costs.
+
+## What none of them can do
+
+None of these packages signs anything on its own behalf. The connector asks a
+wallet; the MCP server queues a request and returns its id; the wallet core
+signs only with a key the person unlocked. There is no code path here that
+moves funds without a human at a keyboard, and that asymmetry is the design
+rather than an omission.
 
 ## Working in this repository
 
 ```bash
 npm install          # npm workspaces, Node >= 20
-npm test             # jest, plain node — no jsdom anywhere
-npm run typecheck    # tsc --build, strict, noUncheckedIndexedAccess on
+npm test             # jest: plain node, plus jsdom for the wallet's ./web entry
+npm run typecheck    # tsc, strict; each package also has its own tsconfig
 npm run build        # tsup: ESM + .d.ts per package
 ```
 
-ESM only. The connector's whole transport is `fetch`, `EventSource` and
-`postMessage`; a runtime old enough to need CommonJS does not have them, so a CJS
-build would be a build nobody can use pretending otherwise.
+Two details worth knowing before a first change:
+
+- **The node test project has no setup file, on purpose.** It is what proves the
+  wallet core and the connector are runtime-agnostic. The moment one of them
+  needs a browser shim to pass, the extraction has failed. Only
+  `packages/wallet/src/web` — IndexedDB and WebAuthn — runs under jsdom.
+- **Node types live in `packages/mcp/tsconfig.json`, not in the root config.**
+  The MCP server is the only package that runs on a machine; handing `node` to
+  every package would let a browser package reach for `fs` and still typecheck.
+
+ESM only, everywhere. The connector's whole transport is `fetch`, `EventSource`
+and `postMessage`, and the wallet core is WebCrypto — a runtime old enough to
+need CommonJS has none of them, so a CJS build would be a build nobody can use
+pretending otherwise.
 
 ## Releasing
 
@@ -39,6 +65,11 @@ A package is published by pushing a tag, never by hand:
 ```bash
 git tag dapp-connector-v0.1.1 && git push origin dapp-connector-v0.1.1
 ```
+
+The prefix is the **directory** under `packages/`, not the npm name: `mcp-v0.1.0`
+publishes `@cancore/mcp`. The workflow also refuses a tag whose version does not
+match the manifest, because otherwise the version on npm is not the version the
+tag claims and nobody can tell afterwards.
 
 The `publish` workflow builds from that tag, runs the tests it publishes
 against, and publishes through **npm trusted publishing**: GitHub Actions mints
@@ -57,13 +88,19 @@ published there is no package to configure. So version one goes out by hand:
 
 ```bash
 npm run release:connector -- --otp=<code>
+npm run release:mcp -- --otp=<code>
+npm run release:wallet -- --otp=<code>
 ```
 
-From the repository root, and note the package name in it. `npm publish` at the
-root publishes the ROOT — which is `private: true` and refuses, after printing a
-tarball listing of the whole repository that looks alarming and is not what
-would have been sent. Naming the workspace is what makes the command mean what
-it reads like.
+From the repository root, and note the package name in each. `npm publish` at
+the root publishes the ROOT — which is `private: true` and refuses, after
+printing a tarball listing of the whole repository that looks alarming and is
+not what would have been sent. Naming the workspace is what makes the command
+mean what it reads like.
+
+`npm pack` runs each package's `prepack` build with `--silent`, because
+`npm pack --silent` prints the tarball name to stdout and callers capture it —
+a chatty build ends up inside the filename.
 
 ## License
 
