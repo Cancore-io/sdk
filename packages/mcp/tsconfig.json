@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // Node types live here and not in the root config on purpose: this is the
+    // only package that runs on a machine. Handing `node` to every package
+    // would let a browser package reach for `fs` and still typecheck.
+    "types": ["jest", "node"]
+  },
+  "include": ["src/**/*.ts"],
+  // The root config excludes this package (it is typechecked here instead);
+  // that exclude is inherited and would swallow these inputs too.
+  "exclude": []
+}
