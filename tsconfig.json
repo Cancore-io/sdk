@@ -22,6 +22,7 @@
     "packages/*/src/**/*.ts"
   ],
   "exclude": [
-    "packages/mcp/**"
+    "packages/mcp/**",
+    "packages/wallet/**"
   ]
 }

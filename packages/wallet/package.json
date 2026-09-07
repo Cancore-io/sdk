@@ -1,0 +1,64 @@
+{
+  "name": "@cancore/wallet",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Cancore wallet core \u2014 key material, signing and storage contracts. Runtime-agnostic: no browser, no React.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./operations": {
+      "types": "./dist/operations.d.ts",
+      "import": "./dist/operations.js",
+      "default": "./dist/operations.js"
+    },
+    "./web": {
+      "types": "./dist/web/index.d.ts",
+      "import": "./dist/web/index.js",
+      "default": "./dist/web/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cancore-io/sdk.git",
+    "directory": "packages/wallet"
+  },
+  "homepage": "https://docs.cancore.io/sdk/wallet",
+  "bugs": {
+    "url": "https://github.com/Cancore-io/sdk/issues"
+  },
+  "keywords": [
+    "canton",
+    "cancore",
+    "wallet",
+    "ed25519",
+    "signing",
+    "keystore",
+    "webauthn",
+    "bip39"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "prepack": "tsup --silent",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.3.2",
+    "@scure/bip39": "^1.6.0"
+  }
+}
