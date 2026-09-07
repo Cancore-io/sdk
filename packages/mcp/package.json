@@ -1,0 +1,58 @@
+{
+  "name": "@cancore/mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "An MCP server that lets an AI agent ask a Cancore wallet owner for a trade. The agent queues a request; the person approves and signs it in their own wallet. No key ever reaches the agent.",
+  "bin": {
+    "cancore-mcp": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cancore-io/sdk.git",
+    "directory": "packages/mcp"
+  },
+  "homepage": "https://docs.cancore.io/sdk/mcp",
+  "bugs": {
+    "url": "https://github.com/Cancore-io/sdk/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "canton",
+    "cancore",
+    "agent",
+    "trading",
+    "wallet"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "prepack": "tsup --silent",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "zod": "^3.25.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
