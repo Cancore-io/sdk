@@ -53,7 +53,7 @@
   },
   "scripts": {
     "build": "tsup",
-    "prepack": "npm run build",
+    "prepack": "tsup --silent",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
