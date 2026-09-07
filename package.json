@@ -2,7 +2,7 @@
   "name": "cancore-sdk",
   "private": true,
   "version": "0.1.0",
-  "description": "Cancore SDK — the packages a third-party dApp or a wallet build installs from npm.",
+  "description": "Cancore SDK \u2014 the packages a third-party dApp or a wallet build installs from npm.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -18,15 +18,17 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "jest",
-    "typecheck": "tsc --build --force",
+    "typecheck": "tsc --build --force && tsc --noEmit -p packages/mcp/tsconfig.json",
     "clean": "rm -rf packages/*/dist",
-    "release:connector": "npm publish -w @cancore/dapp-connector --access public"
+    "release:connector": "npm publish -w @cancore/dapp-connector --access public",
+    "release:mcp": "npm publish -w @cancore/mcp --access public"
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",
     "@swc/core": "^1.7.0",
     "@swc/jest": "^0.2.36",
     "@types/jest": "^29.5.12",
+    "@types/node": "^26.4.1",
     "jest": "^29.7.0",
     "tsup": "^8.3.0",
     "typescript": "^5.9.0"
