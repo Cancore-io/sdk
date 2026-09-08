@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // `node` for the tests only (spec.test.ts reads the OpenAPI snapshot from
+    // disk). The shipped code is fetch-only and runs anywhere fetch does.
+    "types": ["jest", "node"]
+  },
+  "include": ["src/**/*.ts"],
+  // The root config excludes this package (it is typechecked here instead);
+  // that exclude is inherited and would swallow these inputs too.
+  "exclude": []
+}

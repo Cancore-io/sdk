@@ -18,11 +18,12 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "jest",
-    "typecheck": "tsc --build --force && tsc --noEmit -p packages/mcp/tsconfig.json && tsc --noEmit -p packages/wallet/tsconfig.json",
+    "typecheck": "tsc --build --force && tsc --noEmit -p packages/mcp/tsconfig.json && tsc --noEmit -p packages/wallet/tsconfig.json && tsc --noEmit -p packages/client/tsconfig.json",
     "clean": "rm -rf packages/*/dist",
     "release:connector": "npm publish -w @cancore/dapp-connector --access public",
     "release:mcp": "npm publish -w @cancore/mcp --access public",
-    "release:wallet": "npm publish -w @cancore/wallet --access public"
+    "release:wallet": "npm publish -w @cancore/wallet --access public",
+    "release:client": "npm publish -w @cancore/client --access public"
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",
