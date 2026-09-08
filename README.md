@@ -5,32 +5,29 @@ The packages a third-party dApp, an AI agent, or a wallet build installs from np
 | Package | npm | What it is |
 | --- | --- | --- |
 | [`@cancore/dapp-connector`](packages/dapp-connector) | [`@cancore/dapp-connector`](https://www.npmjs.com/package/@cancore/dapp-connector) | A CIP-0103 provider (remote profile) that asks a Cancore wallet to sign. No keys, ever. |
-| [`@cancore/mcp`](packages/mcp) | *not published yet* | An MCP server that lets an AI agent ask a wallet owner for a trade. The agent queues a request; the owner signs it in their own wallet. |
-| [`@cancore/wallet`](packages/wallet) | *not published yet* | The wallet core: key material, signing, storage contracts, the operations-envelope client. |
+| [`@cancore/mcp`](packages/mcp) | [`@cancore/mcp`](https://www.npmjs.com/package/@cancore/mcp) | An MCP server that lets an AI agent ask a wallet owner for a trade. The agent queues a request; the owner signs it in their own wallet. |
+| [`@cancore/client`](packages/client) | *not published yet* | A typed client for the API: orders and pool trades (`./swap`), the USDCx bridge (`./bridge`). Hands out hashes to sign, never holds a key. |
+| [`@cancore/wallet`](packages/wallet) | [`@cancore/wallet`](https://www.npmjs.com/package/@cancore/wallet) | The wallet core: key material, signing, storage contracts, the operations-envelope client. |
 
 **Full documentation: <https://docs.cancore.io/sdk/overview>.**
 
-The three answer three different questions. A dApp that wants a signature from
+The four answer four different questions. A dApp that wants a signature from
 somebody else's wallet takes the **connector**. An agent that wants to propose a
-trade its owner will approve takes **mcp**. A build that owns the keys itself —
-a wallet, a CLI, a signer — takes **wallet**.
+trade its owner will approve takes **mcp**. A program that trades or bridges
+through the API under its own credential takes **client**. A build that owns the
+keys itself — a wallet, a CLI, a signer — takes **wallet**.
 
-## Why two of them are not on npm yet
+## Why one of them is not on npm yet
 
-`@cancore/wallet` holds key material, so its publication is gated on the
-key-storage-at-rest audit. That audit has been done: what it found is either
-fixed in the code or written down in the package README, which is the condition
-it set. What is left is the last of those fixes landing and the package's
-trusted publisher being configured.
-
-`@cancore/mcp` holds nothing and is gated only by never having had a first
+`@cancore/client` holds nothing and is gated only by never having had a first
 release — see the note at the end about what that costs.
 
 ## What none of them can do
 
 None of these packages signs anything on its own behalf. The connector asks a
-wallet; the MCP server queues a request and returns its id; the wallet core
-signs only with a key the person unlocked. There is no code path here that
+wallet; the MCP server queues a request and returns its id; the client hands out
+a hash and takes a signature back; the wallet core signs only with a key the
+person unlocked. There is no code path here that
 moves funds without a human at a keyboard, and that asymmetry is the design
 rather than an omission.
 
@@ -90,6 +87,7 @@ published there is no package to configure. So version one goes out by hand:
 npm run release:connector -- --otp=<code>
 npm run release:mcp -- --otp=<code>
 npm run release:wallet -- --otp=<code>
+npm run release:client -- --otp=<code>
 ```
 
 From the repository root, and note the package name in each. `npm publish` at

@@ -1,0 +1,46 @@
+{
+  "name": "@cancore/client",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "A typed client for the Cancore API: orders and pool trades (./swap), USDCx bridge (./bridge). No keys — signing stays with @cancore/wallet or the dApp connector.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./swap": {
+      "types": "./dist/swap.d.ts",
+      "import": "./dist/swap.js",
+      "default": "./dist/swap.js"
+    },
+    "./bridge": {
+      "types": "./dist/bridge.d.ts",
+      "import": "./dist/bridge.js",
+      "default": "./dist/bridge.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cancore-io/sdk.git",
+    "directory": "packages/client"
+  },
+  "homepage": "https://docs.cancore.io/sdk/client",
+  "bugs": {
+    "url": "https://github.com/Cancore-io/sdk/issues"
+  },
+  "keywords": ["canton", "cancore", "swap", "bridge", "usdcx", "trading", "api-client"],
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsup",
+    "prepack": "tsup --silent",
+    "prepublishOnly": "npm run build",
+    "spec:refresh": "curl -sf https://api-dev.cancore.app/api-json -o spec/openapi.json && node -e \"const s=require('./spec/openapi.json');console.log(Object.keys(s.paths).length,'paths')\""
+  }
+}
