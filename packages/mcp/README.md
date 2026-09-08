@@ -155,6 +155,15 @@ The grant file is `0600` and nothing more — no keyring, no encryption at rest.
 running as your user can read it, the same as the `~/.aws` and `~/.kube` files next to it. The
 grant is revocable from the wallet and expires on its own.
 
+## One contract, two runtimes
+
+`contract/agent-tools.contract.json` is the agent surface written down: every tool's name,
+description, arguments and required set, as `tools/list` announces them. This package tests
+its running server against the file, and the Go server in `Cancore-io/mcp-server` tests
+against its copy of the same file — so the two implementations that share a grant file also
+provably share a surface. Change a tool here, regenerate the file with
+`UPDATE_CONTRACT=1 npx jest contract`, and the Go side goes red until it follows.
+
 ## Using the pieces directly
 
 ```ts

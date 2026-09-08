@@ -64,7 +64,7 @@ export function registerAgentTools(server: McpServer, session: CancoreSession): 
         targetNetwork: z.string().describe('network the maker wants to receive on'),
         targetTokenAddress: z.string().describe('instrument id or contract address wanted in return'),
         targetAmount: z.string().describe('decimal amount wanted, e.g. "12.5"'),
-        sourceTokenName: z.string().optional().describe('display name for the offered token, when the wallet list may not carry it'),
+        sourceTokenName: z.string().optional().describe("display name for the offered token, when the wallet's token list may not carry it"),
         targetTokenName: z.string().optional().describe('display name for the wanted token'),
         agentLabel: z.string().optional().describe(AGENT_LABEL_DESCRIPTION),
       },
