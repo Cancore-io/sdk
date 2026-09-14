@@ -1,8 +1,8 @@
 {
   "name": "@cancore/client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
-  "description": "A typed client for the Cancore API: orders and pool trades (./swap), USDCx bridge (./bridge). No keys — signing stays with @cancore/wallet or the dApp connector.",
+  "description": "A typed client for the Cancore API: orders and pool trades (./swap), USDCx bridge (./bridge). No keys \u2014 signing stays with @cancore/wallet or the dApp connector.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -33,10 +33,26 @@
   "bugs": {
     "url": "https://github.com/Cancore-io/sdk/issues"
   },
-  "keywords": ["canton", "cancore", "swap", "bridge", "usdcx", "trading", "api-client"],
-  "files": ["dist", "README.md", "LICENSE"],
-  "publishConfig": { "access": "public" },
-  "engines": { "node": ">=20" },
+  "keywords": [
+    "canton",
+    "cancore",
+    "swap",
+    "bridge",
+    "usdcx",
+    "trading",
+    "api-client"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsup",
     "prepack": "tsup --silent",
