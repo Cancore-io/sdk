@@ -117,16 +117,19 @@ export interface Page<T> {
   total: number;
 }
 
+/** The list query, in the API's own parameter names (GET /orders, GET /orders/my). */
 export interface ListOrdersQuery {
   page?: number;
   pageSize?: number;
-  sortBy?: string;
+  sortBy?: 'assets' | 'merchant' | 'pay' | 'rate' | 'status' | 'timeout' | 'id';
   sortDir?: 'asc' | 'desc';
   sourceNetwork?: string;
   targetNetwork?: string;
   sourceTokenAddress?: string;
   targetTokenAddress?: string;
-  status?: OrderStatus;
+  /** `all` is the API's own "no filter"; `expired` is a list-side view, not an OrderStatus. */
+  /** `all` is the API's own "no filter"; `expired` is a list-side view, not an OrderStatus. */
+  statusFilter?: 'all' | OrderStatus | 'expired';
 }
 
 /** `POST /auto-trader/quote` — a live price for a pool trade, good for `expiresInSec`. */

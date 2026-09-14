@@ -95,6 +95,24 @@ test.each(Object.entries(REQUEST_FIELDS))('%s: the client sends only fields the 
   expect((schema?.required ?? []).filter((r) => !fields.includes(r))).toEqual([]);
 });
 
+/**
+ * Query types: every field of a list query must be a parameter the route
+ * declares. This is the check that would have caught `status` where the API
+ * says `statusFilter` — found by the first consumer, not by this test, which
+ * is the wrong order and the reason the check exists now.
+ */
+const QUERY_FIELDS: Record<string, string[]> = {
+  '/orders': ['page', 'pageSize', 'sortBy', 'sortDir', 'sourceNetwork', 'targetNetwork', 'sourceTokenAddress', 'targetTokenAddress', 'statusFilter'],
+  '/orders/my': ['page', 'pageSize', 'sortBy', 'sortDir', 'sourceNetwork', 'targetNetwork', 'sourceTokenAddress', 'targetTokenAddress', 'statusFilter'],
+  '/canton-wallet/bridge/history': ['page', 'pageSize'],
+};
+
+test.each(Object.entries(QUERY_FIELDS))('GET %s: every query field the client types is a parameter the route declares', (path, fields) => {
+  const declared = ((spec.paths[path]?.get as { parameters?: Array<{ name: string }> } | undefined)?.parameters ?? []).map((p) => p.name);
+  expect(declared.length).toBeGreaterThan(0);
+  expect(fields.filter((f) => !declared.includes(f))).toEqual([]);
+});
+
 /** Response types: every field the client types must exist on the DTO. */
 const RESPONSE_FIELDS: Record<string, string[]> = {
   OrderResponseDto: [
