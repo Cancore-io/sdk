@@ -1,0 +1,49 @@
+{
+  "name": "@cancore/contracts",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The Cancore EVM contracts as data: ABIs of the deployed HTLC, FeeVault and CNRX contracts, their custom-error selectors, the EIP-712 FeeClaim voucher, the network registry. No runtime code, no dependencies.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./abi": {
+      "types": "./dist/abi.d.ts",
+      "import": "./dist/abi.js",
+      "default": "./dist/abi.js"
+    },
+    "./networks": {
+      "types": "./dist/networks.d.ts",
+      "import": "./dist/networks.js",
+      "default": "./dist/networks.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cancore-io/sdk.git",
+    "directory": "packages/contracts"
+  },
+  "homepage": "https://docs.cancore.io/sdk/contracts",
+  "bugs": {
+    "url": "https://github.com/Cancore-io/sdk/issues"
+  },
+  "keywords": ["canton", "cancore", "abi", "htlc", "evm", "eip-712", "contracts"],
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsup",
+    "prepack": "tsup --silent",
+    "prepublishOnly": "npm run build",
+    "sync": "node scripts/sync.mjs"
+  },
+  "devDependencies": {
+    "@noble/hashes": "^1.3.2"
+  }
+}

@@ -23,6 +23,7 @@
   ],
   "exclude": [
     "packages/client/**",
+    "packages/contracts/**",
     "packages/mcp/**",
     "packages/wallet/**"
   ]
