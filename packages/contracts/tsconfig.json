@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // `node` for the tests (they read the spec snapshot from disk); the shipped
+    // code is constants and runs anywhere.
+    "types": ["jest", "node"]
+  },
+  "include": ["src/**/*.ts"],
+  // The root config excludes this package (it is typechecked here instead);
+  // that exclude is inherited and would swallow these inputs too.
+  "exclude": []
+}
