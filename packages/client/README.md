@@ -22,8 +22,10 @@ const cancore = createClient({
   request: (url, init) => fetch(url, { ...init, headers: { ...init.headers, authorization: `Bearer ${token}` } }),
 });
 
-// A pool trade: a live price, then the trade at that price.
-const quote = await cancore.swap.quote({ pairConfigId: 'cc-usdcx', sourceAmount: '5' });
+// A pool trade: pick a pair the venue quotes, get a live price, trade at that price.
+// `pairConfigId` is the pair's UUID — the service rejects symbols like 'CC/USDCx' with a 400.
+const [pair] = await cancore.swap.pairs({ sourceToken: 'CC', targetToken: 'USDCx' });
+const quote = await cancore.swap.quote({ pairConfigId: pair.id, sourceAmount: '5' });
 const { orderId } = await cancore.swap.execute(quote.quoteToken);
 const order = await cancore.swap.track(orderId);       // polls until a terminal status
 ```
@@ -43,6 +45,7 @@ does not care which.
 | `createForPair(input)` | `POST /orders/pair` | the same offer, named by a trading pair the venue lists |
 | `accept(id)` | `POST /orders/{id}/accept` | take the other side |
 | `cancel(id)` | `POST /orders/{id}/cancel` | withdraw your offer |
+| `pairs(query?)` | `GET /auto-trader/pairs` | the pool pairs the venue quotes, with the `id` that `quote` takes |
 | `quote({ pairConfigId, sourceAmount })` | `POST /auto-trader/quote` | a live pool price, good for `expiresInSec` |
 | `execute(quoteToken)` | `POST /auto-trader/execute` | trade at that price; returns the order the pool opened for you |
 | `track(id, options?)` | polls `GET /orders/{id}` | until `completed`, `cancelled`, `refunded` or `delivery_failed` |

@@ -40,6 +40,7 @@ test('each method hits the API route it documents, with the API field names', as
   await client.createForPair({ tradingPairId: 'p1', sourceAmount: '5', targetAmount: '1', side: 'buy' });
   await client.accept('o1');
   await client.cancel('o1');
+  await client.pairs({ sourceToken: 'CC', sortBy: 'rate' });
   await client.quote({ pairConfigId: 'pc1', sourceAmount: '5' });
   await client.execute('qt_1');
 
@@ -51,12 +52,13 @@ test('each method hits the API route it documents, with the API field names', as
     'POST /orders/pair',
     'POST /orders/o1/accept',
     'POST /orders/o1/cancel',
+    'GET /auto-trader/pairs?sourceToken=CC&sortBy=rate',
     'POST /auto-trader/quote',
     'POST /auto-trader/execute',
   ]);
   // The pool quote takes a number, as the service does; the client converts.
-  expect(calls[7]?.body).toEqual({ pairConfigId: 'pc1', sourceAmount: 5 });
-  expect(calls[8]?.body).toEqual({ quoteToken: 'qt_1' });
+  expect(calls[8]?.body).toEqual({ pairConfigId: 'pc1', sourceAmount: 5 });
+  expect(calls[9]?.body).toEqual({ quoteToken: 'qt_1' });
   // Accept sends an (empty) JSON body — AcceptOrderDto is `{}`, not absent.
   expect(calls[5]?.body).toEqual({});
 });
