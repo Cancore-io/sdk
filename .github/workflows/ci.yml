@@ -23,6 +23,10 @@ jobs:
       # project that is not this repository. A broken `exports` map, a file left
       # out of `files`, a missing type declaration — all of it passes every test
       # in the suite and fails the first person who runs `npm install`.
+      #
+      # EVERY subpath the manifest publishes, not just the root: a subpath entry
+      # is exactly where an exports map breaks, and `@cancore/client/realtime`
+      # would have been the fourth entry nothing here ever imported.
       - name: Install the tarball as a stranger would
         run: |
           set -euo pipefail
@@ -36,10 +40,14 @@ jobs:
             npm init -y >/dev/null
             npm install "$RUNNER_TEMP/$tarball" --no-audit --no-fund
             node --input-type=module -e "
-              import * as pkg from '$name';
-              const names = Object.keys(pkg);
-              if (names.length === 0) throw new Error('$name exports nothing');
-              console.log('$name exports:', names.join(', '));
+              import { readFileSync } from 'node:fs';
+              const manifest = JSON.parse(readFileSync('node_modules/$name/package.json', 'utf8'));
+              for (const subpath of Object.keys(manifest.exports ?? { '.': {} })) {
+                const specifier = '$name' + (subpath === '.' ? '' : subpath.slice(1));
+                const names = Object.keys(await import(specifier));
+                if (names.length === 0) throw new Error(specifier + ' exports nothing');
+                console.log(specifier, 'exports:', names.join(', '));
+              }
             "
             test -f "node_modules/$name/dist/index.d.ts" || { echo "$name ships no types"; exit 1; }
             cd "$GITHUB_WORKSPACE"
