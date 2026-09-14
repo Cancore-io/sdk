@@ -6,7 +6,7 @@ The packages a third-party dApp, an AI agent, or a wallet build installs from np
 | --- | --- | --- |
 | [`@cancore/dapp-connector`](packages/dapp-connector) | [`@cancore/dapp-connector`](https://www.npmjs.com/package/@cancore/dapp-connector) | A CIP-0103 provider (remote profile) that asks a Cancore wallet to sign. No keys, ever. |
 | [`@cancore/mcp`](packages/mcp) | [`@cancore/mcp`](https://www.npmjs.com/package/@cancore/mcp) | An MCP server that lets an AI agent ask a wallet owner for a trade. The agent queues a request; the owner signs it in their own wallet. |
-| [`@cancore/client`](packages/client) | *not published yet* | A typed client for the API: orders and pool trades (`./swap`), the USDCx bridge (`./bridge`). Hands out hashes to sign, never holds a key. |
+| [`@cancore/client`](packages/client) | [`@cancore/client`](https://www.npmjs.com/package/@cancore/client) | A typed client for the API: orders and pool trades (`./swap`), the USDCx bridge (`./bridge`). Hands out hashes to sign, never holds a key. |
 | [`@cancore/wallet`](packages/wallet) | [`@cancore/wallet`](https://www.npmjs.com/package/@cancore/wallet) | The wallet core: key material, signing, storage contracts, the operations-envelope client. |
 
 **Full documentation: <https://docs.cancore.io/sdk/overview>.**
@@ -16,11 +16,6 @@ somebody else's wallet takes the **connector**. An agent that wants to propose a
 trade its owner will approve takes **mcp**. A program that trades or bridges
 through the API under its own credential takes **client**. A build that owns the
 keys itself — a wallet, a CLI, a signer — takes **wallet**.
-
-## Why one of them is not on npm yet
-
-`@cancore/client` holds nothing and is gated only by never having had a first
-release — see the note at the end about what that costs.
 
 ## What none of them can do
 
@@ -81,7 +76,8 @@ repository and the `publish.yml` workflow filename.
 
 Trusted publishing cannot make the first release of a NEW package — the
 publisher is configured in the package's settings, and until something is
-published there is no package to configure. So version one goes out by hand:
+published there is no package to configure. So version one goes out by hand
+(all four packages here have had theirs; this is for the fifth):
 
 ```bash
 npm run release:connector -- --otp=<code>
