@@ -110,9 +110,14 @@ describe('published documentation', () => {
   it.each(DOCUMENTS)('%s imports only symbols the packages export', (document) => {
     const missing: string[] = [];
     for (const { spec, names } of documentedImports(read(document))) {
+      // Our own packages only. An example may legitimately import somebody
+      // else's package — `socket.io-client`, for the socket the client's
+      // realtime entry takes — and what that one exports is not ours to police.
+      if (!spec.startsWith('@cancore/')) continue;
       const known = exports[spec];
-      // An unknown specifier is a documentation bug of its own: it means the
-      // README tells people to import from a package that does not exist here.
+      // An unknown @cancore specifier is a documentation bug of its own: it
+      // means the README tells people to import from a package that does not
+      // exist here.
       expect(known ?? `unknown module ${spec}`).toBeInstanceOf(Set);
       for (const name of names) if (!known.has(name)) missing.push(`${spec}#${name}`);
     }

@@ -1,0 +1,35 @@
+{
+  "description": "What @cancore/client/realtime expects from the gateway's Socket.IO feed. Every entry is read off the backend, and `source` says where — `Cancore-io/backend` at the commit below. A change there that this file does not follow is what realtime.contract.test.ts is for.",
+  "backend": {
+    "repository": "Cancore-io/backend",
+    "ref": "dev",
+    "commit": "adda3895f",
+    "read": "2026-09-14"
+  },
+  "namespace": "/presence",
+  "source": "apps/gateway/src/presence/gateways/presence.gateway.ts:40",
+  "handshake": {
+    "auth": { "token": "the same JWT the REST client sends; the handshake is rejected without it" },
+    "source": "apps/gateway/src/presence/gateways/presence-auth.middleware.ts:22"
+  },
+  "join": {
+    "protocol": "none — the server joins the socket to `user_<userId>` itself once the token verifies",
+    "source": "apps/gateway/src/presence/gateways/presence-connection.handler.ts:73"
+  },
+  "events": [
+    {
+      "name": "order:updated",
+      "audience": "every connected client — `server.emit`, not a room, so the client filters by order id",
+      "source": "apps/gateway/src/presence/gateways/presence.gateway.ts:136",
+      "payload": {
+        "shape": "OrderResponseDto, passed through publicOrderView, which drops initiator.ethAddress / initiator.tronAddress and the same two on opponent",
+        "source": [
+          "libs/common/src/events/order-updated.event.ts:3",
+          "libs/trading-core/src/orders/services/order-enrichment.service.ts:41",
+          "libs/trading-core/src/orders/services/orders.service.ts:239"
+        ],
+        "fieldsRead": ["id", "status"]
+      }
+    }
+  ]
+}

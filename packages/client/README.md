@@ -1,15 +1,16 @@
 # `@cancore/client`
 
-A typed client for the Cancore API. Two entries: the exchange (`./swap`) and the USDCx
-bridge (`./bridge`). **No keys.** Where a step needs a signature, the client hands you a hash
-and takes the signature back — signing stays with `@cancore/wallet` or the dApp connector.
+A typed client for the Cancore API. Three entries: the exchange (`./swap`), the USDCx
+bridge (`./bridge`) and live order updates (`./realtime`). **No keys.** Where a step needs a
+signature, the client hands you a hash and takes the signature back — signing stays with
+`@cancore/wallet` or the dApp connector.
 
 ```bash
 npm install @cancore/client
 ```
 
 No runtime dependencies. The transport is `fetch`, and you inject the function that adds
-your credential.
+your credential; the realtime entry takes a socket the same way.
 
 ## Quick start
 
@@ -26,6 +27,7 @@ const cancore = createClient({
 const quote = await cancore.swap.quote({ pairConfigId: 'cc-usdcx', sourceAmount: '5' });
 const { orderId } = await cancore.swap.execute(quote.quoteToken);
 const order = await cancore.swap.track(orderId);       // polls until a terminal status
+// …or wait on the push feed instead — see `./realtime` below.
 ```
 
 `request` receives the absolute URL and the init the client built (method, JSON headers,
@@ -47,6 +49,8 @@ does not care which.
 | `execute(quoteToken)` | `POST /auto-trader/execute` | trade at that price; returns the order the pool opened for you |
 | `track(id, options?)` | polls `GET /orders/{id}` | until `completed`, `cancelled`, `refunded` or `delivery_failed` |
 
+The push feed is the other way to follow an order — `./realtime`, below.
+
 Every shape is the API's own DTO, field for field — `Order` is `OrderResponseDto`,
 `CreateOrderInput` is `CreateOrderDto` — and a test holds them to the gateway's OpenAPI
 document. Amounts are decimal **strings** everywhere except the pool quote, which the
@@ -59,6 +63,54 @@ saw, so you are never left with a bare timeout.
 **What `accept` does not do.** It is a POST. Where the swap that follows needs your
 signature — self-custody HTLC legs — that ceremony runs through
 `@cancore/wallet/operations` (or the dApp connector), not through this client.
+
+## `@cancore/client/realtime`
+
+`track` polls. The gateway also pushes every order change over Socket.IO, and this entry
+reads that feed — without adding a dependency. The socket is injected exactly the way
+`request` is, so `socket.io-client` stays on your side:
+
+```ts
+import { io } from 'socket.io-client';
+import { orderUpdates, waitForOrder } from '@cancore/client/realtime';
+
+const socket = io(`${baseUrl}/presence`, { auth: { token }, transports: ['websocket'] });
+
+const stop = orderUpdates(socket, (order) => console.log(order.id, order.status));
+const settled = await waitForOrder(socket, orderId);   // resolves on the first terminal update
+stop();
+```
+
+| Export | What it is |
+| --- | --- |
+| `orderUpdates(socket, handler)` | every order update the venue broadcasts; returns the unsubscribe |
+| `waitForOrder(socket, id, options?)` | resolves on the first update for `id` that is terminal |
+| `ORDER_UPDATED_EVENT` | the event name, `order:updated` |
+| `SocketLike` | the two methods this entry uses — `socket.io-client`'s `Socket` satisfies it, and a test compiles that claim rather than asserting it in prose |
+| `OrderWaitTimeoutError` | `waitForOrder` gave up; `last` is the most recent update it saw, if any |
+
+Nothing is added to your install: `socket.io-client` is not a dependency of this package,
+runtime or peer — `SocketLike` is two methods, so a stub or another Socket.IO build does
+just as well.
+
+`/presence` is the namespace and `auth.token` is the credential — the handshake is rejected
+without it. There is no join message to send: the gateway verifies the token and puts the
+socket in that user's room itself.
+
+**The feed is not filtered for you.** `order:updated` goes to every connected client, so
+orders you have nothing to do with arrive too — `waitForOrder` filters by id, `orderUpdates`
+hands you everything. The payload is the same `Order` the REST API returns, minus the
+counterparties' `ethAddress`/`tronAddress`, which the broadcast strips.
+
+`waitForOrder` takes `{ isTerminal?, timeoutMs?, signal? }`, gives up after 15 minutes like
+`track`, and — unlike `track`, which always holds an order it just fetched — **rejects** on
+abort rather than resolving, with the signal's own reason. An order that was already
+terminal before you subscribed sends no further update; `swap.get(id)` answers that, this
+waits for a transition.
+
+The event name and the payload fields this entry reads are pinned in
+`contract/realtime-events.contract.json` with the backend file:line each came from, and a
+test holds them to `spec/openapi.json`.
 
 ## `@cancore/client/bridge`
 
@@ -107,9 +159,10 @@ the test says so rather than skipping them silently.
 ## Using the pieces
 
 ```ts
-import { swap } from '@cancore/client/swap';      // just the exchange
-import { bridge } from '@cancore/client/bridge';  // just the bridge
-import { createHttp } from '@cancore/client';     // the seam, for a route this client lacks
+import { swap } from '@cancore/client/swap';            // just the exchange
+import { bridge } from '@cancore/client/bridge';        // just the bridge
+import { orderUpdates } from '@cancore/client/realtime'; // just the push feed
+import { createHttp } from '@cancore/client';           // the seam, for a route this client lacks
 ```
 
 Full documentation: <https://docs.cancore.io/sdk/client>
