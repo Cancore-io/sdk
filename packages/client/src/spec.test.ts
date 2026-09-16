@@ -17,7 +17,7 @@ import { createSwapClient } from './swap';
  * requested is what gets checked. Adding a method adds a checked route.
  *
  * `/auto-trader/*` is a separate service the gateway document does not include;
- * those two routes are listed as such rather than silently skipped.
+ * those three routes are listed as such rather than silently skipped.
  */
 interface Spec {
   paths: Record<string, Record<string, unknown>>;
@@ -45,7 +45,7 @@ async function routesTheClientCalls(): Promise<string[]> {
   await Promise.all([
     s.listOpen(), s.listMine(), s.get('o1'), s.create(offer),
     s.createForPair({ tradingPairId: 'p', sourceAmount: '1', targetAmount: '1' }),
-    s.accept('o1'), s.cancel('o1'), s.quote({ pairConfigId: 'p', sourceAmount: 1 }), s.execute('q'),
+    s.accept('o1'), s.cancel('o1'), s.pairs(), s.quote({ pairConfigId: 'p', sourceAmount: 1 }), s.execute('q'),
     s.track('o1', { sleep: async () => {} }),
     b.limits(), b.history(), b.checkOnboarding(), b.estimateCost({ operation: 'burn', amount: '1' }),
     b.mint({}), b.burn({ amount: '1', ethRecipient: '0x0' }),
@@ -55,11 +55,11 @@ async function routesTheClientCalls(): Promise<string[]> {
 }
 
 /** Outside the gateway document by construction; shapes come from the Cancore app. */
-const OUTSIDE_SPEC = ['/auto-trader/quote', '/auto-trader/execute'];
+const OUTSIDE_SPEC = ['/auto-trader/pairs', '/auto-trader/quote', '/auto-trader/execute'];
 
 test('every route the client actually calls exists in the gateway document, with that method', async () => {
   const called = await routesTheClientCalls();
-  expect(called.length).toBeGreaterThanOrEqual(17); // a vacuous pass would be worse than a failure
+  expect(called.length).toBeGreaterThanOrEqual(18); // a vacuous pass would be worse than a failure
   const missing = called
     .filter((route) => !OUTSIDE_SPEC.some((p) => route.endsWith(` ${p}`)))
     .filter((route) => {

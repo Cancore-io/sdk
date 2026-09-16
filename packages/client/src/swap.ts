@@ -132,6 +132,50 @@ export interface ListOrdersQuery {
   statusFilter?: 'all' | OrderStatus | 'expired';
 }
 
+/** `GET /auto-trader/pairs` — the list query, in the API's own parameter names. */
+export interface ListPairsQuery {
+  /** Case-insensitive source symbol filter, e.g. `CC`. */
+  sourceToken?: string;
+  /** Case-insensitive target symbol filter, e.g. `USDCx`. */
+  targetToken?: string;
+  /** Omitted: creation order. */
+  sortBy?: 'rate' | 'volume' | 'spread' | 'min' | 'max';
+  sortDir?: 'asc' | 'desc';
+}
+
+/**
+ * One pool pair the venue quotes right now (`PairListItem` in the service). `id` is the
+ * `pairConfigId` that `quote` takes — a UUID, never a symbol.
+ */
+export interface Pair {
+  id: string;
+  sourceToken: string;
+  targetToken: string;
+  sourceInstrumentId: string;
+  targetInstrumentId: string;
+  spreadPercent: string;
+  minAmountUsd: string;
+  maxAmountUsd: string;
+  timeoutHours: number;
+  /** Mid-market, target per 1 source; `null` while the price feed is unavailable. */
+  marketRate: string | null;
+  /** The rate you would get = marketRate × (1 − spread/100). */
+  quotedRate: string | null;
+  sourcePriceUsd: string | null;
+  volume24hUsd: string;
+  trades24h: number;
+  /** Live pool inventory in the target token — the real ceiling, not `maxAmountUsd`. */
+  availableTargetAmount: string | null;
+  availableTargetUsd: string | null;
+  /** The largest source amount that still fills; `null` when rate or inventory is unknown. */
+  availableSourceAmount: string | null;
+  /** Spread applied to this direction right now; negative means subsidised. */
+  effectiveSpreadPercent: string | null;
+  targetSkew: string | null;
+  amountPrecision: number;
+  pricePrecision: number;
+}
+
 /** `POST /auto-trader/quote` — a live price for a pool trade, good for `expiresInSec`. */
 export interface Quote {
   quoteToken: string;
@@ -186,6 +230,8 @@ export interface SwapClient {
   /** Take the other side of an open order. A POST — no signature crosses here. */
   accept(id: string): Promise<Order>;
   cancel(id: string): Promise<Order>;
+  /** The pool pairs the venue quotes, with the `id` that `quote` needs. */
+  pairs(query?: ListPairsQuery): Promise<Pair[]>;
   /** A live pool price. Rates move; the quote is good for `expiresInSec`. */
   quote(input: { pairConfigId: string; sourceAmount: number | string }): Promise<Quote>;
   /** Trade at a quoted price. Returns the order the pool opened for you. */
@@ -208,6 +254,7 @@ export function createSwapClient(http: Http): SwapClient {
     cancel: (id) => http.post(`/orders/${encodeURIComponent(id)}/cancel`),
     // The quote service takes a number where the rest of the API takes decimal
     // strings; the client converts so a caller can pass either.
+    pairs: (query) => http.get('/auto-trader/pairs', query),
     quote: ({ pairConfigId, sourceAmount }) =>
       http.post('/auto-trader/quote', { pairConfigId, sourceAmount: Number(sourceAmount) }),
     execute: (quoteToken) => http.post('/auto-trader/execute', { quoteToken }),
