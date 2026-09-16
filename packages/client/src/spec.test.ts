@@ -54,7 +54,10 @@ async function routesTheClientCalls(): Promise<string[]> {
   return [...seen].sort();
 }
 
-/** Outside the gateway document by construction; shapes come from the Cancore app. */
+/**
+ * Not in the gateway document yet; shapes come from the Cancore app. The test
+ * below goes red the day a refresh brings them in, and says what to do then.
+ */
 const OUTSIDE_SPEC = ['/auto-trader/pairs', '/auto-trader/quote', '/auto-trader/execute'];
 
 test('every route the client actually calls exists in the gateway document, with that method', async () => {
@@ -70,7 +73,14 @@ test('every route the client actually calls exists in the gateway document, with
 });
 
 test('the routes outside the document really are outside it', () => {
-  for (const path of OUTSIDE_SPEC) expect(spec.paths[path]).toBeUndefined();
+  const nowInside = OUTSIDE_SPEC.filter((path) => spec.paths[path] !== undefined);
+  if (nowInside.length > 0) {
+    throw new Error(
+      `spec/openapi.json now documents ${nowInside.join(', ')}. This is the expected signal, not a regression: ` +
+        'the auto-trader routes joined the document. Remove them from OUTSIDE_SPEC so they get the normal ' +
+        'route/method check, and add their DTOs to REQUEST_FIELDS and RESPONSE_FIELDS.',
+    );
+  }
 });
 
 /** Request types this client declares, against the DTO each route takes. */
