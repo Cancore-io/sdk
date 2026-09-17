@@ -15,7 +15,9 @@ The packages a third-party dApp, an AI agent, or a wallet build installs from np
 The five answer five different questions. A dApp that wants a signature from
 somebody else's wallet takes the **connector**. An agent that wants to propose a
 trade its owner will approve takes **mcp**. A program that trades or bridges
-through the API under its own credential takes **client**. Anything that talks
+through the API takes **client**, and it runs on a user's own session token —
+the JWT that user gets at sign-in. The scoped grants the connector and the MCP
+server obtain are refused on the trading and bridge routes. Anything that talks
 to the contracts directly — decoding an event, verifying a deployment, signing a
 voucher — takes **contracts**, which is data rather than code. A build that owns
 the keys itself — a wallet, a CLI, a signer — takes **wallet**.

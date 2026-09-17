@@ -33,8 +33,24 @@ const order = await cancore.swap.track(orderId);       // polls until a terminal
 ```
 
 `request` receives the absolute URL and the init the client built (method, JSON headers,
-body). Return a `Response`. A user JWT, an app-session grant, a device-flow token — the client
-does not care which.
+body). Return a `Response`.
+
+**Which credential trades.** The client sends whatever `request` adds; the API decides what it
+accepts. The order, pool and bridge routes take a user's own session token — the JWT issued
+at sign-in, by `POST /auth/login` for an email-and-password account, or by `POST /auth/challenge`,
+a signature from the wallet key, then `POST /auth/login-signature` for a key-based one.
+
+An app-session grant (`cs_…`) cannot trade, whether it came from the dApp connector's consent
+popup or from a device flow. No grantable scope covers orders, pool trades or the bridge, and
+the routes refuse it before looking it up:
+
+| Routes | What a grant gets back |
+| --- | --- |
+| `/orders/*`, `/canton-wallet/bridge/*` | `403 This route declares no scope and is closed to app sessions` |
+| `/auto-trader/*` | `401 Unauthorized` |
+
+A grant works where a route declares a scope: the connector's wallet RPC, and the agent queue
+that `@cancore/mcp` proposes trades through.
 
 ## `@cancore/client/swap`
 
