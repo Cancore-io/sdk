@@ -1,0 +1,124 @@
+name: Client spec refresh
+
+# Keeps packages/client/spec/openapi.json in step with the deployed gateway, so
+# the API moving out from under @cancore/client arrives as a PR and a red run,
+# not as the first consumer's bug report.
+#
+# Source: the public https://api-dev.cancore.app/api-json. The backend commits
+# its own document in a private repository; reading that from here would need a
+# standing token in a public repository. This workflow needs no secret at all,
+# and never runs on pull_request_target.
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write # push the refresh branch
+  pull-requests: write # open or update the refresh PR
+
+concurrency:
+  group: client-spec-refresh
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    env:
+      BRANCH: automation/client-spec-refresh
+      SPEC: packages/client/spec/openapi.json
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run spec:refresh -w @cancore/client
+
+      - name: Did the document change?
+        id: diff
+        run: |
+          if git diff --quiet -- "$SPEC"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "The snapshot matches the deployed document. Nothing to do." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A PR opened with GITHUB_TOKEN does not trigger ci.yml, so this run is the
+      # check on the refresh: the result goes into the PR body, and a failure
+      # fails this job after the PR is up.
+      - name: Test the client against the refreshed document
+        id: test
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          set +e
+          npm test 2>&1 | tee "$RUNNER_TEMP/test.log"
+          echo "status=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the refresh PR
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          STATUS: ${{ steps.test.outputs.status }}
+        run: |
+          set -euo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$BRANCH"
+          git commit -m 'chore(client): refresh the gateway OpenAPI snapshot' -- "$SPEC"
+
+          # Same tree as the branch already carries (same main, same document):
+          # leave the branch and the PR alone instead of force-pushing daily noise.
+          pushed=false
+          if git fetch --quiet origin "$BRANCH" 2>/dev/null \
+            && [ "$(git rev-parse 'FETCH_HEAD^{tree}')" = "$(git rev-parse 'HEAD^{tree}')" ]; then
+            echo "The refresh branch already carries this snapshot on this main."
+          else
+            git push --force origin "HEAD:refs/heads/$BRANCH"
+            pushed=true
+          fi
+
+          if [ "$STATUS" = "0" ]; then
+            title='chore(client): refresh the gateway OpenAPI snapshot'
+            verdict="\`npm test\` against this snapshot: **passed**."
+          else
+            title='chore(client): API drift, the refreshed OpenAPI snapshot fails the client tests'
+            verdict="\`npm test\` against this snapshot: **failed** (exit $STATUS). The API moved out from under \`@cancore/client\`: fix the client on this branch, or the API, before merging. A failure in \"the routes outside the document really are outside it\" means the auto-trader routes joined the document; its message says what to change."
+          fi
+          {
+            echo "Scheduled refresh of \`$SPEC\` from https://api-dev.cancore.app/api-json ([run]($run_url))."
+            echo
+            echo "$verdict"
+            echo
+            echo "This PR was opened with \`GITHUB_TOKEN\`, so the CI workflow does not run on it by itself. The result above comes from the refresh run. Any commit pushed to this branch by a person runs CI as usual."
+            echo
+            echo '<details><summary>npm test output (tail)</summary>'
+            echo
+            echo '```text'
+            tail -n 150 "$RUNNER_TEMP/test.log" | tail -c 40000
+            echo '```'
+            echo
+            echo '</details>'
+            echo
+            echo 'Refs CAN-744.'
+          } > "$RUNNER_TEMP/body.md"
+
+          pr=$(gh pr list --head "$BRANCH" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -n "$pr" ]; then
+            if [ "$pushed" = true ]; then gh pr edit "$pr" --title "$title" --body-file "$RUNNER_TEMP/body.md"; fi
+            echo "Refresh PR: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$pr" >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh pr create --base main --head "$BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY" || {
+              echo "::error::Could not open the PR. If GitHub says Actions may not create pull requests, enable Settings > Actions > General > Allow GitHub Actions to create and approve pull requests. The branch is pushed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/main...$BRANCH"
+              exit 1
+            }
+          fi
+
+      - name: Fail when the client does not survive the refresh
+        if: steps.diff.outputs.changed == 'true' && steps.test.outputs.status != '0'
+        run: |
+          echo "::error::npm test fails against the refreshed OpenAPI document. See the refresh PR for the failing assertions."
+          exit 1

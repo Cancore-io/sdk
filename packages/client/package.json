@@ -62,6 +62,6 @@
     "build": "tsup",
     "prepack": "tsup --silent",
     "prepublishOnly": "npm run build",
-    "spec:refresh": "curl -sf https://api-dev.cancore.app/api-json -o spec/openapi.json && node -e \"const s=require('./spec/openapi.json');console.log(Object.keys(s.paths).length,'paths')\""
+    "spec:refresh": "node scripts/refresh-spec.mjs"
   }
 }
