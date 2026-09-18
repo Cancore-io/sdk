@@ -75,6 +75,10 @@ Every shape is the API's own DTO, field for field — `Order` is `OrderResponseD
 document. Amounts are decimal **strings** everywhere except the pool quote, which the
 service takes as a number; the client converts, so pass either.
 
+A `Quote` also reports `subsidized`: the venue sometimes quotes better than market on the
+direction that rebalances its pool, and that flag is how you tell such a price from a
+plain one before showing it to anyone.
+
 `track` reports every poll through `onUpdate`, stops on an `AbortSignal`, and gives up after
 `timeoutMs` (default 15 minutes) with `TrackTimeoutError` — which carries the last order it
 saw, so you are never left with a bare timeout.
@@ -171,9 +175,17 @@ exists in the document with that method, and that every request field the client
 and every response field it types — is a field the DTO has. `npm run spec:refresh` pulls a
 fresh document; a red test after that is the API having moved.
 
-The pool-trade routes (`/auto-trader/*`) are a separate service the gateway document does not
-include; their shapes are written from the responses the Cancore app itself consumes, and
-the test says so rather than skipping them silently.
+The pool-trade routes (`/auto-trader/*`) are in that document now and are checked like every
+other route — but only as routes. The document publishes their request DTOs with no
+properties, declares no query parameters for the pair list and types no response for any of
+the three, so `ListPairsQuery`, `Pair`, `Quote` and `Executed` stay written from what the
+service returns. A test pins that gap instead of leaving it implied, and goes red the day
+the document starts carrying the fields.
+
+The snapshot is a test fixture and is not published: `files` is `dist`, `README.md` and
+`LICENSE`, so the document growing — it covers the whole venue now, operator routes
+included — costs the install nothing. A route existing in it is not a reason for this
+client to wrap it, and a test holds the client off the operator surface.
 
 ## Using the pieces
 

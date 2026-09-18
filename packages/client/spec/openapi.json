@@ -44,6 +44,27 @@
         ],
         "type": "object"
       },
+      "AddWorkerDto": {
+        "properties": {
+          "email": {
+            "description": "Existing registered user email",
+            "type": "string"
+          },
+          "partyName": {
+            "description": "Display name for the worker party",
+            "type": "string"
+          },
+          "password": {
+            "description": "Keycloak password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "type": "object"
+      },
       "AdminAccountDeltaPageDto": {
         "properties": {
           "accounts": {
@@ -142,6 +163,22 @@
         "required": [
           "paused"
         ],
+        "type": "object"
+      },
+      "AdminFreezeDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "AdminInitVaultDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "AdminTreasuryWithdrawDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "AdminVaultWithdrawDto": {
+        "properties": {},
         "type": "object"
       },
       "AllocateOwedResponseDto": {
@@ -1150,6 +1187,14 @@
         ],
         "type": "object"
       },
+      "CreateBotPairDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "CreateBotStrategyDto": {
+        "properties": {},
+        "type": "object"
+      },
       "CreateBroadcastDto": {
         "properties": {
           "channels": {
@@ -1658,6 +1703,19 @@
         ],
         "type": "object"
       },
+      "CreateVaultWorkerDto": {
+        "properties": {
+          "name": {
+            "description": "Optional display name override",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "DepositIntentDto": {
+        "properties": {},
+        "type": "object"
+      },
       "DeviceAnswerDto": {
         "properties": {},
         "type": "object"
@@ -1906,6 +1964,10 @@
         ],
         "type": "object"
       },
+      "EnablePairDto": {
+        "properties": {},
+        "type": "object"
+      },
       "EthChallengeResponseDto": {
         "properties": {
           "expiresAt": {
@@ -2009,6 +2071,10 @@
         ],
         "type": "object"
       },
+      "ExecuteDto": {
+        "properties": {},
+        "type": "object"
+      },
       "ExternalPartySendPrepareDto": {
         "properties": {
           "amount": {
@@ -2017,6 +2083,15 @@
           "description": {
             "description": "Free-form transfer memo",
             "type": "string"
+          },
+          "expiresInMinutes": {
+            "description": "Send only: minutes the receiver has to accept a registry-token TransferInstruction (1 hour, 1 day, 2 weeks); omit for the 30-day default. No effect on CC (settles via preapproval) or on LP deposits.",
+            "enum": [
+              60,
+              1440,
+              20160
+            ],
+            "type": "number"
           },
           "receiverPartyId": {
             "type": "string"
@@ -3014,6 +3089,10 @@
         },
         "type": "object"
       },
+      "KillSwitchDto": {
+        "properties": {},
+        "type": "object"
+      },
       "LegalConsentStatusDto": {
         "properties": {
           "accepted": {
@@ -3190,6 +3269,10 @@
         ],
         "type": "object"
       },
+      "ManualAdjustmentDto": {
+        "properties": {},
+        "type": "object"
+      },
       "MarkReadDto": {
         "properties": {
           "ids": {
@@ -3230,6 +3313,10 @@
             "type": "number"
           }
         },
+        "type": "object"
+      },
+      "MigrateBotDto": {
+        "properties": {},
         "type": "object"
       },
       "MintTokenDto": {
@@ -3481,6 +3568,16 @@
             "description": "Admin-configured amount precision (decimal places) from the order's trading pair. Null when the order has no associated trading pair. The frontend uses it as the fixed display precision for source/target amounts, with a significant-digit guard so small non-zero amounts are never truncated to 0.",
             "nullable": true,
             "type": "number"
+          },
+          "cancelReason": {
+            "description": "Why a system path cancelled the order (expired, swept, delivery exhausted). Null when a person cancelled it — cancelledBy names them instead.",
+            "nullable": true,
+            "type": "string"
+          },
+          "cancelledBy": {
+            "description": "User who cancelled the order, when a person did. Null on an order that is not cancelled, on a system-side close (see cancelReason), and on rows cancelled before CAN-1585 recorded this.",
+            "nullable": true,
+            "type": "string"
           },
           "counterHtlcExpired": {
             "description": "Whether the counter HTLC lock has expired (only when swap is linked; from ledger/timeout)",
@@ -4328,6 +4425,10 @@
         ],
         "type": "object"
       },
+      "PricingSettingsDto": {
+        "properties": {},
+        "type": "object"
+      },
       "ProposalListItemDto": {
         "properties": {
           "amount": {
@@ -4384,6 +4485,10 @@
         ],
         "type": "object"
       },
+      "QuoteDto": {
+        "properties": {},
+        "type": "object"
+      },
       "RecordLegalConsentDto": {
         "properties": {
           "documents": {
@@ -4425,6 +4530,10 @@
         "required": [
           "code"
         ],
+        "type": "object"
+      },
+      "RefillBotDto": {
+        "properties": {},
         "type": "object"
       },
       "RefreshTokenDto": {
@@ -4471,7 +4580,35 @@
         },
         "type": "object"
       },
+      "RemoveOpsFundingPartyDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "RemoveTokenPolicyDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "RenameWorkerDto": {
+        "properties": {
+          "name": {
+            "description": "New worker display name (1..128 chars)",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "ResetPasswordDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "ReturnBotFundsDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "RunDistributionDto": {
         "properties": {},
         "type": "object"
       },
@@ -4500,6 +4637,10 @@
         ],
         "type": "object"
       },
+      "SetAutoBalanceSettingsDto": {
+        "properties": {},
+        "type": "object"
+      },
       "SetAutoTradeDto": {
         "properties": {
           "enabled": {
@@ -4525,6 +4666,14 @@
         ],
         "type": "object"
       },
+      "SetDexSettingsDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "SetPlatformFeeDto": {
+        "properties": {},
+        "type": "object"
+      },
       "SetPricePriorityDto": {
         "properties": {
           "sources": {
@@ -4544,6 +4693,10 @@
         ],
         "type": "object"
       },
+      "SetRebalanceAlertsDto": {
+        "properties": {},
+        "type": "object"
+      },
       "SetTokenTradingDto": {
         "properties": {
           "enabled": {
@@ -4560,6 +4713,22 @@
         },
         "required": [
           "enabled"
+        ],
+        "type": "object"
+      },
+      "SetVenuePolicyDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "SetWorkerActiveDto": {
+        "properties": {
+          "active": {
+            "description": "Active status of the worker",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "active"
         ],
         "type": "object"
       },
@@ -5267,6 +5436,14 @@
         ],
         "type": "object"
       },
+      "SyntheticDepositDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "ToggleApyTargetDto": {
+        "properties": {},
+        "type": "object"
+      },
       "TokenBalanceDto": {
         "properties": {
           "balance": {
@@ -5780,10 +5957,13 @@
             "type": "string"
           },
           "expiresInMinutes": {
-            "description": "Transfer expiration in minutes (default: 60, applies to CC transfers)",
-            "example": 60,
-            "maximum": 10080,
-            "minimum": 5,
+            "description": "How long the receiver has to accept a pending TransferInstruction, in minutes (1 hour, 1 day, 2 weeks). Omit for the 30-day default. No effect when the transfer settles directly (receiver preapproval).",
+            "enum": [
+              60,
+              1440,
+              20160
+            ],
+            "example": 1440,
             "type": "number"
           },
           "instrumentId": {
@@ -5827,6 +6007,18 @@
           "nonce",
           "expiresAt"
         ],
+        "type": "object"
+      },
+      "UpdateApyTargetDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "UpdateBotPairDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "UpdateBotStrategyDto": {
+        "properties": {},
         "type": "object"
       },
       "UpdateBroadcastTemplateDto": {
@@ -6014,6 +6206,10 @@
         ],
         "type": "object"
       },
+      "UpdatePairConfigDto": {
+        "properties": {},
+        "type": "object"
+      },
       "UpdateTelegramChannelDto": {
         "properties": {
           "chatIdInput": {
@@ -6059,6 +6255,14 @@
         },
         "type": "object"
       },
+      "UpsertApyTargetDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "UpsertBotTopupTargetDto": {
+        "properties": {},
+        "type": "object"
+      },
       "UpsertCantonTransferFeeRuleRequestDto": {
         "properties": {
           "enabled": {
@@ -6093,6 +6297,14 @@
           "feeType",
           "feeAmount"
         ],
+        "type": "object"
+      },
+      "UpsertPairConfigDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "UpsertTokenPolicyDto": {
+        "properties": {},
         "type": "object"
       },
       "UserResponseDto": {
@@ -6314,8 +6526,41 @@
         ],
         "type": "object"
       },
+      "VaultTopupDto": {
+        "properties": {},
+        "type": "object"
+      },
       "VaultTopupFeeLegDto": {
         "properties": {},
+        "type": "object"
+      },
+      "VaultTopupPrepareDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "VaultTopupSubmitDto": {
+        "properties": {
+          "fee": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/VaultTopupFeeLegDto"
+              }
+            ],
+            "description": "Optional fee-leg co-signature (unused for a top-up)."
+          },
+          "signature": {
+            "description": "Base64 party-key signature over the prepared transaction hash.",
+            "type": "string"
+          },
+          "submissionKey": {
+            "description": "Submission key returned by user-vault-topup/prepare.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "submissionKey",
+          "signature"
+        ],
         "type": "object"
       },
       "VaultTransferDto": {
@@ -6426,6 +6671,10 @@
         "type": "object"
       },
       "VerifyLoopWithdrawFeeDto": {
+        "properties": {},
+        "type": "object"
+      },
+      "WithdrawDto": {
         "properties": {},
         "type": "object"
       },
@@ -8880,6 +9129,20 @@
         "summary": "Cancel our own open order and take the input back",
         "tags": [
           "admin-lp"
+        ]
+      }
+    },
+    "/admin/lp/user-balance": {
+      "get": {
+        "operationId": "LpVaultBalancesController_userBalance",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpVaultBalances"
         ]
       }
     },
@@ -13396,6 +13659,15 @@
                       "nullable": true,
                       "type": "string"
                     },
+                    "partyKind": {
+                      "enum": [
+                        "local",
+                        "external-selfcustody",
+                        "external-loop"
+                      ],
+                      "example": "external-selfcustody",
+                      "type": "string"
+                    },
                     "publicKey": {
                       "example": "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b",
                       "nullable": true,
@@ -13519,6 +13791,1887 @@
         "summary": "Verify email address using token from verification email",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/auto-trader/admin/apy-targets": {
+      "get": {
+        "operationId": "AdminApyTargetsController_listApyTargets",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminApyTargets"
+        ]
+      },
+      "post": {
+        "operationId": "AdminApyTargetsController_upsertApyTarget",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertApyTargetDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminApyTargets"
+        ]
+      }
+    },
+    "/auto-trader/admin/apy-targets/available-pairs": {
+      "get": {
+        "operationId": "AdminApyTargetsController_listApyAvailablePairs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminApyTargets"
+        ]
+      }
+    },
+    "/auto-trader/admin/apy-targets/{id}": {
+      "delete": {
+        "operationId": "AdminApyTargetsController_deleteApyTarget",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminApyTargets"
+        ]
+      },
+      "patch": {
+        "operationId": "AdminApyTargetsController_updateApyTarget",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateApyTargetDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminApyTargets"
+        ]
+      }
+    },
+    "/auto-trader/admin/apy-targets/{id}/toggle": {
+      "post": {
+        "operationId": "AdminApyTargetsController_toggleApyTarget",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ToggleApyTargetDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminApyTargets"
+        ]
+      }
+    },
+    "/auto-trader/admin/auto-balance-settings": {
+      "get": {
+        "operationId": "AdminLiquidityController_getAutoBalanceSettings",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      },
+      "post": {
+        "operationId": "AdminLiquidityController_setAutoBalanceSettings",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetAutoBalanceSettingsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/available-trading-pairs": {
+      "get": {
+        "operationId": "AdminPairsController_listAvailableTradingPairs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminPairs"
+        ]
+      }
+    },
+    "/auto-trader/admin/balance-picture": {
+      "get": {
+        "operationId": "AdminLiquidityController_balancePicture",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/bots": {
+      "get": {
+        "operationId": "AdminBotsController_listBots",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminBots"
+        ]
+      },
+      "post": {
+        "operationId": "AdminBotsController_addWorker",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddWorkerDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminBots"
+        ]
+      }
+    },
+    "/auto-trader/admin/bots/vault-worker": {
+      "post": {
+        "operationId": "AdminBotsController_createVaultWorker",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVaultWorkerDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminBots"
+        ]
+      }
+    },
+    "/auto-trader/admin/bots/{id}/active": {
+      "post": {
+        "operationId": "AdminBotsController_setWorkerActive",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetWorkerActiveDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminBots"
+        ]
+      }
+    },
+    "/auto-trader/admin/bots/{id}/name": {
+      "post": {
+        "operationId": "AdminBotsController_renameWorker",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameWorkerDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminBots"
+        ]
+      }
+    },
+    "/auto-trader/admin/dex-settings": {
+      "get": {
+        "operationId": "AdminLiquidityController_getDexSettings",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      },
+      "post": {
+        "operationId": "AdminLiquidityController_setDexSettings",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetDexSettingsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/history": {
+      "get": {
+        "operationId": "AdminHistoryController_listHistory",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pageSize",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminHistory"
+        ]
+      }
+    },
+    "/auto-trader/admin/kill-switch": {
+      "get": {
+        "operationId": "AdminKillSwitchController_getKillSwitch",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminKillSwitch"
+        ]
+      },
+      "post": {
+        "operationId": "AdminKillSwitchController_setKillSwitch",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KillSwitchDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminKillSwitch"
+        ]
+      }
+    },
+    "/auto-trader/admin/liquidity": {
+      "get": {
+        "operationId": "AdminLiquidityController_liquidity",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/accounts": {
+      "get": {
+        "operationId": "LpAdminController_listAccounts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/distributions": {
+      "get": {
+        "operationId": "LpAdminController_listDistributions",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pageSize",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/freeze": {
+      "post": {
+        "operationId": "LpVaultAdminController_freeze",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminFreezeDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpVaultAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/inventory": {
+      "get": {
+        "operationId": "LpAdminController_listInventory",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/inventory/refills": {
+      "get": {
+        "operationId": "LpAdminController_listRefills",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/inventory/{botId}/designation": {
+      "post": {
+        "operationId": "LpAdminController_patchDesignation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "botId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/inventory/{botId}/refill": {
+      "post": {
+        "operationId": "LpAdminController_refillBot",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "botId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefillBotDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/inventory/{botId}/return": {
+      "post": {
+        "operationId": "LpAdminController_returnBotFunds",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "botId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReturnBotFundsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/ops-funding-parties": {
+      "get": {
+        "operationId": "LpVaultAdminController_listOpsFundingParties",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpVaultAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/ops-funding-parties/remove": {
+      "post": {
+        "operationId": "LpVaultAdminController_removeOpsFundingParty",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoveOpsFundingPartyDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpVaultAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/platform-fee-pct": {
+      "get": {
+        "operationId": "LpAdminController_getPlatformFee",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      },
+      "post": {
+        "operationId": "LpAdminController_setPlatformFee",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetPlatformFeeDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/pools-history": {
+      "get": {
+        "operationId": "LpAdminController_poolsHistoryFeed",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "type",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "hash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "bot",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "counterparty",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "operator",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dateFrom",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "dateTo",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pageSize",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/run-distribution": {
+      "post": {
+        "operationId": "LpAdminController_runDistribution",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunDistributionDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/stats": {
+      "get": {
+        "operationId": "LpAdminController_stats",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/synthetic-deposit": {
+      "post": {
+        "operationId": "LpAdminController_syntheticDeposit",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SyntheticDepositDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/token-policies": {
+      "get": {
+        "operationId": "LpAdminController_listTokenPolicies",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      },
+      "post": {
+        "operationId": "LpAdminController_upsertTokenPolicy",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertTokenPolicyDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/token-policies/remove": {
+      "post": {
+        "operationId": "LpAdminController_removeTokenPolicy",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RemoveTokenPolicyDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/treasury/withdraw": {
+      "post": {
+        "operationId": "LpVaultAdminController_treasuryWithdraw",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminTreasuryWithdrawDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpVaultAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/use-vault-as-rebalancer": {
+      "post": {
+        "operationId": "LpVaultAdminController_useVaultAsRebalancer",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpVaultAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/vault": {
+      "get": {
+        "operationId": "LpVaultAdminController_vault",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpVaultAdmin"
+        ]
+      },
+      "post": {
+        "operationId": "LpVaultAdminController_initVault",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminInitVaultDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpVaultAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/vault-topup": {
+      "post": {
+        "operationId": "LpVaultAdminController_vaultTopup",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VaultTopupDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpVaultAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/vault-topup/prepare": {
+      "post": {
+        "operationId": "LpVaultAdminController_vaultTopupPrepare",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VaultTopupPrepareDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpVaultAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/vault-topup/submit": {
+      "post": {
+        "operationId": "LpVaultAdminController_vaultTopupSubmit",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VaultTopupSubmitDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpVaultAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/lp/vault/withdraw": {
+      "post": {
+        "operationId": "LpVaultAdminController_vaultWithdraw",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminVaultWithdrawDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "LpVaultAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/pairs": {
+      "get": {
+        "operationId": "AdminPairsController_listPairs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminPairs"
+        ]
+      },
+      "post": {
+        "operationId": "AdminPairsController_upsertPair",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertPairConfigDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminPairs"
+        ]
+      }
+    },
+    "/auto-trader/admin/pairs/{id}": {
+      "delete": {
+        "operationId": "AdminPairsController_deletePair",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminPairs"
+        ]
+      },
+      "patch": {
+        "operationId": "AdminPairsController_updatePair",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePairConfigDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminPairs"
+        ]
+      }
+    },
+    "/auto-trader/admin/pnl/backfill": {
+      "post": {
+        "operationId": "PnlAdminController_backfill",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PnlAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/pnl/entries": {
+      "get": {
+        "operationId": "PnlAdminController_entries",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PnlAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/pnl/manual-adjustment": {
+      "post": {
+        "operationId": "PnlAdminController_manualAdjustment",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManualAdjustmentDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PnlAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/pnl/summary": {
+      "get": {
+        "operationId": "PnlAdminController_summary",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PnlAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/pnl/timeseries": {
+      "get": {
+        "operationId": "PnlAdminController_timeseries",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "PnlAdmin"
+        ]
+      }
+    },
+    "/auto-trader/admin/pricing-live": {
+      "get": {
+        "operationId": "AdminLiquidityController_pricingLive",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/pricing-settings": {
+      "get": {
+        "operationId": "AdminPricingSettingsController_getPricingSettings",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminPricingSettings"
+        ]
+      },
+      "post": {
+        "operationId": "AdminPricingSettingsController_setPricingSettings",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PricingSettingsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminPricingSettings"
+        ]
+      }
+    },
+    "/auto-trader/admin/rates": {
+      "get": {
+        "operationId": "AdminLiquidityController_rates",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/rebalance-alerts": {
+      "get": {
+        "operationId": "AdminLiquidityController_getRebalanceAlerts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      },
+      "post": {
+        "operationId": "AdminLiquidityController_setRebalanceAlerts",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetRebalanceAlertsDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/rebalance-history": {
+      "get": {
+        "operationId": "AdminLiquidityController_rebalanceHistory",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/rebalance-preview": {
+      "get": {
+        "operationId": "AdminLiquidityController_rebalancePreview",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/rebalance-tradecraft": {
+      "post": {
+        "operationId": "AdminLiquidityController_rebalanceTradecraft",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/rebalance/offers": {
+      "get": {
+        "operationId": "AdminLiquidityController_rebalanceOffers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/rebalance/rates": {
+      "get": {
+        "operationId": "AdminLiquidityController_venueRates",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/rebalance/venue-status": {
+      "get": {
+        "operationId": "AdminLiquidityController_venueStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/rebalance/venues": {
+      "get": {
+        "operationId": "AdminLiquidityController_venues",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      },
+      "post": {
+        "operationId": "AdminLiquidityController_setVenues",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetVenuePolicyDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/rebalance/venues/temple": {
+      "get": {
+        "operationId": "AdminLiquidityController_templeAccount",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/reload-bots": {
+      "post": {
+        "operationId": "AdminOpsController_reloadBots",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminOps"
+        ]
+      }
+    },
+    "/auto-trader/admin/reload-vault": {
+      "post": {
+        "operationId": "AdminOpsController_reloadVault",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminOps"
+        ]
+      }
+    },
+    "/auto-trader/admin/service-balances": {
+      "get": {
+        "operationId": "AdminLiquidityController_serviceBalances",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/admin/tradecraft-pools": {
+      "get": {
+        "operationId": "AdminLiquidityController_tradecraftPools",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AdminLiquidity"
+        ]
+      }
+    },
+    "/auto-trader/execute": {
+      "post": {
+        "operationId": "RfqController_execute",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecuteDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Rfq"
+        ]
+      }
+    },
+    "/auto-trader/lp/deposit-intent": {
+      "post": {
+        "operationId": "LpController_depositIntent",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DepositIntentDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Lp"
+        ]
+      }
+    },
+    "/auto-trader/lp/me": {
+      "get": {
+        "operationId": "LpController_getMe",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Lp"
+        ]
+      }
+    },
+    "/auto-trader/lp/me/rewards-history": {
+      "get": {
+        "operationId": "LpController_getMyRewardsHistory",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Lp"
+        ]
+      }
+    },
+    "/auto-trader/lp/pool-stats": {
+      "get": {
+        "operationId": "LpController_getPoolStats",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Lp"
+        ]
+      }
+    },
+    "/auto-trader/lp/pools": {
+      "get": {
+        "operationId": "LpController_getPools",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Lp"
+        ]
+      }
+    },
+    "/auto-trader/lp/pools/tvl-history": {
+      "get": {
+        "operationId": "LpController_getPoolsTvlHistory",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Lp"
+        ]
+      }
+    },
+    "/auto-trader/lp/pools/{symbol}": {
+      "get": {
+        "operationId": "LpController_getPool",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "symbol",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Lp"
+        ]
+      }
+    },
+    "/auto-trader/lp/tvl-history": {
+      "get": {
+        "operationId": "LpController_getTvlHistory",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "symbol",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Lp"
+        ]
+      }
+    },
+    "/auto-trader/lp/withdraw": {
+      "post": {
+        "operationId": "LpController_withdrawSubmit",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WithdrawDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Lp"
+        ]
+      }
+    },
+    "/auto-trader/lp/withdraw/by-ref/{ref}/cancel": {
+      "post": {
+        "operationId": "LpController_withdrawCancelByRef",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ref",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Lp"
+        ]
+      }
+    },
+    "/auto-trader/lp/withdraw/preview": {
+      "post": {
+        "operationId": "LpController_withdrawPreview",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WithdrawDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Lp"
+        ]
+      }
+    },
+    "/auto-trader/lp/withdraw/{id}/cancel": {
+      "post": {
+        "operationId": "LpController_withdrawCancel",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Lp"
+        ]
+      }
+    },
+    "/auto-trader/pairs": {
+      "get": {
+        "operationId": "RfqController_listPairs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Rfq"
+        ]
+      }
+    },
+    "/auto-trader/quote": {
+      "post": {
+        "operationId": "RfqController_quote",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuoteDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Rfq"
         ]
       }
     },
@@ -13667,6 +15820,833 @@
         "summary": "Get TRC20 token balances for a Tron address across all Tron networks",
         "tags": [
           "evm"
+        ]
+      }
+    },
+    "/bot-admin/accounts": {
+      "get": {
+        "operationId": "AdminBotsController_listBotAccounts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List bot accounts available for pairing",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/drain-all": {
+      "post": {
+        "operationId": "AdminBotsController_drainAll",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Withdraw ALL balances (CBTC, USDCx, CC) of every bot back to the venue. Registry tokens go to 0; CC keeps a tiny reserve for its own transfer fee. Moves real funds.",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/fund-targets": {
+      "post": {
+        "operationId": "AdminBotsController_fundTargets",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Fund every bot up to its configured topup target from the venue (fund-only, no draining). Moves real funds.",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/migrate": {
+      "post": {
+        "operationId": "AdminBotsController_migrateBot",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MigrateBotDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Migrate one bot to a self-custody (external) party",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/pairs": {
+      "get": {
+        "operationId": "AdminBotsController_listPairs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List bot pairs",
+        "tags": [
+          "admin-bots"
+        ]
+      },
+      "post": {
+        "operationId": "AdminBotsController_createPair",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBotPairDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create a bot pair",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/pairs/{id}": {
+      "delete": {
+        "operationId": "AdminBotsController_deletePair",
+        "parameters": [
+          {
+            "description": "Bot pair UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete a bot pair",
+        "tags": [
+          "admin-bots"
+        ]
+      },
+      "patch": {
+        "operationId": "AdminBotsController_updatePair",
+        "parameters": [
+          {
+            "description": "Bot pair UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateBotPairDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update a bot pair",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/pairs/{id}/drain": {
+      "post": {
+        "operationId": "AdminBotsController_drainPair",
+        "parameters": [
+          {
+            "description": "Bot pair UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Withdraw ALL balances (CBTC, USDCx, CC) of BOTH bots in a pair back to the venue. Moves real funds.",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/pairs/{id}/fund": {
+      "post": {
+        "operationId": "AdminBotsController_fundPair",
+        "parameters": [
+          {
+            "description": "Bot pair UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Fund BOTH bots in a pair up to their configured topup targets from the venue (fund-only). Moves real funds.",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/rebalance": {
+      "post": {
+        "operationId": "AdminBotsController_rebalance",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Normalize all bots to their topup targets: (1) consolidate cross-held tokens back to each bot’s bank, (2) defrag holdings, (3) per bank target — return surplus above target to the venue and fund any deficit from it. Moves real funds.",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/strategies": {
+      "get": {
+        "operationId": "AdminBotsController_listStrategies",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List bot strategies",
+        "tags": [
+          "admin-bots"
+        ]
+      },
+      "post": {
+        "operationId": "AdminBotsController_createStrategy",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBotStrategyDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create a bot strategy",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/strategies/available-pairs": {
+      "get": {
+        "operationId": "AdminBotsController_listAvailablePairs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List trading pairs that can be attached to bots",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/strategies/enable-pair": {
+      "post": {
+        "operationId": "AdminBotsController_enablePair",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnablePairDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Enable a bot strategy of the requested type on a trading pair, attached to the given bot pairs.",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/strategies/{id}": {
+      "delete": {
+        "operationId": "AdminBotsController_deleteStrategy",
+        "parameters": [
+          {
+            "description": "Strategy UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete a bot strategy",
+        "tags": [
+          "admin-bots"
+        ]
+      },
+      "patch": {
+        "operationId": "AdminBotsController_updateStrategy",
+        "parameters": [
+          {
+            "description": "Strategy UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateBotStrategyDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Update a bot strategy (params / enabled / attached pairs)",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/strategies/{id}/balances": {
+      "get": {
+        "operationId": "AdminBotsController_strategyBalances",
+        "parameters": [
+          {
+            "description": "Strategy UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Bot balances on the strategy trading pair tokens",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/strategies/{id}/cc-loop-stats": {
+      "get": {
+        "operationId": "AdminBotsController_ccLoopStats",
+        "parameters": [
+          {
+            "description": "Strategy UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "CC_LOOP throughput stats: completed/failed counts, rate, total moved",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/strategies/{id}/consolidate": {
+      "post": {
+        "operationId": "AdminBotsController_consolidateBalances",
+        "parameters": [
+          {
+            "description": "Strategy UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Consolidate: move all base to botA, all quote to botB",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/topup-targets": {
+      "get": {
+        "operationId": "AdminBotsController_listTopupTargets",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List per-bot topup targets (venue refill rules)",
+        "tags": [
+          "admin-bots"
+        ]
+      },
+      "post": {
+        "operationId": "AdminBotsController_upsertTopupTarget",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertBotTopupTargetDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create or replace a topup target for (botAccountId, symbol). Amount in native token units.",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/topup-targets/{id}": {
+      "delete": {
+        "operationId": "AdminBotsController_deleteTopupTarget",
+        "parameters": [
+          {
+            "description": "Topup target UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Delete a topup target",
+        "tags": [
+          "admin-bots"
         ]
       }
     },
@@ -15172,15 +18152,19 @@
     },
     "/health": {
       "get": {
-        "operationId": "HealthController_health",
+        "operationId": "AppController_health",
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "All dependencies are healthy"
+          },
+          "503": {
+            "description": "One or more dependencies are down"
           }
         },
+        "summary": "Health check with dependency verification",
         "tags": [
-          "Health"
+          "health"
         ]
       }
     },
