@@ -16,12 +16,19 @@ import { createSwapClient } from './swap';
  * client method is CALLED against a recording transport, and what it actually
  * requested is what gets checked. Adding a method adds a checked route.
  *
- * `/auto-trader/*` is a separate service the gateway document does not include;
- * those three routes are listed as such rather than silently skipped.
+ * `/auto-trader/*` used to be outside the document entirely. It is in now, so
+ * the three pool-trade routes take the same route/method check as the rest —
+ * but only the routes: their fields are still undocumented, and the test below
+ * pins that so the day they arrive is a red test rather than nobody noticing.
  */
 interface Spec {
   paths: Record<string, Record<string, unknown>>;
   components: { schemas: Record<string, { properties?: Record<string, unknown>; required?: string[] }> };
+}
+interface Operation {
+  parameters?: Array<{ name: string }>;
+  requestBody?: { content: Record<string, { schema?: { $ref?: string } }> };
+  responses?: Record<string, { content?: unknown }>;
 }
 const spec = JSON.parse(readFileSync(join(__dirname, '..', 'spec', 'openapi.json'), 'utf8')) as Spec;
 
@@ -54,31 +61,61 @@ async function routesTheClientCalls(): Promise<string[]> {
   return [...seen].sort();
 }
 
-/**
- * Not in the gateway document yet; shapes come from the Cancore app. The test
- * below goes red the day a refresh brings them in, and says what to do then.
- */
-const OUTSIDE_SPEC = ['/auto-trader/pairs', '/auto-trader/quote', '/auto-trader/execute'];
-
 test('every route the client actually calls exists in the gateway document, with that method', async () => {
   const called = await routesTheClientCalls();
   expect(called.length).toBeGreaterThanOrEqual(18); // a vacuous pass would be worse than a failure
-  const missing = called
-    .filter((route) => !OUTSIDE_SPEC.some((p) => route.endsWith(` ${p}`)))
-    .filter((route) => {
-      const [method, path] = route.split(' ') as [string, string];
-      return spec.paths[path]?.[method] === undefined;
-    });
+  const missing = called.filter((route) => {
+    const [method, path] = route.split(' ') as [string, string];
+    return spec.paths[path]?.[method] === undefined;
+  });
   expect(missing).toEqual([]);
 });
 
-test('the routes outside the document really are outside it', () => {
-  const nowInside = OUTSIDE_SPEC.filter((path) => spec.paths[path] !== undefined);
-  if (nowInside.length > 0) {
+/**
+ * The document carries the whole auto-trader service, its operator surface
+ * included. Wrapping one of those here would pass the check above — it is in
+ * the document — and hand an admin API to every third-party dApp that installs
+ * this package. Existing in the document is not a reason to wrap something.
+ */
+test('the client wraps no operator route', async () => {
+  const called = await routesTheClientCalls();
+  expect(called.filter((route) => /\/(auto-trader\/admin|bot-admin)\//.test(route))).toEqual([]);
+});
+
+/**
+ * The three pool-trade routes are in the document as routes and nothing more:
+ * `QuoteDto` and `ExecuteDto` come out with no properties, `GET /auto-trader/pairs`
+ * declares no parameters, and none of the three types a response. So there is
+ * nothing for `ListPairsQuery`, `Pair`, `Quote` and `Executed` to be held to,
+ * and they stay written from what the service returns. That gap is the
+ * document's, not these routes' alone — plenty of its DTOs are empty and most
+ * of its operations type no response.
+ *
+ * Pinning it here means the day the detail arrives is a red test with the next
+ * step in it, which is what the old "they are outside the document" assertion
+ * bought before the routes landed.
+ */
+const POOL_TRADE: Array<[string, string]> = [
+  ['get', '/auto-trader/pairs'],
+  ['post', '/auto-trader/quote'],
+  ['post', '/auto-trader/execute'],
+];
+
+test('the pool-trade routes are documented as routes only, so the field checks cannot reach them', () => {
+  const arrived = POOL_TRADE.flatMap(([method, path]) => {
+    const op = spec.paths[path]?.[method] as Operation | undefined;
+    expect(op).toBeDefined();
+    const dto = op?.requestBody?.content['application/json']?.schema?.$ref?.split('/').pop();
+    return [
+      (op?.parameters ?? []).length > 0 && `${path} declares query parameters`,
+      dto && Object.keys(spec.components.schemas[dto]?.properties ?? {}).length > 0 && `${dto} has properties`,
+      Object.values(op?.responses ?? {}).some((r) => r.content) && `${path} types a response`,
+    ].filter((found): found is string => typeof found === 'string');
+  });
+  if (arrived.length > 0) {
     throw new Error(
-      `spec/openapi.json now documents ${nowInside.join(', ')}. This is the expected signal, not a regression: ` +
-        'the auto-trader routes joined the document. Remove them from OUTSIDE_SPEC so they get the normal ' +
-        'route/method check, and add their DTOs to REQUEST_FIELDS and RESPONSE_FIELDS.',
+      `${arrived.join('; ')}. This is the expected signal, not a regression: put those fields in QUERY_FIELDS, ` +
+        'REQUEST_FIELDS or RESPONSE_FIELDS below so the client is held to them, and drop the route from POOL_TRADE.',
     );
   }
 });

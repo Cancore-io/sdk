@@ -86,7 +86,7 @@ jobs:
             verdict="\`npm test\` against this snapshot: **passed**."
           else
             title='chore(client): API drift, the refreshed OpenAPI snapshot fails the client tests'
-            verdict="\`npm test\` against this snapshot: **failed** (exit $STATUS). The API moved out from under \`@cancore/client\`: fix the client on this branch, or the API, before merging. A failure in \"the routes outside the document really are outside it\" means the auto-trader routes joined the document; its message says what to change."
+            verdict="\`npm test\` against this snapshot: **failed** (exit $STATUS). The API moved out from under \`@cancore/client\`: fix the client on this branch, or the API, before merging. A failure in \"the pool-trade routes are documented as routes only\" means the document started publishing their fields; its message says what to change."
           fi
           {
             echo "Scheduled refresh of \`$SPEC\` from https://api-dev.cancore.app/api-json ([run]($run_url))."
