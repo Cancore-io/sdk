@@ -1,0 +1,30 @@
+name: R1 probe
+
+# TEMPORARY, removed by its own commit before this PR is reviewed.
+#
+# CAN-1645 R1: `Cancore-io/.github` is PRIVATE and `Cancore-io/sdk` is the
+# organization's only PUBLIC repository. Whether a public repository may
+# resolve a composite action from a private repository of the same
+# organization is not answered by GitHub's documentation, and there is no
+# in-org precedent to copy — so it is measured here rather than assumed.
+#
+# Nothing is notified: `slack-bot-token` is empty (the action exits 0 with a
+# ::warning:: before any network call) and `branch` carries no CAN-/BUG- id,
+# which makes the action exit at its first step. A resolution failure arrives
+# before that first step, as `Unable to resolve action ... repository not found`.
+on: pull_request
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: Cancore-io/.github/actions/ci-failure-notify@0dc29d8de04c618def81cab831288139bc0e1cb5
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          slack-bot-token: ''
+          repository: ${{ github.repository }}
+          run-id: '0'
+          run-url: 'https://example.invalid'
+          workflow-name: 'R1 probe'
+          branch: 'probe-no-ticket'
