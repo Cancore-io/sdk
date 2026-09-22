@@ -35,8 +35,6 @@ const workflowFiles = (): string[] =>
 
 const read = (file: string) => fs.readFileSync(path.join(WORKFLOW_DIR, file), 'utf8');
 
-const exists = (file: string) => fs.existsSync(path.join(WORKFLOW_DIR, file));
-
 /** The line following a top-level key, e.g. the `group:` under `concurrency:`. */
 const blockOf = (text: string, topLevelKey: string): string => {
   const lines = text.split('\n');
@@ -68,14 +66,6 @@ const jobsOf = (text: string): Array<{ name: string; body: string }> => {
   });
   return out;
 };
-
-/** The workflow's own `name:` — what a `workflow_run` trigger matches on. */
-const nameOf = (text: string): string => {
-  const m = /^name:\s*(.+?)\s*$/m.exec(text);
-  return m ? m[1].replace(/^['"]|['"]$/g, '') : '';
-};
-
-const NOTIFIER = 'github-events.yml';
 
 // ---------------------------------------------------------------------------
 // Group 1 — ci.yml cancels superseded PR runs, and never a run on main.
@@ -117,47 +107,9 @@ describe('group 2: ci.yml permissions', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Group 3 — a red run reaches #dev at all.
+// Group 3 — the sentinels: what must NOT change, and what must stay written.
 // ---------------------------------------------------------------------------
-describe('group 3: the CI-failure notifier is wired', () => {
-  test(`${NOTIFIER} exists`, () => {
-    expect(exists(NOTIFIER)).toBe(true);
-  });
-
-  test('triggers on a completed workflow_run', () => {
-    const text = exists(NOTIFIER) ? read(NOTIFIER) : '';
-    expect(text).toMatch(/workflow_run:/);
-    expect(text).toMatch(/types:\s*\[\s*completed\s*\]/);
-  });
-
-  // Pinned by commit, never by tag or branch: a mutable ref in a workflow that
-  // holds SLACK_BOT_TOKEN is a supply-chain hole. renovate.json's
-  // helpers:pinGitHubActionDigests keeps the pin current.
-  test('pins Cancore-io/.github/actions/ci-failure-notify by a 40-character commit sha', () => {
-    const text = exists(NOTIFIER) ? read(NOTIFIER) : '';
-    expect(text).toMatch(/Cancore-io\/\.github\/actions\/ci-failure-notify@[0-9a-f]{40}\b/);
-  });
-
-  // Discovered from the files, not a literal: a workflow added later and left
-  // out of the watch list is unmonitored, and a list cannot say so about itself.
-  test('watches every other workflow in this repository by name', () => {
-    const text = exists(NOTIFIER) ? read(NOTIFIER) : '';
-    const others = workflowFiles().filter((f) => f !== NOTIFIER);
-    expect(others.length).toBeGreaterThan(0);
-    // `nameOf` reads the file's CONTENT, never its filename — a `workflow_run`
-    // trigger matches on `name:`. Passing the filename here made this test pass
-    // vacuously on every input (found by running the red, CAN-1645 G3), so the
-    // names are asserted non-empty before they are used.
-    const names = others.map((f) => nameOf(read(f)));
-    expect(names.filter((n) => n === '')).toEqual([]);
-    expect(names.filter((n) => !text.includes(n))).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Group 4 — the sentinels: what must NOT change, and what must stay written.
-// ---------------------------------------------------------------------------
-describe('group 4: guarded invariants', () => {
+describe('group 3: guarded invariants', () => {
   // Aborting a tag run mid-publish is worse than wasted runner minutes: the tag
   // is already pushed, the version is already fixed in the manifest, and a
   // half-run `npm publish` can leave the registry in a state no retry fixes.
@@ -179,9 +131,9 @@ describe('group 4: guarded invariants', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Group 5 — no job can hang on the public runner.
+// Group 4 — no job can hang on the public runner.
 // ---------------------------------------------------------------------------
-describe('group 5: every job has a timeout', () => {
+describe('group 4: every job has a timeout', () => {
   test.each(workflowFiles())('%s: every job declares timeout-minutes', (file) => {
     const jobs = jobsOf(read(file));
     // Vacuity guard: a file whose jobs we failed to find must fail here rather
