@@ -7,7 +7,7 @@ The packages a third-party dApp, an AI agent, or a wallet build installs from np
 | [`@cancore/dapp-connector`](packages/dapp-connector) | [`@cancore/dapp-connector`](https://www.npmjs.com/package/@cancore/dapp-connector) | A CIP-0103 provider (remote profile) that asks a Cancore wallet to sign. No keys, ever. |
 | [`@cancore/mcp`](packages/mcp) | [`@cancore/mcp`](https://www.npmjs.com/package/@cancore/mcp) | An MCP server that lets an AI agent ask a wallet owner for a trade. The agent queues a request; the owner signs it in their own wallet. |
 | [`@cancore/contracts`](packages/contracts) | [`@cancore/contracts`](https://www.npmjs.com/package/@cancore/contracts) | The EVM contracts as data: ABIs, custom-error selectors, deployments per environment, the EIP-712 voucher, the network registry. No runtime code. |
-| [`@cancore/client`](packages/client) | [`@cancore/client`](https://www.npmjs.com/package/@cancore/client) | A typed client for the API: orders and pool trades (`./swap`), the USDCx bridge (`./bridge`), live order updates over the gateway's socket (`./realtime`). Hands out hashes to sign, never holds a key. |
+| [`@cancore/client`](packages/client) | [`@cancore/client`](https://www.npmjs.com/package/@cancore/client) | A typed client for the API: orders and pool trades (`./swap`), the USDCx bridge (`./bridge`), live order updates over the gateway's socket (`./realtime`), scoped trading grants by device flow (`./auth`). Hands out hashes to sign, never holds a key. |
 | [`@cancore/wallet`](packages/wallet) | [`@cancore/wallet`](https://www.npmjs.com/package/@cancore/wallet) | The wallet core: key material, signing, storage contracts, the operations-envelope client. |
 
 **Full documentation: <https://docs.cancore.io/sdk/overview>.**
@@ -15,9 +15,10 @@ The packages a third-party dApp, an AI agent, or a wallet build installs from np
 The five answer five different questions. A dApp that wants a signature from
 somebody else's wallet takes the **connector**. An agent that wants to propose a
 trade its owner will approve takes **mcp**. A program that trades or bridges
-through the API takes **client**, and it runs on a user's own session token —
-the JWT that user gets at sign-in. The scoped grants the connector and the MCP
-server obtain are refused on the trading and bridge routes. Anything that talks
+through the API takes **client**. It runs on a user's own session token (the JWT
+that user gets at sign-in) or on a grant that user approved for it. A grant
+carries scopes and, to trade, limits; trading scopes work where the API enables
+them, and no grant opens the bridge. Anything that talks
 to the contracts directly — decoding an event, verifying a deployment, signing a
 voucher — takes **contracts**, which is data rather than code. A build that owns
 the keys itself — a wallet, a CLI, a signer — takes **wallet**.
@@ -27,9 +28,10 @@ the keys itself — a wallet, a CLI, a signer — takes **wallet**.
 None of these packages signs anything on its own behalf. The connector asks a
 wallet; the MCP server queues a request and returns its id; the client hands out
 a hash and takes a signature back; the wallet core signs only with a key the
-person unlocked. There is no code path here that
-moves funds without a human at a keyboard, and that asymmetry is the design
-rather than an omission.
+person unlocked. There is no code path here that moves funds a person has not
+approved. The approval is either one trade at a time, or a trading grant whose
+scopes and limits they read on the consent page and can revoke. That asymmetry
+is the design rather than an omission.
 
 ## Working in this repository
 
