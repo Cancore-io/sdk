@@ -1,8 +1,8 @@
 {
   "name": "@cancore/client",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
-  "description": "A typed client for the Cancore API: orders and pool trades (./swap), USDCx bridge (./bridge), live order updates (./realtime). No keys \u2014 signing stays with @cancore/wallet or the dApp connector.",
+  "description": "A typed client for the Cancore API: orders and pool trades (./swap), USDCx bridge (./bridge), live order updates (./realtime), scoped trading grants by device flow (./auth). No keys \u2014 signing stays with @cancore/wallet or the dApp connector.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -23,6 +23,11 @@
       "types": "./dist/realtime.d.ts",
       "import": "./dist/realtime.js",
       "default": "./dist/realtime.js"
+    },
+    "./auth": {
+      "types": "./dist/auth.d.ts",
+      "import": "./dist/auth.js",
+      "default": "./dist/auth.js"
     }
   },
   "main": "./dist/index.js",
@@ -45,7 +50,8 @@
     "bridge",
     "usdcx",
     "trading",
-    "api-client"
+    "api-client",
+    "device-flow"
   ],
   "files": [
     "dist",

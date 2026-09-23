@@ -1721,7 +1721,36 @@
         "type": "object"
       },
       "DeviceAuthorizeDto": {
-        "properties": {},
+        "properties": {
+          "appName": {
+            "description": "The name the consent screen shows the person",
+            "maxLength": 100,
+            "type": "string"
+          },
+          "limits": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/GrantLimitsDto"
+              }
+            ],
+            "description": "Required when `scopes` contain orders:write or pool:trade, rejected otherwise (CAN-744). Shown on the consent screen and stored on the grant at approval, unchanged."
+          },
+          "scopes": {
+            "description": "Scopes the app asks for",
+            "example": [
+              "orders:write",
+              "orders:read"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "appName",
+          "scopes"
+        ],
         "type": "object"
       },
       "DevicePollDto": {
@@ -2340,6 +2369,45 @@
           "swap",
           "legs",
           "swapStatus"
+        ],
+        "type": "object"
+      },
+      "GrantLimitsDto": {
+        "properties": {
+          "maxOrderUsd": {
+            "description": "Ceiling on the USD value of a single order or pool trade",
+            "example": 250,
+            "maximum": 100000,
+            "type": "number"
+          },
+          "pairIds": {
+            "description": "Trading-pair ids (GET /trading-pairs) this grant may trade, on both surfaces. Omit to allow any pair. An order counts as the pair its two token legs form (in either direction); a pool trade as the trading pair its pool config trades. A trade whose legs form no listed pair is refused.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "type": "array"
+          },
+          "windowSeconds": {
+            "description": "Length of the rolling spend window, in seconds",
+            "example": 86400,
+            "maximum": 2592000,
+            "minimum": 60,
+            "type": "number"
+          },
+          "windowUsd": {
+            "description": "Ceiling on the USD the grant may commit inside one rolling window. Must be at least maxOrderUsd.",
+            "example": 1000,
+            "maximum": 1000000,
+            "type": "number"
+          }
+        },
+        "required": [
+          "maxOrderUsd",
+          "windowUsd",
+          "windowSeconds"
         ],
         "type": "object"
       },
@@ -12539,6 +12607,9 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "description": ""
+          },
           "400": {
             "description": "An unknown scope, or no app name to show on the consent screen"
           }
@@ -12624,6 +12695,16 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": ""
+          },
           "404": {
             "description": "Unknown, expired, or already collected"
           }

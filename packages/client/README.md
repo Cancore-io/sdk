@@ -1,7 +1,7 @@
 # `@cancore/client`
 
-A typed client for the Cancore API. Three entries: the exchange (`./swap`), the USDCx
-bridge (`./bridge`) and live order updates (`./realtime`). **No keys.** Where a step needs a
+A typed client for the Cancore API. Four entries: the exchange (`./swap`), the USDCx
+bridge (`./bridge`), live order updates (`./realtime`) and scoped trading grants (`./auth`). **No keys.** Where a step needs a
 signature, the client hands you a hash and takes the signature back — signing stays with
 `@cancore/wallet` or the dApp connector.
 
@@ -35,22 +35,153 @@ const order = await cancore.swap.track(orderId);       // polls until a terminal
 `request` receives the absolute URL and the init the client built (method, JSON headers,
 body). Return a `Response`.
 
-**Which credential trades.** The client sends whatever `request` adds; the API decides what it
-accepts. The order, pool and bridge routes take a user's own session token — the JWT issued
-at sign-in, by `POST /auth/login` for an email-and-password account, or by `POST /auth/challenge`,
-a signature from the wallet key, then `POST /auth/login-signature` for a key-based one.
+**Which credential.** The client sends whatever `request` adds; the API decides what it
+accepts. Two kinds of credential work:
 
-An app-session grant (`cs_…`) cannot trade, whether it came from the dApp connector's consent
-popup or from a device flow. No grantable scope covers orders, pool trades or the bridge, and
-the routes refuse it before looking it up:
+- **A user's own session token**, the JWT issued at sign-in: by `POST /auth/login` for an
+  email-and-password account, or by `POST /auth/challenge`, a signature from the wallet key,
+  then `POST /auth/login-signature` for a key-based one. It opens every route below.
+- **A grant** (`cs_…`), which a person approved for your program. It carries scopes and, to
+  trade, limits, and it opens only the routes its scopes name. Trading scopes work where the
+  API enables them. See [Trading under a grant](#trading-under-a-grant).
 
-| Routes | What a grant gets back |
+## Trading under a grant
+
+A program that trades for somebody should not hold their login. `@cancore/client/auth` asks
+them for a grant instead: scoped to what the program does, capped by a budget they read and
+approve, and revocable from their wallet. This is the device flow (RFC 8628). Your program
+asks, the person approves in a browser, and your program receives a token of its own.
+
+```ts
+import { createClient } from '@cancore/client';
+import { requestGrant } from '@cancore/client/auth';
+
+const grant = await requestGrant({
+  baseUrl: 'https://api.cancore.io',
+  appUrl: 'https://cancore.io', // where the wallet is served; the consent page lives there
+  appName: 'Rebalancer',
+  scopes: ['orders:write', 'orders:read'],
+  limits: { maxOrderUsd: 250, windowUsd: 1000, windowSeconds: 86_400 },
+});
+
+console.log(`Open ${grant.verificationUri} and check that it shows ${grant.userCode}`);
+const token = await grant.wait(); // resolves once the person approves
+
+const cancore = createClient({
+  baseUrl: 'https://api.cancore.io',
+  request: (url, init) => fetch(url, { ...init, headers: { ...init.headers, authorization: `Bearer ${token}` } }),
+});
+```
+
+Trading grants work where the API enables them. Where it does not, `requestGrant` rejects
+with the API's own 400 naming the scope (`Unknown scope: orders:write. Allowed scopes: …`),
+and the trading routes refuse any grant.
+
+**What the person sees.** They open the page, sign in to their wallet if they are not signed in
+yet, and see the code, the app name you sent, the scopes you asked for and, for a trading
+grant, the limits. The code must match the one your program printed. If it does not, the
+request is not yours and they should decline. Then they approve or decline. Nothing is granted
+before that, and only that page can approve: your program cannot approve its own request. The
+grant lasts until it expires or the person revokes it. After that every call answers 401, and
+your program asks again.
+
+**`requestGrant(options)`**
+
+| Option | Meaning |
 | --- | --- |
-| `/orders/*`, `/canton-wallet/bridge/*` | `403 This route declares no scope and is closed to app sessions` |
-| `/auto-trader/*` | `401 Unauthorized` |
+| `baseUrl` | gateway root |
+| `appName` | the name the consent page shows |
+| `scopes` | what the grant may do, see the table below |
+| `limits` | the budget; required with `orders:write` or `pool:trade`, refused without them |
+| `appUrl` | where the wallet is served. The API answers with a path on that host, and with `appUrl` set, `verificationUri` is a full URL. Not derived from `baseUrl`, because the API and the wallet are not always one host apart |
+| `request`, `fetchImpl` | the same transport seam as the rest of the client. No credential is needed: this call is how you get one |
 
-A grant works where a route declares a scope: the connector's wallet RPC, and the agent queue
-that `@cancore/mcp` proposes trades through.
+It resolves to `{ userCode, verificationUri, expiresAt, wait(options?) }`. The device code the
+API issued stays inside. It is a credential in waiting and is never handed to you.
+
+**`wait({ signal?, sleep? })`** polls at the interval the API sets and resolves to the token.
+The token is handed over exactly once.
+
+| Outcome | What `wait` does |
+| --- | --- |
+| approved | resolves to the token |
+| declined | rejects with `GrantDeniedError` |
+| nobody approved it before `expiresAt`, or it was already collected | rejects with `GrantExpiredError` |
+| the API answers 429 | slows down: five more seconds per poll from then on (RFC 8628 `slow_down`), longer if the answer says so |
+| `signal` aborts | rejects with the signal's `reason`. A poll already in flight is never cut off, so a collected grant is never dropped. The request stays live until `expiresAt`: call `wait` again and the code on the person's screen keeps working |
+| any other error | rejects with `CancoreApiError` |
+
+**Limits.** Required with a spending scope, refused without one, and immutable once issued. A
+different budget is a different grant.
+
+| Field | Meaning | The API's bounds |
+| --- | --- | --- |
+| `maxOrderUsd` | ceiling on the USD value of one order or pool trade | above 0, at most 100,000 |
+| `windowUsd` | ceiling on the USD committed within one rolling window; at least `maxOrderUsd` | above 0, at most 1,000,000 |
+| `windowSeconds` | length of that window, in whole seconds | 60 to 2,592,000 (30 days) |
+| `pairIds` | trading-pair ids the grant may trade, in either direction; omit for any pair | 1 to 50 uuids |
+
+`requestGrant` throws a `TypeError` before sending anything for a request the API would refuse
+anyway: a spending scope without limits, limits without one, a figure that is not a positive
+number, a figure outside the bounds above, a fractional window, a window budget under the
+per-order cap, or a `pairIds` that is empty, too long or holds anything but uuids. The API stays
+authoritative: whatever it refuses, it answers 400 naming what is wrong.
+
+Creating, accepting and pool-executing count against the window. A pool quote is checked
+against `maxOrderUsd` and `pairIds` but moves nothing, so it does not count. Cancelling is never
+refused by a budget. A trade the API cannot price in USD is refused.
+
+**Which method needs which scope.**
+
+| Method | Route | Scope |
+| --- | --- | --- |
+| `swap.listOpen(query?)` | `GET /orders` | `orders:read` |
+| `swap.listMine(query?)` | `GET /orders/my` | `orders:read` |
+| `swap.get(id)` | `GET /orders/{id}` | `orders:read` |
+| `swap.track(id, options?)` | polls `GET /orders/{id}` | `orders:read` |
+| `swap.create(input)` | `POST /orders` | `orders:write` |
+| `swap.createForPair(input)` | `POST /orders/pair` | `orders:write` |
+| `swap.accept(id)` | `POST /orders/{id}/accept` | `orders:write` |
+| `swap.cancel(id)` | `POST /orders/{id}/cancel` | `orders:write` |
+| `swap.pairs(query?)` | `GET /auto-trader/pairs` | not open to a grant |
+| `swap.quote(input)` | `POST /auto-trader/quote` | `pool:trade` |
+| `swap.execute(quoteToken)` | `POST /auto-trader/execute` | `pool:trade` |
+| `bridge.limits()`, `bridge.history(query?)`, `bridge.checkOnboarding()`, `bridge.estimateCost(input)` | `/canton-wallet/bridge/*` | not open to a grant |
+| `bridge.mint(input)`, `bridge.burn(input)`, `bridge.prepareInteractive(input)`, `bridge.submitInteractive(input)`, `bridge.executeInteractive(input, sign)` | `/canton-wallet/bridge/*` | not open to a grant |
+| `orderUpdates(socket, handler)`, `waitForOrder(socket, id, options?)` | the `/presence` socket | not open to a grant: the handshake takes a user's session token only. Use `swap.track` |
+| `requestGrant(options)`, `wait(options?)` | `POST /auth/device/authorize`, `POST /auth/device/token` | none: this is how you get one |
+
+`swaps:read` is the fourth trading scope. It opens `GET /htlc/swaps`, `GET /htlc/swaps/{id}/full`
+and `GET /htlc/{id}`, which this client does not wrap. Reach them through `createHttp`.
+
+A grant does not sign. Where the swap after an order needs the account holder's signature
+(self-custody legs), that still happens in their wallet.
+
+**What a refusal looks like.** Every refusal is a `CancoreApiError` whose message keeps the API's
+own words, and a limit refusal names the limit, so a program can act on it:
+
+| Answer | Meaning |
+| --- | --- |
+| `403: Grant limit "maxOrderUsd" exceeded: this trade is worth $900.00, the grant allows $250.00 per order` | one trade over the per-order cap: split it |
+| `403: Grant limit "windowUsd" exceeded: this trade is worth $300.00, the grant has $150.00 left of $1000.00 per 86400s` | the window is spent: wait, or trade less |
+| `403: Grant limit "pairIds": this grant may not trade pair …` | the pair is not on the allow-list |
+| `403: Grant limit "maxOrderUsd": this trade has no USD price, so it cannot be checked against the grant budget.` | the API cannot price it, so it refuses it |
+| `403: Session is missing the required scope: pool:trade` | the grant lacks the scope |
+| `403: This route declares no scope and is closed to app sessions` | no scope opens this route to a grant |
+| `401` | the grant expired or was revoked: ask again |
+
+```ts
+import { CancoreApiError } from '@cancore/client';
+
+try {
+  await cancore.swap.createForPair(input);
+} catch (err) {
+  const limit = err instanceof CancoreApiError && err.status === 403 ? /Grant limit "(\w+)"/.exec(err.message)?.[1] : undefined;
+  if (limit === 'maxOrderUsd') { /* split the order */ }
+  else if (limit === 'windowUsd') { /* wait for the window to roll */ }
+  else throw err;
+}
+```
 
 ## `@cancore/client/swap`
 
@@ -182,6 +313,11 @@ the three, so `ListPairsQuery`, `Pair`, `Quote` and `Executed` stay written from
 service returns. A test pins that gap instead of leaving it implied, and goes red the day
 the document starts carrying the fields.
 
+The device-flow routes are in the document only in part. `requestGrant`'s body and the
+limits are checked like every other request type, but the document types neither the poll
+body nor either answer, so those shapes in `./auth` are written from what the service
+returns. The same kind of test pins that gap.
+
 The snapshot is a test fixture and is not published: `files` is `dist`, `README.md` and
 `LICENSE`, so the document growing — it covers the whole venue now, operator routes
 included — costs the install nothing. A route existing in it is not a reason for this
@@ -193,6 +329,7 @@ client to wrap it, and a test holds the client off the operator surface.
 import { swap } from '@cancore/client/swap';            // just the exchange
 import { bridge } from '@cancore/client/bridge';        // just the bridge
 import { orderUpdates } from '@cancore/client/realtime'; // just the push feed
+import { requestGrant } from '@cancore/client/auth';    // just the grant request
 import { createHttp } from '@cancore/client';           // the seam, for a route this client lacks
 ```
 

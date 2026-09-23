@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { requestGrant } from './auth';
 import { createBridgeClient } from './bridge';
 import { createHttp } from './http';
 import { createSwapClient } from './swap';
@@ -20,6 +21,8 @@ import { createSwapClient } from './swap';
  * the three pool-trade routes take the same route/method check as the rest —
  * but only the routes: their fields are still undocumented, and the test below
  * pins that so the day they arrive is a red test rather than nobody noticing.
+ * The device-flow routes are held the same way, for the part the document
+ * does not carry.
  */
 interface Spec {
   paths: Record<string, Record<string, unknown>>;
@@ -32,17 +35,18 @@ interface Operation {
 }
 const spec = JSON.parse(readFileSync(join(__dirname, '..', 'spec', 'openapi.json'), 'utf8')) as Spec;
 
+const ORDER_REPLY = { id: 'o1', status: 'completed', submissionKey: 'k', preparedTransactionHash: 'h' };
+const DEVICE_REPLY = { deviceCode: 'd', userCode: 'U', verificationUri: '/w', expiresIn: 600, interval: 5, status: 'granted', token: 't' };
+
 /** Drive every method once; collect `METHOD /path` with ids folded back to `{id}`. */
 async function routesTheClientCalls(): Promise<string[]> {
   const seen = new Set<string>();
-  const http = createHttp({
-    baseUrl: 'https://api.example',
-    request: async (url, init) => {
-      const path = new URL(url).pathname.replace(/\/o1(?=\/|$)/, '/{id}');
-      seen.add(`${(init.method ?? 'GET').toLowerCase()} ${path}`);
-      return new Response(JSON.stringify({ id: 'o1', status: 'completed', submissionKey: 'k', preparedTransactionHash: 'h' }));
-    },
-  });
+  const request = async (url: string, init: RequestInit) => {
+    const path = new URL(url).pathname.replace(/\/o1(?=\/|$)/, '/{id}');
+    seen.add(`${(init.method ?? 'GET').toLowerCase()} ${path}`);
+    return new Response(JSON.stringify(path.startsWith('/auth/device/') ? DEVICE_REPLY : ORDER_REPLY));
+  };
+  const http = createHttp({ baseUrl: 'https://api.example', request });
   const s = createSwapClient(http);
   const b = createBridgeClient(http);
   const offer = {
@@ -57,13 +61,17 @@ async function routesTheClientCalls(): Promise<string[]> {
     b.limits(), b.history(), b.checkOnboarding(), b.estimateCost({ operation: 'burn', amount: '1' }),
     b.mint({}), b.burn({ amount: '1', ethRecipient: '0x0' }),
     b.prepareInteractive({ operation: 'burn', amount: '1' }), b.submitInteractive({ submissionKey: 'k', signature: 's' }),
+    requestGrant({
+      baseUrl: 'https://api.example', request, appName: 'a', scopes: ['orders:write'],
+      limits: { maxOrderUsd: 1, windowUsd: 1, windowSeconds: 60 },
+    }).then((grant) => grant.wait()),
   ]);
   return [...seen].sort();
 }
 
 test('every route the client actually calls exists in the gateway document, with that method', async () => {
   const called = await routesTheClientCalls();
-  expect(called.length).toBeGreaterThanOrEqual(18); // a vacuous pass would be worse than a failure
+  expect(called.length).toBeGreaterThanOrEqual(20); // a vacuous pass would be worse than a failure
   const missing = called.filter((route) => {
     const [method, path] = route.split(' ') as [string, string];
     return spec.paths[path]?.[method] === undefined;
@@ -120,6 +128,33 @@ test('the pool-trade routes are documented as routes only, so the field checks c
   }
 });
 
+/**
+ * The device-flow routes are in the document in part: `DeviceAuthorizeDto` and
+ * `GrantLimitsDto` carry their fields and are held below like every other
+ * request type, but `DevicePollDto` comes out with no properties and neither
+ * route types its answer (the token route declares an object with no fields).
+ * So the poll body and both answers in auth.ts are written from what the
+ * service returns, and this pin turns the day they arrive into a red test.
+ */
+test('the device-flow routes are documented in part, so the field checks cannot reach all of them', () => {
+  const arrived = [
+    Object.keys(spec.components.schemas.DevicePollDto?.properties ?? {}).length > 0 && 'DevicePollDto has properties',
+    ...['/auth/device/authorize', '/auth/device/token'].map((path) => {
+      const op = spec.paths[path]?.post as Operation | undefined;
+      expect(op).toBeDefined();
+      // `{ type: 'object' }` with nothing in it is a body, not a type.
+      const typed = Object.values(op?.responses ?? {}).some((r) => /"\$ref"|"properties"/.test(JSON.stringify(r.content ?? {})));
+      return typed && `${path} types a response`;
+    }),
+  ].filter((found): found is string => typeof found === 'string');
+  if (arrived.length > 0) {
+    throw new Error(
+      `${arrived.join('; ')}. This is the expected signal, not a regression: put those fields in REQUEST_FIELDS ` +
+        'or RESPONSE_FIELDS below so the client is held to them, and drop them from this test.',
+    );
+  }
+});
+
 /** Request types this client declares, against the DTO each route takes. */
 const REQUEST_FIELDS: Record<string, string[]> = {
   CreateOrderDto: [
@@ -132,6 +167,8 @@ const REQUEST_FIELDS: Record<string, string[]> = {
   BridgeMintDirectDto: ['amount', 'evmTxHash', 'sourceChainId', 'retryOf'],
   BridgeBurnDirectDto: ['amount', 'ethRecipient', 'destinationChainId', 'retryOf'],
   BridgeInteractiveSubmitDto: ['submissionKey', 'signature'],
+  DeviceAuthorizeDto: ['appName', 'scopes', 'limits'],
+  GrantLimitsDto: ['maxOrderUsd', 'windowUsd', 'windowSeconds', 'pairIds'],
 };
 
 test.each(Object.entries(REQUEST_FIELDS))('%s: the client sends only fields the DTO has, and all it requires', (dto, fields) => {
