@@ -22,7 +22,9 @@ concurrency:
 
 jobs:
   refresh:
+    # ubuntu-latest, not cancore-runners — rationale in ci.yml (CAN-1120).
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       BRANCH: automation/client-spec-refresh
       SPEC: packages/client/spec/openapi.json

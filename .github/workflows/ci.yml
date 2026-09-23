@@ -5,9 +5,40 @@ on:
     branches: [main]
   pull_request:
 
+# Scoped by workflow AND ref. `github.ref` differs between a pull_request run
+# (refs/pull/N/merge) and a push run of the same commit, so a merge into main
+# never cancels the check still running on the PR, or the other way round.
+#
+# main is excluded from cancellation on purpose, and not out of caution: a
+# cancelled run has conclusion `cancelled`, not `failure`, so the CI-failure
+# notifier — which fires on failure/timed_out — would never hear about it. Two
+# merges in quick succession would silently swallow the first one's red run,
+# which is the exact signal this repository is being wired to emit. The runner
+# minutes this saves are all on PR branches anyway, where the expensive tarball
+# step below runs on every push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Explicit, rather than whatever the repository default grants. Nothing in this
+# workflow writes: it installs, types, tests, builds and packs.
+permissions:
+  contents: read
+
 jobs:
   check:
+    # ubuntu-latest, NOT the cancore-runners standard (CAN-1120). This is the
+    # organization's only PUBLIC repository, and this workflow's `pull_request`
+    # trigger runs code authored in forks — on a self-hosted runner that is
+    # arbitrary code executing inside our network, the textbook way to lose a
+    # runner. The standard is not violated by a documented exception; it is
+    # violated by an undocumented one, so this is the record. Revisit only if
+    # cancore-runners becomes ephemeral/isolated per job, or if fork PRs get a
+    # workflow of their own.
     runs-on: ubuntu-latest
+    # A hung `npm install` in the loop below would otherwise burn the default
+    # six hours of a public repository's runner budget.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -7,9 +7,16 @@ on:
   push:
     tags: ['*-v*']
 
+# Deliberately no `concurrency` block. Each tag publishes its own package and
+# version, so two tag runs never contend — and cancelling one mid-publish is
+# worse than any minutes it saves: the tag is pushed, the version is fixed in
+# the manifest, and a retry under the same tag is impossible.
+
 jobs:
   publish:
+    # ubuntu-latest, not cancore-runners — rationale in ci.yml (CAN-1120).
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       # The whole credential. npm trusted publishing exchanges this OIDC token
