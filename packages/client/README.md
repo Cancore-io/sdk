@@ -1,16 +1,19 @@
 # `@cancore/client`
 
-A typed client for the Cancore API. Four entries: the exchange (`./swap`), the USDCx
-bridge (`./bridge`), live order updates (`./realtime`) and scoped trading grants (`./auth`). **No keys.** Where a step needs a
-signature, the client hands you a hash and takes the signature back — signing stays with
-`@cancore/wallet` or the dApp connector.
+A typed client for the Cancore API. Five entries: the exchange (`./swap`), the USDCx
+bridge (`./bridge`), live order updates (`./realtime`), scoped trading grants (`./auth`) and a
+self-custody account a program runs with its own key (`./selfcustody`). **No keys.** Where a
+step needs a signature, the client hands you a hash and takes the signature back — signing
+stays with `@cancore/wallet` or the dApp connector.
 
 ```bash
 npm install @cancore/client
 ```
 
 No runtime dependencies. The transport is `fetch`, and you inject the function that adds
-your credential; the realtime entry takes a socket the same way.
+your credential; the realtime entry takes a socket the same way. The one exception is
+`./selfcustody`, which imports `@cancore/wallet` (a peer dependency) for how a prepared
+transaction is signed.
 
 ## Quick start
 
@@ -217,6 +220,77 @@ saw, so you are never left with a bare timeout.
 **What `accept` does not do.** It is a POST. Where the swap that follows needs your
 signature — self-custody HTLC legs — that ceremony runs through
 `@cancore/wallet/operations` (or the dApp connector), not through this client.
+
+## `@cancore/client/selfcustody`
+
+A self-custody Canton account run entirely by a program — a partner's trading service, a
+bot. The account's key signs every step that needs its authority: its sign-in, its Canton
+party, each leg of a swap, the acceptance of a delivery or a cashback payout. Only the
+signatures leave your process; the API never holds the key.
+
+```ts
+import { providerFromMnemonic } from '@cancore/wallet';
+import { createSelfCustody } from '@cancore/client/selfcustody';
+
+// One recovery phrase holds any number of accounts: m/44'/6767'/{account}'/0'/0'.
+const signer = await providerFromMnemonic(process.env.PHRASE!, { account: 0 });
+const acct = createSelfCustody({ baseUrl: 'https://api.cancore.io', signer });
+
+// Once per account: sign up (a partner invite code grants the partner role), then create
+// the account's Canton party and enable CC receipts. Both are safe to run again.
+await acct.session.register({ inviteCode: 'ABCD-EFGH-JKMN' });
+await acct.onboard();
+// Every later run just signs in — `acct.session.login()` — or lets the first request do it.
+
+// Orders are refused until the stand's documents are accepted — the ones you read.
+const { accepted, requiredVersion } = await acct.legalStatus();
+if (!accepted && requiredVersion) await acct.acceptTerms(requiredVersion, documentsYouRead);
+
+// The maker places the order and settles its side; the taker (another account, another
+// process, another partner) settles the other. Each call returns when the swap has settled
+// and this account's proceeds are in.
+const order = await acct.swap.createForPair({ tradingPairId, sourceAmount: '100', targetAmount: '20' });
+const { swap, delivery } = await acct.make(order.id);
+// …elsewhere: await other.take(order.id);
+
+// Registry-token deliveries and cashback payouts wait for this account's signature.
+await acct.acceptIncoming();
+await acct.cashback.collect();   // claim, then accept this claim's payouts as they arrive
+```
+
+| Member | What it does |
+| --- | --- |
+| `session.register(input?)` | `register-challenge` → signed `register` → `redeem-invite` when `inviteCode` is given |
+| `session.login()` | `challenge` → signed `login-signature` |
+| `session.request` | the authenticated transport: renews the JWT before it expires, signs in again on a 401 |
+| `me()` | `GET /auth/me` |
+| `onboard()` | `wallet.topology` (the party, signed by the key) then `tokens.preapproval` (CC receipts, venue-paid); skips what exists |
+| `legalStatus()` / `acceptTerms(version, documents)` | `GET` / signed `POST /legal/consent` |
+| `make(orderId, options?)` | maker: wait for the taker, open the swap, accept the counter leg, claim — both legs settle at once |
+| `take(orderId, options?)` | taker: accept the order, fund the counter leg, wait for settlement, accept the delivery |
+| `incoming()` / `accept(transfer)` / `acceptIncoming(filter?)` | transfers waiting for this account's signature |
+| `send(input)` / `consolidate(tokenId?)` / `balance(instrumentId)` | move, merge and read this account's tokens |
+| `cashback.summary()` / `claims()` / `claim()` / `collect(options?)` | partner cashback (role `partner-bot`) |
+| `execute(type, params?)` | any operation of `GET /wallet/operations`: prepare, sign every leg, submit |
+| `swapState(swapId)` | `GET /htlc/{id}` |
+
+**How a trade settles.** `make` opens the swap with a fresh preimage, locking the order's
+source amount grossed up by the fee rate so the taker receives exactly what the order says;
+`take` does the same for the counter leg. The preimage is also stored with the API,
+encrypted for the maker, so a maker process that dies mid-swap resumes it with another
+`make(order.id)`. A CC delivery arrives through the account's preapproval (`delivery:
+'direct'`); a registry-token delivery (CBTC, USDCx) is a transfer this account accepts
+(`'accepted'`), or `'pending'` if it did not arrive within `deliveryWaitMs` — the next
+`acceptIncoming` takes it.
+
+**What it retries, and what it does not.** A submit is never re-sent blindly: the only
+retries are the ones the API says are safe — a timed-out submit is resubmitted with the same
+signatures, an accept whose prepared transaction expired before the submit is prepared and
+signed again once, and a swap refused as too fragmented is retried once after merging
+holdings. Anything else surfaces as a `CeremonyError` (with what the prepare had said) or a
+`SettleError` (with the last state seen).
+
+Canton↔Canton orders only: an EVM leg is locked by an EVM key, which is not this signer.
 
 ## `@cancore/client/realtime`
 

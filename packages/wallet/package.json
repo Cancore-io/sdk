@@ -1,6 +1,6 @@
 {
   "name": "@cancore/wallet",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Cancore wallet core \u2014 key material, signing and storage contracts. Runtime-agnostic: no browser, no React.",
   "exports": {

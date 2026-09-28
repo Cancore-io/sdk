@@ -46,19 +46,21 @@ export type QueryValue = string | number | boolean | undefined;
 export interface Http {
   /** `query` is any object of scalar fields — an interface, not only a Record. */
   get<T>(path: string, query?: object): Promise<T>;
-  post<T>(path: string, body?: unknown): Promise<T>;
+  /** `headers` rides on this one request only, e.g. the captcha token a sign-up carries. */
+  post<T>(path: string, body?: unknown, headers?: Record<string, string>): Promise<T>;
 }
 
 export function createHttp({ baseUrl, request, fetchImpl }: ClientOptions): Http {
   const root = baseUrl.replace(/\/+$/, '');
   const send: FetchLike = request ?? fetchImpl ?? ((url, init) => globalThis.fetch(url, init));
 
-  async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+  async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown, headers?: Record<string, string>): Promise<T> {
     const init: RequestInit = {
       method,
       headers: {
         accept: 'application/json',
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...headers,
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     };
@@ -71,7 +73,7 @@ export function createHttp({ baseUrl, request, fetchImpl }: ClientOptions): Http
 
   return {
     get: (path, query) => call('GET', path + queryString(query)),
-    post: (path, body) => call('POST', path, body),
+    post: (path, body, headers) => call('POST', path, body, headers),
   };
 }
 

@@ -1,5 +1,6 @@
 import { binaryStringToBytes, bytesToBinaryString, bytesToHex, type Bytes } from './bytes';
-import { signWithEd25519Signer, type Ed25519Signer } from './ed25519';
+import { createEd25519Signer, signWithEd25519Signer, type Ed25519Signer } from './ed25519';
+import { deriveWalletKey, isValidMnemonic, type DerivationScheme } from './mnemonic';
 
 /**
  * Fixed prefix of the backend's signature-login challenge
@@ -111,4 +112,31 @@ export function createPasskeySigningProvider(
       return btoa(bytesToBinaryString(await signBytes(hash)));
     },
   };
+}
+
+export interface ProviderFromMnemonicOptions {
+  /** Which wallet of the phrase — see `cantonDerivationPath`. Default 0, the app's own wallet. */
+  account?: number;
+  /** Default 'standard'. 'legacy' only for phrases created before CAN-539. */
+  scheme?: DerivationScheme;
+}
+
+/**
+ * A signing provider straight from a recovery phrase — how a program (a
+ * partner's trading service, a bot) holds a self-custody key with no browser,
+ * no keystore and no password.
+ *
+ * The phrase is checked against the BIP39 wordlists first: a mistyped word is
+ * still a valid seed to PBKDF2, and would silently derive a different, empty
+ * party instead of failing. Nothing here keeps the phrase — the caller owns it.
+ */
+export async function providerFromMnemonic(
+  mnemonic: string,
+  { account = 0, scheme = 'standard' }: ProviderFromMnemonicOptions = {},
+): Promise<PasskeySigningProvider> {
+  if (!isValidMnemonic(mnemonic)) {
+    throw new Error('providerFromMnemonic: not a valid BIP39 recovery phrase');
+  }
+  const key = deriveWalletKey(mnemonic, scheme, account);
+  return createPasskeySigningProvider(await createEd25519Signer(key.seed), key.publicKeyHex);
 }

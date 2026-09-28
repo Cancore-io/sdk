@@ -1,7 +1,8 @@
 import { ed25519 } from '@noble/curves/ed25519';
-import { binaryStringToBytes, bytesToBinaryString, bytesToHex } from './bytes';
+import { binaryStringToBytes, bytesToBinaryString, bytesToHex, hexToBytes } from './bytes';
 import { createEd25519Signer, generateEd25519KeyPair } from './ed25519';
-import { createPasskeySigningProvider, LOGIN_CHALLENGE_PREFIX } from './provider';
+import { createPasskeySigningProvider, LOGIN_CHALLENGE_PREFIX, providerFromMnemonic } from './provider';
+import { deriveWalletKey } from './mnemonic';
 
 describe('createPasskeySigningProvider (LoopProvider-shaped { public_key, signMessage })', () => {
   it('exposes public_key as the hex-encoded Ed25519 public key', async () => {
@@ -350,5 +351,25 @@ describe('domain separation over a deterministic xorshift corpus (REQ-WAL-12, TC
     // The corpus really is ~200 cases over the equivalence classes — a silent
     // generator regression would otherwise make this test vacuous.
     expect(buildCorpus()).toHaveLength(204);
+  });
+});
+
+describe('providerFromMnemonic — a headless signer from a recovery phrase', () => {
+  const PHRASE = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
+
+  it('signs as the wallet the phrase derives, account by account', async () => {
+    const zero = await providerFromMnemonic(PHRASE);
+    const one = await providerFromMnemonic(PHRASE, { account: 1 });
+    expect(zero.public_key).toBe(deriveWalletKey(PHRASE).publicKeyHex);
+    expect(one.public_key).toBe(deriveWalletKey(PHRASE, 'standard', 1).publicKeyHex);
+    expect(one.public_key).not.toBe(zero.public_key);
+
+    const hash = new Uint8Array(32).fill(7);
+    const signature = await one.signPreparedHash!(btoa(bytesToBinaryString(hash)));
+    expect(ed25519.verify(binaryStringToBytes(atob(signature)), hash, hexToBytes(one.public_key))).toBe(true);
+  });
+
+  it('refuses a phrase with a mistyped word instead of deriving some other, empty wallet', async () => {
+    await expect(providerFromMnemonic(PHRASE.replace('winner', 'winer'))).rejects.toThrow(/BIP39/);
   });
 });

@@ -1,8 +1,8 @@
 {
   "name": "@cancore/client",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
-  "description": "A typed client for the Cancore API: orders and pool trades (./swap), USDCx bridge (./bridge), live order updates (./realtime), scoped trading grants by device flow (./auth). No keys \u2014 signing stays with @cancore/wallet or the dApp connector.",
+  "description": "A typed client for the Cancore API: orders and pool trades (./swap), USDCx bridge (./bridge), live order updates (./realtime), scoped trading grants by device flow (./auth), and a self-custody account run by a program with its own key (./selfcustody). No keys \u2014 signing stays with @cancore/wallet or the dApp connector.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -28,6 +28,11 @@
       "types": "./dist/auth.d.ts",
       "import": "./dist/auth.js",
       "default": "./dist/auth.js"
+    },
+    "./selfcustody": {
+      "types": "./dist/selfcustody.d.ts",
+      "import": "./dist/selfcustody.js",
+      "default": "./dist/selfcustody.js"
     }
   },
   "main": "./dist/index.js",
@@ -51,7 +56,9 @@
     "usdcx",
     "trading",
     "api-client",
-    "device-flow"
+    "device-flow",
+    "self-custody",
+    "partner"
   ],
   "files": [
     "dist",
@@ -63,6 +70,9 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "peerDependencies": {
+    "@cancore/wallet": ">=0.1.0 <1.0.0"
   },
   "scripts": {
     "build": "tsup",
