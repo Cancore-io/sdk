@@ -17,7 +17,7 @@ wagmi infer function, event and error types from the ABIs.
 | --- | --- | --- |
 | `@cancore/contracts/abi` | `HTLC_ABI`, `FEE_VAULT_ABI`, `CNRX_ABI`, `IHTLC_ABI`, `IBURN_MINT_ERC20_ABI`, `IPERMIT2_ABI`, `MULTI_BALANCE_CHECKER_ABI`; `HTLC_ERRORS`, `FEE_VAULT_ERRORS`, `CNRX_ERRORS` | `Cancore-io/evm-contracts/abi/*.json` — the reviewed snapshots that repository keeps in lock-step with its compiled contracts |
 | `@cancore/contracts/networks` | `NETWORKS`, `networkOf`, `networkKindOf`, `networkByChainId` | the chain ids the Cancore API uses |
-| `@cancore/contracts` | all of the above, plus `DEPLOYMENTS` / `deploymentOf`, `FEE_CLAIM_TYPES` / `feeClaimDomain`, `BYTECODE_HASHES`, `CONTRACTS_RELEASE`, `describeRevert` | the contracts repository's `version.json` and bytecode hashes; the FeeVault contract's own struct and domain |
+| `@cancore/contracts` | all of the above, plus `DEPLOYMENTS` / `deploymentOf`, `FEE_CLAIM_TYPES` / `feeClaimDomain`, `FILL_PROOF_TYPES` / `fillProofDomain` / `FillProof`, `BYTECODE_HASHES`, `CONTRACTS_RELEASE`, `describeRevert` | the contracts repository's `version.json` and bytecode hashes; the FeeVault contract's own struct and domain; `evm-contracts/abi/typed-data/FillProof.json` for the router's `FillProof` |
 
 The ABIs and selector tables are **generated**, never edited: `npm run sync` reads a checkout
 of `evm-contracts` (`EVM_CONTRACTS_DIR`) and rewrites `spec/abi/*.json` and
@@ -38,6 +38,27 @@ Why a package and not a copied file: the Cancore app's own copy of the HTLC ABI 
 from the deployed contract — its `Claimed` event carried seven parameters where the contract
 emits eight — and nothing noticed, because a copied ABI decodes what it describes and
 silently misses what it does not. This package is what the app installs now.
+
+## FillProof: what attestors sign
+
+`CancoreRouter.settle(order, proof, sigs)` pays a filler out only against k attestor
+signatures over one EIP-712 `FillProof`, in the domain of the order's **source** router.
+
+```ts
+import { FILL_PROOF_TYPES, fillProofDomain, PROOF_KIND_ATTESTATION } from '@cancore/contracts';
+
+const signature = await wallet.signTypedData({
+  domain: fillProofDomain(sourceChainId, sourceRouter),
+  types: FILL_PROOF_TYPES,
+  primaryType: 'FillProof',
+  message: proof, // setId: attestationSetFor(orderHash), never currentSetId
+});
+```
+
+The schema comes with golden vectors (`spec/typed-data/FillProof.json`). `evm-contracts`
+checks every vector against the router's own `hashFillProof`, and this package's test checks
+the same file with an encoder of its own, so a field changed in one place fails both. The
+schema is synced like the ABIs, by `npm run sync`.
 
 ## Reverts
 

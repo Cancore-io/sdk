@@ -41,7 +41,7 @@
     "build": "tsup",
     "prepack": "tsup --silent",
     "prepublishOnly": "npm run build",
-    "sync": "node scripts/sync.mjs"
+    "sync": "node scripts/sync.mjs && node scripts/sync-typed-data.mjs"
   },
   "devDependencies": {
     "@noble/hashes": "^1.3.2"

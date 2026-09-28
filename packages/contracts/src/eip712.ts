@@ -37,3 +37,43 @@ export function feeClaimDomain(chainId: number, verifyingContract: `0x${string}`
     verifyingContract,
   } as const;
 }
+
+import { FILL_PROOF_DOMAIN } from './generated/typedData';
+
+export { FILL_PROOF_DOMAIN, FILL_PROOF_TYPES, FILL_PROOF_TYPE_STRING } from './generated/typedData';
+
+/** `FillProof.kind` of v1: k-of-n attestor signatures — the only kind `settle` accepts. */
+export const PROOF_KIND_ATTESTATION = 1;
+
+/**
+ * What the attestors sign and `CancoreRouter.settle` verifies: the fact of a
+ * delivery on the destination chain, for one order. Generated from the
+ * contract's schema (`spec/typed-data/FillProof.json`), golden vectors included.
+ */
+export interface FillProof {
+  kind: number;
+  orderHash: `0x${string}`;
+  /** bytes32: the destination chain id, left-padded. */
+  destination: `0x${string}`;
+  /** EVM: the delivery transaction hash; Canton: keccak256 of the update id. */
+  fillRef: `0x${string}`;
+  recipient: `0x${string}`;
+  outputAsset: `0x${string}`;
+  /** What arrived, not what was sent. */
+  amountDelivered: bigint;
+  filledAt: bigint;
+  /** The filler's payout address on the source chain. */
+  filler: `0x${string}`;
+  attempt: number;
+  /** The attestor set live when the order opened — `attestationSetFor(orderHash)`, never `currentSetId`. */
+  setId: number;
+}
+
+/**
+ * The typed-data domain of a proof: the order's SOURCE router. `settle`
+ * recomputes the digest in its own domain, so a proof never verifies on
+ * another chain or another router.
+ */
+export function fillProofDomain(chainId: number, verifyingContract: `0x${string}`) {
+  return { ...FILL_PROOF_DOMAIN, chainId, verifyingContract } as const;
+}
