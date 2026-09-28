@@ -1,5 +1,5 @@
 {
-  "$comment": "EIP-712 schema of FillProof — the struct CancoreRouter.settle verifies attestor signatures over — and its golden vectors. The contract is the source of truth: test/CancoreRouter.ts checks this file against FILLPROOF_TYPEHASH and hashFillProof. @cancore/contracts mirrors it (sdk: npm run sync) and checks the same vectors with its own encoder. Change the struct in one place and both fail.",
+  "$comment": "EIP-712 schema of FillProof — the struct CancoreRouter.settle verifies attestor signatures over — and its golden vectors. The contract is the source of truth: test/CancoreRouter.ts checks this file against FILLPROOF_TYPEHASH and hashFillProof. @cancore/contracts mirrors it (sdk: npm run sync) and checks the same vectors with its own encoder. Change the struct here and this repository's test fails at once; the SDK's fails once its `npm run sync` pulls the change (nothing checks the two repositories against each other automatically).",
   "primaryType": "FillProof",
   "domain": {
     "$comment": "The SOURCE router of the order: settle recomputes the digest in its own domain, so a proof never verifies on another chain or router.",
