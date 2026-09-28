@@ -176,10 +176,25 @@ export function normalizeMnemonic(mnemonic: string): string {
 /** How a mnemonic maps to the wallet key. See the module doc for the two schemes. */
 export type DerivationScheme = 'standard' | 'legacy';
 
-/** BIP44-shaped SLIP-0010 path on Canton Coin's registered SLIP-0044 coin type. */
-export const CANTON_DERIVATION_PATH = "m/44'/6767'/0'/0'/0'";
-
 const HARDENED_OFFSET = 0x80000000;
+
+/**
+ * The path of the `account`-th wallet one phrase derives: m/44'/6767'/{account}'/0'/0'.
+ *
+ * The account index sits where BIP44 puts it, so one recovery phrase can hold
+ * any number of independent Canton parties (a partner running many trading
+ * accounts keeps one secret, not thousands). Account 0 IS the wallet the app
+ * derives, so a phrase keeps restoring the same party in both places.
+ */
+export function cantonDerivationPath(account = 0): string {
+  if (!Number.isInteger(account) || account < 0 || account >= HARDENED_OFFSET) {
+    throw new Error(`Invalid account index ${account}: expected an integer in [0, 2^31)`);
+  }
+  return `m/44'/6767'/${account}'/0'/0'`;
+}
+
+/** BIP44-shaped SLIP-0010 path on Canton Coin's registered SLIP-0044 coin type (account 0). */
+export const CANTON_DERIVATION_PATH = cantonDerivationPath(0);
 
 /** Parse a hardened-only path ("m" or "m/44'/…'") into child indices. */
 function parseHardenedPath(path: string): number[] {
@@ -219,11 +234,25 @@ export function slip10DeriveEd25519(seed: Bytes, path: string): Bytes {
   return Uint8Array.from(I.slice(0, 32));
 }
 
-/** Derive the wallet's raw 32-byte Ed25519 seed from a BIP39 mnemonic. */
+/**
+ * Derive the wallet's raw 32-byte Ed25519 seed from a BIP39 mnemonic.
+ *
+ * `account` selects the wallet on the standard path (see
+ * {@link cantonDerivationPath}). The legacy scheme has no path, hence exactly
+ * one key per phrase, so any other account is refused rather than silently
+ * answered with account 0's key.
+ */
 export function mnemonicToEd25519Seed(
   mnemonic: string,
   scheme: DerivationScheme = 'standard',
+  account = 0,
 ): Bytes {
+  if (scheme === 'legacy' && account !== 0) {
+    throw new Error('The legacy scheme derives one key per phrase — account must be 0');
+  }
+  // Checked before the BIP39 seed is computed: a bad index is the caller's
+  // error whichever scheme it names.
+  const path = cantonDerivationPath(account);
   // Coerce the BIP39 seed into this realm's Uint8Array before handing it to
   // noble (see ED25519_SLIP10_KEY note).
   const bip39Seed = Uint8Array.from(mnemonicToSeedSync(normalizeMnemonic(mnemonic)));
@@ -231,7 +260,7 @@ export function mnemonicToEd25519Seed(
     const I = hmac(sha512, ED25519_SLIP10_KEY, bip39Seed);
     return Uint8Array.from(I.slice(0, 32));
   }
-  return slip10DeriveEd25519(bip39Seed, CANTON_DERIVATION_PATH);
+  return slip10DeriveEd25519(bip39Seed, path);
 }
 
 /** Key material derived from a recovery phrase — the wallet's key identity. */
@@ -257,8 +286,9 @@ export interface DerivedWalletKey {
 export function deriveWalletKey(
   mnemonic: string,
   scheme: DerivationScheme = 'standard',
+  account = 0,
 ): DerivedWalletKey {
-  const seed = mnemonicToEd25519Seed(mnemonic, scheme);
+  const seed = mnemonicToEd25519Seed(mnemonic, scheme, account);
   return {
     scheme,
     seed,

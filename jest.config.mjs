@@ -22,6 +22,12 @@ const nodeProject = {
   testPathIgnorePatterns: ['/node_modules/', '<rootDir>/packages/wallet/src/web/'],
   testMatch: ['**/*.test.ts'],
   transform,
+  // A package importing a sibling tests against the sibling's source: `dist/`
+  // does not exist until the build, which runs after the tests.
+  moduleNameMapper: {
+    '^@cancore/wallet$': '<rootDir>/packages/wallet/src/index.ts',
+    '^@cancore/wallet/operations$': '<rootDir>/packages/wallet/src/operations.ts',
+  },
 };
 
 /** `@cancore/wallet/web` — IndexedDB and WebAuthn, which only exist in a browser. */

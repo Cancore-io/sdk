@@ -6,6 +6,7 @@ import {
   deriveWalletKey,
   describeMnemonicError,
   slip10DeriveEd25519,
+  cantonDerivationPath,
   CANTON_DERIVATION_PATH,
 } from './mnemonic';
 import { ed25519PublicKeyFromSeed } from './ed25519';
@@ -162,6 +163,39 @@ describe('mnemonic (BIP39 self-custody recovery phrase)', () => {
       expect(bytesToHex(mnemonicToEd25519Seed(PHRASE, 'standard'))).not.toBe(
         bytesToHex(mnemonicToEd25519Seed(PHRASE, 'legacy')),
       );
+    });
+  });
+
+  describe('accounts — many wallets from one phrase', () => {
+    const PHRASE = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
+
+    it('account 0 is the wallet the app derives', () => {
+      expect(bytesToHex(mnemonicToEd25519Seed(PHRASE, 'standard', 0))).toBe(
+        bytesToHex(mnemonicToEd25519Seed(PHRASE)),
+      );
+      expect(cantonDerivationPath(0)).toBe(CANTON_DERIVATION_PATH);
+    });
+
+    it("account n derives along m/44'/6767'/n'/0'/0' (regression lock)", () => {
+      // Computed with an independent SLIP-0010 implementation (Python hmac +
+      // pbkdf2), which reproduces the account-0 lock above byte for byte.
+      expect(cantonDerivationPath(1)).toBe("m/44'/6767'/1'/0'/0'");
+      expect(bytesToHex(mnemonicToEd25519Seed(PHRASE, 'standard', 1))).toBe(
+        '14725174bf25a204003eaf788bded5e006800685c21acb27486f012a2e74af73',
+      );
+      expect(deriveWalletKey(PHRASE, 'standard', 7).seedHex).toBe(
+        '33d491405244768ec4d4cd53966c36bba9098194b798bbe63bf5a42d24cadf40',
+      );
+    });
+
+    it('refuses an index that is not a hardened-range integer', () => {
+      expect(() => cantonDerivationPath(-1)).toThrow(/account index/);
+      expect(() => cantonDerivationPath(1.5)).toThrow(/account index/);
+      expect(() => cantonDerivationPath(2 ** 31)).toThrow(/account index/);
+    });
+
+    it('refuses an account on the legacy scheme instead of answering with account 0', () => {
+      expect(() => mnemonicToEd25519Seed(PHRASE, 'legacy', 1)).toThrow(/legacy/);
     });
   });
 

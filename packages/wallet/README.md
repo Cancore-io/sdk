@@ -72,6 +72,23 @@ wordlistFor(language)
 `describeMnemonicError` returns an i18n **key**, not a sentence: the package does not know
 your product's language. `MNEMONIC_LANGUAGES` lists what is supported.
 
+### Many accounts from one phrase
+
+```ts
+import { cantonDerivationPath, deriveWalletKey, providerFromMnemonic } from '@cancore/wallet';
+
+cantonDerivationPath(3);                        // "m/44'/6767'/3'/0'/0'"
+deriveWalletKey(mnemonic, 'standard', 3);       // the key material of account 3
+const signer = await providerFromMnemonic(mnemonic, { account: 3 });
+```
+
+The account index sits where BIP44 puts it, so a program running many accounts keeps one
+secret. Account 0 is the wallet the app derives. `providerFromMnemonic` is the headless way
+to hold a key — no browser, keystore or password: it checks the phrase against the BIP39
+wordlists (a mistyped word would otherwise derive a different, empty wallet) and returns
+the same shape-checked signer the app uses, which `@cancore/client/selfcustody` takes as
+it is. The legacy scheme derives one key per phrase and refuses any account but 0.
+
 ### Restore
 
 A phrase alone does not say which derivation made the wallet, so restoring means trying both

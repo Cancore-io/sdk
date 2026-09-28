@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { requestGrant } from './auth';
 import { createBridgeClient } from './bridge';
 import { createHttp } from './http';
+import { createSelfCustody } from './selfcustody';
 import { createSwapClient } from './swap';
 
 /**
@@ -36,15 +37,30 @@ interface Operation {
 const spec = JSON.parse(readFileSync(join(__dirname, '..', 'spec', 'openapi.json'), 'utf8')) as Spec;
 
 const ORDER_REPLY = { id: 'o1', status: 'completed', submissionKey: 'k', preparedTransactionHash: 'h' };
+/** What the self-custody account reads off a reply to get to its next call. */
+const SELF_CUSTODY_REPLIES: Record<string, unknown> = {
+  '/auth/challenge': { challenge: 'Welcome to Cancore 2026-01-01 sig:0' },
+  '/auth/register-challenge': { challenge: 'Welcome to Cancore 2026-01-01 sig:0' },
+  '/auth/login-signature': { token: 'h.e30.s', user: { id: 'u' } },
+  '/auth/register': { token: 'h.e30.s', user: { id: 'u' } },
+  '/auth/me': { id: 'u', partyId: 'p' },
+  '/wallet/operations/prepare': { operationId: 'op', legs: [], meta: {} },
+  '/partner/cashback/claims': [],
+  '/tokens/transfer-requests/incoming': [],
+};
 const DEVICE_REPLY = { deviceCode: 'd', userCode: 'U', verificationUri: '/w', expiresIn: 600, interval: 5, status: 'granted', token: 't' };
 
 /** Drive every method once; collect `METHOD /path` with ids folded back to `{id}`. */
 async function routesTheClientCalls(): Promise<string[]> {
   const seen = new Set<string>();
   const request = async (url: string, init: RequestInit) => {
-    const path = new URL(url).pathname.replace(/\/o1(?=\/|$)/, '/{id}');
+    const raw = new URL(url).pathname;
+    const path = raw
+      .replace(/\/o1(?=\/|$)/, '/{id}')
+      .replace(/^\/tokens\/balance\/[^/]+\/[^/]+$/, '/tokens/balance/{partyId}/{instrumentId}');
     seen.add(`${(init.method ?? 'GET').toLowerCase()} ${path}`);
-    return new Response(JSON.stringify(path.startsWith('/auth/device/') ? DEVICE_REPLY : ORDER_REPLY));
+    const reply = SELF_CUSTODY_REPLIES[raw] ?? (path.startsWith('/auth/device/') ? DEVICE_REPLY : ORDER_REPLY);
+    return new Response(JSON.stringify(reply));
   };
   const http = createHttp({ baseUrl: 'https://api.example', request });
   const s = createSwapClient(http);
@@ -53,6 +69,20 @@ async function routesTheClientCalls(): Promise<string[]> {
     sourceNetwork: 'canton', sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: '1',
     targetNetwork: 'sepolia', targetTokenAddress: '0x0', targetTokenName: 'USDC', targetAmount: '1',
   };
+  // The self-custody account's own calls. Its two orchestrators (`make`, `take`)
+  // run on swap state, so they are driven by the settled-swap test in
+  // selfcustody.test.ts, which checks every route they touch the same way.
+  const signer = { public_key: '00'.repeat(32), signMessage: async () => '00', signChallenge: async () => '00' };
+  const acct = createSelfCustody({ baseUrl: 'https://api.example', signer, fetchImpl: request });
+  const doc = { key: 'terms-of-use', version: 'v', url: '/legal/terms-of-use' };
+  await acct.session.login();
+  await acct.session.register({ inviteCode: 'ABCD-EFGH-JKMN' });
+  await Promise.all([
+    acct.me(), acct.onboard(), acct.legalStatus(), acct.acceptTerms('v', [doc]), acct.execute('tokens.consolidate'),
+    acct.swapState('o1'), acct.incoming(), acct.acceptIncoming(), acct.consolidate(), acct.balance('CC'),
+    acct.send({ receiverPartyId: 'p', amount: '1' }),
+    acct.cashback.summary(), acct.cashback.claims(), acct.cashback.claim(), acct.cashback.collect(),
+  ]);
   await Promise.all([
     s.listOpen(), s.listMine(), s.get('o1'), s.create(offer),
     s.createForPair({ tradingPairId: 'p', sourceAmount: '1', targetAmount: '1' }),
@@ -169,7 +199,29 @@ const REQUEST_FIELDS: Record<string, string[]> = {
   BridgeInteractiveSubmitDto: ['submissionKey', 'signature'],
   DeviceAuthorizeDto: ['appName', 'scopes', 'limits'],
   GrantLimitsDto: ['maxOrderUsd', 'windowUsd', 'windowSeconds', 'pairIds'],
+  ChallengeRequestDto: ['publicKey'],
+  LoginSignatureDto: ['publicKey', 'signature', 'challenge'],
+  RefreshTokenDto: ['refreshToken'],
+  RedeemInviteDto: ['code'],
+  RecordLegalConsentDto: ['version', 'documents', 'issuedAt', 'signature'],
+  ConsentedDocumentDto: ['key', 'version', 'url'],
+  PrepareOperationDto: ['type', 'params'],
+  SubmitOperationDto: ['operationId', 'signatures'],
+  OperationSignatureDto: ['legId', 'signature'],
+  ClaimHtlcDto: ['preimage'],
 };
+
+/**
+ * Sign-up is the one body the document declares inline rather than as a DTO.
+ * Its `required` list says `email`, which the API does not enforce for a
+ * self-custody (passkey) sign-up — the check here is the same subset one.
+ */
+test('the sign-up body sends only fields the document declares', () => {
+  const op = spec.paths['/auth/register']?.post as { requestBody: { content: Record<string, { schema: { properties: Record<string, unknown> } }> } };
+  const known = Object.keys(op.requestBody.content['application/json']!.schema.properties);
+  const sent = ['signingMethod', 'publicKey', 'challenge', 'signature', 'partyName', 'email'];
+  expect(sent.filter((f) => !known.includes(f))).toEqual([]);
+});
 
 test.each(Object.entries(REQUEST_FIELDS))('%s: the client sends only fields the DTO has, and all it requires', (dto, fields) => {
   const schema = spec.components.schemas[dto];
@@ -219,7 +271,55 @@ const RESPONSE_FIELDS: Record<string, string[]> = {
     'cantonTxUrl', 'evmTxUrl', 'destinationTxUrl', 'createdAt',
   ],
   BridgePreparedInteractiveDto: ['submissionKey', 'preparedTransactionHash'],
+  AuthResponseDto: ['token', 'refreshToken', 'user'],
+  ChallengeResponseDto: ['challenge'],
+  UserResponseDto: ['id', 'partyId', 'partyName', 'roles', 'status', 'signingMethod', 'email', 'walletPublicKey'],
+  HtlcSwapResponseDto: [
+    'id', 'status', 'sender', 'receiver', 'tokenId', 'amount', 'counterTokenId', 'counterAmount',
+    'hashLock', 'timeout', 'counterTimeout', 'rejectReason',
+  ],
+  TransferInstructionResponseDto: [
+    'contractId', 'templateId', 'transferId', 'sender', 'receiver', 'amount', 'instrumentId',
+    'instrumentAdmin', 'memo', 'requestedAt', 'executeBefore', 'swapContext',
+  ],
+  TransferSwapContextDto: ['swapId', 'orderId', 'swapStatus', 'leg'],
+  LegalConsentStatusDto: ['accepted', 'requiredVersion'],
+  PreimageResponseDto: ['preimage', 'senderPreimage'],
+  TokenBalanceDto: ['balance', 'holdingsCount'],
 };
+
+/**
+ * Routes the self-custody account reads whose answers the document does not
+ * type: the envelope's prepare/submit, the fee and timeout lookups, and the
+ * partner cashback routes. Their shapes in selfcustody.ts are written from the
+ * services. Pinned like the pool-trade routes above, so the day a schema lands
+ * is a red test with the next step in it.
+ */
+const UNTYPED_ANSWERS: Array<[string, string]> = [
+  ['post', '/wallet/operations/prepare'],
+  ['post', '/wallet/operations/submit'],
+  ['get', '/htlc/fee-config'],
+  ['get', '/htlc/timeout-options'],
+  ['get', '/partner/cashback/me'],
+  ['get', '/partner/cashback/claims'],
+  ['post', '/partner/cashback/claim'],
+];
+
+test('the self-custody routes whose answers are untyped are still untyped', () => {
+  const typed = UNTYPED_ANSWERS.filter(([method, path]) => {
+    const op = spec.paths[path]?.[method] as Operation | undefined;
+    expect(op).toBeDefined();
+    return Object.entries(op?.responses ?? {}).some(
+      ([code, r]) => code.startsWith('2') && /"\$ref"|"properties"/.test(JSON.stringify(r.content ?? {})),
+    );
+  });
+  if (typed.length > 0) {
+    throw new Error(
+      `${typed.map(([m, p]) => `${m.toUpperCase()} ${p}`).join(', ')} now type(s) the answer. This is the expected ` +
+        'signal, not a regression: hold the matching type in selfcustody.ts to it in RESPONSE_FIELDS and drop the route here.',
+    );
+  }
+});
 
 test.each(Object.entries(RESPONSE_FIELDS))('%s: every field the client types is a field the DTO has', (dto, fields) => {
   const known = Object.keys(spec.components.schemas[dto]?.properties ?? {});
