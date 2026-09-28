@@ -2,6 +2,14 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FILL_PROOF_DOMAIN, FILL_PROOF_TYPES, FILL_PROOF_TYPE_STRING, fillProofDomain, PROOF_KIND_ATTESTATION } from './index';
+import type { FillProof } from './index';
+
+// The FillProof interface is hand-written; the types are generated. A field
+// added, renamed or dropped by `npm run sync` must break the build (CI's
+// typecheck covers this file), not ship two exports that disagree.
+type SchemaFields = (typeof FILL_PROOF_TYPES)['FillProof'][number]['name'];
+const sameFields: [SchemaFields] extends [keyof FillProof] ? ([keyof FillProof] extends [SchemaFields] ? true : never) : never = true;
+void sameFields;
 
 // The contract's schema and golden vectors, as synced from evm-contracts, where
 // test/CancoreRouter.ts checks the same file against the router itself. This

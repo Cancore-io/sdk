@@ -55,10 +55,10 @@ const signature = await wallet.signTypedData({
 });
 ```
 
-The schema comes with golden vectors (`spec/typed-data/FillProof.json`). `evm-contracts`
-checks every vector against the router's own `hashFillProof`, and this package's test checks
-the same file with an encoder of its own, so a field changed in one place fails both. The
-schema is synced like the ABIs, by `npm run sync`.
+This repository keeps golden vectors for the schema in `spec/typed-data/FillProof.json` (they
+are not in the published package). `evm-contracts` checks every vector against the router's own
+`hashFillProof`, and this package's test checks the same file with an encoder of its own, so a
+field changed in one place fails both. The schema is synced like the ABIs, by `npm run sync`.
 
 ## Reverts
 

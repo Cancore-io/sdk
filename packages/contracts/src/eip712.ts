@@ -5,6 +5,7 @@
  * stay in lock-step with `FeeVault.sol` and with the backend's signer, which is
  * why both are written here once rather than re-typed by each consumer.
  */
+import { FILL_PROOF_DOMAIN } from './generated/typedData';
 
 export const FEE_CLAIM_DOMAIN_NAME = 'CancoreFeeVault';
 export const FEE_CLAIM_DOMAIN_VERSION = '1';
@@ -38,8 +39,6 @@ export function feeClaimDomain(chainId: number, verifyingContract: `0x${string}`
   } as const;
 }
 
-import { FILL_PROOF_DOMAIN } from './generated/typedData';
-
 export { FILL_PROOF_DOMAIN, FILL_PROOF_TYPES, FILL_PROOF_TYPE_STRING } from './generated/typedData';
 
 /** `FillProof.kind` of v1: k-of-n attestor signatures — the only kind `settle` accepts. */
@@ -47,8 +46,9 @@ export const PROOF_KIND_ATTESTATION = 1;
 
 /**
  * What the attestors sign and `CancoreRouter.settle` verifies: the fact of a
- * delivery on the destination chain, for one order. Generated from the
- * contract's schema (`spec/typed-data/FillProof.json`), golden vectors included.
+ * delivery on the destination chain, for one order. Written by hand from the
+ * contract's schema (`FILL_PROOF_TYPES`, which is generated); fillProof.test.ts
+ * fails to compile if the two stop naming the same fields.
  */
 export interface FillProof {
   kind: number;

@@ -8,7 +8,7 @@
 // ABI; `npm run sync` runs both. Nothing here is edited by hand.
 //
 //   EVM_CONTRACTS_DIR=../evm-contracts npm run sync
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,7 +24,7 @@ const constName = (name) => name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperC
 const blocks = [];
 for (const file of files) {
   const schema = JSON.parse(readFileSync(join(src, file), 'utf8'));
-  writeFileSync(join(pkg, 'spec', 'typed-data', file), `${JSON.stringify(schema, null, 2)}\n`);
+  copyFileSync(join(src, file), join(pkg, 'spec', 'typed-data', file)); // byte-identical by construction
   const id = constName(schema.primaryType);
   blocks.push(
     `/** \`${schema.typeString}\` — from evm-contracts/abi/typed-data/${file}. */\n` +
