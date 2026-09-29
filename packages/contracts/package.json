@@ -18,7 +18,8 @@
       "types": "./dist/networks.d.ts",
       "import": "./dist/networks.js",
       "default": "./dist/networks.js"
-    }
+    },
+    "./spec/*": "./spec/*"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -34,14 +35,15 @@
     "url": "https://github.com/Cancore-io/sdk/issues"
   },
   "keywords": ["canton", "cancore", "abi", "htlc", "evm", "eip-712", "contracts", "filler-protocol", "asyncapi", "json-schema"],
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": ["dist", "spec", "README.md", "LICENSE"],
   "publishConfig": { "access": "public" },
   "engines": { "node": ">=20" },
   "scripts": {
     "build": "tsup",
     "prepack": "tsup --silent",
     "prepublishOnly": "npm run build",
-    "sync": "node scripts/sync.mjs && node scripts/sync-typed-data.mjs"
+    "sync": "node scripts/sync.mjs && node scripts/sync-typed-data.mjs",
+    "vectors": "node scripts/gen-protocol-vectors.mjs && node scripts/gen-protocol-docs.mjs"
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0"

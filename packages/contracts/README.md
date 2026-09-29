@@ -57,8 +57,8 @@ const signature = await wallet.signTypedData({
 });
 ```
 
-This repository keeps golden vectors for the schema in `spec/typed-data/FillProof.json` (they
-are not in the published package). `evm-contracts` checks every vector against the router's own
+This repository keeps golden vectors for the schema in `spec/typed-data/FillProof.json` (shipped
+in the package since 0.2.0, under `@cancore/contracts/spec/*`). `evm-contracts` checks every vector against the router's own
 `hashFillProof`, and this package's test checks the same file with an encoder of its own: a
 field changed there fails there at once, and here after the next `npm run sync`. The schema is
 synced like the ABIs.
@@ -104,6 +104,37 @@ inputs in `scripts/protocol-fixtures.mjs`, and checked by this package's own enc
 `spec/protocol/vectors/jcs.json` holds RFC 8785 cases and `draw.json` the draw of
 auction-and-draw §3.7 (r = 417828, acme-markets) plus the test-kit fixture draw, both on real
 drand quicknet rounds.
+
+### Schemas, AsyncAPI, examples
+
+| File (`@cancore/contracts/spec/protocol/…`) | Holds |
+| --- | --- |
+| `messages.schema.json` | one `$def` per WebSocket frame type (22), `x-direction` S2F / F2S / both, and the primitives they share |
+| `rest.schema.json` | REST fallback bodies; `x-endpoints` (method, path, auth, request/response), `x-error-status` |
+| `records.schema.json` | the draw record, the epoch record, `GET /v1/gateway` |
+| `asyncapi.json` | AsyncAPI 3.0: channel `/v1`, the gateway's send/receive operations, examples |
+| `vectors/messages.json`, `vectors/records.json` | valid example frames and fixture records (hashes real, `sig` a zero placeholder) |
+
+The same objects are exported as `PROTOCOL_SCHEMAS`, `ASYNCAPI`, `MESSAGE_DIRECTIONS` and
+`REST_ENDPOINTS`, with TypeScript shapes of every frame (`TicketOffer`, `QuoteAck`, …) and the
+enums (`DECLINE_REASONS`, `ERROR_CODES`, …) a test holds to the schemas.
+
+```ts
+import Ajv2020 from 'ajv/dist/2020';
+import { PROTOCOL_SCHEMAS, SCHEMA_VOCABULARY, messageSchemaRef } from '@cancore/contracts';
+
+const ajv = new Ajv2020({ strict: true });
+ajv.addVocabulary([...SCHEMA_VOCABULARY]);
+for (const schema of Object.values(PROTOCOL_SCHEMAS)) ajv.addSchema(schema);
+ajv.validate(messageSchemaRef(frame.type), frame); // errors name the field: instancePath "/amountOut"
+```
+
+The schemas describe what a v1 **sender** emits: lowercase hex, uint64 and wider as decimal
+strings, gateway times in milliseconds, every S→F frame with `fillerId`, `sentAt` and `sig`. No
+object is closed: a receiver ignores unknown fields and a taker ignores unknown S→F types
+(V-2), so check a frame of an unknown type against `s2fEnvelope` and skip it.
+`scripts/gen-protocol-docs.mjs` derives the examples, records and the AsyncAPI document from
+the schemas and the vectors.
 
 `FILLER_GATEWAYS` is where the gateway key and the ticket signers of each environment are
 published. It is empty in the RC: no gateway key exists yet.
