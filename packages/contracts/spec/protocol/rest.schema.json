@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cancore.io/schemas/filler-protocol/v1/rest.schema.json",
+  "title": "Cancore filler protocol v1 — REST fallback",
+  "$comment": "protocol §3.6. Bodies are the WebSocket frames (S→F responses carry the gateway sig). /v1/filler/* needs `Authorization: Bearer <token>` from POST /v1/filler/auth; the token is bound to the fillerId it was issued for, and a ticket of another filler is 404 UNKNOWN_TICKET. /v1/draws/* and /v1/gateway are public. Every non-2xx body is the `error` frame, with the HTTP status of x-error-status. x-endpoints: request/response name a $def here or in messages.schema.json.",
+  "x-endpoints": [
+    { "method": "GET", "path": "/v1/filler/auth/challenge", "auth": "none", "response": "messages.schema.json#/$defs/auth.challenge" },
+    { "method": "POST", "path": "/v1/filler/auth", "auth": "none", "request": "messages.schema.json#/$defs/auth.response", "response": "#/$defs/authToken" },
+    { "method": "GET", "path": "/v1/filler/tickets", "auth": "bearer", "query": "#/$defs/ticketListQuery", "response": "#/$defs/ticketList" },
+    { "method": "POST", "path": "/v1/filler/tickets/{orderHash}/{attempt}/intent", "auth": "bearer", "request": "messages.schema.json#/$defs/ticket.intent", "response": "messages.schema.json#/$defs/ticket.intent.ack" },
+    { "method": "POST", "path": "/v1/filler/tickets/{orderHash}/{attempt}/receipt", "auth": "bearer", "request": "messages.schema.json#/$defs/ticket.receipt", "response": "#/$defs/empty" },
+    { "method": "POST", "path": "/v1/filler/tickets/{orderHash}/{attempt}/decline", "auth": "bearer", "request": "messages.schema.json#/$defs/ticket.decline", "response": "#/$defs/empty" },
+    { "method": "POST", "path": "/v1/filler/stake-bindings", "auth": "bearer", "request": "#/$defs/stakeBindingRequest", "response": "#/$defs/empty" },
+    { "method": "GET", "path": "/v1/filler/quotes", "auth": "bearer", "query": "#/$defs/quoteListQuery", "response": "#/$defs/quoteList" },
+    { "method": "GET", "path": "/v1/filler/stats", "auth": "bearer", "response": "#/$defs/fillerStats" },
+    { "method": "GET", "path": "/v1/filler/penalties", "auth": "bearer", "query": "#/$defs/pageQuery", "response": "#/$defs/penaltyList" },
+    { "method": "GET", "path": "/v1/draws/{orderHash}", "auth": "none", "response": "records.schema.json#/$defs/drawRecord" },
+    { "method": "GET", "path": "/v1/draws/epochs/{id}", "auth": "none", "response": "records.schema.json#/$defs/epochRecord" },
+    { "method": "GET", "path": "/v1/gateway", "auth": "none", "response": "records.schema.json#/$defs/gatewayInfo" }
+  ],
+  "x-error-status": {
+    "BAD_REQUEST": 400, "UNAUTHENTICATED": 401, "UNSUPPORTED_VERSION": 400, "UNSUPPORTED_TYPE": 400, "BAD_SIGNATURE": 422,
+    "UNKNOWN_REQUEST": 404, "UNKNOWN_TICKET": 404, "TICKET_CLOSED": 409, "NOT_ELIGIBLE": 403, "RATE_LIMITED": 429, "INTERNAL": 500
+  },
+  "$defs": {
+    "errorBody": { "$ref": "messages.schema.json#/$defs/error" },
+    "empty": { "type": "object", "maxProperties": 0 },
+    "authToken": {
+      "type": "object",
+      "required": ["token", "expiresAt"],
+      "properties": { "token": { "type": "string", "minLength": 1 }, "expiresAt": { "$ref": "messages.schema.json#/$defs/timeMs" } }
+    },
+    "pageQuery": {
+      "type": "object",
+      "properties": { "cursor": { "type": "string", "minLength": 1 }, "limit": { "type": "string", "pattern": "^([1-9][0-9]?|100)$", "description": "1..100, default 50" } }
+    },
+    "ticketListQuery": {
+      "allOf": [{ "$ref": "#/$defs/pageQuery" }],
+      "type": "object",
+      "properties": { "status": { "enum": ["OFFERED", "ISSUED"] } }
+    },
+    "quoteListQuery": {
+      "allOf": [{ "$ref": "#/$defs/pageQuery" }],
+      "type": "object",
+      "properties": { "since": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "description": "unix ms" } }
+    },
+    "ticketList": {
+      "type": "object",
+      "required": ["items", "nextCursor"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": { "oneOf": [{ "$ref": "messages.schema.json#/$defs/ticket.offer" }, { "$ref": "messages.schema.json#/$defs/ticket.issued" }] }
+        },
+        "nextCursor": { "type": ["string", "null"] }
+      }
+    },
+    "stakeBindingRequest": {
+      "type": "object",
+      "description": "sig = StakeBinding{partnerId, stakingAddress, chainId, nonce} by the staking address",
+      "required": ["partnerId", "stakingAddress", "chainId", "nonce", "sig"],
+      "properties": {
+        "partnerId": { "$ref": "messages.schema.json#/$defs/fillerId" },
+        "stakingAddress": { "$ref": "messages.schema.json#/$defs/address" },
+        "chainId": { "$ref": "messages.schema.json#/$defs/uintDec256" },
+        "nonce": { "$ref": "messages.schema.json#/$defs/uintDec64" },
+        "sig": { "$ref": "messages.schema.json#/$defs/sig65" }
+      }
+    },
+    "quoteRecord": {
+      "type": "object",
+      "required": ["quote", "ack", "status"],
+      "properties": {
+        "quote": { "$ref": "messages.schema.json#/$defs/quote" },
+        "ack": { "$ref": "messages.schema.json#/$defs/quote.ack" },
+        "status": { "enum": ["COUNTED", "LATE", "SHORT_TTL", "REPLACED", "BAD_SIG", "OUTLIER", "IN_BAND", "OUT_OF_BAND", "WON", "LOST"] }
+      }
+    },
+    "quoteList": {
+      "type": "object",
+      "required": ["items", "nextCursor"],
+      "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/quoteRecord" } }, "nextCursor": { "type": ["string", "null"] } }
+    },
+    "fillerStats": {
+      "type": "object",
+      "required": ["won", "delivered", "noShow", "reliability", "capacityUsd", "inFlightUsd"],
+      "properties": {
+        "won": { "type": "integer", "minimum": 0 },
+        "delivered": { "type": "integer", "minimum": 0 },
+        "noShow": { "type": "integer", "minimum": 0 },
+        "reliability": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "basis points" },
+        "capacityUsd": { "$ref": "messages.schema.json#/$defs/intDecUsd" },
+        "inFlightUsd": { "$ref": "messages.schema.json#/$defs/intDecUsd" }
+      }
+    },
+    "penaltyRecord": {
+      "type": "object",
+      "required": ["violationId", "code", "step", "at", "details"],
+      "properties": {
+        "violationId": { "type": "string", "minLength": 1 },
+        "code": { "type": "string", "minLength": 1 },
+        "step": { "$ref": "messages.schema.json#/$defs/penaltyStep" },
+        "orderHash": { "$ref": "messages.schema.json#/$defs/bytes32" },
+        "attempt": { "$ref": "messages.schema.json#/$defs/uint32" },
+        "at": { "$ref": "messages.schema.json#/$defs/timeMs" },
+        "details": { "type": "object" }
+      }
+    },
+    "penaltyList": {
+      "type": "object",
+      "required": ["items", "nextCursor"],
+      "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/penaltyRecord" } }, "nextCursor": { "type": ["string", "null"] } }
+    }
+  }
+}

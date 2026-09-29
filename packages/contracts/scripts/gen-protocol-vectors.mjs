@@ -131,9 +131,9 @@ out('spec/protocol/typed-data/FillerAuth.json', file('FillerAuth', PROTOCOL_META
 ])));
 const SIG = `0x${'00'.repeat(65)}`;
 const bodies = [
-  ['ticket.offer of the fixture order; `sig` is excluded from the body', { type: 'ticket.offer', fillerId: 'acme-markets', sentAt: 1790000013000, orderHash: evmOrderHash, attempt: 0, order: EVM_ORDER, amountOut: EVM_ORDER.minReceived, validFrom: fixtureTicket.validFrom, validUntil: fixtureTicket.validUntil, acceptBy: 1790000016000, sig: SIG }],
-  ['quote.ack', { type: 'quote.ack', fillerId: 'acme-markets', sentAt: 1790000001500, re: 'q-1', requestId: REQ, quoteHash: FF32, receivedAt: 1790000001499, status: 'COUNTED', sig: SIG }],
-  ['auth.challenge: the one frame without fillerId', { type: 'auth.challenge', sentAt: 1790000000000, nonce: utf8Hash('cancore:test:auth-nonce:1'), expiresAt: '1790000030', sig: SIG }],
+  ['ticket.offer of the fixture order; `sig` is excluded from the body', { type: 'ticket.offer', fillerId: 'acme-markets', sentAt: 1790000020000, orderHash: evmOrderHash, attempt: 0, order: EVM_ORDER, amountOut: EVM_ORDER.minReceived, validFrom: fixtureTicket.validFrom, validUntil: fixtureTicket.validUntil, acceptBy: 1790000023000, sig: SIG }],
+  ['quote.ack', { type: 'quote.ack', fillerId: 'acme-markets', sentAt: 1789999991001, re: 'q-1', requestId: REQ, quoteHash: FF32, receivedAt: 1789999991000, status: 'COUNTED', sig: SIG }],
+  ['auth.challenge: the one frame without fillerId', { type: 'auth.challenge', sentAt: 1789999980000, nonce: utf8Hash('cancore:test:auth-nonce:1'), expiresAt: '1790000030', sig: SIG }],
 ];
 out('spec/protocol/typed-data/GatewayMessage.json', file('GatewayMessage', PROTOCOL_META, FROZEN('`bodyHash` = keccak256(utf8(JCS(message without "sig"))), JCS = RFC 8785. Each vector carries the S→F body, its canonical text and the hash.'), bodies.map(([note, body]) => {
   const { sig: _sig, ...unsigned } = body;

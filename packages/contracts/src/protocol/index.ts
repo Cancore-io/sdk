@@ -4,3 +4,4 @@ export * from './hash';
 export * from './draw';
 export * from './gateway';
 export * from './messages';
+export * from './schemas';
