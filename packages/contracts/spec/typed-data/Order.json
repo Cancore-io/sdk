@@ -1,0 +1,141 @@
+{
+  "$comment": "PROVISIONAL hand copy of the CancoreRouter.sol struct (evm-contracts f936594) until evm-contracts publishes abi/typed-data for it with its own vectors (follow-up F-1); digests by ethers TypedDataEncoder, checked in this package by the shipped encoder as well. The canton vector equals spec/vectors/canton-order.json (Solidity-pinned); the sepolia vector is the test-kit fixture order.",
+  "primaryType": "Order",
+  "domain": {
+    "name": "CancoreRouter",
+    "version": "1",
+    "fields": [
+      "name",
+      "version",
+      "chainId",
+      "verifyingContract"
+    ]
+  },
+  "typeString": "Order(address user,uint64 originChainId,address inputToken,uint256 inputAmount,bytes32 destination,bytes32 outputAsset,uint256 minReceived,bytes32 recipient,uint64 createdAt,uint64 fillDeadline,uint16 feeBps)",
+  "types": {
+    "Order": [
+      {
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "name": "originChainId",
+        "type": "uint64"
+      },
+      {
+        "name": "inputToken",
+        "type": "address"
+      },
+      {
+        "name": "inputAmount",
+        "type": "uint256"
+      },
+      {
+        "name": "destination",
+        "type": "bytes32"
+      },
+      {
+        "name": "outputAsset",
+        "type": "bytes32"
+      },
+      {
+        "name": "minReceived",
+        "type": "uint256"
+      },
+      {
+        "name": "recipient",
+        "type": "bytes32"
+      },
+      {
+        "name": "createdAt",
+        "type": "uint64"
+      },
+      {
+        "name": "fillDeadline",
+        "type": "uint64"
+      },
+      {
+        "name": "feeBps",
+        "type": "uint16"
+      }
+    ]
+  },
+  "vectors": [
+    {
+      "note": "canton-source golden order (spec/vectors/canton-order.json)",
+      "chainId": "9223372036854775809",
+      "verifyingContract": "0x2f37b46ea93001829498b145985fb53028033701",
+      "message": {
+        "user": "0x47f0d84377b46651f7936ae656dcecefdc1a2a86",
+        "originChainId": "9223372036854775809",
+        "inputToken": "0x795ae88257786ea0e2cfe2c43b88b420993dc98f",
+        "inputAmount": "12505000000000",
+        "destination": "0x0000000000000000000000000000000000000000000000000000000000000001",
+        "outputAsset": "0x000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "minReceived": "1200250000",
+        "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
+        "createdAt": "1789999400",
+        "fillDeadline": "1790000000",
+        "feeBps": "30"
+      },
+      "digest": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204"
+    },
+    {
+      "note": "EVM-source fixture order of @cancore/test-kit (sepolia to arbitrum sepolia)",
+      "chainId": "11155111",
+      "verifyingContract": "0x00000000000000000000000000000000cafe0001",
+      "message": {
+        "user": "0xa11ce00000000000000000000000000000000001",
+        "originChainId": "11155111",
+        "inputToken": "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
+        "inputAmount": "1003000000",
+        "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
+        "outputAsset": "0x00000000000000000000000075faf114eafb1bdbe2f0316df893fd58ce46aa4d",
+        "minReceived": "999000000",
+        "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
+        "createdAt": "1790000000",
+        "fillDeadline": "1790000600",
+        "feeBps": "30"
+      },
+      "digest": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6"
+    },
+    {
+      "note": "every integer at its maximum",
+      "chainId": "11155111",
+      "verifyingContract": "0x00000000000000000000000000000000cafe0001",
+      "message": {
+        "user": "0xffffffffffffffffffffffffffffffffffffffff",
+        "originChainId": "18446744073709551615",
+        "inputToken": "0xffffffffffffffffffffffffffffffffffffffff",
+        "inputAmount": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "destination": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "outputAsset": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "minReceived": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "recipient": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "createdAt": "18446744073709551615",
+        "fillDeadline": "18446744073709551615",
+        "feeBps": "65535"
+      },
+      "digest": "0x86cc928e50ec1003b13c9474aca3fd27a02eba667560e281f47f1962388300f8"
+    },
+    {
+      "note": "zero words and the zero address",
+      "chainId": "11155111",
+      "verifyingContract": "0x00000000000000000000000000000000cafe0001",
+      "message": {
+        "user": "0x0000000000000000000000000000000000000000",
+        "originChainId": "0",
+        "inputToken": "0x0000000000000000000000000000000000000000",
+        "inputAmount": "0",
+        "destination": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "outputAsset": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "minReceived": "0",
+        "recipient": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "createdAt": "0",
+        "fillDeadline": "0",
+        "feeBps": "0"
+      },
+      "digest": "0x3da628e3bc0683cdb45726c73345d9d2c479dc7607d9fa31275cb5e59a0cbd44"
+    }
+  ]
+}

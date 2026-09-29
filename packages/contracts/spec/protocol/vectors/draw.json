@@ -1,0 +1,61 @@
+{
+  "$comment": "auction-and-draw §3.6 A-21/A-22: h = keccak256(randomness ‖ orderHash ‖ uint32be(attempt)), r = h mod Σw, winner = first candidate (sorted by UTF-8 bytes of fillerId) whose cumulative weight exceeds r. Real drand quicknet rounds (signature and randomness as served by api.drand.sh).",
+  "vectors": [
+    {
+      "note": "auction-and-draw §3.7 worked example: quicknet round 1000, fixed bytes32 orderHash",
+      "round": 1000,
+      "time": 1692806364,
+      "signature": "0xb44679b9a59af2ec876b1a6b1ad52ea9b1615fc3982b19576350f93447cb1125e342b73a8dd2bacbe47e4b6b63ed5e39",
+      "randomness": "0xfe290beca10872ef2fb164d2aa4442de4566183ec51c56ff3cd603d930e54fdd",
+      "orderHash": "0xe61e980d40d1a666a509d2296c0d2658a40ff681e290c7646a75a550629ce1ad",
+      "attempt": 0,
+      "candidates": [
+        {
+          "fillerId": "acme-markets",
+          "weight": "1500000"
+        },
+        {
+          "fillerId": "cancore-reserve",
+          "weight": "900000"
+        },
+        {
+          "fillerId": "zeta-liquidity",
+          "weight": "1000000"
+        }
+      ],
+      "h": "0x33d5eb9f347a11be3454ba1631ef7e62cbecebffc588e5ffbc3c6a6028574664",
+      "totalWeight": "3400000",
+      "r": "417828",
+      "winnerFillerId": "acme-markets"
+    },
+    {
+      "note": "test-kit fixture order, attempt 0: t0 1790000012, deltaDrand 6 s → quicknet round 32398885",
+      "t0": "1790000012",
+      "deltaDrand": 6,
+      "round": 32398885,
+      "time": 1790000019,
+      "signature": "0x8f6d5ddd520329a4ce9a25db41c0552a5ac04bd56577138cbb0ec2b9326af2b8012c7dc2c5bcddc439d922c93a281d24",
+      "randomness": "0xb6d412641a7d58b20ef5dded4ae48e9358cc35710f90961d8fe6e99d0e0281ef",
+      "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+      "attempt": 0,
+      "candidates": [
+        {
+          "fillerId": "acme-markets",
+          "weight": "1500000"
+        },
+        {
+          "fillerId": "cancore-reserve",
+          "weight": "900000"
+        },
+        {
+          "fillerId": "zeta-liquidity",
+          "weight": "1000000"
+        }
+      ],
+      "h": "0x88392ad2bf239ee4534211ecf450a6e5f248eb37997a6f94705ed5c4f2b3b293",
+      "totalWeight": "3400000",
+      "r": "599507",
+      "winnerFillerId": "acme-markets"
+    }
+  ]
+}

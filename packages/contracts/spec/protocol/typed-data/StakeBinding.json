@@ -1,0 +1,75 @@
+{
+  "$comment": "Filler protocol v1 (frozen, RC): `chainId` = EVM chain id of the CNRXStaking deployment; `nonce` strictly increasing per staking address. Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.",
+  "primaryType": "StakeBinding",
+  "domain": {
+    "name": "CancoreFillerProtocol",
+    "version": "1",
+    "fields": [
+      "name",
+      "version"
+    ]
+  },
+  "typeString": "StakeBinding(string partnerId,address stakingAddress,uint256 chainId,uint64 nonce)",
+  "types": {
+    "StakeBinding": [
+      {
+        "name": "partnerId",
+        "type": "string"
+      },
+      {
+        "name": "stakingAddress",
+        "type": "address"
+      },
+      {
+        "name": "chainId",
+        "type": "uint256"
+      },
+      {
+        "name": "nonce",
+        "type": "uint64"
+      }
+    ]
+  },
+  "vectors": [
+    {
+      "note": "binding on Ethereum",
+      "message": {
+        "partnerId": "acme-markets",
+        "stakingAddress": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+        "chainId": "1",
+        "nonce": "1"
+      },
+      "digest": "0x6ac36a45f25327288b197152fd0c514344cd59c134bf81217e593029078867df"
+    },
+    {
+      "note": "binding on BNB Chain, non-ASCII partner id (UTF-8 hashed)",
+      "message": {
+        "partnerId": "zéta-liquidity",
+        "stakingAddress": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+        "chainId": "56",
+        "nonce": "2"
+      },
+      "digest": "0x7c83afa565803e9d7f68f5cac2b362783551d2aca7a1908b3e71278d04eb84a8"
+    },
+    {
+      "note": "every integer at its maximum",
+      "message": {
+        "partnerId": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "stakingAddress": "0xffffffffffffffffffffffffffffffffffffffff",
+        "chainId": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "nonce": "18446744073709551615"
+      },
+      "digest": "0x14fc8f045be98d0ab8fba2434ac6a90b576fd9763f6441c9d6f34d38bd24f8b0"
+    },
+    {
+      "note": "zero values, empty string",
+      "message": {
+        "partnerId": "",
+        "stakingAddress": "0x0000000000000000000000000000000000000000",
+        "chainId": "0",
+        "nonce": "0"
+      },
+      "digest": "0xc3c8fe2d9891016a853efa3d23d6ad1fb3d69369769ba95312ab90fee7293e62"
+    }
+  ]
+}
