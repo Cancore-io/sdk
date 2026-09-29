@@ -62,7 +62,7 @@ describe.each(KINDS)('ticket cycle (%s mock)', (kind) => {
       expect([f.type, recoverOrNull(f)]).toEqual([f.type, gateway.gateway]);
       expect([f.type, typeof f.sentAt]).toEqual([f.type, 'number']);
       if (f.type !== 'auth.challenge') expect([f.type, f.fillerId]).toEqual([f.type, 'acme-markets']);
-      expect([f.type, validateMessage(f)]).toEqual([f.type, null]);
+      expect([f.type, validateMessage(f, 'S2F')]).toEqual([f.type, null]);
     }
     const log = (await ctl<{ log: LogEntry[] }>(mock, '/__mock/log')).body.log;
     expect(() => assertTakerReaction(log, 'HAPPY')).not.toThrow();

@@ -29,9 +29,9 @@ function describe(e: ErrorObject): string {
   return `${field} ${e.message ?? 'is invalid'}`;
 }
 
-/** A frame against `messages.schema.json#/$defs/<type>`. */
-export const validateMessage = (msg: Record<string, unknown>) =>
-  directionOf(String(msg.type)) ? validate(messageSchemaRef(String(msg.type)), msg) : `type: unknown frame type ${JSON.stringify(msg.type)}`;
+/** A frame against `messages.schema.json#/$defs/<type>`; `direction` picks the signed or unsigned copy of ping/pong. */
+export const validateMessage = (msg: Record<string, unknown>, direction?: 'S2F' | 'F2S') =>
+  directionOf(String(msg.type)) ? validate(messageSchemaRef(String(msg.type), direction), msg) : `type: unknown frame type ${JSON.stringify(msg.type)}`;
 
 /** A public record against `records.schema.json#/$defs/<name>`. */
 export const validateRecord = (name: 'drawRecord' | 'epochRecord' | 'gatewayInfo', value: unknown) => validate(`${RECORDS_ID}#/$defs/${name}`, value);

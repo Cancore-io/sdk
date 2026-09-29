@@ -70,7 +70,7 @@ function bearer(gw: MockGateway, header: string | undefined): string | undefined
 function login(c: Ctx, body: Record<string, unknown>): void {
   const gw = c.gw;
   gw.record('F2S', 'rest', undefined, body);
-  const invalid = validateMessage({ ...body, type: 'auth.response' });
+  const invalid = validateMessage({ ...body, type: 'auth.response' }, 'F2S');
   if (invalid) return error(c, fail('BAD_REQUEST', invalid), body.id);
   let last: Failure = fail('UNAUTHENTICATED', 'no live challenge: GET /v1/filler/auth/challenge first');
   for (const [nonce, expiresAt] of gw.restChallenges) {
@@ -106,7 +106,7 @@ function quotes(c: Ctx): void {
 function ticketAction(c: Ctx, [, orderHash, attempt, action]: RegExpExecArray, body: Record<string, unknown>): void {
   const msg: Record<string, unknown> & { type: string } = { ...body, type: ACTION_TYPE[action!]! };
   c.gw.record('F2S', 'rest', c.fillerId, msg);
-  const invalid = validateMessage(msg);
+  const invalid = validateMessage(msg, 'F2S');
   if (invalid) return error(c, fail('BAD_REQUEST', invalid), body.id);
   if (String(msg.orderHash).toLowerCase() !== orderHash!.toLowerCase() || msg.attempt !== Number(attempt)) return error(c, fail('BAD_REQUEST', 'orderHash/attempt: the body differs from the path'), body.id);
   const outcome = HANDLERS[msg.type]!(c.gw, c.fillerId!, msg);

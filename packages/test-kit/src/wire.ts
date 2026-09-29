@@ -46,7 +46,7 @@ export function onFrame(gw: MockGateway, conn: Conn, text: string): void {
     answer(gw, conn, fail('UNAUTHENTICATED', 'authenticate first: nothing but auth.response before auth.ok'), msg.id);
     return conn.close(1008, 'UNAUTHENTICATED');
   }
-  const invalid = validateMessage(msg);
+  const invalid = validateMessage(msg, 'F2S');
   if (!invalid) return onAuthResponse(gw, conn, msg);
   answer(gw, conn, fail('BAD_REQUEST', invalid), msg.id);
   conn.close(1008, 'BAD_REQUEST');
@@ -57,7 +57,7 @@ function authenticated(gw: MockGateway, conn: Conn, fillerId: string, msg: Recor
   if (type === 'pong') return onPong(conn, msg);
   const direction = directionOf(type);
   if (!direction || direction === 'S2F') return answer(gw, conn, fail('UNSUPPORTED_TYPE', `no F→S frame "${type}" in protocol v1`), msg.id);
-  const invalid = validateMessage(msg);
+  const invalid = validateMessage(msg, 'F2S');
   if (invalid) return answer(gw, conn, fail('BAD_REQUEST', invalid), msg.id);
   if (type === 'ping') return void gw.emit({ conn, fillerId }, { type: 'pong', re: msg.id });
   const handler = HANDLERS[type];
