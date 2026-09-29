@@ -1,0 +1,47 @@
+{
+  "name": "@cancore/test-kit",
+  "version": "0.1.0-rc.1",
+  "type": "module",
+  "description": "A mock Cancore filler gateway for the CI of a taker: the filler protocol v1 over WebSocket and REST, every server message signed with a published TEST key, a virtual clock, and failure modes switched from the test. TEST ONLY: the keys it ships are public.",
+  "bin": {
+    "cancore-test-kit": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cancore-io/sdk.git",
+    "directory": "packages/test-kit"
+  },
+  "homepage": "https://docs.cancore.io/sdk/test-kit",
+  "bugs": {
+    "url": "https://github.com/Cancore-io/sdk/issues"
+  },
+  "keywords": ["canton", "cancore", "taker", "filler", "mock", "gateway", "conformance", "testing"],
+  "files": ["dist", "README.md", "LICENSE"],
+  "publishConfig": { "access": "public" },
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsup",
+    "prepack": "tsup --silent",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
+    "ajv": "^8.20.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}
