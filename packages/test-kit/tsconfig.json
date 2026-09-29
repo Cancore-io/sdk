@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // A server: it runs on a machine, never in a browser.
+    "types": ["jest", "node"],
+    // The protocol schemas are JSON the contracts package imports.
+    "resolveJsonModule": true,
+    // The sibling package's source, not its unbuilt `dist/`: typecheck runs
+    // before build, in CI and here.
+    "paths": {
+      "@cancore/contracts": ["../contracts/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  // The root config excludes this package (it is typechecked here instead);
+  // that exclude is inherited and would swallow these inputs too.
+  "exclude": []
+}

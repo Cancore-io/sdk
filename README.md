@@ -9,6 +9,7 @@ The packages a third-party dApp, an AI agent, or a wallet build installs from np
 | [`@cancore/contracts`](packages/contracts) | [`@cancore/contracts`](https://www.npmjs.com/package/@cancore/contracts) | The EVM contracts as data: ABIs, custom-error selectors, deployments per environment, the EIP-712 voucher, the network registry. No runtime code. |
 | [`@cancore/client`](packages/client) | [`@cancore/client`](https://www.npmjs.com/package/@cancore/client) | A typed client for the API: orders and pool trades (`./swap`), the USDCx bridge (`./bridge`), live order updates over the gateway's socket (`./realtime`), scoped trading grants by device flow (`./auth`). Hands out hashes to sign, never holds a key. |
 | [`@cancore/wallet`](packages/wallet) | [`@cancore/wallet`](https://www.npmjs.com/package/@cancore/wallet) | The wallet core: key material, signing, storage contracts, the operations-envelope client. |
+| [`@cancore/test-kit`](packages/test-kit) | [`@cancore/test-kit`](https://www.npmjs.com/package/@cancore/test-kit) | A mock filler gateway for a taker's CI: protocol v1 over WebSocket and REST, signed with public TEST keys, a virtual clock, failure modes and a conformance check. Tests only. |
 
 **Full documentation: <https://docs.cancore.io/sdk/overview>.**
 
@@ -84,7 +85,7 @@ repository and the `publish.yml` workflow filename.
 Trusted publishing cannot make the first release of a NEW package — the
 publisher is configured in the package's settings, and until something is
 published there is no package to configure. So version one goes out by hand
-(all five packages here have had theirs; this is for the sixth):
+(five packages here have had theirs; `@cancore/test-kit` is the sixth and has not):
 
 ```bash
 npm run release:connector -- --otp=<code>
@@ -92,6 +93,7 @@ npm run release:mcp -- --otp=<code>
 npm run release:wallet -- --otp=<code>
 npm run release:client -- --otp=<code>
 npm run release:contracts -- --otp=<code>
+npm run release:test-kit -- --otp=<code>   # pre-release: dist-tag next
 ```
 
 From the repository root, and note the package name in each. `npm publish` at
