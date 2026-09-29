@@ -5,7 +5,8 @@
  * is typed by hand so the declaration files do not inline the JSON.
  *
  * Validating with ajv: `new Ajv2020()`, `ajv.addVocabulary([...SCHEMA_VOCABULARY])`,
- * `addSchema` the three schemas, then `ajv.validate(messageSchemaRef(frame.type), frame)`.
+ * `addSchema` the three schemas, then `ajv.validate(messageSchemaRef(frame.type, 'S2F'), frame)`
+ * (a taker; the gateway passes 'F2S').
  */
 import asyncapi from '../../spec/protocol/asyncapi.json';
 import messages from '../../spec/protocol/messages.schema.json';
@@ -41,7 +42,12 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<string, MessageDirection>> = Ob
 
 export const REST_ENDPOINTS: readonly RestEndpoint[] = rest['x-endpoints'] as RestEndpoint[];
 
-/** The absolute `$ref` of a frame type's schema (or any other `$def` of messages.schema.json). */
-export function messageSchemaRef(type: string): string {
-  return `${messages.$id}#/$defs/${type}`;
+/**
+ * The absolute `$ref` of a frame type's schema (or any other `$def` of messages.schema.json).
+ * `direction` picks the copy of a type that goes both ways: `ping`/`pong` from the gateway are
+ * signed (`pingS2F`), from a taker they are not (`pingF2S`); without it, either copy passes.
+ */
+export function messageSchemaRef(type: string, direction?: 'S2F' | 'F2S'): string {
+  const def = direction && MESSAGE_DIRECTIONS[type] === 'both' ? `${type}${direction}` : type;
+  return `${messages.$id}#/$defs/${def}`;
 }

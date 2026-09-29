@@ -24,7 +24,7 @@
   },
   "$defs": {
     "errorBody": { "$ref": "messages.schema.json#/$defs/error" },
-    "empty": { "type": "object", "maxProperties": 0 },
+    "empty": { "type": "object", "description": "no fields in v1; receivers ignore unknown ones (V-2)" },
     "authToken": {
       "type": "object",
       "required": ["token", "expiresAt"],
@@ -37,7 +37,7 @@
     "ticketListQuery": {
       "allOf": [{ "$ref": "#/$defs/pageQuery" }],
       "type": "object",
-      "properties": { "status": { "enum": ["OFFERED", "ISSUED"] } }
+      "properties": { "status": { "enum": ["OFFERED", "ISSUED"], "description": "a request filter: the gateway owns the list, so it is closed" } }
     },
     "quoteListQuery": {
       "allOf": [{ "$ref": "#/$defs/pageQuery" }],
@@ -73,7 +73,7 @@
       "properties": {
         "quote": { "$ref": "messages.schema.json#/$defs/quote" },
         "ack": { "$ref": "messages.schema.json#/$defs/quote.ack" },
-        "status": { "enum": ["COUNTED", "LATE", "SHORT_TTL", "REPLACED", "BAD_SIG", "OUTLIER", "IN_BAND", "OUT_OF_BAND", "WON", "LOST"] }
+        "status": { "anyOf": [{ "enum": ["COUNTED", "LATE", "SHORT_TTL", "REPLACED", "BAD_SIG", "OUTLIER", "IN_BAND", "OUT_OF_BAND", "WON", "LOST"] }, { "$ref": "messages.schema.json#/$defs/futureEnumValue" }] }
       }
     },
     "quoteList": {

@@ -12,7 +12,7 @@ const records = JSON.parse(readFileSync(join(__dirname, '..', '..', 'spec', 'pro
   draw: Unsigned<DrawRecord>;
   epoch: Unsigned<EpochRecord>;
 };
-const SIG = `0x${'00'.repeat(65)}` as const;
+const SIG = `0x${'00'.repeat(64)}1b` as const;
 
 const ajv = new Ajv2020({ strict: true, allErrors: true });
 ajv.addVocabulary([...SCHEMA_VOCABULARY]);

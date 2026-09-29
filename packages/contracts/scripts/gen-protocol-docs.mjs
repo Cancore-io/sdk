@@ -60,15 +60,22 @@ write('protocol/vectors/records.json', {
   ...records,
 });
 
-// AsyncAPI 3.0, from the gateway's side: it sends S2F frames and receives F2S ones.
+// AsyncAPI 3.0, from the gateway's side: it sends S2F frames and receives F2S ones. A type that
+// goes both ways (ping, pong) is two messages, <type>S2F (signed) and <type>F2S, each with its $def.
 const dirs = Object.fromEntries(types.map((t) => [t, schemas.messages.$defs[t]['x-direction']]));
+const messageKeys = types.flatMap((t) => (dirs[t] === 'both' ? [`${t}S2F`, `${t}F2S`] : [t]));
+const wireType = (key) => (dirs[key] ? key : key.slice(0, -3));
+const dirOf = (key) => dirs[key] ?? key.slice(-3);
+const examplesOf = (key) => examples[wireType(key)].filter((e) => dirs[key] || ('sig' in e) === (dirOf(key) === 'S2F'));
+for (const key of messageKeys.filter((k) => !dirs[k])) {
+  if (!examplesOf(key).length) throw new Error(`no example for ${key}`);
+  for (const e of examplesOf(key)) check(`${MSG}${key}`, e);
+}
 const opName = (action, type) => `${action}${type.split(/[.-]/).map((w) => w[0].toUpperCase() + w.slice(1)).join('')}`;
 const operations = {};
-for (const type of types) {
-  const actions = dirs[type] === 'both' ? ['send', 'receive'] : [dirs[type] === 'S2F' ? 'send' : 'receive'];
-  for (const action of actions) {
-    operations[opName(action, type)] = { action, channel: { $ref: '#/channels/filler' }, messages: [{ $ref: `#/channels/filler/messages/${type}` }] };
-  }
+for (const key of messageKeys) {
+  const action = dirOf(key) === 'S2F' ? 'send' : 'receive';
+  operations[opName(action, wireType(key))] = { action, channel: { $ref: '#/channels/filler' }, messages: [{ $ref: `#/channels/filler/messages/${key}` }] };
 }
 write('protocol/asyncapi.json', {
   asyncapi: '3.0.0',
@@ -87,22 +94,22 @@ write('protocol/asyncapi.json', {
     filler: {
       address: '/v1',
       description: 'One JSON object per text frame. Nothing but auth.* and error flows before auth.ok; FillerAuth in auth.response authenticates the socket (the REST fallback uses a bearer token).',
-      messages: Object.fromEntries(types.map((t) => [t, { $ref: `#/components/messages/${t}` }])),
+      messages: Object.fromEntries(messageKeys.map((k) => [k, { $ref: `#/components/messages/${k}` }])),
     },
   },
   operations,
   components: {
     messages: Object.fromEntries(
-      types.map((t) => [
-        t,
+      messageKeys.map((k) => [
+        k,
         {
-          name: t,
-          title: `${t} (${dirs[t]})`,
-          payload: { schemaFormat: 'application/schema+json;version=draft-2020-12', schema: { $ref: `messages.schema.json#/$defs/${t}` } },
-          examples: examples[t].map((payload, i) => ({ name: `${t.replace(/\./g, '-')}-${i + 1}`, payload })),
+          name: wireType(k),
+          title: `${wireType(k)} (${dirOf(k)})`,
+          payload: { schemaFormat: 'application/schema+json;version=draft-2020-12', schema: { $ref: `messages.schema.json#/$defs/${k}` } },
+          examples: examplesOf(k).map((payload, i) => ({ name: `${k.replace(/\./g, '-')}-${i + 1}`, payload })),
         },
       ]),
     ),
   },
 });
-console.log(`${types.length} frame types, ${Object.keys(operations).length} operations`);
+console.log(`${types.length} frame types, ${messageKeys.length} messages, ${Object.keys(operations).length} operations`);

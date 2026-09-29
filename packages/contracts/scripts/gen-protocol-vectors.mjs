@@ -129,7 +129,7 @@ out('spec/protocol/typed-data/FillerAuth.json', file('FillerAuth', PROTOCOL_META
   { note: 'every integer at its maximum', message: { fillerId: 'z'.repeat(63), nonce: FF32, expiresAt: U64 } },
   { note: 'zero values, empty string', message: { fillerId: '', nonce: Z32, expiresAt: '0' } },
 ])));
-const SIG = `0x${'00'.repeat(65)}`;
+const SIG = `0x${'00'.repeat(64)}1b`; // a placeholder: not part of the body hash
 const bodies = [
   ['ticket.offer of the fixture order; `sig` is excluded from the body', { type: 'ticket.offer', fillerId: 'acme-markets', sentAt: 1790000020000, orderHash: evmOrderHash, attempt: 0, order: EVM_ORDER, amountOut: EVM_ORDER.minReceived, validFrom: fixtureTicket.validFrom, validUntil: fixtureTicket.validUntil, acceptBy: 1790000023000, sig: SIG }],
   ['quote.ack', { type: 'quote.ack', fillerId: 'acme-markets', sentAt: 1789999991001, re: 'q-1', requestId: REQ, quoteHash: FF32, receivedAt: 1789999991000, status: 'COUNTED', sig: SIG }],
@@ -150,7 +150,10 @@ out('spec/protocol/vectors/jcs.json', {
     return { note, texts, canonical, keccak256: utf8Hash(canonical) };
   }),
 });
-const drawRow = (d) => {
+const drawRow = (fixture) => {
+  // A-22: candidates ascending by the UTF-8 bytes of fillerId, whatever order the fixture lists them in.
+  const candidates = [...fixture.candidates].sort((a, b) => Buffer.compare(Buffer.from(a.fillerId), Buffer.from(b.fillerId)));
+  const d = { ...fixture, candidates };
   const h = BigInt(keccak256(concat([d.randomness, d.orderHash, zeroPadValue(toBeHex(d.attempt), 4)])));
   const total = d.candidates.reduce((s, c) => s + BigInt(c.weight), 0n);
   const r = h % total;

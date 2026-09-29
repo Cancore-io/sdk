@@ -7,7 +7,9 @@
  * gateway times in milliseconds (JSON integer), hex lowercase.
  *
  * Receivers ignore unknown fields and unknown S→F types (V-2), so none of
- * these types is closed.
+ * these types is closed. The enum types list the known values; the schemas
+ * accept any UPPER_SNAKE value besides them, and a receiver treats an unknown
+ * one as OTHER/generic (V-2).
  */
 import type { Hex } from './typedData';
 
@@ -76,9 +78,14 @@ export interface F2SBase {
 export interface AuthChallenge extends S2FBase { type: 'auth.challenge'; nonce: Hex; expiresAt: DecString }
 export interface AuthResponse extends F2SBase { type: 'auth.response'; fillerId: string; keyAddress: Hex; protocolVersion: '1'; sig: Hex }
 export interface AuthOk extends S2FBase { type: 'auth.ok'; fillerId: string; heartbeatIntervalMs: number }
-/** Both directions; an S→F ping also carries the S→F envelope. */
-export interface Ping { type: 'ping'; id: string }
-export interface Pong { type: 'pong'; re: string; id?: string }
+/** Heartbeat from the taker: unsigned, like every F→S frame. */
+export interface PingF2S { type: 'ping'; id: string }
+export interface PongF2S { type: 'pong'; re: string; id?: string }
+/** Heartbeat from the gateway: signed, addressed and timed, like every S→F frame (D-C). */
+export interface PingS2F extends S2FBase { type: 'ping'; fillerId: string; id: string }
+export interface PongS2F extends S2FBase { type: 'pong'; fillerId: string; re: string }
+export type Ping = PingF2S | PingS2F;
+export type Pong = PongF2S | PongS2F;
 export interface ErrorMessage extends S2FBase { type: 'error'; code: ErrorCode; message: string }
 export interface EpochWeights extends S2FBase { type: 'epoch.weights'; epochId: DecString; startsAt: DecString; endsAt: DecString; weightsRoot: Hex }
 
@@ -128,10 +135,10 @@ export interface OrderSettled extends S2FBase {
 export interface PenaltyApplied extends S2FBase { type: 'penalty.applied'; violationId: string; code: string; step: PenaltyStep; details: Record<string, unknown> }
 
 export type S2FMessage =
-  | AuthChallenge | AuthOk | ErrorMessage | EpochWeights | QuoteRequest | QuoteAck | QuoteReconfirm
+  | AuthChallenge | AuthOk | PingS2F | PongS2F | ErrorMessage | EpochWeights | QuoteRequest | QuoteAck | QuoteReconfirm
   | TicketOffer | TicketIntentAck | TicketIssued | TicketExpired | OrderSettled | PenaltyApplied;
 export type F2SMessage =
-  | AuthResponse | QuoteMessage | QuoteReconfirmReply | TicketIntentMessage | TicketDecline | TicketReceiptMessage | FillReported;
+  | AuthResponse | PingF2S | PongF2S | QuoteMessage | QuoteReconfirmReply | TicketIntentMessage | TicketDecline | TicketReceiptMessage | FillReported;
 
 // --- REST (protocol §3.6); an error body is the `error` message itself.
 

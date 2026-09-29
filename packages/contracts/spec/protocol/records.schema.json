@@ -15,14 +15,14 @@
       "properties": {
         "attempt": { "$ref": "messages.schema.json#/$defs/uint32" },
         "tBase": { "$ref": "messages.schema.json#/$defs/timeS" },
-        "closedBy": { "enum": ["OFFER_TIMEOUT", "OFFER_DECLINE", "TICKET_DECLINE", "TICKET_EXPIRED", "FILLED", null] },
+        "closedBy": { "anyOf": [{ "enum": ["OFFER_TIMEOUT", "OFFER_DECLINE", "TICKET_DECLINE", "TICKET_EXPIRED", "FILLED", null] }, { "$ref": "messages.schema.json#/$defs/futureEnumValue" }] },
         "drandRound": { "$ref": "messages.schema.json#/$defs/uintDec64" },
         "drandRandomness": { "$ref": "messages.schema.json#/$defs/bytes32" },
         "drandSignature": { "type": "string", "pattern": "^0x[0-9a-f]{96}$", "description": "BLS signature of the round, 48 bytes (G1)" },
         "candidates": { "type": "array", "items": { "$ref": "#/$defs/drawCandidate" }, "description": "ascending by the UTF-8 bytes of fillerId (A-22)" },
         "r": { "$ref": "messages.schema.json#/$defs/uintDec256" },
         "winnerFillerId": { "$ref": "messages.schema.json#/$defs/fillerId" },
-        "fallbackReason": { "enum": ["DRAW_FALLBACK", null] }
+        "fallbackReason": { "anyOf": [{ "enum": ["DRAW_FALLBACK", null] }, { "$ref": "messages.schema.json#/$defs/futureEnumValue" }] }
       }
     },
     "drawRecord": {

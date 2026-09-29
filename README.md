@@ -100,6 +100,10 @@ printing a tarball listing of the whole repository that looks alarming and is
 not what would have been sent. Naming the workspace is what makes the command
 mean what it reads like.
 
+A prerelease (`0.2.0-rc.1`) by hand goes out with `--tag next`:
+`npm run release:contracts -- --tag next --otp=<code>`. npm 11 refuses one
+without a tag; older npm moves `latest` onto it.
+
 `npm pack` runs each package's `prepack` build with `--silent`, because
 `npm pack --silent` prints the tarball name to stdout and callers capture it —
 a chatty build ends up inside the filename.

@@ -5,7 +5,8 @@
 import { StandardMerkleTree } from '@openzeppelin/merkle-tree';
 import { keccak256, toUtf8Bytes } from 'ethers';
 
-export const PLACEHOLDER_SIG = `0x${'00'.repeat(65)}`;
+// r = s = 0, v = 27: the shape of a signature, and no key signs it.
+export const PLACEHOLDER_SIG = `0x${'00'.repeat(64)}1b`;
 const S = { fillerId: 'acme-markets', sig: PLACEHOLDER_SIG };
 const tx = (label) => keccak256(toUtf8Bytes(label));
 const REQ = 'req-7f3a9c21-4d88-4e5b-9a1e-0c2f6b8d4e31';
@@ -60,8 +61,8 @@ export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHas
     'auth.challenge': [{ type: 'auth.challenge', sentAt: 1789999980000, nonce: tx('cancore:test:auth-nonce:1'), expiresAt: '1790000030', sig: PLACEHOLDER_SIG }],
     'auth.response': [{ type: 'auth.response', id: 'a-1', fillerId: 'acme-markets', keyAddress: QUOTE_KEY, protocolVersion: '1', sig: PLACEHOLDER_SIG }],
     'auth.ok': [{ type: 'auth.ok', ...S, sentAt: 1789999980200, re: 'a-1', heartbeatIntervalMs: 15000 }],
-    ping: [{ type: 'ping', id: 'p-1' }],
-    pong: [{ type: 'pong', re: 'p-1' }],
+    ping: [{ type: 'ping', id: 'p-1' }, { type: 'ping', ...S, sentAt: 1789999995000, id: 'gp-1' }],
+    pong: [{ type: 'pong', re: 'gp-1' }, { type: 'pong', ...S, sentAt: 1789999995100, re: 'p-1' }],
     error: [
       { type: 'error', ...S, sentAt: 1790000023500, re: 'i-2', code: 'TICKET_CLOSED', message: 'ticket.intent after acceptBy' },
       { type: 'error', sentAt: 1789999980100, sig: PLACEHOLDER_SIG, re: 'q-0', code: 'UNAUTHENTICATED', message: 'quote before auth.ok' },

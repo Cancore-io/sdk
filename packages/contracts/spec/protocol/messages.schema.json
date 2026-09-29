@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cancore.io/schemas/filler-protocol/v1/messages.schema.json",
   "title": "Cancore filler protocol v1 — WebSocket frames",
-  "$comment": "One $def per frame type, validated by name ($defs/<type>). The schemas encode the SENDER rule (protocol §3.1): lowercase hex, uint64 and wider as canonical decimal strings, uint8/16/32 as JSON integers, gateway times in milliseconds. No object is closed (V-2): receivers ignore unknown fields, takers ignore unknown S→F types, and treat an unknown reason/result/code as OTHER/generic. x-direction: S2F = gateway to taker (signed, addressed, timed), F2S = taker to gateway, both = either way (an S→F copy also carries the S→F envelope).",
+  "$comment": "One $def per frame type, validated by name ($defs/<type>). The schemas encode the SENDER rule (protocol §3.1): lowercase hex, uint64 and wider as canonical decimal strings, uint8/16/32 as JSON integers, gateway times in milliseconds. No object is closed (V-2): receivers ignore unknown fields, takers ignore unknown S→F types, and treat an unknown reason/result/code as OTHER/generic. Every enum is open: anyOf [known values, futureEnumValue]. x-direction: S2F = gateway to taker (signed, addressed, timed), F2S = taker to gateway, both = either way (ping/pong; <type>S2F is the signed gateway copy, <type>F2S the taker's).",
   "$defs": {
     "uintDec64": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20, "description": "uint64 as a decimal string: digits only, no sign, no exponent, no leading zero" },
     "uintDec256": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 78, "description": "uint256 as a decimal string" },
@@ -12,7 +12,7 @@
     "uint32": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
     "address": { "type": "string", "pattern": "^0x[0-9a-f]{40}$", "description": "EVM address, lowercase hex" },
     "bytes32": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
-    "sig65": { "type": "string", "pattern": "^0x[0-9a-f]{130}$", "description": "65-byte r ‖ s ‖ v, low-s, v ∈ {27, 28}" },
+    "sig65": { "type": "string", "pattern": "^0x[0-9a-f]{128}(1b|1c)$", "description": "65-byte r ‖ s ‖ v, low-s, v ∈ {27, 28}" },
     "timeMs": { "type": "integer", "minimum": 1000000000000, "maximum": 9007199254740991, "description": "unix milliseconds, gateway clock; the minimum rejects seconds" },
     "durationMs": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
     "timeS": { "$ref": "#/$defs/uintDec64", "description": "unix seconds as a decimal string (on-chain and signed times)" },
@@ -42,7 +42,7 @@
         "recipient": { "$ref": "#/$defs/bytes32" },
         "createdAt": { "$ref": "#/$defs/timeS" },
         "fillDeadline": { "$ref": "#/$defs/timeS" },
-        "feeBps": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,4})$" }
+        "feeBps": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$", "description": "uint16" }
       }
     },
     "ticket": {
@@ -56,16 +56,23 @@
         "validUntil": { "$ref": "#/$defs/timeS" }
       }
     },
+    "futureEnumValue": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$", "description": "a value added to an open enum within v1 (V-2); the receiver treats it as OTHER/generic. Every protocol enum is `anyOf: [{enum: known values}, futureEnumValue]`" },
     "declineReason": {
-      "enum": ["NO_INVENTORY", "RISK_LIMIT", "PRICE_MOVED", "PAUSED", "OTHER", "TICKET_SIGNER_UNKNOWN", "TICKET_MISMATCH", "TICKET_TTL_TOO_SHORT", "TICKET_ISSUED_LATE", "TICKET_BEYOND_DEADLINE", "ESCROW_NOT_OPEN", "ESCROW_MISMATCH", "PROOF_WINDOW_TOO_SHORT", "SKEW_MARGIN_TOO_SHORT", "DRAW_MISMATCH"]
+      "anyOf": [
+        { "enum": ["NO_INVENTORY", "RISK_LIMIT", "PRICE_MOVED", "PAUSED", "OTHER", "TICKET_SIGNER_UNKNOWN", "TICKET_MISMATCH", "TICKET_TTL_TOO_SHORT", "TICKET_ISSUED_LATE", "TICKET_BEYOND_DEADLINE", "ESCROW_NOT_OPEN", "ESCROW_MISMATCH", "PROOF_WINDOW_TOO_SHORT", "SKEW_MARGIN_TOO_SHORT", "DRAW_MISMATCH"] },
+        { "$ref": "#/$defs/futureEnumValue" }
+      ]
     },
     "errorCode": {
-      "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL"]
+      "anyOf": [
+        { "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL"] },
+        { "$ref": "#/$defs/futureEnumValue" }
+      ]
     },
-    "expiredResult": { "enum": ["FILLED", "NO_SHOW", "NO_SHOW_UNCONFIRMED", "EXEMPT"] },
-    "exemptReason": { "enum": ["DESTINATION_HALTED", "GATEWAY_FAULT", "REORGED_AFTER_INCLUSION", "RECIPIENT_NOT_READY", "OTHER"] },
-    "quoteAckStatus": { "enum": ["COUNTED", "LATE", "SHORT_TTL"], "description": "verdict at receipt time; the final status is on GET /v1/filler/quotes" },
-    "penaltyStep": { "enum": ["L1", "L2", "L3", "L4"] },
+    "expiredResult": { "anyOf": [{ "enum": ["FILLED", "NO_SHOW", "NO_SHOW_UNCONFIRMED", "EXEMPT"] }, { "$ref": "#/$defs/futureEnumValue" }] },
+    "exemptReason": { "anyOf": [{ "enum": ["DESTINATION_HALTED", "GATEWAY_FAULT", "REORGED_AFTER_INCLUSION", "RECIPIENT_NOT_READY", "OTHER"] }, { "$ref": "#/$defs/futureEnumValue" }] },
+    "quoteAckStatus": { "anyOf": [{ "enum": ["COUNTED", "LATE", "SHORT_TTL"] }, { "$ref": "#/$defs/futureEnumValue" }], "description": "verdict at receipt time; the final status is on GET /v1/filler/quotes" },
+    "penaltyStep": { "anyOf": [{ "enum": ["L1", "L2", "L3", "L4"] }, { "$ref": "#/$defs/futureEnumValue" }] },
     "s2fEnvelope": {
       "type": "object",
       "required": ["type", "sentAt", "sig"],
@@ -114,13 +121,33 @@
     },
     "ping": {
       "x-direction": "both",
+      "description": "Heartbeat, either way. A receiver checks the copy of its direction: pingS2F (gateway to taker: signed, addressed, timed) or pingF2S (unsigned)",
+      "anyOf": [{ "$ref": "#/$defs/pingF2S" }, { "$ref": "#/$defs/pingS2F" }]
+    },
+    "pingF2S": {
       "type": "object",
+      "required": ["type", "id"],
+      "properties": { "type": { "const": "ping" }, "id": { "$ref": "#/$defs/messageId" } }
+    },
+    "pingS2F": {
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
       "required": ["type", "id"],
       "properties": { "type": { "const": "ping" }, "id": { "$ref": "#/$defs/messageId" } }
     },
     "pong": {
       "x-direction": "both",
+      "description": "Answer to a ping, re = ping.id. A receiver checks the copy of its direction: pongS2F (signed, addressed, timed) or pongF2S (unsigned)",
+      "anyOf": [{ "$ref": "#/$defs/pongF2S" }, { "$ref": "#/$defs/pongS2F" }]
+    },
+    "pongF2S": {
       "type": "object",
+      "required": ["type", "re"],
+      "properties": { "type": { "const": "pong" }, "re": { "$ref": "#/$defs/messageId" } }
+    },
+    "pongS2F": {
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
       "required": ["type", "re"],
       "properties": { "type": { "const": "pong" }, "re": { "$ref": "#/$defs/messageId" } }
     },
@@ -294,25 +321,23 @@
     "ticket.issued": {
       "x-direction": "S2F",
       "type": "object",
-      "description": "form discriminates the EVM-destination ticket (FillTicket + ticketSig) from the Canton-destination one (DeliveryOrder)",
-      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "description": "form discriminates the EVM-destination ticket (FillTicket + ticketSig) from the Canton-destination one (DeliveryOrder); a form added within v1 (V-2) is checked against the common fields only",
       "required": ["type", "form", "orderHash", "attempt"],
       "properties": {
         "type": { "const": "ticket.issued" },
-        "form": { "enum": ["evm", "canton"] },
+        "form": { "anyOf": [{ "enum": ["evm", "canton"] }, { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }] },
         "orderHash": { "$ref": "#/$defs/bytes32" },
         "attempt": { "$ref": "#/$defs/uint32" }
       },
-      "oneOf": [
+      "allOf": [
+        { "$ref": "#/$defs/s2fBase" },
         {
-          "type": "object",
-          "required": ["ticket", "ticketSig"],
-          "properties": { "form": { "const": "evm" }, "ticket": { "$ref": "#/$defs/ticket" }, "ticketSig": { "$ref": "#/$defs/sig65" } }
+          "if": { "type": "object", "properties": { "form": { "const": "evm" } }, "required": ["form"] },
+          "then": { "type": "object", "required": ["ticket", "ticketSig"], "properties": { "ticket": { "$ref": "#/$defs/ticket" }, "ticketSig": { "$ref": "#/$defs/sig65" } } }
         },
         {
-          "type": "object",
-          "required": ["deliveryOrderCid", "validUntil"],
-          "properties": { "form": { "const": "canton" }, "deliveryOrderCid": { "type": "string", "minLength": 1 }, "validUntil": { "$ref": "#/$defs/timeS" } }
+          "if": { "type": "object", "properties": { "form": { "const": "canton" } }, "required": ["form"] },
+          "then": { "type": "object", "required": ["deliveryOrderCid", "validUntil"], "properties": { "deliveryOrderCid": { "type": "string", "minLength": 1 }, "validUntil": { "$ref": "#/$defs/timeS" } } }
         }
       ]
     },

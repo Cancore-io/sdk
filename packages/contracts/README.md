@@ -113,7 +113,7 @@ drand quicknet rounds.
 | `rest.schema.json` | REST fallback bodies; `x-endpoints` (method, path, auth, request/response), `x-error-status` |
 | `records.schema.json` | the draw record, the epoch record, `GET /v1/gateway` |
 | `asyncapi.json` | AsyncAPI 3.0: channel `/v1`, the gateway's send/receive operations, examples |
-| `vectors/messages.json`, `vectors/records.json` | valid example frames and fixture records (hashes real, `sig` a zero placeholder) |
+| `vectors/messages.json`, `vectors/records.json` | valid example frames and fixture records (hashes real, `sig` a placeholder: r = s = 0, v = 27) |
 
 The same objects are exported as `PROTOCOL_SCHEMAS`, `ASYNCAPI`, `MESSAGE_DIRECTIONS` and
 `REST_ENDPOINTS`, with TypeScript shapes of every frame (`TicketOffer`, `QuoteAck`, …) and the
@@ -126,13 +126,17 @@ import { PROTOCOL_SCHEMAS, SCHEMA_VOCABULARY, messageSchemaRef } from '@cancore/
 const ajv = new Ajv2020({ strict: true });
 ajv.addVocabulary([...SCHEMA_VOCABULARY]);
 for (const schema of Object.values(PROTOCOL_SCHEMAS)) ajv.addSchema(schema);
-ajv.validate(messageSchemaRef(frame.type), frame); // errors name the field: instancePath "/amountOut"
+ajv.validate(messageSchemaRef(frame.type, 'S2F'), frame); // errors name the field: instancePath "/amountOut"
 ```
 
 The schemas describe what a v1 **sender** emits: lowercase hex, uint64 and wider as decimal
 strings, gateway times in milliseconds, every S→F frame with `fillerId`, `sentAt` and `sig`. No
 object is closed: a receiver ignores unknown fields and a taker ignores unknown S→F types
-(V-2), so check a frame of an unknown type against `s2fEnvelope` and skip it.
+(V-2), so check a frame of an unknown type against `s2fEnvelope` and skip it. Every enum is
+open the same way: the known values, or any UPPER_SNAKE value added within v1, which a receiver
+treats as `OTHER`/generic; a `ticket.issued` of an unknown `form` is checked on its common fields
+only. `ping`/`pong` go both ways: the gateway's copy is signed like every S→F frame
+(`pingS2F`), the taker's is not (`pingF2S`); the second argument of `messageSchemaRef` picks one.
 `scripts/gen-protocol-docs.mjs` derives the examples, records and the AsyncAPI document from
 the schemas and the vectors.
 
