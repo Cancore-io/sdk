@@ -49,6 +49,8 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # The mock gateway as a real process and a real WebSocket client (needs dist/).
+      - run: npm run test:int
 
       # The check unit tests cannot do: pack the tarball and import it from a
       # project that is not this repository. A broken `exports` map, a file left
@@ -61,15 +63,27 @@ jobs:
       - name: Install the tarball as a stranger would
         run: |
           set -euo pipefail
+          # Pack everything first: a package that depends on a sibling
+          # (@cancore/test-kit on @cancore/contracts) installs the sibling from
+          # this tree, not from a registry that may not have the version yet.
+          declare -A TARBALL
+          for pkg in packages/*/; do
+            name=$(node -p "require('./$pkg/package.json').name")
+            if [ "$(node -p "require('./$pkg/package.json').private === true")" = "true" ]; then continue; fi
+            TARBALL[$name]="$RUNNER_TEMP/$(cd "$pkg" && npm pack --pack-destination "$RUNNER_TEMP" --silent)"
+          done
           for pkg in packages/*/; do
             name=$(node -p "require('./$pkg/package.json').name")
             private=$(node -p "require('./$pkg/package.json').private === true")
             if [ "$private" = "true" ]; then echo "skip $name (private)"; continue; fi
-            tarball=$(cd "$pkg" && npm pack --pack-destination "$RUNNER_TEMP" --silent)
+            siblings=()
+            for dep in $(node -p "Object.keys(require('./$pkg/package.json').dependencies ?? {}).filter((d) => d.startsWith('@cancore/')).join(' ')"); do
+              siblings+=("${TARBALL[$dep]}")
+            done
             rm -rf "$RUNNER_TEMP/consumer" && mkdir -p "$RUNNER_TEMP/consumer"
             cd "$RUNNER_TEMP/consumer"
             npm init -y >/dev/null
-            npm install "$RUNNER_TEMP/$tarball" --no-audit --no-fund
+            npm install "${TARBALL[$name]}" "${siblings[@]}" --no-audit --no-fund
             node --input-type=module -e "
               import { readFileSync } from 'node:fs';
               const manifest = JSON.parse(readFileSync('node_modules/$name/package.json', 'utf8'));
@@ -92,3 +106,29 @@ jobs:
             fi
             cd "$GITHUB_WORKSPACE"
           done
+
+      # B16: what another repository's CI does — the mock from the tarball, one
+      # command, ready and healthy within five seconds.
+      - name: Start the mock gateway as a stranger would
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/mock" && mkdir -p "$RUNNER_TEMP/mock" && cd "$RUNNER_TEMP/mock"
+          npm init -y >/dev/null
+          npm install "$RUNNER_TEMP"/cancore-contracts-*.tgz "$RUNNER_TEMP"/cancore-test-kit-*.tgz --no-audit --no-fund
+          npx cancore-test-kit mock-gateway --port 0 --control 0 > ready.log 2> mock.err &
+          pid=$!
+          for _ in $(seq 50); do [ -s ready.log ] && break; sleep 0.1; done
+          test -s ready.log || { echo "not ready in 5 s"; cat mock.err; exit 1; }
+          control=$(node -p "JSON.parse(require('fs').readFileSync('ready.log', 'utf8').split('\\n')[0]).control")
+          curl -fsS "$control/__mock/health"
+          kill "$pid"
+
+      - name: Build and run the mock gateway image
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP"/cancore-contracts-*.tgz "$RUNNER_TEMP"/cancore-test-kit-*.tgz packages/test-kit/
+          docker build -t cancore-mock-gateway:ci packages/test-kit
+          docker run -d --name mock -p 8787:8787 -p 8788:8788 cancore-mock-gateway:ci
+          for _ in $(seq 50); do curl -fsS http://127.0.0.1:8788/__mock/health && break; sleep 0.1; done
+          curl -fsS http://127.0.0.1:8788/__mock/health >/dev/null || { docker logs mock; exit 1; }
+          docker rm -f mock
