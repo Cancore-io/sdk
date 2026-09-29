@@ -141,6 +141,17 @@ describe.each(KINDS)('failure modes (%s mock)', (kind) => {
     await taker.close();
   });
 
+  test('V-2: an unknown decline reason is accepted (as OTHER), not refused', async () => {
+    const { taker, offer } = await offered('HAPPY');
+    taker.send({ type: 'ticket.decline', orderHash: offer.orderHash, attempt: offer.attempt, reason: 'FUTURE_REASON' });
+    taker.send({ type: 'ping' });
+    await taker.next('pong');
+    expect(taker.frames.some((f) => f.type === 'error')).toBe(false);
+    const token = await restLogin(mock);
+    expect((await rest<{ items: Frame[] }>(mock, 'GET', '/v1/filler/tickets?status=OFFERED', undefined, token)).body.items).toEqual([]);
+    await taker.close();
+  });
+
   test('B9 NO_ISSUED: nothing arrives by acceptBy + δ_issue; the next offer is attempt + 1', async () => {
     const { taker, offer } = await offered('NO_ISSUED');
     taker.send(intentFor(offer));

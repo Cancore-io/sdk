@@ -1,14 +1,23 @@
 import { spawnSync } from 'node:child_process';
 import WebSocket from 'ws';
-import { startMockGateway, TEST_KEYS } from '../src/index';
+import { DEFAULT_FILLERS, startMockGateway, TEST_KEYS } from '../src/index';
 import { MODES } from '../src/scenario';
-import { BIN, ctl, rest, signedByGateway, spawnMock, Taker } from './helpers';
-import type { MockHandle } from './helpers';
+import { BIN, ctl, KINDS, login, rest, signedByGateway, spawnMock, Taker } from './helpers';
+import type { Kind, MockHandle } from './helpers';
 
-describe('cancore-test-kit mock-gateway (the CLI, as a child process)', () => {
+const omega = { fillerId: 'omega-desk', quoteKey: TEST_KEYS.zetaQuote.address, fillerAddress: TEST_KEYS.zetaFiller.address };
+
+async function start(kind: Kind): Promise<MockHandle> {
+  if (kind === 'cli') return spawnMock(['--filler', `${omega.fillerId}:${omega.quoteKey}:${omega.fillerAddress}`]);
+  const started = Date.now();
+  const gw = await startMockGateway({ port: 0, controlPort: 0, fillers: [...DEFAULT_FILLERS, omega] });
+  return { url: gw.url, http: gw.httpUrl, control: gw.controlUrl, readyMs: Date.now() - started, close: () => gw.close() };
+}
+
+describe.each(KINDS)('mock-gateway entry and control interface (%s)', (kind) => {
   let mock: MockHandle;
   beforeAll(async () => {
-    mock = await spawnMock(['--filler', `omega-desk:${TEST_KEYS.zetaQuote.address}:${TEST_KEYS.zetaFiller.address}`]);
+    mock = await start(kind);
   });
   afterAll(() => mock.close());
   beforeEach(() => ctl(mock, '/__mock/reset', {}));
@@ -69,6 +78,14 @@ describe('cancore-test-kit mock-gateway (the CLI, as a child process)', () => {
     expect(outcome).toBe('refused');
   });
 
+  test('drop closes the sockets of a taker; the clock reads back', async () => {
+    const { taker } = await login(mock);
+    expect(await ctl(mock, '/__mock/drop', { fillerId: 'acme-markets' })).toEqual({ status: 200, body: { dropped: 1 } });
+    await taker.closed;
+    expect((await ctl<{ now: number }>(mock, '/__mock/clock')).body.now).toBe((await ctl<{ now: number }>(mock, '/__mock/health')).body.now);
+    expect((await ctl(mock, '/__mock/offer', { fillerId: 'nobody' })).status).toBe(500);
+  });
+
   test('an unknown REST path is 404 with a signed error body', async () => {
     const res = await rest(mock, 'GET', '/v1/nope');
     expect(res.status).toBe(404);
@@ -91,6 +108,23 @@ describe('CLI usage', () => {
 });
 
 describe('startMockGateway (the programmatic API)', () => {
+  test('rfq, drop, health, reset', async () => {
+    const gw = await startMockGateway({ port: 0, controlPort: 0, clock: 'real' });
+    try {
+      expect(gw.health()).toMatchObject({ ok: true, mode: 'HAPPY', config: { clock: 'real' } });
+      expect(Math.abs(gw.now() - Date.now())).toBeLessThan(1_000);
+      const req = gw.rfq({ fillerIds: ['acme-markets'] });
+      expect(req.windowCloseAt).toBeGreaterThan(Date.now());
+      expect(gw.drop()).toBe(0);
+      gw.scenario('NO_ISSUED');
+      gw.reset();
+      expect(gw.scenario()).toBe('HAPPY');
+      expect(gw.log()).toEqual([]);
+    } finally {
+      await gw.close();
+    }
+  });
+
   test('scenario, clock, offer, log and the conformance check without HTTP', async () => {
     const gw = await startMockGateway({ port: 0, controlPort: 0 });
     try {

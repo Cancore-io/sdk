@@ -3,6 +3,7 @@
  * and the offer, the signed intent ack, `ticket.issued`, `ticket.expired`
  * and `order.settled` — and, per scenario, the one rule the mock breaks.
  */
+import { DECLINE_REASONS } from '@cancore/contracts';
 import type { Order, OrderJson } from '@cancore/contracts';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
@@ -167,7 +168,9 @@ export function onReceipt(gw: MockGateway, fillerId: string, msg: Record<string,
 
 export function onDecline(gw: MockGateway, fillerId: string, msg: Record<string, unknown>): Outcome {
   const ref = { orderHash: String(msg.orderHash), attempt: msg.attempt as number };
-  const res = gw.tickets.decline(fillerId, { ...ref, reason: String(msg.reason), ...(typeof msg.detail === 'string' ? { detail: msg.detail } : {}) });
+  // V-2: an enum value this version does not know reads as OTHER.
+  const reason = (DECLINE_REASONS as readonly string[]).includes(String(msg.reason)) ? String(msg.reason) : 'OTHER';
+  const res = gw.tickets.decline(fillerId, { ...ref, reason, ...(typeof msg.detail === 'string' ? { detail: msg.detail } : {}) });
   if (!res.ok) return res;
   if (gw.tickets.find(fillerId, ref.orderHash, ref.attempt)?.decline?.stage === 'offer') closeAttempt(gw, ref, 'OFFER_DECLINE');
   return { ok: true };

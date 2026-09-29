@@ -29,9 +29,12 @@ describe.each(KINDS)('session (%s mock)', (kind) => {
     const { taker } = await login(mock);
     taker.autoPong = false;
     const ping = taker.send({ type: 'ping' });
-    expect(await taker.next('pong')).toMatchObject({ re: ping.id });
+    const pong = await taker.next('pong');
+    expect(pong).toMatchObject({ re: ping.id, fillerId: 'acme-markets', sentAt: expect.any(Number) });
+    expect(signedByGateway(pong)).toBe(true);
     await advance(mock, 15_000);
     const serverPing = await taker.next('ping');
+    expect(serverPing).toMatchObject({ id: expect.any(String), fillerId: 'acme-markets', sentAt: expect.any(Number) });
     expect(signedByGateway(serverPing)).toBe(true);
     taker.send({ type: 'pong', re: serverPing.id });
     taker.send({ type: 'ping' }); // a round trip: the pong is in before the clock moves on
