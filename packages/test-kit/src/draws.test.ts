@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { beacon, drawAttempt, firstRoundAtOrAfter, weightOf, weightsRoot } from './draws';
@@ -43,7 +45,7 @@ test('firstRoundAtOrAfter follows the quicknet genesis and period', () => {
 
 describe('beacon', () => {
   test('a round of the fixture window is the real drand round: randomness = sha256(signature)', () => {
-    const b = beacon(firstRoundAtOrAfter(1789999400 + 6));
+    const b = beacon(firstRoundAtOrAfter(1790000012 + 6));
     expect(b.real).toBe(true);
     expect(b.randomness).toBe(`0x${bytesToHex(sha256(hexToBytes(b.signature.slice(2))))}`);
     expect(b.signature).toMatch(/^0x[0-9a-f]{96}$/);
@@ -77,4 +79,13 @@ test('drawAttempt records round, randomness, sorted candidates, r and winner con
   expect(a.candidates.map((c) => c.fillerId)).toEqual(['acme-markets', 'zeta-liquidity']);
   expect(a).toMatchObject({ attempt: 0, tBase: '1789999400', closedBy: null, fallbackReason: null });
   expect(drawOutcome(a.drandRandomness, orderHash, 0, a.candidates)).toEqual({ r: a.r, winnerFillerId: a.winnerFillerId });
+});
+
+test('the fixture draw of @cancore/contracts (spec/protocol/vectors/draw.json) is what the mock serves for attempt 0', () => {
+  const file = JSON.parse(readFileSync(join(__dirname, '..', '..', 'contracts', 'spec', 'protocol', 'vectors', 'draw.json'), 'utf8')) as {
+    vectors: { t0?: string; deltaDrand?: number; round: number; signature: string; randomness: string; orderHash: `0x${string}`; attempt: number; candidates: { fillerId: string; weight: string }[]; r: string; winnerFillerId: string }[];
+  };
+  const v = file.vectors.find((x) => x.t0 !== undefined)!;
+  const a = drawAttempt({ orderHash: v.orderHash, attempt: v.attempt, tBase: Number(v.t0), deltaDrand: v.deltaDrand!, candidates: v.candidates });
+  expect(a).toMatchObject({ drandRound: String(v.round), drandSignature: v.signature, drandRandomness: v.randomness, r: v.r, winnerFillerId: v.winnerFillerId });
 });

@@ -27,16 +27,30 @@ describe.each(KINDS)('session (%s mock)', (kind) => {
 
   test('B2: ping/pong both ways; three missed pongs close the socket (virtual clock)', async () => {
     const { taker } = await login(mock);
+    taker.autoPong = false;
     const ping = taker.send({ type: 'ping' });
     expect(await taker.next('pong')).toMatchObject({ re: ping.id });
     await advance(mock, 15_000);
     const serverPing = await taker.next('ping');
     expect(signedByGateway(serverPing)).toBe(true);
     taker.send({ type: 'pong', re: serverPing.id });
+    taker.send({ type: 'ping' }); // a round trip: the pong is in before the clock moves on
+    await taker.next('pong');
     await advance(mock, 15_000);
-    await taker.next('ping'); // answered the previous one: still open
-    await advance(mock, 45_000); // three pings unanswered
-    expect(await taker.closed).toBeGreaterThan(0);
+    await taker.next('ping'); // the previous one was answered: still open, a new ping
+    for (let missed = 1; missed <= 3; missed++) await advance(mock, 15_000);
+    expect(await taker.closed).toBe(4000);
+    expect(taker.frames.filter((f) => f.type === 'ping')).toHaveLength(4);
+  });
+
+  test('B2: pings sent inside one jump of the clock are not held against the taker', async () => {
+    const { taker } = await login(mock);
+    taker.autoPong = false;
+    await advance(mock, 5 * 15_000);
+    taker.send({ type: 'ping' });
+    await taker.next('pong');
+    expect(taker.ws.readyState).toBe(taker.ws.OPEN);
+    await taker.close();
   });
 
   test('B8: a quote before auth.ok is UNAUTHENTICATED and closes the socket', async () => {

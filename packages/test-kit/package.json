@@ -26,16 +26,34 @@
   "bugs": {
     "url": "https://github.com/Cancore-io/sdk/issues"
   },
-  "keywords": ["canton", "cancore", "taker", "filler", "mock", "gateway", "conformance", "testing"],
-  "files": ["dist", "README.md", "LICENSE"],
-  "publishConfig": { "access": "public" },
-  "engines": { "node": ">=20" },
+  "keywords": [
+    "canton",
+    "cancore",
+    "taker",
+    "filler",
+    "mock",
+    "gateway",
+    "conformance",
+    "testing"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsup",
     "prepack": "tsup --silent",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@cancore/contracts": "^0.2.0-rc.1",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",
     "ajv": "^8.20.0",

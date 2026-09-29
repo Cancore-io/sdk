@@ -23,6 +23,8 @@ export class Clock {
   private tasks: Task[] = [];
   private seq = 0;
   private timers = new Set<ReturnType<typeof setTimeout>>();
+  /** Bumped by every `advance`: work done inside one jump of the clock shares a generation. */
+  generation = 0;
 
   constructor(private readonly opts: ClockOptions) {
     this.base = opts.baseMs;
@@ -39,6 +41,7 @@ export class Clock {
   /** Move time forward by `ms` and run every task that became due, each at its own time. */
   advance(ms: number): void {
     if (ms < 0) throw new RangeError('the clock only moves forward');
+    this.generation++;
     const target = this.now() + ms;
     for (let task = this.nextDue(target); task; task = this.nextDue(target)) {
       if (task.at > this.now()) this.offset += task.at - this.now();

@@ -87,16 +87,23 @@ export type FillerId = keyof typeof FILLERS;
 let ids = 0;
 export const nextId = () => `c-${++ids}`;
 
-/** A WebSocket client that records every frame and hands them out by type, in arrival order. */
+/**
+ * A WebSocket client that records every frame and hands them out by type, in
+ * arrival order. It answers the gateway's heartbeat pings like any live taker
+ * (`autoPong = false` to play a dead one).
+ */
 export class Taker {
   readonly frames: Frame[] = [];
+  autoPong = true;
   private readonly taken = new Set<number>();
   private waiters: (() => void)[] = [];
   readonly closed: Promise<number>;
 
   private constructor(readonly ws: WebSocket) {
     ws.on('message', (data: Buffer) => {
-      this.frames.push(JSON.parse(data.toString()) as Frame);
+      const frame = JSON.parse(data.toString()) as Frame;
+      this.frames.push(frame);
+      if (frame.type === 'ping' && this.autoPong) this.send({ type: 'pong', re: frame.id });
       for (const w of this.waiters.splice(0)) w();
     });
     this.closed = new Promise((ok) => ws.once('close', (code: number) => ok(code)));

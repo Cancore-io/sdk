@@ -139,8 +139,9 @@ describe.each(KINDS)('ticket cycle (%s mock)', (kind) => {
     await advanceTo(mock, (request.windowCloseAt as number) + 1);
     expect(await taker.next('ticket.offer')).toMatchObject({ amountOut: '90' });
     const token = await restLogin(mock);
-    const list = await rest<{ items: { nonce: string; status: string }[] }>(mock, 'GET', '/v1/filler/quotes', undefined, token);
-    expect(list.body.items.map((i) => [i.nonce, i.status])).toEqual([
+    const list = await rest<{ items: { quote: { nonce: string }; ack: Frame; status: string }[] }>(mock, 'GET', '/v1/filler/quotes', undefined, token);
+    expect(list.body.items.every((i) => signedByGateway(i.ack) && i.ack.type === 'quote.ack')).toBe(true);
+    expect(list.body.items.map((i) => [i.quote.nonce, i.status])).toEqual([
       ['1', 'REPLACED'],
       ['2', 'WON'],
     ]);
