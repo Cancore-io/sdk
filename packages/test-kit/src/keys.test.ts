@@ -50,6 +50,10 @@ describe('sign / recover — 65 bytes r‖s‖v, low-s, v ∈ {27, 28}', () => {
     ['v = 29', (sig: string) => `${sig.slice(0, 130)}1d`],
     ['64 bytes', (sig: string) => sig.slice(0, 130)],
     ['not hex', (sig: string) => `${sig.slice(0, 128)}zz1b`],
+    ['r = 0', (sig: string) => `0x${'00'.repeat(32)}${sig.slice(66)}`],
+    ['s = 0', (sig: string) => `${sig.slice(0, 66)}${'00'.repeat(32)}${sig.slice(130)}`],
+    ['r = n', (sig: string) => `0x${N.toString(16)}${sig.slice(66)}`],
+    ['all zero', () => `0x${'00'.repeat(64)}1b`],
   ])('%s is rejected', (_name, mutate) => {
     const sig = sign(digest, TEST_KEYS.acmeQuote.privateKey);
     expect(() => recover(digest, mutate(sig) as `0x${string}`)).toThrow(BadSignatureError);

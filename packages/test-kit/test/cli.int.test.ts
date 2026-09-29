@@ -91,7 +91,7 @@ describe.each(KINDS)('mock-gateway entry and control interface (%s)', (kind) => 
   test('an unknown REST path is 404 with a signed error body', async () => {
     const res = await rest(mock, 'GET', '/v1/nope');
     expect(res.status).toBe(404);
-    expect(res.body).toMatchObject({ type: 'error', code: 'BAD_REQUEST' });
+    expect(res.body).toMatchObject({ type: 'error', code: 'UNKNOWN_REQUEST' });
   });
 });
 

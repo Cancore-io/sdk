@@ -74,6 +74,12 @@ describe('frozen clock', () => {
   test('advance refuses a negative step', () => {
     expect(() => new Clock({ mode: 'frozen', baseMs: 0 }).advance(-1)).toThrow(RangeError);
   });
+
+  test.each([NaN, Infinity, 1.5])('advance refuses %p and leaves the clock readable', (ms) => {
+    const clock = new Clock({ mode: 'frozen', baseMs: 1_000 });
+    expect(() => clock.advance(ms)).toThrow(RangeError);
+    expect(clock.now()).toBe(1_000);
+  });
 });
 
 describe('real clock', () => {

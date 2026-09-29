@@ -9,6 +9,7 @@ import { WebSocketServer } from 'ws';
 import type { WebSocket } from 'ws';
 import { serveControl } from './control';
 import type { Conn, MockGateway } from './gateway';
+import { MAX_BODY_BYTES } from './http';
 import { serveRest } from './rest';
 import { openSession } from './session';
 import { onFrame } from './wire';
@@ -31,6 +32,8 @@ function attach(gw: MockGateway, ws: WebSocket): void {
   };
   gw.conns.add(conn);
   ws.on('message', (data: Buffer) => onFrame(gw, conn, data.toString('utf8')));
+  // A protocol-level fault (a frame over maxPayload, invalid UTF-8) closes this socket with its code; unhandled, it would crash the process.
+  ws.on('error', () => undefined);
   ws.on('close', () => {
     conn.closed = true;
     gw.conns.delete(conn);
@@ -48,7 +51,7 @@ const listen = (server: Server, port: number, host: string) =>
 const shut = (server: Server) => new Promise<void>((ok) => server.close(() => ok()));
 
 export async function serve(gw: MockGateway, opts: { host: string; port: number; controlPort: number }): Promise<Listening> {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_BODY_BYTES });
   const api = createServer((req, res) => void serveRest(gw, req, res));
   api.on('upgrade', (req, socket, head) => {
     if (new URL(req.url ?? '/', 'http://mock').pathname !== '/v1') {

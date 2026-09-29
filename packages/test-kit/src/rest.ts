@@ -2,7 +2,9 @@
  * The REST fallback (protocol §3.6, D-J) on the same port as `/v1`: bearer
  * login by challenge, the ticket list, intent/receipt/decline by path, the
  * quote list, and the public draw/epoch records and gateway identity. Every
- * error body is the signed `error` frame with the status of its code.
+ * error body is the signed `error` frame with the status of its code. v1 has
+ * no NOT_FOUND: an unknown route, draw or epoch is UNKNOWN_REQUEST (404), the
+ * code whose status says "no such thing here".
  */
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -15,7 +17,7 @@ import type { Hex } from './keys';
 import { fail } from './quotes';
 import type { Failure } from './quotes';
 import { checkAuth, restChallenge } from './session';
-import { HANDLERS } from './wire';
+import { failureOf, HANDLERS } from './wire';
 import { validateMessage } from './validate';
 
 const TOKEN_TTL_MS = 3_600_000;
@@ -38,8 +40,8 @@ export async function serveRest(gw: MockGateway, req: IncomingMessage, res: Serv
   try {
     await route(c, req.method ?? 'GET', req);
   } catch (e) {
-    if (e instanceof MalformedBodyError) return error(c, fail('BAD_REQUEST', `/ ${e.message}`));
-    error(c, fail('INTERNAL', (e as Error).message));
+    if (e instanceof MalformedBodyError) return error(c, fail('BAD_REQUEST', `/ ${e.message}`), undefined, e.status);
+    error(c, failureOf(e));
   }
 }
 
@@ -50,14 +52,14 @@ async function route(c: Ctx, method: string, req: IncomingMessage): Promise<void
   if (key === 'GET /v1/filler/auth/challenge') return sendJson(c.res, 200, restChallenge(c.gw));
   if (key === 'POST /v1/filler/auth') return login(c, await readJson(req));
   if (method === 'GET' && path.startsWith('/v1/draws/')) return draws(c, path.slice('/v1/draws/'.length));
-  if (!path.startsWith('/v1/filler/')) return error(c, fail('BAD_REQUEST', `no route ${key}`), undefined, 404);
+  if (!path.startsWith('/v1/filler/')) return error(c, fail('UNKNOWN_REQUEST', `no route ${key}`));
   c.fillerId = bearer(c.gw, req.headers.authorization);
   if (!c.fillerId) return error(c, fail('UNAUTHENTICATED', 'Authorization: Bearer <token from POST /v1/filler/auth> required'));
   if (key === 'GET /v1/filler/tickets') return tickets(c);
   if (key === 'GET /v1/filler/quotes') return quotes(c);
   const action = method === 'POST' ? TICKET_ACTION.exec(path) : null;
   if (action) return ticketAction(c, action, await readJson(req));
-  error(c, fail('BAD_REQUEST', `no route ${key}`), undefined, 404);
+  error(c, fail('UNKNOWN_REQUEST', `no route ${key}`));
 }
 
 function bearer(gw: MockGateway, header: string | undefined): string | undefined {
@@ -118,10 +120,10 @@ function ticketAction(c: Ctx, [, orderHash, attempt, action]: RegExpExecArray, b
 function draws(c: Ctx, rest: string): void {
   const epoch = /^epochs\/([^/]+)$/.exec(rest);
   if (epoch) {
-    if (epoch[1] !== c.gw.epoch.epochId) return error(c, fail('BAD_REQUEST', `no epoch ${epoch[1]}`), undefined, 404);
+    if (epoch[1] !== c.gw.epoch.epochId) return error(c, fail('UNKNOWN_REQUEST', `no epoch ${epoch[1]}`));
     return sendJson(c.res, 200, c.gw.signRecord({ ...c.gw.epoch }));
   }
   const record = c.gw.draws.get(rest.toLowerCase());
-  if (!record) return error(c, fail('BAD_REQUEST', `no draw for ${rest}`), undefined, 404);
+  if (!record) return error(c, fail('UNKNOWN_REQUEST', `no draw for ${rest}`));
   sendJson(c.res, 200, c.gw.signRecord({ ...record }));
 }

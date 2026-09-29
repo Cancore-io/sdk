@@ -46,13 +46,16 @@ function setScenario(gw: MockGateway, body: Record<string, unknown>): [number, u
   }
 }
 
+/** Only a JSON number (Number("15s") is NaN, Number(true) is 1); the clock refuses a non-integer or a negative one → 400. */
+const msOf = (v: unknown) => (typeof v === 'number' ? v : NaN);
+
 const ROUTES: Record<string, Route> = {
   'GET /__mock/health': (gw) => [200, health(gw)],
   'GET /__mock/scenario': (gw) => [200, { mode: gw.mode, allowed: [...MODES] }],
   'POST /__mock/scenario': setScenario,
   'POST /__mock/reset': (gw) => (gw.reset(), [200, { ok: true, now: gw.now() }]),
   'GET /__mock/clock': (gw) => [200, { now: gw.now() }],
-  'POST /__mock/clock': (gw, b) => (gw.clock.advance(Number(b.advanceMs ?? 0)), [200, { now: gw.now() }]),
+  'POST /__mock/clock': (gw, b) => (gw.clock.advance(msOf(b.advanceMs ?? 0)), [200, { now: gw.now() }]),
   'GET /__mock/fillers': (gw) => [200, { fillers: [...gw.fillers.values()] }],
   'POST /__mock/rfq': (gw, b) => [200, rfq(gw, b as RfqOptions)],
   'POST /__mock/offer': (gw, b) => [200, offerFixture(gw, String(b.fillerId ?? 'acme-markets'))],
@@ -69,6 +72,6 @@ export async function serveControl(gw: MockGateway, req: IncomingMessage, res: S
     const [status, out] = route(gw, body);
     sendJson(res, status, out);
   } catch (e) {
-    sendJson(res, e instanceof MalformedBodyError ? 400 : 500, { error: (e as Error).message });
+    sendJson(res, e instanceof MalformedBodyError ? e.status : e instanceof RangeError ? 400 : 500, { error: (e as Error).message });
   }
 }

@@ -47,9 +47,9 @@ The same over HTTP, for a taker in another language — control port `/__mock/*`
 | `GET /__mock/health` | `{ok, now, mode, config}` |
 | `GET\|POST /__mock/scenario` `{mode}` | read / switch; an unknown mode is `400 {allowed: […]}` |
 | `POST /__mock/reset` | HAPPY, clock back to base, no state, sockets closed |
-| `GET\|POST /__mock/clock` `{advanceMs}` | read / move the virtual clock; due work runs at its own time |
+| `GET\|POST /__mock/clock` `{advanceMs}` | read / move the virtual clock; due work runs at its own time. `advanceMs` is a JSON number, a non-negative integer; anything else is `400` |
 | `POST /__mock/rfq` `{fillerIds?, windowCloseAt?, quoteTtlMs?}` | `quote.request` to connected takers; at `windowCloseAt` the draw and the offer |
-| `POST /__mock/offer` `{fillerId}` | the fixture order's next attempt, offered to that taker |
+| `POST /__mock/offer` `{fillerId}` | the fixture order's next attempt, offered to that taker; once the clock leaves no room for a legal ticket on it (`fillDeadline − 1 − now < MIN_TICKET_TTL`), the fixture order opened now |
 | `POST /__mock/drop` `{fillerId?}` | close sockets |
 | `GET /__mock/log` | every frame both ways, WS and REST: the input of `assertTakerReaction` |
 | `GET /__mock/fillers`, `GET /__mock/keys` | registered takers; the TEST keys |
@@ -90,6 +90,23 @@ Out of the mock (need a chain or a participant): `ESCROW_NOT_OPEN`,
   mode drand rounds are synthetic (the BLS check of a verifier fails).
 - Heartbeat: a ping counts as missed only if the taker had a chance to answer:
   pings sent inside one jump of the virtual clock are not held against it.
+  Several jumps in a row are not one jump: each jump of `≥ heartbeatMs` sends
+  a ping, and the next jump counts the previous ping missed unless the pong
+  already arrived. A test that fires such jumps back to back (a synchronous
+  loop of `gw.advance(20_000)`, or HTTP advances faster than the taker's pong
+  round trip) gets the socket closed after `heartbeatMisses` of them. Advance
+  in one call, await a pong between jumps, or start the mock with a
+  `--heartbeat-ms` larger than the total the test moves the clock.
+- A ticket is offered only if it can satisfy S-1 and S-3; `NO_ISSUED` stops
+  re-offering an order once no legal ticket fits before its `fillDeadline`.
+- Malformed input is answered, never fatal: a signature with `r` or `s` out of
+  range is `BAD_SIGNATURE` (422), a number that passes the schema but not its
+  EIP-712 width (a 20-digit `uint64`) is `BAD_REQUEST` (400), an unexpected
+  failure `INTERNAL` (500) — on the socket or the REST call that caused it.
+- A REST/control body or a WebSocket frame over 64 KiB is refused: `413`
+  (REST, control), close code `1009` (WebSocket).
+- An unknown REST route, draw or epoch is `404 UNKNOWN_REQUEST`: v1 has no
+  NOT_FOUND code, and this is the one whose status is 404 "no such thing".
 - `fill.reported` stands in for the chain: a fill reported in a second
   ≤ `validUntil` expires `FILLED` (then `order.settled`), else `NO_SHOW` with a
   receipt, `NO_SHOW_UNCONFIRMED` without.

@@ -40,7 +40,7 @@ export class Clock {
 
   /** Move time forward by `ms` and run every task that became due, each at its own time. */
   advance(ms: number): void {
-    if (ms < 0) throw new RangeError('the clock only moves forward');
+    if (!Number.isSafeInteger(ms) || ms < 0) throw new RangeError(`advance: a non-negative integer of ms, got ${ms}`);
     this.generation++;
     const target = this.now() + ms;
     for (let task = this.nextDue(target); task; task = this.nextDue(target)) {

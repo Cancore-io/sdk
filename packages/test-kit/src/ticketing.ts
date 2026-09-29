@@ -91,12 +91,26 @@ export function offerOrder(gw: MockGateway, draft: OrderDraft): Signed {
   return signed;
 }
 
-/** `POST /__mock/offer`: the session's fixture order, next attempt, to `fillerId`. */
+/**
+ * A ticket issued now can satisfy S-1 and S-3 together only while
+ * `fillDeadline − 1 − now ≥ MIN_TICKET_TTL`; past that the gateway issues no
+ * ticket for the order (protocol §4: the dispatcher cannot issue one
+ * violating S-1/S-3). The scenario modes break one rule on an order that fits.
+ */
+const fitsTicket = (gw: MockGateway, order: OrderJson) => Number(order.fillDeadline) - 1 - gw.nowS() >= gw.cfg.minTicketTtlS;
+
+/**
+ * `POST /__mock/offer`: the session's fixture order, next attempt, to
+ * `fillerId` — or, once the clock has left no room for a legal ticket on it,
+ * the fixture order opened now (as the rfq path does).
+ */
 export function offerFixture(gw: MockGateway, fillerId: string): Signed {
   if (!gw.fillers.has(fillerId)) throw new Error(`unknown filler ${fillerId}; registered: ${[...gw.fillers.keys()].join(', ')}`);
-  const t0 = Math.floor(gw.baseMs / 1000);
+  const canton = gw.mode === 'CANTON_DESTINATION';
+  const base = Math.floor(gw.baseMs / 1000);
+  const t0 = fitsTicket(gw, orderAt(base)) ? base : gw.nowS();
   const candidates = gw.epoch.leaves.map((l) => candidateOf(gw, l.fillerId));
-  return offerOrder(gw, { order: orderAt(t0, { canton: gw.mode === 'CANTON_DESTINATION' }), t0, candidates, target: fillerId });
+  return offerOrder(gw, { order: orderAt(t0, { canton }), t0, candidates, target: fillerId });
 }
 
 function closeAttempt(gw: MockGateway, ref: TicketRef, by: string): void {
@@ -122,12 +136,14 @@ function scheduleIssue(gw: MockGateway, t: TicketRecord): void {
   gw.clock.schedule(gw.mode === 'LATE_ISSUED' ? late : gw.now(), () => issue(gw, t));
 }
 
-/** NO_ISSUED: nothing came by acceptBy + δ_issue; the order goes to its next attempt. */
+/** NO_ISSUED: nothing came by acceptBy + δ_issue; the order goes to its next attempt, if a legal ticket still fits it. */
 function reoffer(gw: MockGateway, t: TicketRecord): void {
   gw.tickets.close(t, 'OFFER_TIMEOUT');
   closeAttempt(gw, t.offer, 'OFFER_TIMEOUT');
+  const order = t.offer.order as unknown as OrderJson;
+  if (!fitsTicket(gw, order)) return;
   const record = gw.draws.get(t.offer.orderHash)!;
-  offerOrder(gw, { order: t.offer.order as unknown as OrderJson, t0: Number(record.t0), candidates: [candidateOf(gw, t.fillerId)], target: t.fillerId });
+  offerOrder(gw, { order, t0: Number(record.t0), candidates: [candidateOf(gw, t.fillerId)], target: t.fillerId });
 }
 
 function issue(gw: MockGateway, t: TicketRecord): void {

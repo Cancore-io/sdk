@@ -60,12 +60,14 @@ export function recover(digest: Hex, sig: Hex): Hex {
   if (!/^0x[0-9a-fA-F]{130}$/.test(sig)) throw new BadSignatureError('signature must be 65 bytes of hex');
   const v = parseInt(sig.slice(130), 16);
   if (v !== 27 && v !== 28) throw new BadSignatureError(`v must be 27 or 28, got ${v}`);
-  const parsed = secp256k1.Signature.fromCompact(sig.slice(2, 130));
-  if (parsed.s > HALF_N) throw new BadSignatureError('high-s signature');
   try {
+    // fromCompact throws a plain Error for r or s outside 1..n-1: still a bad signature.
+    const parsed = secp256k1.Signature.fromCompact(sig.slice(2, 130));
+    if (parsed.s > HALF_N) throw new BadSignatureError('high-s signature');
     const pub = parsed.addRecoveryBit(v - 27).recoverPublicKey(hexToBytes(digest.slice(2)));
     return hex(keccak_256(pub.toRawBytes(false).subarray(1)).subarray(12));
   } catch (e) {
+    if (e instanceof BadSignatureError) throw e;
     throw new BadSignatureError(`signature does not recover: ${(e as Error).message}`);
   }
 }

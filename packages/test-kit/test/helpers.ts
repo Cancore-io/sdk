@@ -42,6 +42,7 @@ export async function spawnMock(extra: string[] = []): Promise<MockHandle> {
     readyMs: Date.now() - started,
     close: () =>
       new Promise<void>((ok) => {
+        if (child.exitCode !== null || child.signalCode !== null) return ok();
         child.once('exit', () => ok());
         child.kill('SIGTERM');
       }),

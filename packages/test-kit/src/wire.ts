@@ -37,10 +37,26 @@ function answer(gw: MockGateway, conn: Conn, f: Failure, re?: unknown) {
   gw.emit({ conn, fillerId: conn.fillerId }, errorBody(f, re));
 }
 
+/**
+ * What a handler's throw means to the taker: a schema-valid number out of
+ * range for its EIP-712 type (a 20-digit uint64) is the taker's BAD_REQUEST;
+ * anything else is the mock's INTERNAL. Either way it is an answer, never a
+ * crash of the process that serves every other taker.
+ */
+export const failureOf = (e: unknown): Failure => (e instanceof RangeError ? fail('BAD_REQUEST', e.message) : fail('INTERNAL', e instanceof Error ? e.message : String(e)));
+
 export function onFrame(gw: MockGateway, conn: Conn, text: string): void {
   const msg = parse(text);
   gw.record('F2S', 'ws', conn.fillerId, msg ?? { raw: text });
   if (!msg) return answer(gw, conn, fail('BAD_REQUEST', '/ one JSON object with a string "type" per frame'));
+  try {
+    dispatch(gw, conn, msg);
+  } catch (e) {
+    answer(gw, conn, failureOf(e), msg.id);
+  }
+}
+
+function dispatch(gw: MockGateway, conn: Conn, msg: Record<string, unknown>): void {
   if (conn.fillerId) return authenticated(gw, conn, conn.fillerId, msg);
   if (msg.type !== 'auth.response') {
     answer(gw, conn, fail('UNAUTHENTICATED', 'authenticate first: nothing but auth.response before auth.ok'), msg.id);
