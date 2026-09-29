@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import WebSocket from 'ws';
 import { DEFAULT_FILLERS, startMockGateway, TEST_KEYS } from '../src/index';
 import { MODES } from '../src/scenario';
+import { validateRecord } from '../src/validate';
 import { BIN, ctl, KINDS, login, rest, signedByGateway, spawnMock, Taker } from './helpers';
 import type { Kind, MockHandle } from './helpers';
 
@@ -55,6 +56,7 @@ describe.each(KINDS)('mock-gateway entry and control interface (%s)', (kind) => 
   });
 
   test('A6: GET /v1/gateway publishes the gateway key and the ticket signers', async () => {
+    expect(validateRecord('gatewayInfo', (await rest(mock, 'GET', '/v1/gateway')).body)).toBeNull();
     expect(await rest(mock, 'GET', '/v1/gateway')).toEqual({
       status: 200,
       body: { env: 'mock', gateway: TEST_KEYS.gateway.address, ticketSigners: [TEST_KEYS.ticketSigner.address], protocolVersion: '1' },

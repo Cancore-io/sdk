@@ -6,7 +6,7 @@ import type { EpochLeaf } from '../src/draws';
 import { recover } from '../src/keys';
 import type { Hex } from '../src/keys';
 import { drawOutcome, fillerQuoteDigest, fillTicketDigest, ticketIntentDigest } from '../src/protocol';
-import { validateMessage } from '../src/validate';
+import { validateMessage, validateRecord } from '../src/validate';
 import { advance, advanceTo, ctl, intentFor, KINDS, login, now, quoteFor, receiptFor, rest, restLogin, signedByGateway, startMock } from './helpers';
 import type { Frame, MockHandle } from './helpers';
 
@@ -74,11 +74,13 @@ describe.each(KINDS)('ticket cycle (%s mock)', (kind) => {
     const offer = (await ctl<Frame>(mock, '/__mock/offer', { fillerId: 'acme-markets' })).body;
     const record = (await rest<Record<string, unknown>>(mock, 'GET', `/v1/draws/${offer.orderHash}`)).body;
     expect(signedByGateway(record as Frame)).toBe(true);
+    expect(validateRecord('drawRecord', record)).toBeNull();
     const attempt = (record.attempts as { attempt: number; drandRandomness: Hex; candidates: { fillerId: string; weight: string }[]; r: string; winnerFillerId: string }[])[0]!;
     expect(attempt.winnerFillerId).toBe('acme-markets');
     expect(drawOutcome(attempt.drandRandomness, offer.orderHash as Hex, 0, attempt.candidates)).toEqual({ r: attempt.r, winnerFillerId: 'acme-markets' });
     const epochRecord = (await rest<{ weightsRoot: string; leaves: EpochLeaf[] }>(mock, 'GET', `/v1/draws/epochs/${epoch.epochId}`)).body;
     expect(signedByGateway(epochRecord as unknown as Frame)).toBe(true);
+    expect(validateRecord('epochRecord', epochRecord)).toBeNull();
     expect(epochRecord.weightsRoot).toBe(epoch.weightsRoot);
     expect(weightsRoot(epochRecord.leaves)).toBe(epoch.weightsRoot);
     expect((await rest(mock, 'GET', '/v1/draws/0x1234')).status).toBe(404);
