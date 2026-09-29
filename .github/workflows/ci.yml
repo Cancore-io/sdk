@@ -74,6 +74,8 @@ jobs:
               import { readFileSync } from 'node:fs';
               const manifest = JSON.parse(readFileSync('node_modules/$name/package.json', 'utf8'));
               for (const subpath of Object.keys(manifest.exports ?? { '.': {} })) {
+                // a pattern such as ./spec/* names files, not a module: checked below
+                if (subpath.includes('*')) continue;
                 const specifier = '$name' + (subpath === '.' ? '' : subpath.slice(1));
                 const names = Object.keys(await import(specifier));
                 if (names.length === 0) throw new Error(specifier + ' exports nothing');
@@ -81,5 +83,12 @@ jobs:
               }
             "
             test -f "node_modules/$name/dist/index.d.ts" || { echo "$name ships no types"; exit 1; }
+            if node -e "process.exit(require('./node_modules/$name/package.json').exports?.['./spec/*'] ? 0 : 1)"; then
+              node --input-type=module -e "
+                const { default: s } = await import('$name/spec/protocol/messages.schema.json', { with: { type: 'json' } });
+                if (!s.\$defs) throw new Error('$name/spec/* does not resolve to the schemas');
+                console.log('$name/spec/* ok:', Object.keys(s.\$defs).length, 'message defs');
+              "
+            fi
             cd "$GITHUB_WORKSPACE"
           done

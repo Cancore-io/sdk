@@ -1,0 +1,67 @@
+{
+  "$description": "Golden vector for the EVM-form Order of a Canton-source intent (tech plan §3.2a). A Canton intent has no EVM user and no EVM input token, so both are deterministic labels derived from the Canton identifiers, and the source EIP-712 domain points at a fixed anchor address instead of a deployed router. Nothing on chain checks this construction: it is the only rule that makes a Canton delivery matchable on an EVM destination, and every implementation (Solidity tests, @cancore/contracts, the backend, the attestors, the fillers) must reproduce the orderHash below byte for byte.",
+  "$producedBy": "test/helpers/cantonOrder.ts — buildCantonSourceOrder(); verified against CancoreRouter.sourceOrderHash in test/CancoreRouter.ts",
+  "constants": {
+    "eip2294MaxChainId": "9223372036854775771",
+    "$eip2294MaxChainId": "floor((2^64 - 1) / 2) - 36. Every Canton origin id is above it, so no EVM chain can ever collide with one.",
+    "cantonOriginId": {
+      "mainnet": "9223372036854775809",
+      "testnet": "9223372036854775810",
+      "devnet": "9223372036854775811"
+    },
+    "$cantonOriginId": "2^63 + n. Above the EIP-2294 bound, inside uint64 (Order.originChainId), recognisable by eye. 2^63 itself is deliberately unassigned: a bare 9223372036854775808 in a config is more likely a truncation artefact than a deliberate choice.",
+    "cantonSourceAnchor": "0x2f37b46Ea93001829498b145985fb53028033701",
+    "$cantonSourceAnchor": "address(uint160(uint256(keccak256(\"cancore:canton-source-anchor:v1\")))) — the verifyingContract of the Canton source domain. One value for every Canton network: the domain already separates them through chainId. Register it once per origin id with setSourceRouter(originChainId, anchor) on every destination router — that call is WRITE-ONCE.",
+    "ownerLabelTag": "cancore:owner:v1",
+    "instrumentLabelTag": "cancore:instrument:v1",
+    "damlNumericScale": 10
+  },
+  "rules": {
+    "user": "address(uint160(uint256(keccak256(abi.encode(\"cancore:owner:v1\", ownerPartyId, requestId)))))",
+    "inputToken": "address(uint160(uint256(keccak256(abi.encode(\"cancore:instrument:v1\", instrumentAdmin, instrumentId)))))",
+    "inputAmount": "amount × 10^10 (Daml Numeric 10); the request is refused unless it is exact",
+    "minReceived": "minReceived × 10^decimals(wantToken); the request is refused unless it is exact",
+    "feeBps": "feeRate × 10000; refused unless it is a whole number and ≤ MAX_FEE_BPS (1000). The fee is INCLUSIVE on both rails: inputAmount is the total, payout = inputAmount × 10000 / (10000 + feeBps) floored, fee = inputAmount − payout",
+    "createdAt": "unix seconds, the signing time of the Canton request; refused unless it is a whole second. Part of the hash only: the destination does not check it",
+    "fillDeadline": "unix seconds; refused unless it is a whole second",
+    "$requestId": "requestId is part of the owner label on purpose: without it two identical requests in the same second share one orderHash, and one delivery would match two SwapIntents (AUD-E-13, AUD-C-3)."
+  },
+  "vector": {
+    "input": {
+      "ownerPartyId": "alice::1220a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "requestId": "req-7f3a9c21-4d88-4e5b-9a1e-0c2f6b8d4e31",
+      "instrumentAdmin": "cancore-registry::1220f0e1d2c3b4a5968778695a4b3c2d1e0f0e1d2c3b4a5968778695a4b3c2d1e0f",
+      "instrumentId": "CNRX",
+      "amount": "1250.5",
+      "destinationChainId": "1",
+      "wantToken": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "wantDecimals": 6,
+      "minReceived": "1200.25",
+      "recipient": "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
+      "createdAt": 1789999400,
+      "fillDeadline": 1790000000,
+      "feeRate": "0.003",
+      "cantonOriginId": "9223372036854775809"
+    },
+    "order": {
+      "user": "0x47f0d84377B46651f7936AE656DCEceFDc1A2A86",
+      "originChainId": "9223372036854775809",
+      "inputToken": "0x795ae88257786ea0e2CFe2c43B88B420993dC98f",
+      "inputAmount": "12505000000000",
+      "destination": "0x0000000000000000000000000000000000000000000000000000000000000001",
+      "outputAsset": "0x000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "minReceived": "1200250000",
+      "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
+      "createdAt": "1789999400",
+      "fillDeadline": "1790000000",
+      "feeBps": "30"
+    },
+    "domain": {
+      "name": "CancoreRouter",
+      "version": "1",
+      "chainId": "9223372036854775809",
+      "verifyingContract": "0x2f37b46Ea93001829498b145985fb53028033701"
+    },
+    "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204"
+  }
+}

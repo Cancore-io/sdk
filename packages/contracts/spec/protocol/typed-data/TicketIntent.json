@@ -1,0 +1,65 @@
+{
+  "$comment": "Filler protocol v1 (frozen, RC): Field order orderHash, attempt, validFrom, validUntil (CAN-1842 A2). Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.",
+  "primaryType": "TicketIntent",
+  "domain": {
+    "name": "CancoreFillerProtocol",
+    "version": "1",
+    "fields": [
+      "name",
+      "version"
+    ]
+  },
+  "typeString": "TicketIntent(bytes32 orderHash,uint32 attempt,uint64 validFrom,uint64 validUntil)",
+  "types": {
+    "TicketIntent": [
+      {
+        "name": "orderHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "attempt",
+        "type": "uint32"
+      },
+      {
+        "name": "validFrom",
+        "type": "uint64"
+      },
+      {
+        "name": "validUntil",
+        "type": "uint64"
+      }
+    ]
+  },
+  "vectors": [
+    {
+      "note": "intent on the fixture ticket",
+      "message": {
+        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "attempt": 0,
+        "validFrom": "1790000040",
+        "validUntil": "1790000400"
+      },
+      "digest": "0xf3a07f98be564fb062f1574d933fc33f40e5c9e36c0fec83d3b3c4c15e9199c2"
+    },
+    {
+      "note": "every integer at its maximum",
+      "message": {
+        "orderHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "attempt": 4294967295,
+        "validFrom": "18446744073709551615",
+        "validUntil": "18446744073709551615"
+      },
+      "digest": "0xfc7e1cd80e6b3d6efc98bb80656c57f0dd5bc994126ee21f78de5880ce57b103"
+    },
+    {
+      "note": "zero",
+      "message": {
+        "orderHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "attempt": 0,
+        "validFrom": "0",
+        "validUntil": "0"
+      },
+      "digest": "0xd55f2a9c08605111f25c5b6b93b90f060b1c1318e46c40d8f0e6e3668828aaa7"
+    }
+  ]
+}

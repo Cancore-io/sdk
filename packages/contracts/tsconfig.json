@@ -3,7 +3,9 @@
   "compilerOptions": {
     // `node` for the tests (they read the spec snapshot from disk); the shipped
     // code is constants and runs anywhere.
-    "types": ["jest", "node"]
+    "types": ["jest", "node"],
+    // spec/protocol/*.json ships inside the bundle (schemas.ts).
+    "resolveJsonModule": true
   },
   "include": ["src/**/*.ts"],
   // The root config excludes this package (it is typechecked here instead);

@@ -1,0 +1,414 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cancore.io/schemas/filler-protocol/v1/messages.schema.json",
+  "title": "Cancore filler protocol v1 — WebSocket frames",
+  "$comment": "One $def per frame type, validated by name ($defs/<type>). The schemas encode the SENDER rule (protocol §3.1): lowercase hex, uint64 and wider as canonical decimal strings, uint8/16/32 as JSON integers, gateway times in milliseconds. No object is closed (V-2): receivers ignore unknown fields, takers ignore unknown S→F types, and treat an unknown reason/result/code as OTHER/generic. Every enum is open: anyOf [known values, futureEnumValue]. x-direction: S2F = gateway to taker (signed, addressed, timed), F2S = taker to gateway, both = either way (ping/pong; <type>S2F is the signed gateway copy, <type>F2S the taker's).",
+  "$defs": {
+    "uintDec64": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20, "description": "uint64 as a decimal string: digits only, no sign, no exponent, no leading zero" },
+    "uintDec256": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 78, "description": "uint256 as a decimal string" },
+    "intDecUsd": { "type": "string", "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$", "description": "signed decimal USD amount" },
+    "uint8": { "type": "integer", "minimum": 0, "maximum": 255 },
+    "uint16": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    "uint32": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+    "address": { "type": "string", "pattern": "^0x[0-9a-f]{40}$", "description": "EVM address, lowercase hex" },
+    "bytes32": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+    "sig65": { "type": "string", "pattern": "^0x[0-9a-f]{128}(1b|1c)$", "description": "65-byte r ‖ s ‖ v, low-s, v ∈ {27, 28}" },
+    "timeMs": { "type": "integer", "minimum": 1000000000000, "maximum": 9007199254740991, "description": "unix milliseconds, gateway clock; the minimum rejects seconds" },
+    "durationMs": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+    "timeS": { "$ref": "#/$defs/uintDec64", "description": "unix seconds as a decimal string (on-chain and signed times)" },
+    "caip2": { "type": "string", "pattern": "^(eip155:[1-9][0-9]*|canton:(mainnet|testnet|devnet))$" },
+    "cantonAsset": {
+      "type": "object",
+      "required": ["admin", "id"],
+      "properties": { "admin": { "type": "string", "minLength": 1 }, "id": { "type": "string", "minLength": 1 } }
+    },
+    "asset": { "oneOf": [{ "$ref": "#/$defs/address" }, { "$ref": "#/$defs/cantonAsset" }] },
+    "requestId": { "type": "string", "pattern": "^[!-~]{1,64}$", "description": "1..64 printable ASCII (Canonical.daml:90-93)" },
+    "fillerId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+    "messageId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "protocolVersion": { "const": "1" },
+    "order": {
+      "type": "object",
+      "description": "ICancoreRouter.Order, eleven fields, every numeric field a decimal string (the shape of canton-order.json vector.order)",
+      "required": ["user", "originChainId", "inputToken", "inputAmount", "destination", "outputAsset", "minReceived", "recipient", "createdAt", "fillDeadline", "feeBps"],
+      "properties": {
+        "user": { "$ref": "#/$defs/address" },
+        "originChainId": { "$ref": "#/$defs/uintDec64" },
+        "inputToken": { "$ref": "#/$defs/address" },
+        "inputAmount": { "$ref": "#/$defs/uintDec256" },
+        "destination": { "$ref": "#/$defs/bytes32" },
+        "outputAsset": { "$ref": "#/$defs/bytes32" },
+        "minReceived": { "$ref": "#/$defs/uintDec256" },
+        "recipient": { "$ref": "#/$defs/bytes32" },
+        "createdAt": { "$ref": "#/$defs/timeS" },
+        "fillDeadline": { "$ref": "#/$defs/timeS" },
+        "feeBps": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$", "description": "uint16" }
+      }
+    },
+    "ticket": {
+      "type": "object",
+      "required": ["orderHash", "filler", "attempt", "validFrom", "validUntil"],
+      "properties": {
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "filler": { "$ref": "#/$defs/address" },
+        "attempt": { "$ref": "#/$defs/uint32" },
+        "validFrom": { "$ref": "#/$defs/timeS" },
+        "validUntil": { "$ref": "#/$defs/timeS" }
+      }
+    },
+    "futureEnumValue": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$", "description": "a value added to an open enum within v1 (V-2); the receiver treats it as OTHER/generic. Every protocol enum is `anyOf: [{enum: known values}, futureEnumValue]`" },
+    "declineReason": {
+      "anyOf": [
+        { "enum": ["NO_INVENTORY", "RISK_LIMIT", "PRICE_MOVED", "PAUSED", "OTHER", "TICKET_SIGNER_UNKNOWN", "TICKET_MISMATCH", "TICKET_TTL_TOO_SHORT", "TICKET_ISSUED_LATE", "TICKET_BEYOND_DEADLINE", "ESCROW_NOT_OPEN", "ESCROW_MISMATCH", "PROOF_WINDOW_TOO_SHORT", "SKEW_MARGIN_TOO_SHORT", "DRAW_MISMATCH"] },
+        { "$ref": "#/$defs/futureEnumValue" }
+      ]
+    },
+    "errorCode": {
+      "anyOf": [
+        { "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL"] },
+        { "$ref": "#/$defs/futureEnumValue" }
+      ]
+    },
+    "expiredResult": { "anyOf": [{ "enum": ["FILLED", "NO_SHOW", "NO_SHOW_UNCONFIRMED", "EXEMPT"] }, { "$ref": "#/$defs/futureEnumValue" }] },
+    "exemptReason": { "anyOf": [{ "enum": ["DESTINATION_HALTED", "GATEWAY_FAULT", "REORGED_AFTER_INCLUSION", "RECIPIENT_NOT_READY", "OTHER"] }, { "$ref": "#/$defs/futureEnumValue" }] },
+    "quoteAckStatus": { "anyOf": [{ "enum": ["COUNTED", "LATE", "SHORT_TTL"] }, { "$ref": "#/$defs/futureEnumValue" }], "description": "verdict at receipt time; the final status is on GET /v1/filler/quotes" },
+    "penaltyStep": { "anyOf": [{ "enum": ["L1", "L2", "L3", "L4"] }, { "$ref": "#/$defs/futureEnumValue" }] },
+    "s2fEnvelope": {
+      "type": "object",
+      "required": ["type", "sentAt", "sig"],
+      "properties": {
+        "type": { "type": "string" },
+        "fillerId": { "$ref": "#/$defs/fillerId", "description": "the addressee" },
+        "sentAt": { "$ref": "#/$defs/timeMs" },
+        "sig": { "$ref": "#/$defs/sig65", "description": "gateway key over GatewayMessage{bodyHash = keccak256(JCS(frame without sig))}" },
+        "re": { "$ref": "#/$defs/messageId" }
+      }
+    },
+    "s2fBase": { "allOf": [{ "$ref": "#/$defs/s2fEnvelope" }, { "type": "object", "required": ["fillerId"], "properties": { "fillerId": { "$ref": "#/$defs/fillerId" } } }] },
+    "f2sBase": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": { "type": { "type": "string" }, "id": { "$ref": "#/$defs/messageId" } }
+    },
+    "auth.challenge": {
+      "x-direction": "S2F",
+      "type": "object",
+      "description": "First frame after connect; the addressee is not known yet, so no fillerId",
+      "allOf": [{ "$ref": "#/$defs/s2fEnvelope" }],
+      "required": ["type", "nonce", "expiresAt"],
+      "properties": { "type": { "const": "auth.challenge" }, "nonce": { "$ref": "#/$defs/bytes32" }, "expiresAt": { "$ref": "#/$defs/timeS" } }
+    },
+    "auth.response": {
+      "x-direction": "F2S",
+      "type": "object",
+      "description": "sig = FillerAuth{fillerId, nonce, expiresAt} by a registered quote key",
+      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
+      "required": ["type", "fillerId", "keyAddress", "protocolVersion", "sig"],
+      "properties": {
+        "type": { "const": "auth.response" },
+        "fillerId": { "$ref": "#/$defs/fillerId" },
+        "keyAddress": { "$ref": "#/$defs/address" },
+        "protocolVersion": { "type": "string", "description": "the gateway answers UNSUPPORTED_VERSION to anything it does not serve; v1 senders send \"1\"" },
+        "sig": { "$ref": "#/$defs/sig65" }
+      }
+    },
+    "auth.ok": {
+      "x-direction": "S2F",
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "heartbeatIntervalMs"],
+      "properties": { "type": { "const": "auth.ok" }, "heartbeatIntervalMs": { "$ref": "#/$defs/durationMs" } }
+    },
+    "ping": {
+      "x-direction": "both",
+      "description": "Heartbeat, either way. A receiver checks the copy of its direction: pingS2F (gateway to taker: signed, addressed, timed) or pingF2S (unsigned)",
+      "anyOf": [{ "$ref": "#/$defs/pingF2S" }, { "$ref": "#/$defs/pingS2F" }]
+    },
+    "pingF2S": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": { "type": { "const": "ping" }, "id": { "$ref": "#/$defs/messageId" } }
+    },
+    "pingS2F": {
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "id"],
+      "properties": { "type": { "const": "ping" }, "id": { "$ref": "#/$defs/messageId" } }
+    },
+    "pong": {
+      "x-direction": "both",
+      "description": "Answer to a ping, re = ping.id. A receiver checks the copy of its direction: pongS2F (signed, addressed, timed) or pongF2S (unsigned)",
+      "anyOf": [{ "$ref": "#/$defs/pongF2S" }, { "$ref": "#/$defs/pongS2F" }]
+    },
+    "pongF2S": {
+      "type": "object",
+      "required": ["type", "re"],
+      "properties": { "type": { "const": "pong" }, "re": { "$ref": "#/$defs/messageId" } }
+    },
+    "pongS2F": {
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "re"],
+      "properties": { "type": { "const": "pong" }, "re": { "$ref": "#/$defs/messageId" } }
+    },
+    "error": {
+      "x-direction": "S2F",
+      "type": "object",
+      "description": "Reply to the F→S frame `re`; also the REST error body. fillerId is absent before authentication",
+      "allOf": [{ "$ref": "#/$defs/s2fEnvelope" }],
+      "required": ["type", "code", "message"],
+      "properties": { "type": { "const": "error" }, "code": { "$ref": "#/$defs/errorCode" }, "message": { "type": "string" } }
+    },
+    "epoch.weights": {
+      "x-direction": "S2F",
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "epochId", "startsAt", "endsAt", "weightsRoot"],
+      "properties": {
+        "type": { "const": "epoch.weights" },
+        "epochId": { "$ref": "#/$defs/uintDec64" },
+        "startsAt": { "$ref": "#/$defs/timeS" },
+        "endsAt": { "$ref": "#/$defs/timeS" },
+        "weightsRoot": { "$ref": "#/$defs/bytes32" }
+      }
+    },
+    "quote.request": {
+      "x-direction": "S2F",
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "requestId", "route", "inputToken", "inputAmount", "outputAsset", "feeBps", "fillDeadlineHint", "windowCloseAt", "quoteTtlMs"],
+      "properties": {
+        "type": { "const": "quote.request" },
+        "requestId": { "$ref": "#/$defs/requestId" },
+        "route": {
+          "type": "object",
+          "required": ["src", "dst"],
+          "properties": { "src": { "$ref": "#/$defs/caip2" }, "dst": { "$ref": "#/$defs/caip2" } }
+        },
+        "inputToken": { "$ref": "#/$defs/asset" },
+        "inputAmount": { "$ref": "#/$defs/uintDec256", "description": "the total T the maker deposits (inclusive fee), input base units" },
+        "outputAsset": { "$ref": "#/$defs/asset" },
+        "feeBps": { "$ref": "#/$defs/uint16" },
+        "fillDeadlineHint": { "$ref": "#/$defs/timeS" },
+        "windowCloseAt": { "$ref": "#/$defs/timeMs" },
+        "quoteTtlMs": { "$ref": "#/$defs/durationMs" },
+        "imbalanceHint": {
+          "type": "object",
+          "required": ["dstAsset", "netFlow24hUsd"],
+          "properties": { "dstAsset": { "$ref": "#/$defs/asset" }, "netFlow24hUsd": { "$ref": "#/$defs/intDecUsd" } }
+        }
+      }
+    },
+    "quote": {
+      "x-direction": "F2S",
+      "type": "object",
+      "description": "sig = FillerQuote{keccak256(utf8(requestId)), filler, amountOut, validUntil, nonce} by the quote key; counts only if validUntil × 1000 ≥ windowCloseAt + quoteTtlMs",
+      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
+      "required": ["type", "requestId", "filler", "amountOut", "validUntil", "nonce", "sig"],
+      "properties": {
+        "type": { "const": "quote" },
+        "requestId": { "$ref": "#/$defs/requestId" },
+        "filler": { "$ref": "#/$defs/address" },
+        "amountOut": { "$ref": "#/$defs/uintDec256" },
+        "validUntil": { "$ref": "#/$defs/timeS" },
+        "nonce": { "$ref": "#/$defs/uintDec64" },
+        "sig": { "$ref": "#/$defs/sig65" }
+      }
+    },
+    "quote.ack": {
+      "x-direction": "S2F",
+      "type": "object",
+      "description": "For every well-formed, correctly signed quote, late ones included (S-12)",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "requestId", "quoteHash", "receivedAt", "status"],
+      "properties": {
+        "type": { "const": "quote.ack" },
+        "requestId": { "$ref": "#/$defs/requestId" },
+        "quoteHash": { "$ref": "#/$defs/bytes32" },
+        "receivedAt": { "$ref": "#/$defs/timeMs" },
+        "status": { "$ref": "#/$defs/quoteAckStatus" }
+      }
+    },
+    "quote.reconfirm": {
+      "x-direction": "S2F",
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "orderHash", "requestId", "order", "amountOut", "ticketTtl", "replyBy"],
+      "properties": {
+        "type": { "const": "quote.reconfirm" },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "requestId": { "$ref": "#/$defs/requestId" },
+        "order": { "$ref": "#/$defs/order" },
+        "amountOut": { "$ref": "#/$defs/uintDec256" },
+        "ticketTtl": { "$ref": "#/$defs/uint32", "description": "seconds" },
+        "replyBy": { "$ref": "#/$defs/timeMs" }
+      }
+    },
+    "quote.reconfirm.reply": {
+      "x-direction": "F2S",
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
+      "required": ["type", "orderHash", "accept"],
+      "properties": {
+        "type": { "const": "quote.reconfirm.reply" },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "accept": { "type": "boolean" },
+        "validUntil": { "$ref": "#/$defs/timeS" },
+        "nonce": { "$ref": "#/$defs/uintDec64" },
+        "sig": { "$ref": "#/$defs/sig65" }
+      },
+      "if": { "type": "object", "properties": { "accept": { "const": true } }, "required": ["accept"] },
+      "then": { "type": "object", "required": ["validUntil", "nonce", "sig"], "properties": { "validUntil": true, "nonce": true, "sig": true } }
+    },
+    "ticket.offer": {
+      "x-direction": "S2F",
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "orderHash", "attempt", "order", "amountOut", "validFrom", "validUntil", "acceptBy"],
+      "properties": {
+        "type": { "const": "ticket.offer" },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "attempt": { "$ref": "#/$defs/uint32" },
+        "order": { "$ref": "#/$defs/order" },
+        "amountOut": { "$ref": "#/$defs/uintDec256" },
+        "validFrom": { "$ref": "#/$defs/timeS" },
+        "validUntil": { "$ref": "#/$defs/timeS" },
+        "acceptBy": { "$ref": "#/$defs/timeMs" }
+      }
+    },
+    "ticket.intent": {
+      "x-direction": "F2S",
+      "type": "object",
+      "description": "sig = TicketIntent{orderHash, attempt, validFrom, validUntil} by the filler address; values equal the offer",
+      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
+      "required": ["type", "orderHash", "attempt", "validFrom", "validUntil", "sig"],
+      "properties": {
+        "type": { "const": "ticket.intent" },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "attempt": { "$ref": "#/$defs/uint32" },
+        "validFrom": { "$ref": "#/$defs/timeS" },
+        "validUntil": { "$ref": "#/$defs/timeS" },
+        "sig": { "$ref": "#/$defs/sig65" }
+      }
+    },
+    "ticket.decline": {
+      "x-direction": "F2S",
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
+      "required": ["type", "orderHash", "attempt", "reason"],
+      "properties": {
+        "type": { "const": "ticket.decline" },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "attempt": { "$ref": "#/$defs/uint32" },
+        "reason": { "$ref": "#/$defs/declineReason" },
+        "detail": { "type": "string" }
+      }
+    },
+    "ticket.intent.ack": {
+      "x-direction": "S2F",
+      "type": "object",
+      "description": "Idempotent: a repeated identical intent gets the identical ack",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "orderHash", "attempt", "intentHash", "receivedAt"],
+      "properties": {
+        "type": { "const": "ticket.intent.ack" },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "attempt": { "$ref": "#/$defs/uint32" },
+        "intentHash": { "$ref": "#/$defs/bytes32" },
+        "receivedAt": { "$ref": "#/$defs/timeMs" }
+      }
+    },
+    "ticket.issued": {
+      "x-direction": "S2F",
+      "type": "object",
+      "description": "form discriminates the EVM-destination ticket (FillTicket + ticketSig) from the Canton-destination one (DeliveryOrder); a form added within v1 (V-2) is checked against the common fields only",
+      "required": ["type", "form", "orderHash", "attempt"],
+      "properties": {
+        "type": { "const": "ticket.issued" },
+        "form": { "anyOf": [{ "enum": ["evm", "canton"] }, { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }] },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "attempt": { "$ref": "#/$defs/uint32" }
+      },
+      "allOf": [
+        { "$ref": "#/$defs/s2fBase" },
+        {
+          "if": { "type": "object", "properties": { "form": { "const": "evm" } }, "required": ["form"] },
+          "then": { "type": "object", "required": ["ticket", "ticketSig"], "properties": { "ticket": { "$ref": "#/$defs/ticket" }, "ticketSig": { "$ref": "#/$defs/sig65" } } }
+        },
+        {
+          "if": { "type": "object", "properties": { "form": { "const": "canton" } }, "required": ["form"] },
+          "then": { "type": "object", "required": ["deliveryOrderCid", "validUntil"], "properties": { "deliveryOrderCid": { "type": "string", "minLength": 1 }, "validUntil": { "$ref": "#/$defs/timeS" } } }
+        }
+      ]
+    },
+    "ticket.receipt": {
+      "x-direction": "F2S",
+      "type": "object",
+      "description": "sig = TicketReceipt{ticketHash, ticketSigHash} by the filler address",
+      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
+      "required": ["type", "orderHash", "attempt", "ticketHash", "ticketSigHash", "sig"],
+      "properties": {
+        "type": { "const": "ticket.receipt" },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "attempt": { "$ref": "#/$defs/uint32" },
+        "ticketHash": { "$ref": "#/$defs/bytes32" },
+        "ticketSigHash": { "$ref": "#/$defs/bytes32" },
+        "sig": { "$ref": "#/$defs/sig65" }
+      }
+    },
+    "fill.reported": {
+      "x-direction": "F2S",
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
+      "required": ["type", "orderHash", "attempt", "txRef"],
+      "properties": {
+        "type": { "const": "fill.reported" },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "attempt": { "$ref": "#/$defs/uint32" },
+        "txRef": { "type": "string", "minLength": 1, "description": "EVM tx hash or Canton update id" }
+      }
+    },
+    "ticket.expired": {
+      "x-direction": "S2F",
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "orderHash", "attempt", "result"],
+      "properties": {
+        "type": { "const": "ticket.expired" },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "attempt": { "$ref": "#/$defs/uint32" },
+        "result": { "$ref": "#/$defs/expiredResult" },
+        "exemptReason": { "$ref": "#/$defs/exemptReason" }
+      },
+      "if": { "type": "object", "properties": { "result": { "const": "EXEMPT" } }, "required": ["result"] },
+      "then": { "type": "object", "required": ["exemptReason"], "properties": { "exemptReason": true } }
+    },
+    "order.settled": {
+      "x-direction": "S2F",
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "orderHash", "payout", "fee", "penaltyWithheld", "txRef"],
+      "properties": {
+        "type": { "const": "order.settled" },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "payout": { "$ref": "#/$defs/uintDec256" },
+        "fee": { "$ref": "#/$defs/uintDec256" },
+        "penaltyWithheld": { "$ref": "#/$defs/uintDec256" },
+        "txRef": { "type": "string", "minLength": 1 }
+      }
+    },
+    "penalty.applied": {
+      "x-direction": "S2F",
+      "type": "object",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "violationId", "code", "step", "details"],
+      "properties": {
+        "type": { "const": "penalty.applied" },
+        "violationId": { "type": "string", "minLength": 1 },
+        "code": { "type": "string", "minLength": 1 },
+        "step": { "$ref": "#/$defs/penaltyStep" },
+        "details": { "type": "object" }
+      }
+    }
+  }
+}

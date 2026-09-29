@@ -61,9 +61,15 @@ jobs:
         working-directory: ${{ steps.target.outputs.dir }}
         # No token, and no `--provenance`: with trusted publishing npm mints the
         # credential from the OIDC token and attaches provenance by itself.
+        # A prerelease (`1.2.0-rc.1`) goes out under the `next` dist-tag: without
+        # it npm either refuses or moves `latest` onto the release candidate.
+        env:
+          VERSION: ${{ steps.target.outputs.version }}
         run: |
           echo "npm $(npm --version), node $(node --version)"
-          npm publish --access public
+          tag=latest
+          case "$VERSION" in *-*) tag=next ;; esac
+          npm publish --access public --tag "$tag"
 
       - name: Say what shipped
         run: |

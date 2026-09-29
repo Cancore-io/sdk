@@ -1,0 +1,90 @@
+{
+  "$comment": "Filler protocol v1 (frozen, RC): `bodyHash` = keccak256(utf8(JCS(message without \"sig\"))), JCS = RFC 8785. Each vector carries the S→F body, its canonical text and the hash. Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.",
+  "primaryType": "GatewayMessage",
+  "domain": {
+    "name": "CancoreFillerProtocol",
+    "version": "1",
+    "fields": [
+      "name",
+      "version"
+    ]
+  },
+  "typeString": "GatewayMessage(bytes32 bodyHash)",
+  "types": {
+    "GatewayMessage": [
+      {
+        "name": "bodyHash",
+        "type": "bytes32"
+      }
+    ]
+  },
+  "vectors": [
+    {
+      "note": "ticket.offer of the fixture order; `sig` is excluded from the body",
+      "body": {
+        "type": "ticket.offer",
+        "fillerId": "acme-markets",
+        "sentAt": 1790000020000,
+        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "attempt": 0,
+        "order": {
+          "user": "0xa11ce00000000000000000000000000000000001",
+          "originChainId": "11155111",
+          "inputToken": "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
+          "inputAmount": "1003000000",
+          "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
+          "outputAsset": "0x00000000000000000000000075faf114eafb1bdbe2f0316df893fd58ce46aa4d",
+          "minReceived": "999000000",
+          "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
+          "createdAt": "1790000000",
+          "fillDeadline": "1790000600",
+          "feeBps": "30"
+        },
+        "amountOut": "999000000",
+        "validFrom": "1790000040",
+        "validUntil": "1790000400",
+        "acceptBy": 1790000023000,
+        "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b"
+      },
+      "jcs": "{\"acceptBy\":1790000023000,\"amountOut\":\"999000000\",\"attempt\":0,\"fillerId\":\"acme-markets\",\"order\":{\"createdAt\":\"1790000000\",\"destination\":\"0x0000000000000000000000000000000000000000000000000000000000066eee\",\"feeBps\":\"30\",\"fillDeadline\":\"1790000600\",\"inputAmount\":\"1003000000\",\"inputToken\":\"0x1c7d4b196cb0c7b01d743fbc6116a902379c7238\",\"minReceived\":\"999000000\",\"originChainId\":\"11155111\",\"outputAsset\":\"0x00000000000000000000000075faf114eafb1bdbe2f0316df893fd58ce46aa4d\",\"recipient\":\"0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e\",\"user\":\"0xa11ce00000000000000000000000000000000001\"},\"orderHash\":\"0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6\",\"sentAt\":1790000020000,\"type\":\"ticket.offer\",\"validFrom\":\"1790000040\",\"validUntil\":\"1790000400\"}",
+      "message": {
+        "bodyHash": "0x7f50c68dc394bea871ccfb1ce50d1e4f048b1551f4ead0cb7bb8aa4d1c5d508e"
+      },
+      "digest": "0x335a1f5b61815b6afa8c76b211fa287a8baaa7447e3e5e967763848e1706c287"
+    },
+    {
+      "note": "quote.ack",
+      "body": {
+        "type": "quote.ack",
+        "fillerId": "acme-markets",
+        "sentAt": 1789999991001,
+        "re": "q-1",
+        "requestId": "req-7f3a9c21-4d88-4e5b-9a1e-0c2f6b8d4e31",
+        "quoteHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "receivedAt": 1789999991000,
+        "status": "COUNTED",
+        "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b"
+      },
+      "jcs": "{\"fillerId\":\"acme-markets\",\"quoteHash\":\"0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"re\":\"q-1\",\"receivedAt\":1789999991000,\"requestId\":\"req-7f3a9c21-4d88-4e5b-9a1e-0c2f6b8d4e31\",\"sentAt\":1789999991001,\"status\":\"COUNTED\",\"type\":\"quote.ack\"}",
+      "message": {
+        "bodyHash": "0xbc95d5d881aa645ad9201e5f1ba7fd2a1b870c6e1fd01724e60f26761ca42ba7"
+      },
+      "digest": "0xe2dc671bd1b44bfa129667c6d6e4758cc223989845b92940530fae6ac4dca2e3"
+    },
+    {
+      "note": "auth.challenge: the one frame without fillerId",
+      "body": {
+        "type": "auth.challenge",
+        "sentAt": 1789999980000,
+        "nonce": "0x63ed6389bd2a1d23bb678583c227172bda874e82b97b1c170bfeeb4373b4b0d5",
+        "expiresAt": "1790000030",
+        "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b"
+      },
+      "jcs": "{\"expiresAt\":\"1790000030\",\"nonce\":\"0x63ed6389bd2a1d23bb678583c227172bda874e82b97b1c170bfeeb4373b4b0d5\",\"sentAt\":1789999980000,\"type\":\"auth.challenge\"}",
+      "message": {
+        "bodyHash": "0xbd5fc99755c347292e1ed46407714d4250b12d6de2417c40bc020bf9d0893c36"
+      },
+      "digest": "0xfcb5a01ac6595cb1964991fac05b9230cbcaa90392c8371464c40337da2cd328"
+    }
+  ]
+}

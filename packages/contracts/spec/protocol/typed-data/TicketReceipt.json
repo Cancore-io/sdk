@@ -1,0 +1,51 @@
+{
+  "$comment": "Filler protocol v1 (frozen, RC): `ticketHash` = FillTicket digest, `ticketSigHash` = keccak256 of the 65 raw signature bytes. Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.",
+  "primaryType": "TicketReceipt",
+  "domain": {
+    "name": "CancoreFillerProtocol",
+    "version": "1",
+    "fields": [
+      "name",
+      "version"
+    ]
+  },
+  "typeString": "TicketReceipt(bytes32 ticketHash,bytes32 ticketSigHash)",
+  "types": {
+    "TicketReceipt": [
+      {
+        "name": "ticketHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "ticketSigHash",
+        "type": "bytes32"
+      }
+    ]
+  },
+  "vectors": [
+    {
+      "note": "receipt of the fixture ticket (illustrative signature 0x11…11 ‖ 0x1b)",
+      "message": {
+        "ticketHash": "0x466bc75e5efad07ad975aeea9ec731902bc804461686a6c8f76ef4fd50297819",
+        "ticketSigHash": "0x9d30145c6e97cad96cf7cee181ac9d5b879dea7fed0730d7197e84e28487292b"
+      },
+      "digest": "0x17d874287b30326bf0bcc1d56425b6346d928bd7dec201e4521c6f33a85eddc9"
+    },
+    {
+      "note": "all ones",
+      "message": {
+        "ticketHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "ticketSigHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "digest": "0x0ae52f577352714bfc3fc3fb33f7561aae7d915b364e26abf63660b6d1e7b850"
+    },
+    {
+      "note": "zero",
+      "message": {
+        "ticketHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "ticketSigHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "digest": "0xf09c636e52dd8b37732fbe339beabf1d4397db413662dd60d4eb2700ae35418e"
+    }
+  ]
+}
