@@ -1,3 +1,11 @@
+/**
+ * The draw of auction-and-draw §3.6: who gets attempt k of an order, from a
+ * drand quicknet round nobody knew when the order was fixed. Pure arithmetic —
+ * fetching the round and checking its BLS signature is the verifier's job
+ * (`@cancore/trader/taker` verifyDraw), not this package's.
+ */
+import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
+import { beBytes, hexBytes, keccak, toHex, uint } from './bytes';
 import type { Hex } from './typedData';
 
 export interface DrawCandidate {
@@ -21,18 +29,41 @@ export const DRAND_QUICKNET = {
   period: 3,
 } as const;
 
-const notYet = (): never => {
-  throw new Error('not implemented');
-};
-
-export function firstRoundAtOrAfter(_unixSeconds: bigint | number): bigint {
-  return notYet();
+/** The first quicknet round whose time is at or after `unixSeconds` (A-20: `round_k` for `t_k + δ_drand`). */
+export function firstRoundAtOrAfter(unixSeconds: bigint | number): bigint {
+  const t = BigInt(unixSeconds);
+  const genesis = BigInt(DRAND_QUICKNET.genesisTime);
+  const period = BigInt(DRAND_QUICKNET.period);
+  return t <= genesis ? 1n : (t - genesis + period - 1n) / period + 1n;
 }
 
-export function drawValue(_randomness: Hex | string, _orderHash: Hex, _attempt: number): bigint {
-  return notYet();
+/** `h = uint256(keccak256(randomness ‖ orderHash ‖ uint32be(attempt)))` — the 68-byte preimage of A-21. */
+export function drawValue(randomness: Hex | string, orderHash: Hex, attempt: number): bigint {
+  const rand = hexBytes(randomness.startsWith('0x') ? randomness : `0x${randomness}`, 'randomness', 32);
+  const preimage = concatBytes(rand, hexBytes(orderHash, 'orderHash', 32), beBytes(uint(attempt, 32, 'attempt'), 4));
+  return BigInt(toHex(keccak(preimage)));
 }
 
-export function drawWinner(_h: bigint, _candidates: readonly DrawCandidate[]): DrawOutcome {
-  return notYet();
+function compareUtf8(a: Uint8Array, b: Uint8Array): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return a[i]! - b[i]!;
+  return a.length - b.length;
+}
+
+/**
+ * `r = h mod Σw`; the winner is the first candidate, in ascending UTF-8 byte
+ * order of `fillerId` (A-22), whose cumulative weight exceeds `r`. Sorts a copy
+ * itself, so a verifier compares the outcome, not the order it was served in.
+ */
+export function drawWinner(h: bigint, candidates: readonly DrawCandidate[]): DrawOutcome {
+  const sorted = candidates
+    .map((c) => ({ id: c.fillerId, key: utf8ToBytes(c.fillerId), weight: uint(c.weight, 256, `weight of ${c.fillerId}`) }))
+    .sort((a, b) => compareUtf8(a.key, b.key));
+  if (new Set(sorted.map((c) => c.id)).size !== sorted.length) throw new Error('draw: duplicated fillerId');
+  const total = sorted.reduce((sum, c) => sum + c.weight, 0n);
+  if (total === 0n) throw new Error('draw: no candidate with a positive weight');
+  const r = h % total;
+  let acc = 0n;
+  const winner = sorted.find((c) => (acc += c.weight) > r)!;
+  return { r, winnerFillerId: winner.id };
 }

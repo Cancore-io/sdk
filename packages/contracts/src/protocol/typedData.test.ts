@@ -2,7 +2,7 @@ import { TypedDataEncoder } from 'ethers';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FILL_PROOF_TYPES } from '../eip712';
-import { encodeType, hashDomain, hashTypedData, type TypedDataDomain, type TypedDataTypes, typeHash } from './hash';
+import { encodeType, hashDomain, hashStruct, hashTypedData, type TypedDataDomain, type TypedDataTypes, typeHash } from './hash';
 import { FILLER_GATEWAYS, PROTOCOL_VERSION } from './gateway';
 import {
   FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, FILLER_AUTH_TYPES, FILLER_PROTOCOL_DOMAIN, FILLER_QUOTE_TYPES, GATEWAY_MESSAGE_TYPES,
@@ -50,6 +50,7 @@ describe.each(TABLE)('A1 %s', (name, path, types, domainOf) => {
     expect(domain.name).toBe(file.domain.name);
     expect(hashTypedData({ domain, types, primaryType: name, message: v.message })).toBe(v.digest);
     expect(ethersDigest(domain, types, v.message)).toBe(v.digest);
+    expect(hashStruct(types, name, v.message)).toBe(TypedDataEncoder.hashStruct(name, JSON.parse(JSON.stringify(types)), v.message));
   });
 });
 

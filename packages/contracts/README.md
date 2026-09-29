@@ -8,8 +8,9 @@ voucher `FeeVault` redeems, and the network registry the API's chain ids refer t
 npm install @cancore/contracts
 ```
 
-No runtime code beyond three lookups, no dependencies. Everything is `as const`, so viem and
-wagmi infer function, event and error types from the ABIs.
+Everything is `as const`, so viem and wagmi infer function, event and error types from the
+ABIs. The only runtime code is a few lookups and the filler protocol's hashing helpers, which
+need one dependency, `@noble/hashes`.
 
 ## What is here, and where it comes from
 
@@ -17,6 +18,7 @@ wagmi infer function, event and error types from the ABIs.
 | --- | --- | --- |
 | `@cancore/contracts/abi` | `HTLC_ABI`, `FEE_VAULT_ABI`, `CNRX_ABI`, `IHTLC_ABI`, `IBURN_MINT_ERC20_ABI`, `IPERMIT2_ABI`, `MULTI_BALANCE_CHECKER_ABI`; `HTLC_ERRORS`, `FEE_VAULT_ERRORS`, `CNRX_ERRORS` | `Cancore-io/evm-contracts/abi/*.json` — the reviewed snapshots that repository keeps in lock-step with its compiled contracts |
 | `@cancore/contracts/networks` | `NETWORKS`, `networkOf`, `networkKindOf`, `networkByChainId` | the chain ids the Cancore API uses |
+| `@cancore/contracts` (filler protocol v1) | EIP-712 types and domains of the intent rail, `hashTypedData` / `jcs` / `gatewayBodyHash` / `requestIdHash`, `drawValue` / `drawWinner` / `firstRoundAtOrAfter`, wire message types and enums, `FILLER_GATEWAYS` | `docs/intents/protocol.md` and `auction-and-draw.md` in Cancore-io/meta; `CancoreRouter.sol` for the code types |
 | `@cancore/contracts` | all of the above, plus `DEPLOYMENTS` / `deploymentOf`, `FEE_CLAIM_TYPES` / `feeClaimDomain`, `FILL_PROOF_TYPES` / `fillProofDomain` / `FillProof`, `BYTECODE_HASHES`, `CONTRACTS_RELEASE`, `describeRevert` | the contracts repository's `version.json` and bytecode hashes; the FeeVault contract's own struct and domain; `evm-contracts/abi/typed-data/FillProof.json` for the router's `FillProof` |
 
 The ABIs and selector tables are **generated**, never edited: `npm run sync` reads a checkout
@@ -60,6 +62,51 @@ are not in the published package). `evm-contracts` checks every vector against t
 `hashFillProof`, and this package's test checks the same file with an encoder of its own: a
 field changed there fails there at once, and here after the next `npm run sync`. The schema is
 synced like the ABIs.
+
+## Filler protocol v1 (RC)
+
+The wire protocol between a taker and the Cancore filler gateway, frozen as a release
+candidate in `0.2.0-rc.1` (npm dist-tag `next`). In `0.x` protocol v1 is the `0.2.x` line; a
+breaking protocol change is `0.3`.
+
+```ts
+import {
+  FILLER_PROTOCOL_DOMAIN, TICKET_INTENT_TYPES, hashTypedData, gatewayBodyHash, GATEWAY_MESSAGE_TYPES,
+} from '@cancore/contracts';
+
+// what the filler address signs to take an offered ticket
+const digest = hashTypedData({
+  domain: FILLER_PROTOCOL_DOMAIN,
+  types: TICKET_INTENT_TYPES,
+  primaryType: 'TicketIntent',
+  message: { orderHash, attempt, validFrom, validUntil },
+});
+
+// what every S→F frame's `sig` is over: GatewayMessage{bodyHash} in the same domain
+const bodyHash = gatewayBodyHash(frame); // keccak256(JCS(frame without sig))
+```
+
+`hashTypedData` encodes flat structs (address, bool, bytes, bytesN, string, uintN) and throws on
+anything else; it takes wire values as they come — decimal strings, numbers or bigints. There
+is no signing in this package: hand the digest to your own secp256k1 key.
+
+| Types | Domain | Status |
+| --- | --- | --- |
+| `FillerQuote`, `TicketIntent`, `TicketReceipt`, `StakeBinding`, `FillerAuth`, `GatewayMessage` | `CancoreFillerProtocol` v1 | frozen v1 (RC) — vectors in `spec/protocol/typed-data/` |
+| `Order` (11 fields, with `createdAt`), `Quote` | `CancoreRouter` v1, source router | router code; provisional copies in `spec/typed-data/` until evm-contracts publishes them |
+| `FillTicket` | `CancoreFillTicket` v1 | router code; provisional copy, as above |
+| `FillProof` | `CancoreRouter` v1, source router | synced from evm-contracts (above) |
+
+Golden vectors are generated with ethers by `scripts/gen-protocol-vectors.mjs` from the literal
+inputs in `scripts/protocol-fixtures.mjs`, and checked by this package's own encoder too. The
+`canton` Order vector equals `spec/vectors/canton-order.json`, a byte copy of
+`evm-contracts/test/vectors/canton-order.json` at `f936594`, which the router's test pins.
+`spec/protocol/vectors/jcs.json` holds RFC 8785 cases and `draw.json` the draw of
+auction-and-draw §3.7 (r = 417828, acme-markets) plus the test-kit fixture draw, both on real
+drand quicknet rounds.
+
+`FILLER_GATEWAYS` is where the gateway key and the ticket signers of each environment are
+published. It is empty in the RC: no gateway key exists yet.
 
 ## Reverts
 
