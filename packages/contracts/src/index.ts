@@ -2,7 +2,8 @@
  * `@cancore/contracts` — the Cancore EVM contracts as data.
  *
  * ABIs (`./abi`), the network registry (`./networks`), the EIP-712 voucher and
- * the release identity — no runtime code, no dependencies. What an integrator
+ * the release identity; and the filler protocol v1 (`./protocol`): its EIP-712
+ * types, hashing helpers and wire shapes. What an integrator
  * needs to talk to the contracts without copying files out of our repositories,
  * and what our own frontend, backend and MCP server can stop carrying four
  * separate copies of.
@@ -11,6 +12,7 @@ export * from './abi';
 export * from './networks';
 export * from './deployments';
 export * from './eip712';
+export * from './protocol';
 export { BYTECODE_HASHES, CONTRACTS_RELEASE } from './generated/meta';
 
 /** Decode a revert's 4-byte selector into the custom error it names, if it is one of ours. */

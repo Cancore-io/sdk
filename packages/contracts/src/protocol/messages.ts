@@ -1,0 +1,178 @@
+/**
+ * The wire shapes of filler protocol v1 — WebSocket frames on `/v1`, REST
+ * bodies and the public draw/epoch records — as TypeScript. The JSON Schemas
+ * under `spec/protocol/` are normative; schemas.test.ts holds the enums below
+ * to them. Encoding (protocol §3.1): uint64 and wider as decimal strings,
+ * uint8/16/32 as JSON integers, on-chain times in seconds (decimal string),
+ * gateway times in milliseconds (JSON integer), hex lowercase.
+ *
+ * Receivers ignore unknown fields and unknown S→F types (V-2), so none of
+ * these types is closed.
+ */
+import type { Hex } from './typedData';
+
+/** Unsigned decimal string: uint64 and wider. */
+export type DecString = string;
+/** Unix milliseconds, gateway clock. */
+export type TimeMs = number;
+/** EVM token address, or a Canton instrument. */
+export type WireAsset = Hex | { admin: string; id: string };
+
+export const DECLINE_REASONS = [
+  'NO_INVENTORY', 'RISK_LIMIT', 'PRICE_MOVED', 'PAUSED', 'OTHER',
+  'TICKET_SIGNER_UNKNOWN', 'TICKET_MISMATCH', 'TICKET_TTL_TOO_SHORT', 'TICKET_ISSUED_LATE', 'TICKET_BEYOND_DEADLINE',
+  'ESCROW_NOT_OPEN', 'ESCROW_MISMATCH', 'PROOF_WINDOW_TOO_SHORT', 'SKEW_MARGIN_TOO_SHORT', 'DRAW_MISMATCH',
+] as const;
+export const ERROR_CODES = [
+  'BAD_REQUEST', 'UNAUTHENTICATED', 'UNSUPPORTED_VERSION', 'UNSUPPORTED_TYPE', 'BAD_SIGNATURE',
+  'UNKNOWN_REQUEST', 'UNKNOWN_TICKET', 'TICKET_CLOSED', 'NOT_ELIGIBLE', 'RATE_LIMITED', 'INTERNAL',
+] as const;
+/** HTTP status of each error code on the REST fallback. */
+export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
+  BAD_REQUEST: 400, UNAUTHENTICATED: 401, UNSUPPORTED_VERSION: 400, UNSUPPORTED_TYPE: 400, BAD_SIGNATURE: 422,
+  UNKNOWN_REQUEST: 404, UNKNOWN_TICKET: 404, TICKET_CLOSED: 409, NOT_ELIGIBLE: 403, RATE_LIMITED: 429, INTERNAL: 500,
+};
+export const EXPIRED_RESULTS = ['FILLED', 'NO_SHOW', 'NO_SHOW_UNCONFIRMED', 'EXEMPT'] as const;
+export const EXEMPT_REASONS = ['DESTINATION_HALTED', 'GATEWAY_FAULT', 'REORGED_AFTER_INCLUSION', 'RECIPIENT_NOT_READY', 'OTHER'] as const;
+/** Verdict at receipt time, on the `quote.ack`. */
+export const QUOTE_ACK_STATUSES = ['COUNTED', 'LATE', 'SHORT_TTL'] as const;
+/** Final status of a quote, `GET /v1/filler/quotes`. */
+export const QUOTE_FINAL_STATUSES = [...QUOTE_ACK_STATUSES, 'REPLACED', 'BAD_SIG', 'OUTLIER', 'IN_BAND', 'OUT_OF_BAND', 'WON', 'LOST'] as const;
+export const PENALTY_STEPS = ['L1', 'L2', 'L3', 'L4'] as const;
+export const DRAW_CLOSED_BY = ['OFFER_TIMEOUT', 'OFFER_DECLINE', 'TICKET_DECLINE', 'TICKET_EXPIRED', 'FILLED'] as const;
+export const TICKET_LIST_STATUSES = ['OFFERED', 'ISSUED'] as const;
+
+export type DeclineReason = (typeof DECLINE_REASONS)[number];
+export type ErrorCode = (typeof ERROR_CODES)[number];
+export type ExpiredResult = (typeof EXPIRED_RESULTS)[number];
+export type ExemptReason = (typeof EXEMPT_REASONS)[number];
+export type QuoteAckStatus = (typeof QUOTE_ACK_STATUSES)[number];
+export type QuoteFinalStatus = (typeof QUOTE_FINAL_STATUSES)[number];
+export type PenaltyStep = (typeof PENALTY_STEPS)[number];
+export type DrawClosedBy = (typeof DRAW_CLOSED_BY)[number];
+
+/** `ICancoreRouter.Order` on the wire: every numeric field a decimal string, as `canton-order.json`. */
+export interface OrderJson {
+  user: Hex; originChainId: DecString; inputToken: Hex; inputAmount: DecString; destination: Hex; outputAsset: Hex;
+  minReceived: DecString; recipient: Hex; createdAt: DecString; fillDeadline: DecString; feeBps: DecString;
+}
+
+/** Every S→F frame: signed by the gateway (`GatewayMessage`), addressed (`fillerId`) and timed (`sentAt`). */
+export interface S2FBase {
+  type: string;
+  /** The addressee. Absent only on `auth.challenge` and on pre-auth `error`. */
+  fillerId?: string;
+  sentAt: TimeMs;
+  sig: Hex;
+  /** The F→S `id` this frame answers. */
+  re?: string;
+}
+/** Every F→S frame: `id` is unique per connection, ≤ 64 characters. */
+export interface F2SBase {
+  type: string;
+  id: string;
+}
+
+export interface AuthChallenge extends S2FBase { type: 'auth.challenge'; nonce: Hex; expiresAt: DecString }
+export interface AuthResponse extends F2SBase { type: 'auth.response'; fillerId: string; keyAddress: Hex; protocolVersion: '1'; sig: Hex }
+export interface AuthOk extends S2FBase { type: 'auth.ok'; fillerId: string; heartbeatIntervalMs: number }
+/** Both directions; an S→F ping also carries the S→F envelope. */
+export interface Ping { type: 'ping'; id: string }
+export interface Pong { type: 'pong'; re: string; id?: string }
+export interface ErrorMessage extends S2FBase { type: 'error'; code: ErrorCode; message: string }
+export interface EpochWeights extends S2FBase { type: 'epoch.weights'; epochId: DecString; startsAt: DecString; endsAt: DecString; weightsRoot: Hex }
+
+export interface QuoteRequest extends S2FBase {
+  type: 'quote.request';
+  requestId: string;
+  route: { src: string; dst: string };
+  inputToken: WireAsset;
+  /** The total T the maker deposits, input base units. */
+  inputAmount: DecString;
+  outputAsset: WireAsset;
+  feeBps: number;
+  fillDeadlineHint: DecString;
+  windowCloseAt: TimeMs;
+  quoteTtlMs: number;
+  imbalanceHint?: { dstAsset: WireAsset; netFlow24hUsd: string };
+}
+export interface QuoteMessage extends F2SBase { type: 'quote'; requestId: string; filler: Hex; amountOut: DecString; validUntil: DecString; nonce: DecString; sig: Hex }
+export interface QuoteAck extends S2FBase { type: 'quote.ack'; requestId: string; quoteHash: Hex; receivedAt: TimeMs; status: QuoteAckStatus }
+export interface QuoteReconfirm extends S2FBase {
+  type: 'quote.reconfirm'; orderHash: Hex; requestId: string; order: OrderJson; amountOut: DecString; ticketTtl: number; replyBy: TimeMs;
+}
+export interface QuoteReconfirmReply extends F2SBase {
+  type: 'quote.reconfirm.reply'; orderHash: Hex; accept: boolean; validUntil?: DecString; nonce?: DecString; sig?: Hex;
+}
+
+export interface TicketOffer extends S2FBase {
+  type: 'ticket.offer'; orderHash: Hex; attempt: number; order: OrderJson; amountOut: DecString; validFrom: DecString; validUntil: DecString; acceptBy: TimeMs;
+}
+export interface TicketIntentMessage extends F2SBase { type: 'ticket.intent'; orderHash: Hex; attempt: number; validFrom: DecString; validUntil: DecString; sig: Hex }
+export interface TicketDecline extends F2SBase { type: 'ticket.decline'; orderHash: Hex; attempt: number; reason: DeclineReason; detail?: string }
+export interface TicketIntentAck extends S2FBase { type: 'ticket.intent.ack'; orderHash: Hex; attempt: number; intentHash: Hex; receivedAt: TimeMs }
+export interface TicketJson { orderHash: Hex; filler: Hex; attempt: number; validFrom: DecString; validUntil: DecString }
+export interface TicketIssuedEvm extends S2FBase { type: 'ticket.issued'; form: 'evm'; orderHash: Hex; attempt: number; ticket: TicketJson; ticketSig: Hex }
+export interface TicketIssuedCanton extends S2FBase {
+  type: 'ticket.issued'; form: 'canton'; orderHash: Hex; attempt: number; deliveryOrderCid: string; validUntil: DecString;
+}
+export type TicketIssued = TicketIssuedEvm | TicketIssuedCanton;
+export interface TicketReceiptMessage extends F2SBase {
+  type: 'ticket.receipt'; orderHash: Hex; attempt: number; ticketHash: Hex; ticketSigHash: Hex; sig: Hex;
+}
+export interface FillReported extends F2SBase { type: 'fill.reported'; orderHash: Hex; attempt: number; txRef: string }
+export interface TicketExpired extends S2FBase { type: 'ticket.expired'; orderHash: Hex; attempt: number; result: ExpiredResult; exemptReason?: ExemptReason }
+export interface OrderSettled extends S2FBase {
+  type: 'order.settled'; orderHash: Hex; payout: DecString; fee: DecString; penaltyWithheld: DecString; txRef: string;
+}
+export interface PenaltyApplied extends S2FBase { type: 'penalty.applied'; violationId: string; code: string; step: PenaltyStep; details: Record<string, unknown> }
+
+export type S2FMessage =
+  | AuthChallenge | AuthOk | ErrorMessage | EpochWeights | QuoteRequest | QuoteAck | QuoteReconfirm
+  | TicketOffer | TicketIntentAck | TicketIssued | TicketExpired | OrderSettled | PenaltyApplied;
+export type F2SMessage =
+  | AuthResponse | QuoteMessage | QuoteReconfirmReply | TicketIntentMessage | TicketDecline | TicketReceiptMessage | FillReported;
+
+// --- REST (protocol §3.6); an error body is the `error` message itself.
+
+export interface AuthToken { token: string; expiresAt: TimeMs }
+export interface Page<T> { items: T[]; nextCursor: string | null }
+export type TicketList = Page<TicketOffer | TicketIssued>;
+export interface QuoteRecord { quote: QuoteMessage; ack: QuoteAck; status: QuoteFinalStatus }
+export type QuoteList = Page<QuoteRecord>;
+export interface StakeBindingRequest { partnerId: string; stakingAddress: Hex; chainId: DecString; nonce: DecString; sig: Hex }
+export interface FillerStats { won: number; delivered: number; noShow: number; reliability: number; capacityUsd: string; inFlightUsd: string }
+export interface PenaltyRecord { violationId: string; code: string; step: PenaltyStep; orderHash?: Hex; attempt?: number; at: TimeMs; details: Record<string, unknown> }
+export type PenaltyList = Page<PenaltyRecord>;
+
+// --- Public records (auction-and-draw §3.3–3.4) and the gateway identity.
+
+export interface DrawAttempt {
+  attempt: number;
+  tBase: DecString;
+  closedBy: DrawClosedBy | null;
+  drandRound: DecString;
+  drandRandomness: Hex;
+  drandSignature: Hex;
+  candidates: { fillerId: string; weight: DecString }[];
+  r: DecString;
+  winnerFillerId: string;
+  fallbackReason: 'DRAW_FALLBACK' | null;
+}
+export interface DrawRecord {
+  orderHash: Hex; source: string; openRef: string; t0: DecString; epochId: DecString; deltaDrand: number; attempts: DrawAttempt[]; sig: Hex;
+}
+export interface EpochLeaf { fillerId: string; base: DecString; tier: number; reliabilityBps: number }
+export interface EpochRecord {
+  epochId: DecString;
+  startsAt: DecString;
+  endsAt: DecString;
+  weightsRoot: Hex;
+  leaves: EpochLeaf[];
+  stakeSteps: { tier: number; minStake: DecString; step: DecString }[];
+  rMinBps: number;
+  snapshotBlocks: Record<string, DecString>;
+  sig: Hex;
+}
+/** `GET /v1/gateway`: the mirror of `FILLER_GATEWAYS` for one environment. */
+export interface GatewayInfo { env: string; gateway: Hex; ticketSigners: Hex[]; protocolVersion: '1' }
