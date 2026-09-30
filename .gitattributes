@@ -11,3 +11,8 @@ packages/contracts/src/generated/*.ts linguist-generated=true
 # evm-contracts/abi/typed-data, which spec/typed-data mixes with hand copies.
 packages/contracts/src/generated/meta.ts -linguist-generated
 packages/contracts/src/generated/typedData.ts -linguist-generated
+# Rewritten whole by packages/client/scripts/refresh-spec.mjs from the deployed
+# gateway document (daily client-spec-refresh); packages/client/src/spec.test.ts
+# checks what the client derives from it. Folded in diffs and out of the review
+# size budget; the script and the test stay reviewable.
+packages/client/spec/openapi.json linguist-generated=true
