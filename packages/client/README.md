@@ -279,7 +279,8 @@ source amount grossed up by the fee rate so the taker receives exactly what the 
 `take` does the same for the counter leg. The preimage is also stored with the API,
 encrypted for the maker, so a maker process that dies mid-swap resumes it with another
 `make(order.id)`. The API releases it only once the taker's counter leg is locked, so a
-resumed `make` reads it back right before the claim, not when it starts. A CC delivery arrives through the account's preapproval (`delivery:
+resumed `make` reads it back right before the claim, not when it starts. A CC delivery
+arrives through the account's preapproval (`delivery:
 'direct'`); a registry-token delivery (CBTC, USDCx) is a transfer this account accepts
 (`'accepted'`), or `'pending'` if it did not arrive within `deliveryWaitMs` — the next
 `acceptIncoming` takes it.
