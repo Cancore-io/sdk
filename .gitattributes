@@ -1,0 +1,10 @@
+# The TypeScript under packages/contracts/src/generated is written by
+# scripts/sync.mjs and sync-typed-data.mjs from the JSON under spec/, and CI
+# holds it to that JSON (contracts.test.ts: every exported ABI equals its
+# spec/abi snapshot; every error selector is recomputed with keccak-256).
+# Marking it generated folds it in GitHub diffs and keeps it out of the review
+# size budget; the JSON it mirrors stays reviewable.
+packages/contracts/src/generated/*.ts linguist-generated=true
+# meta.ts carries the release identity and bytecode hashes, which no test
+# derives from anything a reviewer already read: keep it in the review.
+packages/contracts/src/generated/meta.ts -linguist-generated
