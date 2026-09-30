@@ -24,7 +24,7 @@ describe('refusalOf, by code', () => {
     expect(refusalOf(refused(409, { errorCode: 'KEY_IN_USE', message: 'x' }))).toBe('other');
   });
 
-  test('a body with a code is never read as prose', () => {
+  test('a body with a known code is never read as prose', () => {
     // The text names another condition: the code decides.
     expect(refusalOf(refused(400, { errorCode: 'KEY_IN_USE', message: 'submission timed out — safe to retry' }))).toBe('other');
     expect(refusalOf(refused(400, { errorCode: 'PREPARED_SUBMISSION_EXPIRED', message: 'safe to retry' }))).toBe('rerunCeremony');
@@ -49,6 +49,10 @@ describe('refusalOf, with no code on the body (prose fallback for a gateway that
 
   test('the status still has to match', () => {
     expect(refusalOf(refused(500, { message: 'safe to retry' }))).toBe('other');
+  });
+
+  test('an unknown code from a newer gateway is read by its text, like no code', () => {
+    expect(refusalOf(refused(400, { errorCode: 'SOME_FUTURE_CODE', message: 'timed out — safe to retry' }))).toBe('retrySameSignatures');
   });
 
   test('an unknown code from a newer gateway with no known prose is other', () => {

@@ -67,7 +67,8 @@ export function refusalForCode(code: SdkErrorCode): Refusal {
 }
 
 /*
- * ponytail: prose fallback, only for a body with no code. The API names these
+ * ponytail: prose fallback, only for a body with no code this client knows (none,
+ * or one from a newer gateway). The API names these
  * conditions in its message but, on mainnet and on the paths that do not throw
  * `sdkError` yet, carries no code for them. Goes when the backend follow-up
  * (CAN-1955: #1875/#1877 rebased on #1907) gives all six a code.
@@ -83,7 +84,10 @@ function refusalFromProse(err: CancoreApiError): Refusal {
   return 'other';
 }
 
-/** Code first; the text of the message only when the body carries no code at all. */
+/**
+ * Code first; the text of the message only when the body carries no code this
+ * client knows — none (an older gateway), or one it does not (a newer gateway).
+ */
 export function refusalOf(err: unknown): Refusal {
   if (!(err instanceof CancoreApiError)) return 'other';
   return err.errorCode === undefined ? refusalFromProse(err) : refusalForCode(err.errorCode);
