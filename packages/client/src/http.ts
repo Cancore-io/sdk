@@ -6,6 +6,7 @@
  * that adds whatever your credential is; the client adds the JSON headers, the
  * base URL and one error type. Nothing here holds a key or signs anything.
  */
+import { SDK_ERROR_CODES, type SdkErrorCode } from './sdk-error-codes';
 
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -18,8 +19,25 @@ export interface ClientOptions {
   fetchImpl?: FetchLike;
 }
 
+const KNOWN_CODES: ReadonlySet<string> = new Set(SDK_ERROR_CODES);
+
+/**
+ * The refusal code of a response body, or undefined: `errorCode`, else `code` (a
+ * gateway older than the registry sends only `code`). A code this client does
+ * not know (a newer gateway) is undefined too. Total: never throws, never logs.
+ */
+export function sdkErrorCodeOf(body: unknown): SdkErrorCode | undefined {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return undefined;
+  const { errorCode, code } = body as { errorCode?: unknown; code?: unknown };
+  const raw = typeof errorCode === 'string' && errorCode !== '' ? errorCode : code;
+  return typeof raw === 'string' && KNOWN_CODES.has(raw) ? (raw as SdkErrorCode) : undefined;
+}
+
 /** A non-2xx answer, with the server's own message kept intact. */
 export class CancoreApiError extends Error {
+  /** The registry code the gateway refused with; undefined when the body carries none this client knows. */
+  readonly errorCode?: SdkErrorCode;
+
   constructor(
     readonly status: number,
     readonly method: string,
@@ -29,7 +47,12 @@ export class CancoreApiError extends Error {
   ) {
     super(`${method} ${path} → ${status}${messageOf(body)}`);
     this.name = 'CancoreApiError';
+    this.errorCode = sdkErrorCodeOf(body);
   }
+}
+
+export function isSdkError<C extends SdkErrorCode>(e: unknown, code: C): e is CancoreApiError & { errorCode: C } {
+  return e instanceof CancoreApiError && e.errorCode === code;
 }
 
 function messageOf(body: unknown): string {

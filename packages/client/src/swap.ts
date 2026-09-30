@@ -4,12 +4,9 @@
  * and the pool trade, quote → execute, with no counterparty to wait for.
  *
  * Every shape below is the API's own DTO, field for field, as the gateway's
- * OpenAPI document declares it (`spec/openapi.json`, checked by spec.test.ts).
- * The pool-trade shapes are the exception, and a narrower one than it used to
- * be: the document now carries the /auto-trader routes, but not their fields —
- * the request DTOs come out with no properties and none of the three declares a
- * response schema. So `Pair`, `Quote` and `Executed` stay written from what the
- * service returns, and spec.test.ts holds the routes and says why not the rest.
+ * OpenAPI document declares it (`spec/openapi.json`, checked by spec.test.ts) —
+ * the pool-trade shapes too, since the document started typing the /auto-trader
+ * routes (`PairListItemDto`, `QuoteResultDto`, `ExecuteResultDto`).
  *
  * Nothing here signs. Accepting an order is a POST; where a swap then needs the
  * user's signature (self-custody legs), that ceremony runs through
