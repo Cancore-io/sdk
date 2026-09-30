@@ -19,7 +19,8 @@
  * this signer.
  */
 import { signLegs, type OperationLeg } from '@cancore/wallet/operations';
-import { CancoreApiError, createHttp, type Http } from './http';
+import { createHttp, type Http } from './http';
+import { refusalOf } from './refusal';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
 
@@ -273,22 +274,6 @@ const DEAD: ReadonlySet<HtlcStatus> = new Set([
   'escrow_compromised',
 ]);
 
-/*
- * The API's refusals a program acts on, matched on the text the API sends —
- * it names each condition in its message and carries no code for it yet. One
- * place, so the day codes arrive is a change here only.
- */
-const says = (err: unknown, status: number, text: string): boolean =>
-  err instanceof CancoreApiError && err.status === status && JSON.stringify(err.body ?? '').includes(text);
-/** The prepared submission timed out and may still commit: resubmitting the same signatures is deduplicated. */
-const timedOutSafeToRetry = (err: unknown) => says(err, 400, 'safe to retry');
-/** The one-shot prepare stash was gone when the submit arrived: nothing committed, the whole ceremony may run again. */
-const stalePrepare = (err: unknown) => says(err, 400, 'No pending');
-const tooFragmented = (err: unknown) => says(err, 409, 'Wallet too fragmented');
-const counterNotReady = (err: unknown) => says(err, 400, 'Counter proposal not found');
-const counterAlreadyAccepted = (err: unknown) => says(err, 400, 'Counter proposal already accepted');
-const alreadySettled = (err: unknown) => says(err, 400, 'both_claimed');
-
 export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccount {
   const { baseUrl, signer, pollMs = 5_000, now = Date.now } = options;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -305,7 +290,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       try {
         return await http.post('/wallet/operations/submit', { operationId, signatures });
       } catch (err) {
-        if (attempt < 2 && timedOutSafeToRetry(err)) {
+        if (attempt < 2 && refusalOf(err) === 'retrySameSignatures') {
           await sleep(pollMs);
           continue;
         }
@@ -334,7 +319,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       try {
         return { meta: prepared.meta, result: await submit(prepared.operationId, signatures) };
       } catch (err) {
-        if (rerunOnStalePrepare && attempt === 0 && stalePrepare(err)) continue;
+        if (rerunOnStalePrepare && attempt === 0 && refusalOf(err) === 'rerunCeremony') continue;
         throw new CeremonyError(type, 'submit', err, prepared.meta as Record<string, unknown> | null);
       }
     }
@@ -411,7 +396,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       } catch (err) {
         if (!(err instanceof CeremonyError)) throw err;
         // Too many small holdings for one command: only this key can merge them.
-        if (!healed && err.stage === 'prepare' && tooFragmented(err.cause)) {
+        if (!healed && err.stage === 'prepare' && refusalOf(err.cause) === 'mergeThenRetry') {
           let merged = 0;
           for (let pass = 0; pass < HEAL_MERGE_PASSES; pass++) {
             const n = await consolidate(order.sourceTokenAddress);
@@ -449,8 +434,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         return;
       } catch (err) {
         const cause = err instanceof CeremonyError ? err.cause : err;
-        if (counterAlreadyAccepted(cause)) return;
-        if (!counterNotReady(cause)) throw err;
+        if (refusalOf(cause) === 'counterAlreadyAccepted') return;
+        if (refusalOf(cause) !== 'counterNotReady') throw err;
       }
       if (now() >= deadline) throw new SettleError('timed out waiting for the counter proposal', swapId, state);
       await sleep(pollMs);
@@ -530,7 +515,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     if (state.status === 'counter_accepted') {
       preimage ??= await storedPreimage(swapId, deadline);
       await http.post(`/htlc/${encodeURIComponent(swapId)}/claim`, { preimage }).catch((err: unknown) => {
-        if (!alreadySettled(err)) throw err;
+        if (refusalOf(err) !== 'alreadySettled') throw err;
       });
     }
     return finish(swapId, order.targetTokenAddress, deadline, opts.deliveryWaitMs ?? DEFAULT_DELIVERY_WAIT_MS);

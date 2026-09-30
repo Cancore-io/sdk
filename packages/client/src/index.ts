@@ -6,8 +6,10 @@
  * holds a key or signs; where a step needs a signature, the client hands you a
  * hash and takes the signature back.
  */
-export { createHttp, CancoreApiError } from './http';
+export { createHttp, CancoreApiError, isSdkError, sdkErrorCodeOf } from './http';
 export type { ClientOptions, FetchLike, Http } from './http';
+export { SDK_ERROR_CODES } from './sdk-error-codes';
+export type { SdkErrorCode } from './sdk-error-codes';
 export { createSwapClient, swap, TERMINAL_ORDER_STATUSES, TrackTimeoutError } from './swap';
 export type {
   CreateOrderInput,

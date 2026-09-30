@@ -19,12 +19,10 @@ import { createSwapClient } from './swap';
  * client method is CALLED against a recording transport, and what it actually
  * requested is what gets checked. Adding a method adds a checked route.
  *
- * `/auto-trader/*` used to be outside the document entirely. It is in now, so
- * the three pool-trade routes take the same route/method check as the rest —
- * but only the routes: their fields are still undocumented, and the test below
- * pins that so the day they arrive is a red test rather than nobody noticing.
- * The device-flow routes are held the same way, for the part the document
- * does not carry.
+ * `/auto-trader/*` used to be outside the document, then in it as routes only;
+ * its fields arrived with the snapshot refresh of CAN-2029, so the
+ * three pool-trade routes are held to their fields like the rest. The
+ * device-flow routes are still held for the part the document does not carry.
  */
 interface Spec {
   paths: Record<string, Record<string, unknown>>;
@@ -122,44 +120,6 @@ test('the client wraps no operator route', async () => {
 });
 
 /**
- * The three pool-trade routes are in the document as routes and nothing more:
- * `QuoteDto` and `ExecuteDto` come out with no properties, `GET /auto-trader/pairs`
- * declares no parameters, and none of the three types a response. So there is
- * nothing for `ListPairsQuery`, `Pair`, `Quote` and `Executed` to be held to,
- * and they stay written from what the service returns. That gap is the
- * document's, not these routes' alone — plenty of its DTOs are empty and most
- * of its operations type no response.
- *
- * Pinning it here means the day the detail arrives is a red test with the next
- * step in it, which is what the old "they are outside the document" assertion
- * bought before the routes landed.
- */
-const POOL_TRADE: Array<[string, string]> = [
-  ['get', '/auto-trader/pairs'],
-  ['post', '/auto-trader/quote'],
-  ['post', '/auto-trader/execute'],
-];
-
-test('the pool-trade routes are documented as routes only, so the field checks cannot reach them', () => {
-  const arrived = POOL_TRADE.flatMap(([method, path]) => {
-    const op = spec.paths[path]?.[method] as Operation | undefined;
-    expect(op).toBeDefined();
-    const dto = op?.requestBody?.content['application/json']?.schema?.$ref?.split('/').pop();
-    return [
-      (op?.parameters ?? []).length > 0 && `${path} declares query parameters`,
-      dto && Object.keys(spec.components.schemas[dto]?.properties ?? {}).length > 0 && `${dto} has properties`,
-      Object.values(op?.responses ?? {}).some((r) => r.content) && `${path} types a response`,
-    ].filter((found): found is string => typeof found === 'string');
-  });
-  if (arrived.length > 0) {
-    throw new Error(
-      `${arrived.join('; ')}. This is the expected signal, not a regression: put those fields in QUERY_FIELDS, ` +
-        'REQUEST_FIELDS or RESPONSE_FIELDS below so the client is held to them, and drop the route from POOL_TRADE.',
-    );
-  }
-});
-
-/**
  * The device-flow routes are in the document in part: `DeviceAuthorizeDto` and
  * `GrantLimitsDto` carry their fields and are held below like every other
  * request type, but `DevicePollDto` comes out with no properties and neither
@@ -210,6 +170,8 @@ const REQUEST_FIELDS: Record<string, string[]> = {
   SubmitOperationDto: ['operationId', 'signatures'],
   OperationSignatureDto: ['legId', 'signature'],
   ClaimHtlcDto: ['preimage'],
+  QuoteDto: ['pairConfigId', 'sourceAmount'],
+  ExecuteDto: ['quoteToken'],
 };
 
 /**
@@ -242,6 +204,7 @@ const QUERY_FIELDS: Record<string, string[]> = {
   '/orders': ['page', 'pageSize', 'sortBy', 'sortDir', 'sourceNetwork', 'targetNetwork', 'sourceTokenAddress', 'targetTokenAddress', 'statusFilter'],
   '/orders/my': ['page', 'pageSize', 'sortBy', 'sortDir', 'sourceNetwork', 'targetNetwork', 'sourceTokenAddress', 'targetTokenAddress', 'statusFilter'],
   '/canton-wallet/bridge/history': ['page', 'pageSize'],
+  '/auto-trader/pairs': ['sourceToken', 'targetToken', 'sortBy', 'sortDir'],
 };
 
 test.each(Object.entries(QUERY_FIELDS))('GET %s: every query field the client types is a parameter the route declares', (path, fields) => {
@@ -287,14 +250,24 @@ const RESPONSE_FIELDS: Record<string, string[]> = {
   LegalConsentStatusDto: ['accepted', 'requiredVersion'],
   PreimageResponseDto: ['preimage', 'senderPreimage'],
   TokenBalanceDto: ['balance', 'holdingsCount'],
+  PairListItemDto: [
+    'id', 'sourceToken', 'targetToken', 'sourceInstrumentId', 'targetInstrumentId', 'spreadPercent',
+    'minAmountUsd', 'maxAmountUsd', 'timeoutHours', 'marketRate', 'quotedRate', 'sourcePriceUsd',
+    'volume24hUsd', 'trades24h', 'availableTargetAmount', 'availableTargetUsd', 'availableSourceAmount',
+    'effectiveSpreadPercent', 'targetSkew', 'amountPrecision', 'pricePrecision',
+  ],
+  QuoteResultDto: [
+    'quoteToken', 'pairConfigId', 'sourceToken', 'sourceAmount', 'targetToken', 'targetAmount',
+    'marketRate', 'quotedRate', 'spreadPercent', 'subsidized', 'expiresInSec',
+  ],
+  ExecuteResultDto: ['orderId', 'recordId'],
 };
 
 /**
  * Routes the self-custody account reads whose answers the document does not
  * type: the envelope's prepare/submit, the fee and timeout lookups, and the
  * partner cashback routes. Their shapes in selfcustody.ts are written from the
- * services. Pinned like the pool-trade routes above, so the day a schema lands
- * is a red test with the next step in it.
+ * services. Pinned so the day a schema lands is a red test with the next step in it.
  */
 const UNTYPED_ANSWERS: Array<[string, string]> = [
   ['post', '/wallet/operations/prepare'],

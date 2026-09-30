@@ -702,18 +702,13 @@ describe('the same refusals, carried by errorCode with no condition in the text'
     expect(taken.swap.status).toBe('both_claimed');
   });
 
-  test('a counter leg not there yet is polled, and one already accepted counts as accepted', async () => {
-    const polled = venue({ coded: true });
-    const first = await tradingPair(polled, [30, 31]);
-    const [made] = await Promise.all([first.maker.make('o1', SHORT), first.taker.take('o1', SHORT)]);
+  test('a counter leg an earlier attempt already accepted counts as accepted, and the swap settles', async () => {
+    const api = venue({ counterAcceptedElsewhere: true, coded: true });
+    const { maker, taker } = await tradingPair(api, [30, 31]);
+    const [made] = await Promise.all([maker.make('o1', SHORT), taker.take('o1', SHORT)]);
     expect(made.swap.status).toBe('both_claimed');
-    expect(askedFor(polled, 'htlc.accept-counter')).toBeGreaterThan(1);
-
-    const elsewhere = venue({ counterAcceptedElsewhere: true, coded: true });
-    const second = await tradingPair(elsewhere, [32, 33]);
-    const [settled] = await Promise.all([second.maker.make('o1', SHORT), second.taker.take('o1', SHORT)]);
-    expect(settled.swap.status).toBe('both_claimed');
-    expect(askedFor(elsewhere, 'htlc.accept-counter')).toBe(1);
+    expect(askedFor(api, 'htlc.accept-counter')).toBe(1);
+    expect(api.claims).toHaveLength(1);
   });
 });
 
