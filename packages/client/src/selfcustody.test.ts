@@ -30,7 +30,8 @@ const hex = (text: string) => new Uint8Array(Buffer.from(text, 'hex'));
 const jwt = (sub: string, exp = FAR) =>
   `h.${Buffer.from(JSON.stringify({ sub, exp })).toString('base64url')}.s`;
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-const refuse = (status: number, message: string) => json({ statusCode: status, message }, status);
+const refuse = (status: number, message: string, errorCode?: string) =>
+  json({ statusCode: status, message, ...(errorCode ? { errorCode, code: errorCode } : {}) }, status);
 
 interface Account { publicKey: string; id: string; partyId: string | null; roles: string[] }
 interface Leg { legId: string; hash: string; kind: string }
@@ -53,6 +54,8 @@ interface VenueOptions {
   rejectAfterCreate?: boolean;
   /** The counter leg is accepted by an earlier attempt: the next accept says so. */
   counterAcceptedElsewhere?: boolean;
+  /** The refusals the SDK acts on carry their errorCode and a text that names no condition, as the registry gateway sends them. */
+  coded?: boolean;
 }
 
 function venue({
@@ -61,7 +64,10 @@ function venue({
   flowBSubmitFails,
   rejectAfterCreate = false,
   counterAcceptedElsewhere = false,
+  coded = false,
 }: VenueOptions = {}) {
+  const refusal = (status: number, prose: string, errorCode: string) =>
+    coded ? refuse(status, 'refused', errorCode) : refuse(status, prose);
   const accounts = new Map<string, Account>(); // by bearer token
   const byKey = new Map<string, Account>();
   const pending = new Map<string, Pending>();
@@ -112,7 +118,7 @@ function venue({
         if (fragmented && (fragmented !== 'once' || fragmentedRefusals === 0)) {
           // A heal loop that never ends would spin here forever: the fifth refusal is one the SDK does not heal.
           if (++fragmentedRefusals > 4) return refuse(400, 'the fake venue ends a heal loop that does not end');
-          return refuse(409, 'Wallet too fragmented: the deposit leg needs more holdings than Canton allows in one command.');
+          return refusal(409, 'Wallet too fragmented: the deposit leg needs more holdings than Canton allows in one command.', 'WALLET_TOO_FRAGMENTED');
         }
         legs = [leg('escrow'), leg('transfer')];
         meta = { swapId: 's1' };
@@ -125,9 +131,9 @@ function venue({
       case 'htlc.accept-counter':
         if (counterAcceptedElsewhere) {
           swap!.status = 'counter_accepted';
-          return refuse(400, 'Counter proposal already accepted');
+          return refusal(400, 'Counter proposal already accepted', 'COUNTER_PROPOSAL_ALREADY_ACCEPTED');
         }
-        if (counterPollsLeft > 0) return refuse(400, 'Counter proposal not found on swap');
+        if (counterPollsLeft > 0) return refusal(400, 'Counter proposal not found on swap', 'COUNTER_PROPOSAL_NOT_READY');
         legs = [leg('transfer')];
         break;
       case 'tokens.accept': legs = [leg('transfer')]; break;
@@ -146,7 +152,7 @@ function venue({
     pending.delete(operationId);
     if (op.type === 'htlc.accept-deposit-counter' && staleDeposit) {
       staleDeposit = false;
-      return refuse(400, 'No pending accept-deposit submission found for this key');
+      return refusal(400, 'No pending accept-deposit submission found for this key', 'PREPARED_SUBMISSION_EXPIRED');
     }
     log.push({ type: op.type, params: op.params });
     switch (op.type) {
@@ -408,6 +414,37 @@ test('a submit that timed out is resubmitted with the same signatures; a plain e
   expect(prepares).toBe(1);
 });
 
+test('a timed-out submit is resubmitted on the code alone, and a code with another condition’s text is not', async () => {
+  const signer = await providerFromMnemonic(PHRASE);
+  const run = async (errorCode: string) => {
+    const submits: string[] = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path === '/auth/challenge') return json({ challenge: 'Welcome to Cancore 2026-09-28 sig:1' });
+      if (path === '/auth/login-signature') return json({ token: jwt('a'), user: {} });
+      const body = JSON.parse(String(init.body));
+      if (path === '/wallet/operations/prepare') {
+        return json({ operationId: 'op1', legs: [{ legId: 'l', hash: b64(new Uint8Array(32)), kind: 'transfer' }], meta: null });
+      }
+      submits.push(body.signatures[0].signature);
+      // The text is the old retry phrase on both runs: only the code tells them apart.
+      return submits.length === 1 ? refuse(400, 'submission timed out — safe to retry', errorCode) : json({ ok: true });
+    };
+    const acct = createSelfCustody({ baseUrl, signer, fetchImpl, ...fast });
+    const outcome = await acct.execute('tokens.accept', {}).then(() => 'done', () => 'refused');
+    return { outcome, submits };
+  };
+
+  const retryable = await run('SUBMISSION_TIMEOUT_RETRYABLE');
+  expect(retryable.outcome).toBe('done');
+  expect(retryable.submits).toHaveLength(2);
+  expect(retryable.submits[0]).toBe(retryable.submits[1]);
+
+  const other = await run('KEY_IN_USE');
+  expect(other.outcome).toBe('refused');
+  expect(other.submits).toHaveLength(1);
+});
+
 test('collect accepts exactly the claim’s own payouts, and nothing else in the inbox', async () => {
   const signer = await providerFromMnemonic(PHRASE);
   const accepted: string[] = [];
@@ -641,6 +678,42 @@ describe('the paths where a mistake costs money', () => {
     // Asked once, answered "already accepted", and taken at its word: the claim followed, once.
     expect(askedFor(api, 'htlc.accept-counter')).toBe(1);
     expect(api.claims).toHaveLength(1);
+  });
+});
+
+describe('the same refusals, carried by errorCode with no condition in the text', () => {
+  // A refusal this SDK fails to act on would leave the other side polling for the default 45 minutes.
+  const SHORT = { deadlineMs: 3_000 };
+
+  test('a wallet too fragmented is merged, then the swap is prepared once more', async () => {
+    const api = venue({ fragmented: 'once', coded: true });
+    const { maker, taker } = await tradingPair(api, [26, 27]);
+    const [made] = await Promise.all([maker.make('o1', SHORT), taker.take('o1', SHORT)]);
+    expect(made.swap.status).toBe('both_claimed');
+    expect(askedFor(api, 'tokens.consolidate')).toBeGreaterThan(0);
+    expect(swapsOpened(api)).toBe(1);
+  });
+
+  test('a deposit whose prepared stash expired is prepared and signed again, once', async () => {
+    const api = venue({ staleDepositOnce: true, coded: true });
+    const { maker, taker } = await tradingPair(api, [28, 29]);
+    const [, taken] = await Promise.all([maker.make('o1', SHORT), taker.take('o1', SHORT)]);
+    expect(api.prepared.filter((t) => t === 'htlc.accept-deposit-counter')).toHaveLength(2);
+    expect(taken.swap.status).toBe('both_claimed');
+  });
+
+  test('a counter leg not there yet is polled, and one already accepted counts as accepted', async () => {
+    const polled = venue({ coded: true });
+    const first = await tradingPair(polled, [30, 31]);
+    const [made] = await Promise.all([first.maker.make('o1', SHORT), first.taker.take('o1', SHORT)]);
+    expect(made.swap.status).toBe('both_claimed');
+    expect(askedFor(polled, 'htlc.accept-counter')).toBeGreaterThan(1);
+
+    const elsewhere = venue({ counterAcceptedElsewhere: true, coded: true });
+    const second = await tradingPair(elsewhere, [32, 33]);
+    const [settled] = await Promise.all([second.maker.make('o1', SHORT), second.taker.take('o1', SHORT)]);
+    expect(settled.swap.status).toBe('both_claimed');
+    expect(askedFor(elsewhere, 'htlc.accept-counter')).toBe(1);
   });
 });
 

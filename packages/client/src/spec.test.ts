@@ -4,6 +4,7 @@ import { requestGrant } from './auth';
 import { createBridgeClient } from './bridge';
 import { createHttp } from './http';
 import { createSelfCustody } from './selfcustody';
+import { SDK_ERROR_CODES } from './sdk-error-codes';
 import { createSwapClient } from './swap';
 
 /**
@@ -27,7 +28,7 @@ import { createSwapClient } from './swap';
  */
 interface Spec {
   paths: Record<string, Record<string, unknown>>;
-  components: { schemas: Record<string, { properties?: Record<string, unknown>; required?: string[] }> };
+  components: { schemas: Record<string, { properties?: Record<string, unknown>; required?: string[]; enum?: string[] }> };
 }
 interface Operation {
   parameters?: Array<{ name: string }>;
@@ -325,4 +326,13 @@ test.each(Object.entries(RESPONSE_FIELDS))('%s: every field the client types is 
   const known = Object.keys(spec.components.schemas[dto]?.properties ?? {});
   expect(known.length).toBeGreaterThan(0);
   expect(fields.filter((f) => !known.includes(f))).toEqual([]);
+});
+
+test('SDK_ERROR_CODES is the SdkErrorCode enum of the document, in its order', () => {
+  // `sdk-error-codes.ts` is written by `npm run spec:refresh` from this same document; a hand edit or a
+  // snapshot refreshed without it is what this catches.
+  const published = spec.components.schemas.SdkErrorCode?.enum;
+  expect(published).toBeDefined();
+  expect([...SDK_ERROR_CODES]).toEqual(published);
+  expect(new Set(SDK_ERROR_CODES).size).toBe(SDK_ERROR_CODES.length);
 });
