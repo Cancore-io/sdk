@@ -488,6 +488,23 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
   }
 
+  /**
+   * The preimage of a swap this account opened in an earlier run, stored by the
+   * API at `openSwap`. The API releases it to the sender only once the counter
+   * leg is locked too (BUG-137 atomicity gate: before that it would let the main
+   * leg be claimed with nothing locked in return), so it is read only when the
+   * claim is next, and waited for while the API still answers null.
+   */
+  async function storedPreimage(swapId: string, deadline: number): Promise<string> {
+    for (;;) {
+      const stored = await http.get<{ senderPreimage?: string | null; preimage?: string | null }>(`/htlc/${encodeURIComponent(swapId)}/preimage`);
+      const preimage = stored.senderPreimage ?? stored.preimage;
+      if (preimage) return preimage;
+      if (now() >= deadline) throw new SettleError(`swap ${swapId} exists but its preimage is not recoverable`, swapId);
+      await sleep(pollMs);
+    }
+  }
+
   function assertCantonOrder(order: Order): void {
     if (order.sourceNetwork !== 'canton' || order.targetNetwork !== 'canton') {
       throw new SettleError(`order ${order.id} is ${order.sourceNetwork}→${order.targetNetwork}; only Canton↔Canton settles here`, null, order);
@@ -499,12 +516,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     const order = await waitFor(() => swap.get(orderId), (o) => o.status !== 'open', deadline, `order ${orderId} to be taken`, null);
     assertCantonOrder(order);
     let swapId = order.swapId ?? null;
-    let preimage: string;
-    if (swapId) {
-      const stored = await http.get<{ senderPreimage?: string | null; preimage?: string | null }>(`/htlc/${encodeURIComponent(swapId)}/preimage`);
-      preimage = stored.senderPreimage ?? stored.preimage ?? '';
-      if (!preimage) throw new SettleError(`swap ${swapId} exists but its preimage is not recoverable`, swapId);
-    } else {
+    // A fresh swap keeps its preimage in memory; a resumed one reads it back right before the claim.
+    let preimage: string | null = null;
+    if (!swapId) {
       if (TERMINAL_ORDER_STATUSES.has(order.status)) throw new SettleError(`order ${orderId} is ${order.status}`, null, order);
       preimage = randomHex(32);
       swapId = await openSwap(order, preimage, await pickTimeout(orderId, opts.timeoutHours));
@@ -514,6 +528,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     // any later status means a claim already happened, and there is only settling to wait for.
     const state = await swapState(swapId);
     if (state.status === 'counter_accepted') {
+      preimage ??= await storedPreimage(swapId, deadline);
       await http.post(`/htlc/${encodeURIComponent(swapId)}/claim`, { preimage }).catch((err: unknown) => {
         if (!alreadySettled(err)) throw err;
       });

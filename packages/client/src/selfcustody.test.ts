@@ -11,6 +11,7 @@ import {
   SettleError,
   sha256Hex,
   type IncomingTransfer,
+  type SelfCustodyOptions,
 } from './selfcustody';
 import { createSession, expiresWithin } from './session';
 
@@ -38,10 +39,16 @@ interface Pending { type: string; params: Record<string, unknown>; legs: Leg[]; 
 interface VenueOptions {
   /** The first accept-deposit submit finds its prepared stash already gone. */
   staleDepositOnce?: boolean;
-  /** The first swap prepare is refused as too fragmented until the maker merges. */
-  fragmentedOnce?: boolean;
-  /** The swap submit answers 500 although the swap row exists and commits a few polls later. */
-  flowBSubmitFails?: boolean;
+  /**
+   * The swap prepare is refused as too fragmented: `once` until the maker merges its 40 small
+   * holdings; `always`, with holdings that never compact; `unmergeable`, with nothing to merge.
+   */
+  fragmented?: 'once' | 'always' | 'unmergeable';
+  /**
+   * The swap submit answers 500 although the swap row exists; the command then `commits` a few
+   * polls later, stays `stuck` in init_request_created, or lands `cancelled`.
+   */
+  flowBSubmitFails?: 'commits' | 'stuck' | 'cancelled';
   /** The proposal is rejected on the ledger right after it is created. */
   rejectAfterCreate?: boolean;
   /** The counter leg is accepted by an earlier attempt: the next accept says so. */
@@ -50,8 +57,8 @@ interface VenueOptions {
 
 function venue({
   staleDepositOnce = false,
-  fragmentedOnce = false,
-  flowBSubmitFails = false,
+  fragmented,
+  flowBSubmitFails,
   rejectAfterCreate = false,
   counterAcceptedElsewhere = false,
 }: VenueOptions = {}) {
@@ -60,6 +67,10 @@ function venue({
   const pending = new Map<string, Pending>();
   const log: Array<{ type: string; params: Record<string, unknown> }> = [];
   const prepared: string[] = [];
+  /** Every prepare asked for, refused or not. */
+  const asked: string[] = [];
+  /** What the preimage route answered the sender, each time it asked: null while the gate withholds it. */
+  const preimageReads: Array<string | null> = [];
   const routes = new Set<string>();
   let staleDeposit = staleDepositOnce;
   const challenges = new Set<string>();
@@ -71,10 +82,11 @@ function venue({
   };
   let swap: Record<string, unknown> | null = null;
   let counterPollsLeft = 0;
-  let mergeable = fragmentedOnce ? 40 : 0;
-  let fragmented = fragmentedOnce;
+  let mergeable = fragmented === 'once' || fragmented === 'always' ? 40 : 0;
+  let fragmentedRefusals = 0;
   let commitPollsLeft = 0;
   let storedPreimage: string | null = null;
+  let counterLocked = false;
   const claims: string[] = [];
   const incoming: IncomingTransfer[] = [];
   let seq = 0;
@@ -92,12 +104,14 @@ function venue({
   function prepare(owner: Account, type: string, params: Record<string, unknown>): Response {
     let legs: Leg[];
     let meta: Record<string, unknown> = {};
+    asked.push(type);
     switch (type) {
       case 'wallet.topology': legs = [leg('topology', 34), leg('topology', 34)]; break;
       case 'tokens.preapproval': legs = owner.roles.includes('has-preapproval') ? [] : [leg('setup')]; meta = { alreadyExists: legs.length === 0 }; break;
       case 'htlc.flow-b-create':
-        if (fragmented) {
-          fragmented = false;
+        if (fragmented && (fragmented !== 'once' || fragmentedRefusals === 0)) {
+          // A heal loop that never ends would spin here forever: the fifth refusal is one the SDK does not heal.
+          if (++fragmentedRefusals > 4) return refuse(400, 'the fake venue ends a heal loop that does not end');
           return refuse(409, 'Wallet too fragmented: the deposit leg needs more holdings than Canton allows in one command.');
         }
         legs = [leg('escrow'), leg('transfer')];
@@ -144,14 +158,14 @@ function venue({
         storedPreimage = String(op.params.encryptedPreimage);
         if (rejectAfterCreate) swap.status = 'proposal_rejected';
         if (flowBSubmitFails) {
-          // The row exists and the command is still in flight: it commits a few polls later.
+          // The row exists and the command is still in flight: it lands a few polls later, or never.
           swap.status = 'init_request_created';
-          commitPollsLeft = 3;
+          commitPollsLeft = flowBSubmitFails === 'stuck' ? 0 : 3;
           return refuse(500, 'Canton did not answer in time');
         }
         break;
-      case 'tokens.consolidate': mergeable = 0; break;
-      case 'htlc.accept-deposit-counter': swap!.status = 'htlc_active'; counterPollsLeft = 2; break;
+      case 'tokens.consolidate': if (fragmented !== 'always') mergeable = 0; break;
+      case 'htlc.accept-deposit-counter': swap!.status = 'htlc_active'; counterLocked = true; counterPollsLeft = 2; break;
       case 'htlc.accept-counter': swap!.status = 'counter_accepted'; break;
       case 'tokens.accept': incoming.splice(incoming.findIndex((t) => t.contractId === op.params.instructionCid), 1); break;
     }
@@ -207,12 +221,17 @@ function venue({
     }
     if (route === 'GET /htlc/s1') {
       if (counterPollsLeft > 0) counterPollsLeft--;
-      if (commitPollsLeft > 0 && --commitPollsLeft === 0) swap!.status = 'proposal_created';
+      if (commitPollsLeft > 0 && --commitPollsLeft === 0) swap!.status = flowBSubmitFails === 'cancelled' ? 'proposal_cancelled' : 'proposal_created';
       return json(swap);
     }
     if (route === 'GET /htlc/s1/preimage') {
-      // Decrypted for the sender only, as the API does.
-      return caller.partyId === swap?.sender ? json({ revealed: false, senderPreimage: storedPreimage }) : refuse(403, 'not the sender');
+      // Decrypted for the sender only, and — the API's BUG-137 atomicity gate — before a claim only
+      // once the counter leg is locked: earlier, it would let the main leg be claimed with nothing in return.
+      if (caller.partyId !== swap?.sender) return refuse(403, 'not the sender');
+      const gated = (swap.status === 'proposal_created' || swap.status === 'htlc_active') && !counterLocked;
+      const senderPreimage = gated ? null : storedPreimage;
+      preimageReads.push(senderPreimage);
+      return json({ revealed: false, senderPreimage });
     }
     if (route === 'POST /htlc/s1/claim') {
       claims.push(body.preimage);
@@ -233,14 +252,14 @@ function venue({
     return refuse(404, `no route ${route}`);
   };
 
-  /** A swap the maker opened before its process died: the row, the order link, the stored preimage. */
-  async function openedEarlier(makerParty: string, takerParty: string, preimage: string) {
-    swap = { id: 's1', status: 'proposal_created', sender: makerParty, receiver: takerParty, hashLock: await sha256Hex(preimage) };
+  /** A swap the maker opened before its process died: the row, the order link, the stored preimage (unless none was stored). */
+  async function openedEarlier(makerParty: string, takerParty: string, preimage: string, { status = 'proposal_created', stored = true } = {}) {
+    swap = { id: 's1', status, sender: makerParty, receiver: takerParty, hashLock: await sha256Hex(preimage) };
     order.swapId = 's1';
-    storedPreimage = preimage;
+    storedPreimage = stored ? preimage : null;
   }
 
-  return { fetchImpl, log, prepared, routes, order, incoming, byKey, claims, openedEarlier };
+  return { fetchImpl, log, prepared, asked, preimageReads, routes, order, incoming, byKey, claims, openedEarlier };
 }
 
 const baseUrl = 'https://api.example';
@@ -456,10 +475,10 @@ test('expiresWithin reads exp from a JWT and leaves an unreadable one to the 401
   expect(expiresWithin('not-a-jwt', 60_000, 0)).toBe(false);
 });
 
-/** Two accounts of one phrase, signed up and onboarded against `api`. */
-async function tradingPair(api: ReturnType<typeof venue>, accounts: [number, number]) {
+/** Two accounts of one phrase, signed up and onboarded against `api`; `makerOptions` override the maker's clock and sleep. */
+async function tradingPair(api: ReturnType<typeof venue>, accounts: [number, number], makerOptions: Partial<SelfCustodyOptions> = {}) {
   const [makerKey, takerKey] = await Promise.all(accounts.map((account) => providerFromMnemonic(PHRASE, { account })));
-  const maker = createSelfCustody({ baseUrl, signer: makerKey!, fetchImpl: api.fetchImpl, ...fast });
+  const maker = createSelfCustody({ baseUrl, signer: makerKey!, fetchImpl: api.fetchImpl, ...fast, ...makerOptions });
   const taker = createSelfCustody({ baseUrl, signer: takerKey!, fetchImpl: api.fetchImpl, ...fast });
   await maker.session.register({ partyName: 'maker' });
   await taker.session.register({ partyName: 'taker' });
@@ -468,10 +487,23 @@ async function tradingPair(api: ReturnType<typeof venue>, accounts: [number, num
 }
 
 const swapsOpened = (api: ReturnType<typeof venue>) => api.prepared.filter((t) => t === 'htlc.flow-b-create').length;
+const askedFor = (api: ReturnType<typeof venue>, type: string) => api.asked.filter((t) => t === type).length;
+
+/** A clock that moves only while the SDK sleeps: a wait minutes long ends in a few dozen polls. */
+function sleepingClock(stepMs = 10_000) {
+  let clock = 0;
+  return {
+    now: () => clock,
+    sleep: () => {
+      clock += stepMs;
+      return fast.sleep();
+    },
+  };
+}
 
 describe('the paths where a mistake costs money', () => {
   test('a wallet too fragmented for one command is merged by its own key, then the swap is prepared once more', async () => {
-    const api = venue({ fragmentedOnce: true });
+    const api = venue({ fragmented: 'once' });
     const { maker, taker } = await tradingPair(api, [4, 5]);
     const [made] = await Promise.all([maker.make('o1'), taker.take('o1')]);
     expect(made.swap.status).toBe('both_claimed');
@@ -482,8 +514,32 @@ describe('the paths where a mistake costs money', () => {
     expect(swapsOpened(api)).toBe(1);
   });
 
+  test('a wallet that stays too fragmented is healed once — the swap is retried once, then the refusal surfaces', async () => {
+    const api = venue({ fragmented: 'always' });
+    const { maker, taker } = await tradingPair(api, [14, 15]);
+    await taker.swap.accept('o1');
+    const error = await maker.make('o1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect(error).toMatchObject({ operation: 'htlc.flow-b-create', stage: 'prepare', cause: { status: 409 } });
+    // One heal of three merge passes (each merged something), one retry — never a second round of paid merges.
+    expect(api.log.filter((e) => e.type === 'tokens.consolidate')).toHaveLength(3);
+    expect(askedFor(api, 'htlc.flow-b-create')).toBe(2);
+    expect(swapsOpened(api)).toBe(0);
+  });
+
+  test('a wallet refused as too fragmented with nothing to merge is not retried', async () => {
+    const api = venue({ fragmented: 'unmergeable' });
+    const { maker, taker } = await tradingPair(api, [16, 17]);
+    await taker.swap.accept('o1');
+    const error = await maker.make('o1').catch((e: unknown) => e);
+    expect(error).toMatchObject({ operation: 'htlc.flow-b-create', stage: 'prepare', cause: { status: 409 } });
+    // The first merge pass found nothing: no more passes, and no retry of a swap that would be refused again.
+    expect(askedFor(api, 'tokens.consolidate')).toBe(1);
+    expect(askedFor(api, 'htlc.flow-b-create')).toBe(1);
+  });
+
   test('a swap submit that fails but commits later is followed — a second swap is never opened', async () => {
-    const api = venue({ flowBSubmitFails: true });
+    const api = venue({ flowBSubmitFails: 'commits' });
     const { maker, taker } = await tradingPair(api, [6, 7]);
     const [made, taken] = await Promise.all([maker.make('o1'), taker.take('o1')]);
     expect(swapsOpened(api)).toBe(1);
@@ -491,17 +547,76 @@ describe('the paths where a mistake costs money', () => {
     expect(taken.delivery).toBe('accepted');
   });
 
-  test('a maker restarted mid-swap resumes it with the preimage the API kept, and opens nothing new', async () => {
+  test.each([
+    ['never leaves init_request_created within the recovery window', 'stuck', [22, 23]],
+    ['lands cancelled', 'cancelled', [24, 25]],
+  ] as const)('a swap submit that fails and then %s surfaces the failure — a second swap is never prepared', async (_, outcome, accounts) => {
+    const api = venue({ flowBSubmitFails: outcome });
+    const { maker, taker } = await tradingPair(api, [...accounts], sleepingClock());
+    await taker.swap.accept('o1');
+    const error = await maker.make('o1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect(error).toMatchObject({ operation: 'htlc.flow-b-create', stage: 'submit', meta: { swapId: 's1' } });
+    expect(askedFor(api, 'htlc.flow-b-create')).toBe(1);
+  });
+
+  test('a maker restarted before the taker deposits resumes the swap, reads the preimage back for the claim, and opens nothing new', async () => {
     const api = venue();
-    const { maker, taker } = await tradingPair(api, [8, 9]);
+    let waitingOnTaker!: () => void;
+    const waiting = new Promise<void>((resolve) => (waitingOnTaker = resolve));
+    const { maker, taker } = await tradingPair(api, [8, 9], {
+      sleep: () => {
+        waitingOnTaker();
+        return fast.sleep();
+      },
+    });
     await taker.swap.accept('o1');
     const preimage = 'ab'.repeat(32);
     await api.openedEarlier((await maker.me()).partyId!, (await taker.me()).partyId!, preimage);
 
-    const [made] = await Promise.all([maker.make('o1'), taker.take('o1')]);
+    // Back while the swap is proposal_created and the counter leg is not locked: the API would answer
+    // the preimage with null, so the maker waits on the taker without asking for it.
+    const making = maker.make('o1');
+    await Promise.race([waiting, making]);
+    expect(api.preimageReads).toEqual([]);
+
+    const [made] = await Promise.all([making, taker.take('o1')]);
     expect(made.swap.status).toBe('both_claimed');
     expect(swapsOpened(api)).toBe(0);
+    expect(api.preimageReads).toEqual([preimage]);
     expect(api.claims).toEqual([preimage]);
+  });
+
+  test('the venue, like the API, withholds the maker’s preimage until the counter leg is locked', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [18, 19]);
+    await taker.swap.accept('o1');
+    const preimage = 'cd'.repeat(32);
+    await api.openedEarlier((await maker.me()).partyId!, (await taker.me()).partyId!, preimage);
+    const read = async () =>
+      ((await (await maker.session.request(`${baseUrl}/htlc/s1/preimage`, { method: 'GET', headers: {} })).json()) as { senderPreimage: string | null })
+        .senderPreimage;
+
+    expect(await read()).toBeNull();
+    await taker.execute('htlc.accept-deposit-counter', { swapId: 's1', counterTokenId: 'CC', counterAmount: grossAmount('5000', '0.005') });
+    expect(await read()).toBe(preimage);
+  });
+
+  test('a resumed swap whose preimage the API never releases ends in a SettleError at the deadline, and nothing is claimed', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [20, 21], sleepingClock());
+    await taker.swap.accept('o1');
+    // The maker died after accepting the counter leg, and the API kept no preimage for it.
+    await api.openedEarlier((await maker.me()).partyId!, (await taker.me()).partyId!, 'ef'.repeat(32), {
+      status: 'counter_accepted',
+      stored: false,
+    });
+    const error = await maker.make('o1', { deadlineMs: 10 * 60_000 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SettleError);
+    expect(error).toMatchObject({ swapId: 's1', message: expect.stringMatching(/preimage is not recoverable/) });
+    // A null is waited on until the deadline, not taken as final on the first read.
+    expect(api.preimageReads.length).toBeGreaterThan(1);
+    expect(api.claims).toEqual([]);
   });
 
   test('a proposal rejected on the ledger ends both sides with a SettleError naming the swap — nothing funded, nothing claimed', async () => {
@@ -523,7 +638,9 @@ describe('the paths where a mistake costs money', () => {
     const { maker, taker } = await tradingPair(api, [12, 13]);
     const [made] = await Promise.all([maker.make('o1'), taker.take('o1')]);
     expect(made.swap.status).toBe('both_claimed');
-    expect(api.log.map((e) => e.type)).not.toContain('htlc.accept-counter');
+    // Asked once, answered "already accepted", and taken at its word: the claim followed, once.
+    expect(askedFor(api, 'htlc.accept-counter')).toBe(1);
+    expect(api.claims).toHaveLength(1);
   });
 });
 
@@ -550,8 +667,8 @@ const takenOrder = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('refusals that come before anything is signed', () => {
-  test('an order that is not Canton on both sides', async () => {
-    const api = stub({ 'GET /orders/o1': () => takenOrder({ sourceNetwork: 'sepolia' }) });
+  test.each([{ sourceNetwork: 'sepolia' }, { targetNetwork: 'sepolia' }])('an order that is not Canton on both sides: %o', async (side) => {
+    const api = stub({ 'GET /orders/o1': () => takenOrder(side) });
     const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast });
     await expect(acct.make('o1')).rejects.toThrow(/only Canton↔Canton/);
     await expect(acct.take('o1')).rejects.toThrow(/only Canton↔Canton/);
