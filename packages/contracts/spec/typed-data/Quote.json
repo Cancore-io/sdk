@@ -1,0 +1,69 @@
+{
+  "$comment": "PROVISIONAL hand copy of the CancoreRouter.sol struct (evm-contracts f936594) until evm-contracts publishes abi/typed-data for it with its own vectors (follow-up F-1); digests by ethers TypedDataEncoder, checked in this package by the shipped encoder as well.",
+  "primaryType": "Quote",
+  "domain": {
+    "name": "CancoreRouter",
+    "version": "1",
+    "fields": [
+      "name",
+      "version",
+      "chainId",
+      "verifyingContract"
+    ]
+  },
+  "typeString": "Quote(bytes32 orderHash,uint64 quoteDeadline)",
+  "types": {
+    "Quote": [
+      {
+        "name": "orderHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "quoteDeadline",
+        "type": "uint64"
+      }
+    ]
+  },
+  "vectors": [
+    {
+      "note": "quote signer approves the fixture order",
+      "chainId": "11155111",
+      "verifyingContract": "0x00000000000000000000000000000000cafe0001",
+      "message": {
+        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "quoteDeadline": "1790000030"
+      },
+      "digest": "0xacf52bd67ac646e4e85269571c6a0b8d4596b02b591afe28ef1d25d857878b7c"
+    },
+    {
+      "note": "every integer at its maximum",
+      "chainId": "11155111",
+      "verifyingContract": "0x00000000000000000000000000000000cafe0001",
+      "message": {
+        "orderHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "quoteDeadline": "18446744073709551615"
+      },
+      "digest": "0x072fa3c045504f6548a932dee33c632e410e03c1707c960e17b071d4200d3db0"
+    },
+    {
+      "note": "zero",
+      "chainId": "11155111",
+      "verifyingContract": "0x00000000000000000000000000000000cafe0001",
+      "message": {
+        "orderHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "quoteDeadline": "0"
+      },
+      "digest": "0x073bf52876f4f94c77600e57aa4a20376c538f1f5d0f2ad2fe52209a8c777b3e"
+    },
+    {
+      "note": "canton source domain",
+      "chainId": "9223372036854775809",
+      "verifyingContract": "0x2f37b46ea93001829498b145985fb53028033701",
+      "message": {
+        "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204",
+        "quoteDeadline": "1789999430"
+      },
+      "digest": "0x4a8ff126558a8cbbfcffce73bef171a6242a4e7bd074070bd0be77220f1f6dec"
+    }
+  ]
+}

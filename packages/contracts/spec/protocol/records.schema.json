@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cancore.io/schemas/filler-protocol/v1/records.schema.json",
+  "title": "Cancore filler protocol v1 — public records",
+  "$comment": "The draw record (GET /v1/draws/{orderHash}), the epoch record (GET /v1/draws/epochs/{id}) — auction-and-draw §3.3–3.4 — and the gateway identity (GET /v1/gateway). Records are signed by the gateway like an S→F frame (sig over GatewayMessage{keccak256(JCS(record without sig))}) but are public: no fillerId, no sentAt.",
+  "$defs": {
+    "drawCandidate": {
+      "type": "object",
+      "required": ["fillerId", "weight"],
+      "properties": { "fillerId": { "$ref": "messages.schema.json#/$defs/fillerId" }, "weight": { "$ref": "messages.schema.json#/$defs/uintDec256" } }
+    },
+    "drawAttempt": {
+      "type": "object",
+      "required": ["attempt", "tBase", "closedBy", "drandRound", "drandRandomness", "drandSignature", "candidates", "r", "winnerFillerId", "fallbackReason"],
+      "properties": {
+        "attempt": { "$ref": "messages.schema.json#/$defs/uint32" },
+        "tBase": { "$ref": "messages.schema.json#/$defs/timeS" },
+        "closedBy": { "anyOf": [{ "enum": ["OFFER_TIMEOUT", "OFFER_DECLINE", "TICKET_DECLINE", "TICKET_EXPIRED", "FILLED", null] }, { "$ref": "messages.schema.json#/$defs/futureEnumValue" }] },
+        "drandRound": { "$ref": "messages.schema.json#/$defs/uintDec64" },
+        "drandRandomness": { "$ref": "messages.schema.json#/$defs/bytes32" },
+        "drandSignature": { "type": "string", "pattern": "^0x[0-9a-f]{96}$", "description": "BLS signature of the round, 48 bytes (G1)" },
+        "candidates": { "type": "array", "items": { "$ref": "#/$defs/drawCandidate" }, "description": "ascending by the UTF-8 bytes of fillerId (A-22)" },
+        "r": { "$ref": "messages.schema.json#/$defs/uintDec256" },
+        "winnerFillerId": { "$ref": "messages.schema.json#/$defs/fillerId" },
+        "fallbackReason": { "anyOf": [{ "enum": ["DRAW_FALLBACK", null] }, { "$ref": "messages.schema.json#/$defs/futureEnumValue" }] }
+      }
+    },
+    "drawRecord": {
+      "type": "object",
+      "required": ["orderHash", "source", "openRef", "t0", "epochId", "deltaDrand", "attempts", "sig"],
+      "properties": {
+        "orderHash": { "$ref": "messages.schema.json#/$defs/bytes32" },
+        "source": { "$ref": "messages.schema.json#/$defs/caip2" },
+        "openRef": { "type": "string", "minLength": 1, "description": "EVM: open tx hash; Canton: Execute update id" },
+        "t0": { "$ref": "messages.schema.json#/$defs/timeS" },
+        "epochId": { "$ref": "messages.schema.json#/$defs/uintDec64" },
+        "deltaDrand": { "$ref": "messages.schema.json#/$defs/uint32", "description": "seconds" },
+        "attempts": { "type": "array", "items": { "$ref": "#/$defs/drawAttempt" } },
+        "sig": { "$ref": "messages.schema.json#/$defs/sig65" }
+      }
+    },
+    "epochLeaf": {
+      "type": "object",
+      "description": "StandardMerkleTree leaf [\"string\", \"uint256\", \"uint8\", \"uint16\"] = (fillerId, base, tier, reliabilityBps)",
+      "required": ["fillerId", "base", "tier", "reliabilityBps"],
+      "properties": {
+        "fillerId": { "$ref": "messages.schema.json#/$defs/fillerId" },
+        "base": { "$ref": "messages.schema.json#/$defs/uintDec256" },
+        "tier": { "$ref": "messages.schema.json#/$defs/uint8" },
+        "reliabilityBps": { "type": "integer", "minimum": 0, "maximum": 10000 }
+      }
+    },
+    "stakeStep": {
+      "type": "object",
+      "required": ["tier", "minStake", "step"],
+      "properties": {
+        "tier": { "$ref": "messages.schema.json#/$defs/uint8" },
+        "minStake": { "$ref": "messages.schema.json#/$defs/uintDec256" },
+        "step": { "$ref": "messages.schema.json#/$defs/uintDec256" }
+      }
+    },
+    "epochRecord": {
+      "type": "object",
+      "required": ["epochId", "startsAt", "endsAt", "weightsRoot", "leaves", "stakeSteps", "rMinBps", "snapshotBlocks", "sig"],
+      "properties": {
+        "epochId": { "$ref": "messages.schema.json#/$defs/uintDec64" },
+        "startsAt": { "$ref": "messages.schema.json#/$defs/timeS" },
+        "endsAt": { "$ref": "messages.schema.json#/$defs/timeS" },
+        "weightsRoot": { "$ref": "messages.schema.json#/$defs/bytes32" },
+        "leaves": { "type": "array", "items": { "$ref": "#/$defs/epochLeaf" } },
+        "stakeSteps": { "type": "array", "items": { "$ref": "#/$defs/stakeStep" } },
+        "rMinBps": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "snapshotBlocks": {
+          "type": "object",
+          "propertyNames": { "$ref": "messages.schema.json#/$defs/caip2" },
+          "additionalProperties": { "$ref": "messages.schema.json#/$defs/uintDec64" }
+        },
+        "sig": { "$ref": "messages.schema.json#/$defs/sig65" }
+      }
+    },
+    "gatewayInfo": {
+      "type": "object",
+      "description": "GET /v1/gateway: the mirror of @cancore/contracts FILLER_GATEWAYS for this environment. A taker trusts the package, and uses this to notice a rotation",
+      "required": ["env", "gateway", "ticketSigners", "protocolVersion"],
+      "properties": {
+        "env": { "type": "string", "minLength": 1 },
+        "gateway": { "$ref": "messages.schema.json#/$defs/address" },
+        "ticketSigners": { "type": "array", "items": { "$ref": "messages.schema.json#/$defs/address" } },
+        "protocolVersion": { "$ref": "messages.schema.json#/$defs/protocolVersion" }
+      }
+    }
+  }
+}

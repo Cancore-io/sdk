@@ -1,8 +1,8 @@
 {
   "name": "@cancore/contracts",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.1",
   "type": "module",
-  "description": "The Cancore EVM contracts as data: ABIs of the deployed HTLC, FeeVault and CNRX contracts, their custom-error selectors, the EIP-712 FeeClaim voucher, the network registry. No runtime code, no dependencies.",
+  "description": "The Cancore EVM contracts as data: ABIs of the deployed HTLC, FeeVault and CNRX contracts, their custom-error selectors, the EIP-712 FeeClaim voucher and FillProof, the network registry; and the filler protocol v1: EIP-712 types and domains, hashing helpers, JSON Schemas, AsyncAPI, golden vectors.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -18,7 +18,8 @@
       "types": "./dist/networks.d.ts",
       "import": "./dist/networks.js",
       "default": "./dist/networks.js"
-    }
+    },
+    "./spec/*": "./spec/*"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -33,17 +34,18 @@
   "bugs": {
     "url": "https://github.com/Cancore-io/sdk/issues"
   },
-  "keywords": ["canton", "cancore", "abi", "htlc", "evm", "eip-712", "contracts"],
-  "files": ["dist", "README.md", "LICENSE"],
+  "keywords": ["canton", "cancore", "abi", "htlc", "evm", "eip-712", "contracts", "filler-protocol", "asyncapi", "json-schema"],
+  "files": ["dist", "spec", "README.md", "LICENSE"],
   "publishConfig": { "access": "public" },
   "engines": { "node": ">=20" },
   "scripts": {
     "build": "tsup",
     "prepack": "tsup --silent",
     "prepublishOnly": "npm run build",
-    "sync": "node scripts/sync.mjs"
+    "sync": "node scripts/sync.mjs && node scripts/sync-typed-data.mjs",
+    "vectors": "node scripts/gen-protocol-vectors.mjs && node scripts/gen-protocol-docs.mjs"
   },
-  "devDependencies": {
-    "@noble/hashes": "^1.3.2"
+  "dependencies": {
+    "@noble/hashes": "^1.8.0"
   }
 }

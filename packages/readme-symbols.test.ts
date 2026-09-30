@@ -48,6 +48,8 @@ function entryPoints(): Record<string, string> {
       exports?: Record<string, { import?: string; default?: string } | string>;
     };
     for (const [subpath, target] of Object.entries(manifest.exports ?? {})) {
+      // A pattern (`./spec/*`) exports files, not a module with names.
+      if (subpath.includes('*')) continue;
       const published = typeof target === 'string' ? target : (target.import ?? target.default);
       if (!published) continue;
       const source = published.replace(/^\.\/dist\//, 'src/').replace(/\.js$/, '.ts');
@@ -80,7 +82,8 @@ function exportedNames(entryRelative: string): Set<string> {
       found.add(name);
     }
     for (const [, target] of source.matchAll(/export\s+\*\s+from\s+'([^']+)'/g)) {
-      visit(path.join(path.dirname(relative), `${target}.ts`));
+      const module = path.join(path.dirname(relative), target);
+      visit(fs.existsSync(path.join(ROOT, `${module}.ts`)) ? `${module}.ts` : path.join(module, 'index.ts'));
     }
   };
   visit(entryRelative);

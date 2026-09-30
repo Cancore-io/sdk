@@ -25,6 +25,7 @@
     "packages/client/**",
     "packages/contracts/**",
     "packages/mcp/**",
-    "packages/wallet/**"
+    "packages/wallet/**",
+    "packages/test-kit/**"
   ]
 }

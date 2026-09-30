@@ -1,0 +1,58 @@
+{
+  "$comment": "Filler protocol v1 (frozen, RC): Signed by the quote key in answer to auth.challenge. Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.",
+  "primaryType": "FillerAuth",
+  "domain": {
+    "name": "CancoreFillerProtocol",
+    "version": "1",
+    "fields": [
+      "name",
+      "version"
+    ]
+  },
+  "typeString": "FillerAuth(string fillerId,bytes32 nonce,uint64 expiresAt)",
+  "types": {
+    "FillerAuth": [
+      {
+        "name": "fillerId",
+        "type": "string"
+      },
+      {
+        "name": "nonce",
+        "type": "bytes32"
+      },
+      {
+        "name": "expiresAt",
+        "type": "uint64"
+      }
+    ]
+  },
+  "vectors": [
+    {
+      "note": "answer to a challenge",
+      "message": {
+        "fillerId": "acme-markets",
+        "nonce": "0x63ed6389bd2a1d23bb678583c227172bda874e82b97b1c170bfeeb4373b4b0d5",
+        "expiresAt": "1790000030"
+      },
+      "digest": "0x08b9926005ad8e873686fbbb4bd260081b5648e62ccb6ba0e2e8d64c0b69233d"
+    },
+    {
+      "note": "every integer at its maximum",
+      "message": {
+        "fillerId": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "nonce": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "expiresAt": "18446744073709551615"
+      },
+      "digest": "0x0355d6c6535d23cb365f8f94fc078f562f7fca4376c6102df44e18e045f4cb1a"
+    },
+    {
+      "note": "zero values, empty string",
+      "message": {
+        "fillerId": "",
+        "nonce": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "expiresAt": "0"
+      },
+      "digest": "0x9cd41646d5050057d09cc545be00a740a41784e02bfc90d161bf326c667f2df3"
+    }
+  ]
+}

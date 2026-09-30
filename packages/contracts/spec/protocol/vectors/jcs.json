@@ -1,0 +1,59 @@
+{
+  "$comment": "RFC 8785 canonical JSON of the values the protocol puts on the wire. Every text of a case parses to the same value; its canonical text and keccak256(utf8(canonical)) follow.",
+  "cases": [
+    {
+      "note": "key order and whitespace",
+      "texts": [
+        "{\"b\":2,\"a\":\"x\"}",
+        "{ \"a\" : \"x\",\n  \"b\" : 2 }"
+      ],
+      "canonical": "{\"a\":\"x\",\"b\":2}",
+      "keccak256": "0x15df7fce9381b47f01cc5e529f28510242a455d8807a842982451477317eaa63"
+    },
+    {
+      "note": "nested objects, arrays (order kept), null and booleans",
+      "texts": [
+        "{\"z\":[3,{\"y\":null,\"x\":true}],\"a\":{\"c\":false,\"b\":[]}}",
+        "{\"a\":{\"b\":[],\"c\":false},\"z\":[3,{\"x\":true,\"y\":null}]}"
+      ],
+      "canonical": "{\"a\":{\"b\":[],\"c\":false},\"z\":[3,{\"x\":true,\"y\":null}]}",
+      "keccak256": "0xc7d273b659f2a66717013adcebb03b0c587918db53c5e8aa152674b0dc2999a2"
+    },
+    {
+      "note": "string escapes: only what JSON requires is escaped, non-ASCII stays raw UTF-8",
+      "texts": [
+        "{\"s\":\"line\\nbreak \\\"q\\\" \\u00e9 \\/\"}",
+        "{\"s\":\"line\\nbreak \\\"q\\\" é /\"}"
+      ],
+      "canonical": "{\"s\":\"line\\nbreak \\\"q\\\" é /\"}",
+      "keccak256": "0xe8747531f4babbe4c15d4daf07c0f012f41feaef008638cbd4fca8d911b02b98"
+    },
+    {
+      "note": "keys sorted by UTF-16 code units, not code points (RFC 8785 §3.2.3 example)",
+      "texts": [
+        "{\"\\u20ac\":1,\"\\r\":2,\"\\ufb33\":3,\"1\":4,\"\\ud83d\\ude00\":5,\"\\u0080\":6,\"\\u00f6\":7}",
+        "{\"1\":4,\"\\u00f6\":7,\"\\ufb33\":3,\"\\ud83d\\ude00\":5,\"\\r\":2,\"\\u20ac\":1,\"\\u0080\":6}"
+      ],
+      "canonical": "{\"\\r\":2,\"1\":4,\"\":6,\"ö\":7,\"€\":1,\"😀\":5,\"דּ\":3}",
+      "keccak256": "0xead3d22663dc89c20cee70437efda8976309c0625521bffcc3c49abe973197c7"
+    },
+    {
+      "note": "integers: zero, negative, 2^53 − 1, exponent form in the input",
+      "texts": [
+        "{\"n\":[0,-1,9007199254740991,1e3]}",
+        "{\"n\":[0,-1,9007199254740991,1000]}"
+      ],
+      "canonical": "{\"n\":[0,-1,9007199254740991,1000]}",
+      "keccak256": "0xf338d0721f890303cfe397bca9fbcbf269e27aac7527a123d8eb3b03be032ee4"
+    },
+    {
+      "note": "empty object and empty array",
+      "texts": [
+        "{\"a\":{},\"b\":[]}",
+        "{ \"b\":[ ], \"a\":{ } }"
+      ],
+      "canonical": "{\"a\":{},\"b\":[]}",
+      "keccak256": "0x133fc5e6a5dcddb53856aa994458fb82f71b1bbd484f21f83635a96148f49f6b"
+    }
+  ]
+}

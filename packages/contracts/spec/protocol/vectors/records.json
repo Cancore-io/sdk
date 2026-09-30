@@ -1,0 +1,81 @@
+{
+  "$comment": "Fixture draw record (attempt 0 of the test-kit fixture order, spec/protocol/vectors/draw.json) and the epoch record containing its t0, without sig — the gateway signs them. weightsRoot: OpenZeppelin StandardMerkleTree over [\"string\",\"uint256\",\"uint8\",\"uint16\"] = (fillerId, base, tier, reliabilityBps); weight = (base + step(tier)) × reliabilityBps.",
+  "draw": {
+    "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+    "source": "eip155:11155111",
+    "openRef": "0xbf27995945a87053970c38b8d6e1991aad68ab122b7b45147e9c38b2d33dc89a",
+    "t0": "1790000012",
+    "epochId": "20717",
+    "deltaDrand": 6,
+    "attempts": [
+      {
+        "attempt": 0,
+        "tBase": "1790000012",
+        "closedBy": null,
+        "drandRound": "32398885",
+        "drandRandomness": "0xb6d412641a7d58b20ef5dded4ae48e9358cc35710f90961d8fe6e99d0e0281ef",
+        "drandSignature": "0x8f6d5ddd520329a4ce9a25db41c0552a5ac04bd56577138cbb0ec2b9326af2b8012c7dc2c5bcddc439d922c93a281d24",
+        "candidates": [
+          {
+            "fillerId": "acme-markets",
+            "weight": "1500000"
+          },
+          {
+            "fillerId": "cancore-reserve",
+            "weight": "900000"
+          },
+          {
+            "fillerId": "zeta-liquidity",
+            "weight": "1000000"
+          }
+        ],
+        "r": "599507",
+        "winnerFillerId": "acme-markets",
+        "fallbackReason": null
+      }
+    ]
+  },
+  "epoch": {
+    "epochId": "20717",
+    "startsAt": "1789948800",
+    "endsAt": "1790035200",
+    "weightsRoot": "0xa1c24765b55b34e0c206f808d2fac2e448d9db6f154d89f898921a80bad76e92",
+    "leaves": [
+      {
+        "fillerId": "acme-markets",
+        "base": "100",
+        "tier": 1,
+        "reliabilityBps": 10000
+      },
+      {
+        "fillerId": "cancore-reserve",
+        "base": "100",
+        "tier": 0,
+        "reliabilityBps": 9000
+      },
+      {
+        "fillerId": "zeta-liquidity",
+        "base": "100",
+        "tier": 0,
+        "reliabilityBps": 10000
+      }
+    ],
+    "stakeSteps": [
+      {
+        "tier": 0,
+        "minStake": "0",
+        "step": "0"
+      },
+      {
+        "tier": 1,
+        "minStake": "100000000000000000000000",
+        "step": "50"
+      }
+    ],
+    "rMinBps": 5000,
+    "snapshotBlocks": {
+      "eip155:1": "23456789",
+      "eip155:56": "61234567"
+    }
+  }
+}
