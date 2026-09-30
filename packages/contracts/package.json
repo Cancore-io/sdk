@@ -1,8 +1,8 @@
 {
   "name": "@cancore/contracts",
-  "version": "0.2.0-rc.1",
+  "version": "0.2.0-rc.2",
   "type": "module",
-  "description": "The Cancore EVM contracts as data: ABIs of the deployed HTLC, FeeVault and CNRX contracts, their custom-error selectors, the EIP-712 FeeClaim voucher and FillProof, the network registry; and the filler protocol v1: EIP-712 types and domains, hashing helpers, JSON Schemas, AsyncAPI, golden vectors.",
+  "description": "The Cancore EVM contracts as data: ABIs of the HTLC, FeeVault, CNRX, CancoreRouter and AttestorSet contracts, their custom-error selectors, the EIP-712 FeeClaim voucher and FillProof, the network registry; and the filler protocol v1: EIP-712 types and domains, hashing helpers, JSON Schemas, AsyncAPI, golden vectors.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

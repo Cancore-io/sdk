@@ -7,8 +7,13 @@
 // The contracts repository is the source of truth; this package is a mirror an
 // integrator can install. Nothing here is edited by hand — re-run the sync.
 //
+// Two source directories. abi/ holds the snapshots evm-contracts extracts from
+// its own artifacts (bare ABI arrays); vendor/ holds ABIs built elsewhere — CNRX
+// and IBurnMintERC20 from cancore-token-evm — as objects whose `.abi` is the
+// array (CAN-1789). abi/ also carries two manifests that are not ABIs.
+//
 //   EVM_CONTRACTS_DIR=../evm-contracts npm run sync
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import render from './render.cjs';
@@ -20,11 +25,26 @@ const pkg = resolve(here, '..');
 const src = resolve(process.env.EVM_CONTRACTS_DIR ?? resolve(pkg, '../../../evm-contracts'));
 
 const abiDir = join(src, 'abi');
-const names = readdirSync(abiDir)
-  .filter((f) => f.endsWith('.json') && f !== 'bytecode-hashes.json')
-  .map((f) => f.replace(/\.json$/, ''))
-  .sort();
+const vendorDir = join(src, 'vendor');
+const MANIFESTS = new Set(['bytecode-hashes.json', 'versions.json']);
+const jsonNames = (dir, skip = new Set()) =>
+  existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith('.json') && !skip.has(f)).map((f) => f.replace(/\.json$/, '')) : [];
+
+/** name → where its ABI lives; a name in both directories is refused rather than silently shadowed. */
+const sources = new Map();
+for (const name of jsonNames(abiDir, MANIFESTS)) sources.set(name, { path: `abi/${name}.json`, pick: (json) => json });
+for (const name of jsonNames(vendorDir)) {
+  if (sources.has(name)) throw new Error(`${name}.json is in both abi/ and vendor/`);
+  sources.set(name, { path: `vendor/${name}.json`, pick: (json) => json.abi });
+}
+const names = [...sources.keys()].sort();
 if (names.length === 0) throw new Error(`no ABI snapshots under ${abiDir}`);
+
+// The sync writes files and deletes none, so a contract that left the source
+// would keep its snapshot on disk while dropping out of index.ts — a lost export
+// nobody sees. Refuse instead; removing one is a decision, not a side effect.
+const orphans = jsonNames(join(pkg, 'spec', 'abi')).filter((name) => !sources.has(name));
+if (orphans.length > 0) throw new Error(`spec/abi has snapshots the source no longer has: ${orphans.join(', ')}`);
 
 const version = JSON.parse(readFileSync(join(src, 'version.json'), 'utf8'));
 const bytecode = JSON.parse(readFileSync(join(abiDir, 'bytecode-hashes.json'), 'utf8'));
@@ -32,10 +52,15 @@ const bytecode = JSON.parse(readFileSync(join(abiDir, 'bytecode-hashes.json'), '
 mkdirSync(join(pkg, 'spec', 'abi'), { recursive: true });
 mkdirSync(join(pkg, 'src', 'generated'), { recursive: true });
 
-const abis = names.map((name) => [name, JSON.parse(readFileSync(join(abiDir, `${name}.json`), 'utf8'))]);
-for (const [name, abi] of abis) {
+const abis = names.map((name) => {
+  const { path, pick } = sources.get(name);
+  const abi = pick(JSON.parse(readFileSync(join(src, path), 'utf8')));
+  if (!Array.isArray(abi)) throw new Error(`${name}: not an ABI array`);
+  return [name, abi, path];
+});
+for (const [name, abi, path] of abis) {
   writeFileSync(join(pkg, 'spec', 'abi', `${name}.json`), `${JSON.stringify(abi, null, 2)}\n`);
-  writeFileSync(join(pkg, 'src', 'generated', `${name}.ts`), renderAbiModule(name, abi, `abi/${name}.json`));
+  writeFileSync(join(pkg, 'src', 'generated', `${name}.ts`), renderAbiModule(name, abi, path));
 }
 writeFileSync(join(pkg, 'src', 'generated', 'errors.ts'), renderErrors(abis));
 writeFileSync(

@@ -21,7 +21,10 @@ test.each(snapshots)('%s: the exported ABI equals the reviewed JSON snapshot', (
 });
 
 test('the snapshot set is the whole contracts surface, not a sample of it', () => {
-  expect(snapshots).toEqual(['CNRX', 'FeeVault', 'HTLC', 'IBurnMintERC20', 'IHTLC', 'IPermit2', 'MultiBalanceChecker']);
+  expect(snapshots).toEqual([
+    'AttestorSet', 'CNRX', 'CNRXStaking', 'CancoreRouter', 'FeeVault', 'HTLC', 'IBurnMintERC20', 'ICancoreRouter', 'IHTLC',
+    'IPermit2', 'MultiBalanceChecker', 'PointsClaim',
+  ]);
 });
 
 const hex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
@@ -30,8 +33,17 @@ const canonical = (i: Input): string =>
   i.type.startsWith('tuple') ? `(${(i.components ?? []).map(canonical).join(',')})${i.type.slice(5)}` : i.type;
 
 // The selector tables are data an integrator decodes reverts with; a wrong
-// selector is a revert that reads as "unknown". Recompute every one.
-test.each(['HTLC', 'FeeVault', 'CNRX'])('%s: every custom error has its keccak selector, and nothing else is in the table', (name) => {
+// selector is a revert that reads as "unknown". Recompute every one, for every
+// snapshot that declares errors (SDK-2).
+const withErrors = snapshots.filter((name) =>
+  (JSON.parse(readFileSync(join(specDir, `${name}.json`), 'utf8')) as Array<{ type: string }>).some((e) => e.type === 'error'),
+);
+
+test('the error tables cover the router, its interface and the attestor set', () => {
+  expect(withErrors).toEqual(expect.arrayContaining(['AttestorSet', 'CNRX', 'CancoreRouter', 'FeeVault', 'HTLC', 'ICancoreRouter']));
+});
+
+test.each(withErrors)('%s: every custom error has its keccak selector, and nothing else is in the table', (name) => {
   const json = JSON.parse(readFileSync(join(specDir, `${name}.json`), 'utf8')) as Array<{ type: string; name: string; inputs: Input[] }>;
   const table = (abi as unknown as Record<string, Readonly<Record<string, string>>>)[`${name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()}_ERRORS`];
   const expected: Record<string, string> = {};
@@ -68,7 +80,7 @@ test('the HTLC selectors agree with the table the app maintained by hand', () =>
 
 test('the release identity names the contracts version and a hash per deployed contract', () => {
   expect(CONTRACTS_RELEASE.version).toMatch(/^\d+\.\d+\.\d+/);
-  for (const name of ['HTLC', 'FeeVault', 'CNRX', 'MultiBalanceChecker']) {
+  for (const name of ['HTLC', 'FeeVault', 'CNRX', 'MultiBalanceChecker', 'CancoreRouter']) {
     expect(BYTECODE_HASHES[name as keyof typeof BYTECODE_HASHES].deployedBytecodeHash).toMatch(/^[0-9a-f]{64}$/);
   }
 });

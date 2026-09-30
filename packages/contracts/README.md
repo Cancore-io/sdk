@@ -1,7 +1,7 @@
 # `@cancore/contracts`
 
-The Cancore EVM contracts as data: the ABIs of the deployed HTLC, FeeVault and CNRX
-contracts, their custom-error selectors, where each is deployed per environment, the EIP-712
+The Cancore EVM contracts as data: the ABIs of the HTLC, FeeVault and CNRX contracts and of
+the intent rail's `CancoreRouter` and `AttestorSet`, their custom-error selectors, where each is deployed per environment, the EIP-712
 voucher `FeeVault` redeems, and the network registry the API's chain ids refer to.
 
 ```bash
@@ -16,7 +16,7 @@ need one dependency, `@noble/hashes`.
 
 | Entry | Holds | Source of truth |
 | --- | --- | --- |
-| `@cancore/contracts/abi` | `HTLC_ABI`, `FEE_VAULT_ABI`, `CNRX_ABI`, `IHTLC_ABI`, `IBURN_MINT_ERC20_ABI`, `IPERMIT2_ABI`, `MULTI_BALANCE_CHECKER_ABI`; `HTLC_ERRORS`, `FEE_VAULT_ERRORS`, `CNRX_ERRORS` | `Cancore-io/evm-contracts/abi/*.json` — the reviewed snapshots that repository keeps in lock-step with its compiled contracts |
+| `@cancore/contracts/abi` | `HTLC_ABI`, `FEE_VAULT_ABI`, `CNRX_ABI`, `IHTLC_ABI`, `IBURN_MINT_ERC20_ABI`, `IPERMIT2_ABI`, `MULTI_BALANCE_CHECKER_ABI`, `CANCORE_ROUTER_ABI`, `ICANCORE_ROUTER_ABI`, `ATTESTOR_SET_ABI`, `CNRXSTAKING_ABI`, `POINTS_CLAIM_ABI`; an `*_ERRORS` table for each contract that declares custom errors | `Cancore-io/evm-contracts/abi/*.json` — the reviewed snapshots that repository keeps in lock-step with its compiled contracts; `CNRX` and `IBurnMintERC20` from `evm-contracts/vendor/*.json`, a build of `cancore-token-evm` vendored there |
 | `@cancore/contracts/networks` | `NETWORKS`, `networkOf`, `networkKindOf`, `networkByChainId` | the chain ids the Cancore API uses |
 | `@cancore/contracts` (filler protocol v1) | EIP-712 types and domains of the intent rail, `hashTypedData` / `jcs` / `gatewayBodyHash` / `requestIdHash`, `drawValue` / `drawWinner` / `firstRoundAtOrAfter`, wire message types and enums, `FILLER_GATEWAYS` | `docs/intents/protocol.md` and `auction-and-draw.md` in Cancore-io/meta; `CancoreRouter.sol` for the code types |
 | `@cancore/contracts` | all of the above, plus `DEPLOYMENTS` / `deploymentOf`, `FEE_CLAIM_TYPES` / `feeClaimDomain`, `FILL_PROOF_TYPES` / `fillProofDomain` / `FillProof`, `BYTECODE_HASHES`, `CONTRACTS_RELEASE`, `describeRevert` | the contracts repository's `version.json` and bytecode hashes; the FeeVault contract's own struct and domain; `evm-contracts/abi/typed-data/FillProof.json` for the router's `FillProof` |
@@ -40,6 +40,28 @@ Why a package and not a copied file: the Cancore app's own copy of the HTLC ABI 
 from the deployed contract — its `Claimed` event carried seven parameters where the contract
 emits eight — and nothing noticed, because a copied ABI decodes what it describes and
 silently misses what it does not. This package is what the app installs now.
+
+## CancoreRouter and AttestorSet
+
+The intent rail's router, its interface and the k-of-n attestor set it inherits. A taker reads
+intents, fills and filler windows off the router and follows its events:
+
+```ts
+import { CANCORE_ROUTER_ABI, CANCORE_ROUTER_ERRORS, describeRevert } from '@cancore/contracts';
+
+const [status, refundAfter, openedAt] = await client.readContract({
+  address: router, abi: CANCORE_ROUTER_ABI, functionName: 'intents', args: [orderHash],
+});
+const fills = await client.getContractEvents({ address: router, abi: CANCORE_ROUTER_ABI, eventName: 'Filled' });
+describeRevert(revertData, [CANCORE_ROUTER_ERRORS]); // 'AlreadyFilled()' | …
+```
+
+`ICANCORE_ROUTER_ABI` is the narrower interface (`fill`, `settle`, `refund`, `openFor`, the hash
+helpers, the events); `ATTESTOR_SET_ABI` is the set on its own (`getAttestorSet`,
+`currentSetId`, `isMember`, `revokedAttestors`), which `CancoreRouter` inherits. A test pins what
+the taker client relies on: those views and calls, the events `IntentOpened`, `Filled`,
+`Settled` and `Refunded`, and the 11-field `Order` tuple in the order of `ORDER_TYPES`, whose
+type hash is the router's `ORDER_TYPEHASH`. Router addresses are not in this package yet.
 
 ## FillProof: what attestors sign
 
@@ -206,10 +228,31 @@ added.
 EVM_CONTRACTS_DIR=../evm-contracts npm run sync   # then review the diff and release
 ```
 
+`npm run sync` is two scripts: `scripts/sync.mjs` (ABIs, error tables, release identity) and
+`scripts/sync-typed-data.mjs` (`abi/typed-data/*.json`). Until evm-contracts publishes
+`abi/typed-data/` the second one fails; run the first one alone:
+
+```bash
+EVM_CONTRACTS_DIR=../evm-contracts node scripts/sync.mjs
+```
+
+It reads `abi/*.json` except the two manifests (`bytecode-hashes.json`, `versions.json`) and
+`vendor/*.json` (the `.abi` field), and refuses to run when `spec/abi/` holds a snapshot the
+source no longer has — dropping a published ABI is a decision, not a side effect of a sync.
+
 A contract change is a release of this package. `CONTRACTS_RELEASE.version` says which
 `evm-contracts` version the data was taken from.
 
 Full documentation: <https://docs.cancore.io/sdk/contracts>
+
+## Changes
+
+- `0.2.0-rc.2` — adds the `CancoreRouter`, `ICancoreRouter` and `AttestorSet` ABIs with their error
+  tables (and `CNRXStaking`, `PointsClaim`, which the mirror brings along); `FeeVault` gains the
+  `TransferFailed()` error and `IPermit2` gains `permitWitnessTransferFrom`; CNRX and
+  IBurnMintERC20 are now read from `evm-contracts/vendor/`. Additive only.
+- `0.2.0-rc.1` — filler protocol v1 release candidate: EIP-712 types, hashing helpers, JSON
+  Schemas, AsyncAPI, golden vectors; the `FillProof` schema.
 
 ## License
 

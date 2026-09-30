@@ -13,16 +13,16 @@ export const CONTRACTS_RELEASE = {
  */
 export const BYTECODE_HASHES = {
   "HTLC": {
-    "bytecodeHash": "17e8b4dfbb8cb7095ce9f0c0334a8f506233e70c3baa1c15784ccb594c5ba07f",
-    "deployedBytecodeHash": "86cff816f5875c8c5afefe9feb223c62ec5c0e2754606db2cecc96883c50c6a2",
-    "bytecodeLength": 14204,
-    "deployedBytecodeLength": 13914
+    "bytecodeHash": "93a991d3a6451f7c3f02dfb70b365a48d29bebccc7f16d8dbe3d56d3dfee0af1",
+    "deployedBytecodeHash": "40ab52456c3b5a04365fc1fad837eb79bbe4b85c8dbd990f549468ae48f97e3a",
+    "bytecodeLength": 14976,
+    "deployedBytecodeLength": 14686
   },
   "FeeVault": {
-    "bytecodeHash": "83785435a8a603143b3bbf0a68587a0df1f966bfdbb66b364ca4f39b9c276da4",
-    "deployedBytecodeHash": "e2458a305d0b8c4489cdf5cde2f1fa3411157292ffb7b2cfc95169550f093bec",
-    "bytecodeLength": 13680,
-    "deployedBytecodeLength": 11472
+    "bytecodeHash": "1c97d27c8d3e584f879bb57549d75ef10394a56a298eaf4a772516b9316e2248",
+    "deployedBytecodeHash": "0631177a64cde0829c2cec8426c08a507564f7d8b084e0237d724ed63faea0e9",
+    "bytecodeLength": 13176,
+    "deployedBytecodeLength": 10968
   },
   "MultiBalanceChecker": {
     "bytecodeHash": "c0a0326694f2a1594e332ba06120692cc98bc06c57d6d8981cb3768e01fad423",
@@ -30,16 +30,34 @@ export const BYTECODE_HASHES = {
     "bytecodeLength": 2456,
     "deployedBytecodeLength": 2394
   },
-  "CNRX": {
-    "bytecodeHash": "61b4e114722e99f93aac4bd4ef3cfb7973dd050b66e6ffb326efad29d4cc8c95",
-    "deployedBytecodeHash": "2b23774e41fb25f820227a50de4f48d7ad79b0bd131c1956aab07c100e0c3948",
-    "bytecodeLength": 21266,
-    "deployedBytecodeLength": 17374
+  "CancoreRouter": {
+    "bytecodeHash": "615b6fb47a4255df9f7fdec963811cdfbefb53166645cd19466fa268df7fb39d",
+    "deployedBytecodeHash": "dec1f5d541c6b383b95b6c53e278123cc3844bdeff3f977a166fb6e9cbf86343",
+    "bytecodeLength": 43102,
+    "deployedBytecodeLength": 36984
+  },
+  "CNRXStaking": {
+    "bytecodeHash": "dfda056ee22b593e2f2e1fc4e679fbb9dc34b04964f389b46914402c422b40fb",
+    "deployedBytecodeHash": "d11534242f166e52f4ad063b5b6b59146e31634d3932f7ad63db05d83a1485f6",
+    "bytecodeLength": 7412,
+    "deployedBytecodeLength": 6240
+  },
+  "PointsClaim": {
+    "bytecodeHash": "0f29890b609f7e15ef4dbcda17a7f2cd7482d016a0057a5f6c4270d7780ff38d",
+    "deployedBytecodeHash": "f2b10c4ec8458c0d6ab0f465481e645524f618f7a3327822e8ae5d3fd42fa46c",
+    "bytecodeLength": 14300,
+    "deployedBytecodeLength": 11504
   },
   "BurnMintTokenPool": {
     "bytecodeHash": "b5b19721149d9dd63e0650d0a1f95ac82affa4b9c650fdffd375db6ea361e416",
     "deployedBytecodeHash": "c9aaa6a40ef4f0caadeb66f0a9adc68b1191949e9e0bdb420f331132bf651c3a",
     "bytecodeLength": 41756,
     "deployedBytecodeLength": 39936
+  },
+  "CNRX": {
+    "bytecodeHash": "61b4e114722e99f93aac4bd4ef3cfb7973dd050b66e6ffb326efad29d4cc8c95",
+    "deployedBytecodeHash": "2b23774e41fb25f820227a50de4f48d7ad79b0bd131c1956aab07c100e0c3948",
+    "bytecodeLength": 21266,
+    "deployedBytecodeLength": 17374
   }
 } as const;
