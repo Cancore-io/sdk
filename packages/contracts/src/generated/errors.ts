@@ -46,23 +46,6 @@ export const CNRX_ERRORS: Readonly<Record<string, string>> = {
   '0xd92e233d': 'ZeroAddress()',
 };
 
-/** Custom errors of CNRXStaking: 4-byte selector → signature, for readable reverts. */
-export const CNRXSTAKING_ERRORS: Readonly<Record<string, string>> = {
-  '0xaa9a98df': 'CooldownActive()',
-  '0x41cebc70': 'CooldownOutOfRange()',
-  '0xd93c0665': 'EnforcedPause()',
-  '0x8dfc202b': 'ExpectedPause()',
-  '0xf1bc94d2': 'InsufficientStake()',
-  '0xd0d04f60': 'NothingToWithdraw()',
-  '0x1e4fbdf7': 'OwnableInvalidOwner(address)',
-  '0x118cdaa7': 'OwnableUnauthorizedAccount(address)',
-  '0x3ee5aeb5': 'ReentrancyGuardReentrantCall()',
-  '0x89051165': 'RenounceDisabled()',
-  '0x5274afe7': 'SafeERC20FailedOperation(address)',
-  '0xd92e233d': 'ZeroAddress()',
-  '0x1f2a2005': 'ZeroAmount()',
-};
-
 /** Custom errors of CancoreRouter: 4-byte selector → signature, for readable reverts. */
 export const CANCORE_ROUTER_ERRORS: Readonly<Record<string, string>> = {
   '0x41a26a63': 'AlreadyFilled()',
@@ -214,27 +197,4 @@ export const ICANCORE_ROUTER_ERRORS: Readonly<Record<string, string>> = {
   '0xd92e233d': 'ZeroAddress()',
   '0xc3b08f54': 'ZeroFillRef()',
   '0xa443558f': 'ZeroMinReceived()',
-};
-
-/** Custom errors of PointsClaim: 4-byte selector → signature, for readable reverts. */
-export const POINTS_CLAIM_ERRORS: Readonly<Record<string, string>> = {
-  '0xf645eedf': 'ECDSAInvalidSignature()',
-  '0xfce698f7': 'ECDSAInvalidSignatureLength(uint256)',
-  '0xd78bce0c': 'ECDSAInvalidSignatureS(bytes32)',
-  '0xdba16ce8': 'InvalidSchedule()',
-  '0xb3512b0c': 'InvalidShortString()',
-  '0x815e1d64': 'InvalidSigner()',
-  '0xda0357f7': 'NotASigner()',
-  '0x969bf728': 'NothingToClaim()',
-  '0x1e4fbdf7': 'OwnableInvalidOwner(address)',
-  '0x118cdaa7': 'OwnableUnauthorizedAccount(address)',
-  '0x3ee5aeb5': 'ReentrancyGuardReentrantCall()',
-  '0x89051165': 'RenounceDisabled()',
-  '0x5274afe7': 'SafeERC20FailedOperation(address)',
-  '0x76bda293': 'SignerPermanentlyRevoked()',
-  '0x305a27a9': 'StringTooLong(string)',
-  '0x157fd87e': 'VoucherExpired()',
-  '0xbfc5fe0f': 'VoucherIsCancelled()',
-  '0xd92e233d': 'ZeroAddress()',
-  '0x1f2a2005': 'ZeroAmount()',
 };

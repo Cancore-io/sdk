@@ -16,7 +16,7 @@ need one dependency, `@noble/hashes`.
 
 | Entry | Holds | Source of truth |
 | --- | --- | --- |
-| `@cancore/contracts/abi` | `HTLC_ABI`, `FEE_VAULT_ABI`, `CNRX_ABI`, `IHTLC_ABI`, `IBURN_MINT_ERC20_ABI`, `IPERMIT2_ABI`, `MULTI_BALANCE_CHECKER_ABI`, `CANCORE_ROUTER_ABI`, `ICANCORE_ROUTER_ABI`, `ATTESTOR_SET_ABI`, `CNRXSTAKING_ABI`, `POINTS_CLAIM_ABI`; an `*_ERRORS` table for each contract that declares custom errors | `Cancore-io/evm-contracts/abi/*.json` — the reviewed snapshots that repository keeps in lock-step with its compiled contracts; `CNRX` and `IBurnMintERC20` from `evm-contracts/vendor/*.json`, a build of `cancore-token-evm` vendored there |
+| `@cancore/contracts/abi` | `HTLC_ABI`, `FEE_VAULT_ABI`, `CNRX_ABI`, `IHTLC_ABI`, `IBURN_MINT_ERC20_ABI`, `IPERMIT2_ABI`, `MULTI_BALANCE_CHECKER_ABI`, `CANCORE_ROUTER_ABI`, `ICANCORE_ROUTER_ABI`, `ATTESTOR_SET_ABI`; an `*_ERRORS` table for each contract that declares custom errors | `Cancore-io/evm-contracts/abi/*.json` — the reviewed snapshots that repository keeps in lock-step with its compiled contracts; `CNRX` and `IBurnMintERC20` from `evm-contracts/vendor/*.json`, a build of `cancore-token-evm` vendored there |
 | `@cancore/contracts/networks` | `NETWORKS`, `networkOf`, `networkKindOf`, `networkByChainId` | the chain ids the Cancore API uses |
 | `@cancore/contracts` (filler protocol v1) | EIP-712 types and domains of the intent rail, `hashTypedData` / `jcs` / `gatewayBodyHash` / `requestIdHash`, `drawValue` / `drawWinner` / `firstRoundAtOrAfter`, wire message types and enums, `FILLER_GATEWAYS` | `docs/intents/protocol.md` and `auction-and-draw.md` in Cancore-io/meta; `CancoreRouter.sol` for the code types |
 | `@cancore/contracts` | all of the above, plus `DEPLOYMENTS` / `deploymentOf`, `FEE_CLAIM_TYPES` / `feeClaimDomain`, `FILL_PROOF_TYPES` / `fillProofDomain` / `FillProof`, `BYTECODE_HASHES`, `CONTRACTS_RELEASE`, `describeRevert` | the contracts repository's `version.json` and bytecode hashes; the FeeVault contract's own struct and domain; `evm-contracts/abi/typed-data/FillProof.json` for the router's `FillProof` |
@@ -188,9 +188,12 @@ const { htlc, htlcBlock } = deploymentOf('mainnet', 'arbitrum')!;
 Three environments, three independent deployments: what is on Sepolia for the dev stand is
 not what is on Sepolia for testnet. `htlcBlock` is the floor for an event scan.
 
-An address is a claim; `BYTECODE_HASHES` is the proof. The runtime code at any `htlc`
-address hashes to `BYTECODE_HASHES.HTLC.deployedBytecodeHash` for the release it was deployed
-from, and `CONTRACTS_RELEASE` names that release.
+`BYTECODE_HASHES` pins the build each release was made from: sha256 over the compiled
+artifact's hex string (creation and runtime), as `evm-contracts` computes it in
+`scripts/tools/check-bytecode-match.mjs`. It is not a hash of `eth_getCode`: a contract with
+immutables (`CancoreRouter`, `FeeVault`) never matches one, so checking a live deployment
+against it means rebuilding the release, not hashing the address. `CONTRACTS_RELEASE` names the
+release.
 
 ## The FeeClaim voucher
 
@@ -248,9 +251,9 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 ## Changes
 
 - `0.2.0-rc.2` — adds the `CancoreRouter`, `ICancoreRouter` and `AttestorSet` ABIs with their error
-  tables (and `CNRXStaking`, `PointsClaim`, which the mirror brings along); `FeeVault` gains the
-  `TransferFailed()` error and `IPermit2` gains `permitWitnessTransferFrom`; CNRX and
-  IBurnMintERC20 are now read from `evm-contracts/vendor/`. Additive only.
+  tables; `FeeVault` gains the `TransferFailed()` error and `IPermit2` gains
+  `permitWitnessTransferFrom`; CNRX and IBurnMintERC20 are now read from `evm-contracts/vendor/`.
+  Additive only.
 - `0.2.0-rc.1` — filler protocol v1 release candidate: EIP-712 types, hashing helpers, JSON
   Schemas, AsyncAPI, golden vectors; the `FillProof` schema.
 

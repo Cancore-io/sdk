@@ -7,9 +7,9 @@
  * the backend of that period talks to; `htlcBlock` is where to start an event
  * scan, not before.
  *
- * `BYTECODE_HASHES` is the check: the runtime code at any `htlc` address below
- * hashes to `BYTECODE_HASHES.HTLC.deployedBytecodeHash` for the release it was
- * deployed from. An address alone is a claim; the hash is the proof.
+ * `BYTECODE_HASHES` pins the build of each release: sha256 over the compiled
+ * artifact's hex, not over `eth_getCode`, so it identifies what was built rather
+ * than proving what an address runs (immutables alone change runtime code).
  */
 
 export type DeploymentEnv = 'mainnet' | 'testnet' | 'devnet';
