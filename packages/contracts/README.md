@@ -188,9 +188,11 @@ const { htlc, htlcBlock } = deploymentOf('mainnet', 'arbitrum')!;
 Three environments, three independent deployments: what is on Sepolia for the dev stand is
 not what is on Sepolia for testnet. `htlcBlock` is the floor for an event scan.
 
-`BYTECODE_HASHES` pins the build each release was made from: sha256 over the compiled
-artifact's hex string (creation and runtime), as `evm-contracts` computes it in
-`scripts/tools/check-bytecode-match.mjs`. It is not a hash of `eth_getCode`: a contract with
+`BYTECODE_HASHES` pins the build each release was made from, as `evm-contracts` records it in
+`scripts/tools/check-bytecode-match.mjs`: `bytecodeHash` and `deployedBytecodeHash` are sha256
+of the UTF-8 text of the artifact's `0x`-prefixed hex (creation and runtime code) — not
+keccak256, and not of the bytes — and `bytecodeLength` / `deployedBytecodeLength` are the length
+of that text, `0x` included. It is not a hash of `eth_getCode`: a contract with
 immutables (`CancoreRouter`, `FeeVault`) never matches one, so checking a live deployment
 against it means rebuilding the release, not hashing the address. `CONTRACTS_RELEASE` names the
 release.
@@ -253,7 +255,9 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 - `0.2.0-rc.2` — adds the `CancoreRouter`, `ICancoreRouter` and `AttestorSet` ABIs with their error
   tables; `FeeVault` gains the `TransferFailed()` error and `IPermit2` gains
   `permitWitnessTransferFrom`; CNRX and IBurnMintERC20 are now read from `evm-contracts/vendor/`.
-  Additive only.
+  Additive only. Documentation correction: `BYTECODE_HASHES` values have always been sha256 of
+  the artifact's hex text, never keccak256 or a hash of `eth_getCode`, as the `0.1.x` README
+  said; the values' meaning is unchanged.
 - `0.2.0-rc.1` — filler protocol v1 release candidate: EIP-712 types, hashing helpers, JSON
   Schemas, AsyncAPI, golden vectors; the `FillProof` schema.
 

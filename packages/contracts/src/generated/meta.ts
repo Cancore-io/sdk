@@ -8,10 +8,12 @@ export const CONTRACTS_RELEASE = {
 } as const;
 
 /**
- * sha256 of the compiled creation and runtime bytecode per contract, taken over the
- * artifact's hex string (evm-contracts scripts/tools/check-bytecode-match.mjs): it pins
- * the build a release was made from. It is not a hash of `eth_getCode` — a contract
- * with immutables (CancoreRouter, FeeVault) never matches one — so checking a live
+ * Per contract, the compiled creation and runtime bytecode of the release, as
+ * evm-contracts scripts/tools/check-bytecode-match.mjs records them: each *Hash is
+ * sha256 of the UTF-8 text of the artifact's 0x-prefixed hex (not keccak256, not of the
+ * bytes), and each *Length is the length of that text including the 0x. It pins the
+ * build a release was made from. It is not a hash of `eth_getCode` — a contract with
+ * immutables (CancoreRouter, FeeVault) never matches one — so checking a live
  * deployment against it needs a rebuild, not a lookup.
  */
 export const BYTECODE_HASHES = {

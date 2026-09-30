@@ -80,7 +80,7 @@ test('the HTLC selectors agree with the table the app maintained by hand', () =>
   expect(describeRevert('0x00000000', [abi.HTLC_ERRORS, abi.FEE_VAULT_ERRORS])).toBeUndefined();
 });
 
-test('the release identity names the contracts version and a hash per deployed contract', () => {
+test('the release identity names the contracts version and a build hash per contract in the release', () => {
   expect(CONTRACTS_RELEASE.version).toMatch(/^\d+\.\d+\.\d+/);
   for (const name of ['HTLC', 'FeeVault', 'CNRX', 'MultiBalanceChecker', 'CancoreRouter']) {
     expect(BYTECODE_HASHES[name as keyof typeof BYTECODE_HASHES].deployedBytecodeHash).toMatch(/^[0-9a-f]{64}$/);
