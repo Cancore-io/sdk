@@ -28,6 +28,8 @@ jobs:
     env:
       BRANCH: automation/client-spec-refresh
       SPEC: packages/client/spec/openapi.json
+      # Written by refresh-spec.mjs from the same document; must land in the same commit.
+      CODES: packages/client/src/sdk-error-codes.ts
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +43,7 @@ jobs:
       - name: Did the document change?
         id: diff
         run: |
-          if git diff --quiet -- "$SPEC"; then
+          if [ -z "$(git status --porcelain -- "$SPEC" "$CODES")" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "The snapshot matches the deployed document. Nothing to do." >> "$GITHUB_STEP_SUMMARY"
           else
@@ -70,7 +72,10 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git switch -c "$BRANCH"
-          git commit -m 'chore(client): refresh the gateway OpenAPI snapshot' -- "$SPEC"
+          # $CODES is absent until the generator lands, so add only what exists.
+          git add -- "$SPEC"
+          if [ -e "$CODES" ]; then git add -- "$CODES"; fi
+          git commit -m 'chore(client): refresh the gateway OpenAPI snapshot'
 
           # Same tree as the branch already carries (same main, same document):
           # leave the branch and the PR alone instead of force-pushing daily noise.
