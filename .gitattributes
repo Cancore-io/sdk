@@ -1,10 +1,13 @@
-# The TypeScript under packages/contracts/src/generated is written by
-# scripts/sync.mjs and sync-typed-data.mjs from the JSON under spec/, and CI
-# holds it to that JSON (contracts.test.ts: every exported ABI equals its
-# spec/abi snapshot; every error selector is recomputed with keccak-256).
-# Marking it generated folds it in GitHub diffs and keeps it out of the review
-# size budget; the JSON it mirrors stays reviewable.
+# src/generated/<Name>.ts, index.ts and errors.ts are written by
+# packages/contracts/scripts/sync.mjs from spec/abi/*.json, and CI re-derives
+# them: packages/contracts/src/generated.test.ts renders each from the JSON with
+# the same code (scripts/render.cjs) and compares the whole file byte for byte,
+# and pins the set of files in the directory. Marking them generated folds them
+# in GitHub diffs and keeps them out of the review size budget; the JSON they
+# mirror stays reviewable.
 packages/contracts/src/generated/*.ts linguist-generated=true
-# meta.ts carries the release identity and bytecode hashes, which no test
-# derives from anything a reviewer already read: keep it in the review.
+# Not derivable from spec/ alone, so a reviewer reads them: meta.ts carries the
+# release identity and bytecode hashes; typedData.ts comes from
+# evm-contracts/abi/typed-data, which spec/typed-data mixes with hand copies.
 packages/contracts/src/generated/meta.ts -linguist-generated
+packages/contracts/src/generated/typedData.ts -linguist-generated
