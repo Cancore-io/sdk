@@ -255,7 +255,8 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 - `0.2.0-rc.3` — adds the `CNRXStaking` and `PointsClaim` ABIs with their error tables
   (`CNRX_STAKING_ABI`, `CNRX_STAKING_ERRORS`, `POINTS_CLAIM_ABI`, `POINTS_CLAIM_ERRORS`). The
   generator now splits an acronym of two or more capitals from the word after it, which renames
-  nothing already exported. Additive only.
+  nothing already exported. Additive only. Neither contract has an address in `DEPLOYMENTS`
+  yet; addresses come in a later release.
 - `0.2.0-rc.2` — adds the `CancoreRouter`, `ICancoreRouter` and `AttestorSet` ABIs with their error
   tables; `FeeVault` gains the `TransferFailed()` error and `IPermit2` gains
   `permitWitnessTransferFrom`; CNRX and IBurnMintERC20 are now read from `evm-contracts/vendor/`.
