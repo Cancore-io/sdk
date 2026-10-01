@@ -19,8 +19,9 @@
  * this signer.
  */
 import { signLegs, type OperationLeg } from '@cancore/wallet/operations';
-import { createHttp, type Http } from './http';
+import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
+import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
 
@@ -173,6 +174,9 @@ export class SettleError extends Error {
 
 /** A signing ceremony that failed, with what its prepare had already said (a submit failure still knows its swap). */
 export class CeremonyError extends Error {
+  /** The API's refusal code, when `cause` is a `CancoreApiError` that carries one. */
+  readonly errorCode?: SdkErrorCode;
+
   constructor(
     readonly operation: string,
     readonly stage: 'prepare' | 'submit',
@@ -181,6 +185,7 @@ export class CeremonyError extends Error {
   ) {
     super(`${operation} ${stage} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
     this.name = 'CeremonyError';
+    this.errorCode = cause instanceof CancoreApiError ? cause.errorCode : undefined;
   }
 }
 

@@ -9,6 +9,7 @@ export type Refusal =
   | 'counterNotReady'
   | 'counterAlreadyAccepted'
   | 'alreadySettled'
+  | 'redeemInviteSeparately'
   | 'other';
 
 function assertNever(value: never): never {
@@ -60,6 +61,7 @@ export function refusalForCode(code: SdkErrorCode): Refusal {
     case 'EMAIL_REGISTERED_AS_PASSWORD':
     case 'WALLET_MISMATCH':
     case 'SIGNING_METHOD_UNSUPPORTED':
+    case 'NOT_FOUND':
       return 'other';
     default:
       return assertNever(code);
@@ -68,10 +70,11 @@ export function refusalForCode(code: SdkErrorCode): Refusal {
 
 /*
  * ponytail: prose fallback, only for a body with no code this client knows (none,
- * or one from a newer gateway). The API names these
- * conditions in its message but, on mainnet and on the paths that do not throw
- * `sdkError` yet, carries no code for them. Goes when the backend follow-up
- * (CAN-1955: #1875/#1877 rebased on #1907) gives all six a code.
+ * or one from a newer gateway). Dev serves a code for all six (CAN-1955: backend
+ * #1874/#1875/#1877/#1907); mainnet does not until those ship dev → stage → main,
+ * and names the conditions only in its message. Drop the message fallback once
+ * mainnet serves CAN-1955 codes — and the invite rule with it, once mainnet's
+ * sign-up takes `inviteCode` (CAN-1593, backend #1846/#1888).
  */
 function refusalFromProse(err: CancoreApiError): Refusal {
   const says = (status: number, text: string) => err.status === status && JSON.stringify(err.body ?? '').includes(text);
@@ -81,6 +84,8 @@ function refusalFromProse(err: CancoreApiError): Refusal {
   if (says(400, 'Counter proposal not found')) return 'counterNotReady';
   if (says(400, 'Counter proposal already accepted')) return 'counterAlreadyAccepted';
   if (says(400, 'both_claimed')) return 'alreadySettled';
+  // A sign-up DTO without the field: the whitelisting validation pipe names it.
+  if (says(400, 'property inviteCode should not exist')) return 'redeemInviteSeparately';
   return 'other';
 }
 

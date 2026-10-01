@@ -182,7 +182,7 @@ const REQUEST_FIELDS: Record<string, string[]> = {
 test('the sign-up body sends only fields the document declares', () => {
   const op = spec.paths['/auth/register']?.post as { requestBody: { content: Record<string, { schema: { properties: Record<string, unknown> } }> } };
   const known = Object.keys(op.requestBody.content['application/json']!.schema.properties);
-  const sent = ['signingMethod', 'publicKey', 'challenge', 'signature', 'partyName', 'email'];
+  const sent = ['signingMethod', 'publicKey', 'challenge', 'signature', 'partyName', 'email', 'inviteCode'];
   expect(sent.filter((f) => !known.includes(f))).toEqual([]);
 });
 

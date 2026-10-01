@@ -13,6 +13,7 @@
  * the same shape.
  */
 import { createHttp, type FetchLike } from './http';
+import { refusalOf } from './refusal';
 
 /**
  * What the session needs from a key. `@cancore/wallet`'s signing provider fits
@@ -60,8 +61,11 @@ interface AuthResponse {
 
 export interface RegisterInput {
   /**
-   * An invite code (`XXXX-XXXX-XXXX`), redeemed right after sign-up. A code
-   * minted with a role — `partner-bot` for a partner — grants that role.
+   * An invite code (`XXXX-XXXX-XXXX`), redeemed by the sign-up request itself.
+   * A code minted with a role — `partner-bot` for a partner — grants that role,
+   * and an unused code stands in for the stand's captcha. A sign-up that comes
+   * back `FAILED` is retried with the same key and the same code: the API knows
+   * the code as this key's and grants the role again rather than refusing it.
    */
   inviteCode?: string;
   /** Optional for a self-custody account. */
@@ -84,9 +88,9 @@ export interface Session {
   /** Sign in with the key. The account must exist. */
   login(): Promise<AccountUser>;
   /**
-   * Create the account for this key and sign in. Redeems `inviteCode` when
-   * given. The account's party is created separately (`onboard`), because it is
-   * the key — not the API — that has to sign it into existence.
+   * Create the account for this key and sign in, redeeming `inviteCode` in the
+   * same request. The account's party is created separately (`onboard`),
+   * because it is the key — not the API — that has to sign it into existence.
    */
   register(input?: RegisterInput): Promise<AccountUser>;
 }
@@ -164,9 +168,9 @@ export function createSession({ baseUrl, signer, fetchImpl, now = Date.now }: Se
 
   const authed = createHttp({ baseUrl, request });
 
-  async function register({ inviteCode, email, partyName, captchaToken }: RegisterInput = {}): Promise<AccountUser> {
+  async function signUp({ inviteCode, email, partyName, captchaToken }: RegisterInput): Promise<AccountUser> {
     const { challenge } = await anonymous.post<{ challenge: string }>('/auth/register-challenge', { publicKey });
-    const user = adopt(
+    return adopt(
       await anonymous.post<AuthResponse>(
         '/auth/register',
         {
@@ -177,11 +181,25 @@ export function createSession({ baseUrl, signer, fetchImpl, now = Date.now }: Se
           // The API requires a party name when there is no email to derive one from.
           partyName: partyName ?? `acct-${publicKey.slice(0, 16)}`,
           ...(email ? { email } : {}),
+          ...(inviteCode ? { inviteCode } : {}),
         },
         captchaToken ? { 'x-captcha-token': captchaToken } : undefined,
       ),
     );
-    if (!inviteCode) return user;
+  }
+
+  async function register(input: RegisterInput = {}): Promise<AccountUser> {
+    const { inviteCode } = input;
+    try {
+      // The code rides on the sign-up itself: the account and the code's role
+      // come from one request, and a sign-up retried with the same key and code
+      // is recognized as the same one.
+      return await signUp(input);
+    } catch (err) {
+      if (!inviteCode || refusalOf(err) !== 'redeemInviteSeparately') throw err;
+    }
+    // A gateway whose sign-up does not take the code yet: sign up, then redeem.
+    await signUp({ ...input, inviteCode: undefined });
     await authed.post('/auth/redeem-invite', { code: inviteCode });
     // Roles are read from the database on every request, so the redeemed role
     // is live at once — re-read the account to return it.
