@@ -14,7 +14,9 @@ permissions:
 
 jobs:
   notify:
-    runs-on: cancore-runners
+    # ubuntu-latest, not cancore-runners (CAN-1120): sdk is public, a self-hosted
+    # runner here would serve fork PRs.
+    runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
       - uses: Cancore-io/.github/actions/review-verdict-notify@05cafddbaa0a977a55c754b32e2fb166b74bb54c
