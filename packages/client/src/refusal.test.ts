@@ -47,6 +47,12 @@ describe('refusalOf, with no code on the body (prose fallback for a gateway that
     expect(refusalOf(refused(status, { statusCode: status, message }))).toBe(expected);
   });
 
+  test('a sign-up DTO that does not take inviteCode yet is told apart from any other validation refusal', () => {
+    const invalid = (errors: string[]) => refused(400, { message: 'Validation failed', errors });
+    expect(refusalOf(invalid(['property inviteCode should not exist']))).toBe('redeemInviteSeparately');
+    expect(refusalOf(invalid(['Invalid invite code format']))).toBe('other');
+  });
+
   test('the status still has to match', () => {
     expect(refusalOf(refused(500, { message: 'safe to retry' }))).toBe('other');
   });

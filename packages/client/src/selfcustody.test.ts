@@ -33,7 +33,7 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 const refuse = (status: number, message: string, errorCode?: string) =>
   json({ statusCode: status, message, ...(errorCode ? { errorCode, code: errorCode } : {}) }, status);
 
-interface Account { publicKey: string; id: string; partyId: string | null; roles: string[] }
+interface Account { publicKey: string; id: string; partyId: string | null; roles: string[]; status: 'ACTIVE' | 'FAILED' }
 interface Leg { legId: string; hash: string; kind: string }
 interface Pending { type: string; params: Record<string, unknown>; legs: Leg[]; owner: Account }
 
@@ -56,6 +56,12 @@ interface VenueOptions {
   counterAcceptedElsewhere?: boolean;
   /** The refusals the SDK acts on carry their errorCode and a text that names no condition, as the registry gateway sends them. */
   coded?: boolean;
+  /** The maker's claim finds the swap already settled by an earlier attempt's claim. */
+  claimedElsewhere?: boolean;
+  /** A gateway older than CAN-1593: its sign-up DTO has no `inviteCode`, so its validation pipe refuses the field. */
+  legacySignUp?: boolean;
+  /** The first sign-up's activation fails: the account comes back FAILED, as the API answers it. */
+  failActivationOnce?: boolean;
 }
 
 function venue({
@@ -65,11 +71,19 @@ function venue({
   rejectAfterCreate = false,
   counterAcceptedElsewhere = false,
   coded = false,
+  claimedElsewhere = false,
+  legacySignUp = false,
+  failActivationOnce = false,
 }: VenueOptions = {}) {
   const refusal = (status: number, prose: string, errorCode: string) =>
     coded ? refuse(status, 'refused', errorCode) : refuse(status, prose);
   const accounts = new Map<string, Account>(); // by bearer token
   const byKey = new Map<string, Account>();
+  /** Invite code → the public key that redeemed it (`invite_codes.used_by_public_key`), null while unused. */
+  const invites = new Map<string, string | null>([['ABCD-EFGH-JKMN', null]]);
+  let failActivation = failActivationOnce;
+  /** Every sign-up body the API received. */
+  const signUps: Array<Record<string, unknown>> = [];
   const pending = new Map<string, Pending>();
   const log: Array<{ type: string; params: Record<string, unknown> }> = [];
   const prepared: string[] = [];
@@ -191,13 +205,34 @@ function venue({
       challenges.add(challenge);
       return json({ challenge, expiresAt: Date.now() + 300_000 });
     }
+    if (route === 'POST /auth/register') {
+      signUps.push(body);
+      // The whitelisting pipe runs before the handler, so the challenge is not spent.
+      if (legacySignUp && 'inviteCode' in body) {
+        return json({ statusCode: 400, message: 'Validation failed', errors: ['property inviteCode should not exist'] }, 400);
+      }
+    }
     if (route === 'POST /auth/login-signature' || route === 'POST /auth/register') {
       if (!challenges.delete(body.challenge)) return refuse(401, 'unknown challenge');
       if (!ed25519.verify(hex(body.signature), new TextEncoder().encode(body.challenge), hex(body.publicKey))) return refuse(401, 'bad signature');
       let account = byKey.get(body.publicKey);
       if (route === 'POST /auth/register') {
+        // A FAILED sign-up under this key is cleaned up for the retry (reconcileFailedEmailless).
+        if (account?.status === 'FAILED') account = undefined;
         if (account || body.signingMethod !== 'passkey' || !body.partyName) return refuse(400, 'bad registration');
-        account = { publicKey: body.publicKey, id: body.partyName, partyId: null, roles: ['user'] };
+        account = { publicKey: body.publicKey, id: body.partyName, partyId: null, roles: ['user'], status: 'ACTIVE' };
+        if (body.inviteCode) {
+          // Redeemed with the account; a code this key redeemed before is granted again (CAN-1593 F-5).
+          if (!invites.has(body.inviteCode)) return refuse(404, 'Invalid invite code');
+          const usedBy = invites.get(body.inviteCode);
+          if (usedBy && usedBy !== body.publicKey) return refuse(409, 'Invite code already used');
+          invites.set(body.inviteCode, body.publicKey);
+          account.roles.push('partner-bot');
+        }
+        if (failActivation) {
+          failActivation = false;
+          account.status = 'FAILED';
+        }
         byKey.set(body.publicKey, account);
       }
       if (!account) return refuse(404, 'ACCOUNT_NOT_FOUND');
@@ -207,7 +242,8 @@ function venue({
     }
     if (!caller) return refuse(401, 'Unauthorized');
     if (route === 'POST /auth/redeem-invite') {
-      if (body.code !== 'ABCD-EFGH-JKMN') return refuse(404, 'unknown code');
+      if (!invites.has(body.code)) return refuse(404, 'unknown code');
+      invites.set(body.code, caller.publicKey);
       caller.roles.push('partner-bot');
       return json({ success: true, role: 'partner-bot' });
     }
@@ -244,6 +280,8 @@ function venue({
       if (swap!.status !== 'counter_accepted') return refuse(400, `swap is ${swap!.status}`);
       if ((await sha256Hex(body.preimage)) !== swap!.hashLock) return refuse(400, 'wrong preimage');
       swap!.status = 'both_claimed';
+      // An earlier attempt's claim landed and this one lost the answer: the swap settled all the same.
+      const answer = claimedElsewhere ? refusal(400, 'swap is both_claimed', 'SWAP_ALREADY_SETTLED') : json(swap);
       // CBTC to the taker is a registry transfer the taker must accept; CC to the maker is direct.
       incoming.push({
         contractId: 'ti-delivery', templateId: 'Splice.Api.Token.TransferInstruction', transferId: 't1',
@@ -252,7 +290,7 @@ function venue({
         executeBefore: new Date(Date.now() + 3_600_000).toISOString(),
         swapContext: { swapId: 's1', orderId: 'o1', swapStatus: 'both_claimed', leg: 'main' },
       });
-      return json(swap);
+      return answer;
     }
     if (route === 'GET /tokens/transfer-requests/incoming') return json(incoming.filter((t) => t.receiver === caller.partyId));
     return refuse(404, `no route ${route}`);
@@ -265,7 +303,7 @@ function venue({
     storedPreimage = stored ? preimage : null;
   }
 
-  return { fetchImpl, log, prepared, asked, preimageReads, routes, order, incoming, byKey, claims, openedEarlier };
+  return { fetchImpl, log, prepared, asked, preimageReads, routes, order, incoming, byKey, claims, signUps, openedEarlier };
 }
 
 const baseUrl = 'https://api.example';
@@ -284,6 +322,8 @@ test('two self-custody accounts from one phrase register, onboard and settle a C
   const registered = await maker.session.register({ partyName: 'maker', inviteCode: 'ABCD-EFGH-JKMN' });
   expect(registered.roles).toContain('partner-bot');
   await taker.session.register({ partyName: 'taker' });
+  // The code rides on the maker's sign-up itself; the taker's carries none.
+  expect(api.signUps.map((b) => b.inviteCode)).toEqual(['ABCD-EFGH-JKMN', undefined]);
   await Promise.all([maker.onboard(), taker.onboard()]);
   // Onboarding again changes nothing: the party exists and the preapproval too.
   await maker.onboard();
@@ -327,7 +367,6 @@ test('two self-custody accounts from one phrase register, onboard and settle a C
     'get /htlc/{id}',
     'get /orders/{id}',
     'get /tokens/transfer-requests/incoming',
-    'post /auth/redeem-invite',
     'post /auth/register',
     'post /auth/register-challenge',
     'post /htlc/{id}/claim',
@@ -418,12 +457,14 @@ test('a timed-out submit is resubmitted on the code alone, and a code with anoth
   const signer = await providerFromMnemonic(PHRASE);
   const run = async (errorCode: string) => {
     const submits: string[] = [];
+    let prepares = 0;
     const fetchImpl: FetchLike = async (url, init) => {
       const path = new URL(url).pathname;
       if (path === '/auth/challenge') return json({ challenge: 'Welcome to Cancore 2026-09-28 sig:1' });
       if (path === '/auth/login-signature') return json({ token: jwt('a'), user: {} });
       const body = JSON.parse(String(init.body));
       if (path === '/wallet/operations/prepare') {
+        prepares++;
         return json({ operationId: 'op1', legs: [{ legId: 'l', hash: b64(new Uint8Array(32)), kind: 'transfer' }], meta: null });
       }
       submits.push(body.signatures[0].signature);
@@ -432,13 +473,15 @@ test('a timed-out submit is resubmitted on the code alone, and a code with anoth
     };
     const acct = createSelfCustody({ baseUrl, signer, fetchImpl, ...fast });
     const outcome = await acct.execute('tokens.accept', {}).then(() => 'done', () => 'refused');
-    return { outcome, submits };
+    return { outcome, submits, prepares };
   };
 
   const retryable = await run('SUBMISSION_TIMEOUT_RETRYABLE');
   expect(retryable.outcome).toBe('done');
   expect(retryable.submits).toHaveLength(2);
   expect(retryable.submits[0]).toBe(retryable.submits[1]);
+  // The server re-stashed the signed transaction: the same one goes again, nothing is prepared anew.
+  expect(retryable.prepares).toBe(1);
 
   const other = await run('KEY_IN_USE');
   expect(other.outcome).toBe('refused');
@@ -712,6 +755,59 @@ describe('the same refusals, carried by errorCode with no condition in the text'
   });
 });
 
+test.each([
+  ['by the text of the message', false, [32, 33]],
+  ['by errorCode alone', true, [34, 35]],
+] as const)('a claim refused as already settled (%s) is a settled swap, not a failure', async (_, coded, accounts) => {
+  const api = venue({ claimedElsewhere: true, coded });
+  const { maker, taker } = await tradingPair(api, [...accounts]);
+  const [made, taken] = await Promise.all([maker.make('o1', { deadlineMs: 3_000 }), taker.take('o1', { deadlineMs: 3_000 })]);
+  expect(made.swap.status).toBe('both_claimed');
+  expect(taken.delivery).toBe('accepted');
+  // Taken at its word: no second claim.
+  expect(api.claims).toHaveLength(1);
+});
+
+describe('signing up with an invite code', () => {
+  const CODE = 'ABCD-EFGH-JKMN';
+
+  test('an emailless partner whose sign-up came back FAILED signs up again with the same key and code, and gets the role', async () => {
+    const api = venue({ failActivationOnce: true });
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 36 }), fetchImpl: api.fetchImpl, ...fast });
+    const first = await acct.session.register({ inviteCode: CODE });
+    expect(first.status).toBe('FAILED');
+    const second = await acct.session.register({ inviteCode: CODE });
+    expect(second).toMatchObject({ status: 'ACTIVE', roles: expect.arrayContaining(['partner-bot']) });
+    // Both requests are the same sign-up: one key, one code, one party name, no email — and no separate redeem.
+    const [a, b] = api.signUps;
+    expect({ ...a, challenge: '', signature: '' }).toEqual({ ...b, challenge: '', signature: '' });
+    expect(a).toMatchObject({ inviteCode: CODE, publicKey: acct.session.publicKey });
+    expect(a).not.toHaveProperty('email');
+    expect([...api.routes]).not.toContain('post /auth/redeem-invite');
+
+    // The code is this key's now: another key presenting it is refused.
+    const other = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 37 }), fetchImpl: api.fetchImpl, ...fast });
+    await expect(other.session.register({ inviteCode: CODE })).rejects.toMatchObject({ status: 409 });
+  });
+
+  test('a gateway whose sign-up does not take the code yet: signs up without it, then redeems it', async () => {
+    const api = venue({ legacySignUp: true });
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 38 }), fetchImpl: api.fetchImpl, ...fast });
+    const user = await acct.session.register({ inviteCode: CODE });
+    expect(user.roles).toContain('partner-bot');
+    expect(api.signUps.map((b) => b.inviteCode)).toEqual([CODE, undefined]);
+    expect([...api.routes]).toContain('post /auth/redeem-invite');
+  });
+
+  test('a code the API does not know is refused — never dropped for a sign-up without the role', async () => {
+    const api = venue();
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 39 }), fetchImpl: api.fetchImpl, ...fast });
+    await expect(acct.session.register({ inviteCode: 'ZZZZ-ZZZZ-ZZZZ' })).rejects.toMatchObject({ status: 404 });
+    expect(api.signUps).toHaveLength(1);
+    expect([...api.routes]).not.toContain('post /auth/redeem-invite');
+  });
+});
+
 /** A signed-in API that answers only the routes a test names, and records every route asked for. */
 function stub(handlers: Record<string, (body: Record<string, unknown>) => unknown>) {
   const hits: string[] = [];
@@ -781,7 +877,16 @@ describe('refusals that come before anything is signed', () => {
     const error = await acct.send({ receiverPartyId: 'p', amount: 'lots' }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(CeremonyError);
     expect(error).toMatchObject({ operation: 'tokens.send', stage: 'prepare', meta: null });
+    expect((error as CeremonyError).errorCode).toBeUndefined();
     expect(api.hits).not.toContain('POST /wallet/operations/submit');
+  });
+
+  test('a coded refusal carries its errorCode on the CeremonyError, for the caller to branch on', async () => {
+    const api = stub({ 'POST /wallet/operations/prepare': () => refuse(503, 'hosting unknown', 'PARTY_HOSTING_UNKNOWN') });
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast });
+    const error = await acct.send({ receiverPartyId: 'p', amount: '1' }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect(error).toMatchObject({ stage: 'prepare', errorCode: 'PARTY_HOSTING_UNKNOWN', cause: { errorCode: 'PARTY_HOSTING_UNKNOWN' } });
   });
 });
 

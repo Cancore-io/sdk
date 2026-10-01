@@ -236,7 +236,7 @@ import { createSelfCustody } from '@cancore/client/selfcustody';
 const signer = await providerFromMnemonic(process.env.PHRASE!, { account: 0 });
 const acct = createSelfCustody({ baseUrl: 'https://api.cancore.io', signer });
 
-// Once per account: sign up (a partner invite code grants the partner role), then create
+// Once per account: sign up with your invite code (it grants the partner role), then create
 // the account's Canton party and enable CC receipts. Both are safe to run again.
 await acct.session.register({ inviteCode: 'ABCD-EFGH-JKMN' });
 await acct.onboard();
@@ -260,7 +260,7 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 
 | Member | What it does |
 | --- | --- |
-| `session.register(input?)` | `register-challenge` → signed `register` → `redeem-invite` when `inviteCode` is given |
+| `session.register(input?)` | `register-challenge` → signed `register`, carrying `inviteCode` when given |
 | `session.login()` | `challenge` → signed `login-signature` |
 | `session.request` | the authenticated transport: renews the JWT before it expires, signs in again on a 401 |
 | `me()` | `GET /auth/me` |
@@ -274,6 +274,19 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `execute(type, params?)` | any operation of `GET /wallet/operations`: prepare, sign every leg, submit |
 | `swapState(swapId)` | `GET /htlc/{id}` |
 
+**Register with your invite code.** A partner gets a single-use code (`XXXX-XXXX-XXXX`) from
+Cancore and passes it to `register`. The code rides on the sign-up request itself: the account
+is created and the code's role (`partner-bot`) granted in one request, and an unused code
+stands in for the stand's captcha, so a program needs no `captchaToken`. No email is needed
+either. If the sign-up comes back with `status: 'FAILED'` (the account's activation did not
+finish), call `register` again with the same key and the same code: the API knows the code
+as this key's and grants the role again instead of refusing it as used. A code the API does
+not know, or one another key redeemed, is refused (`404` / `409`) — the SDK never signs up
+without it. A `409` "Public key already registered" means an earlier sign-up went through:
+`login()` instead. Against a gateway whose sign-up does not take the code yet (mainnet until
+backend CAN-1593 ships there) `register` signs up without it and then redeems it with
+`POST /auth/redeem-invite`, as before.
+
 **How a trade settles.** `make` opens the swap with a fresh preimage, locking the order's
 source amount grossed up by the fee rate so the taker receives exactly what the order says;
 `take` does the same for the counter leg. The preimage is also stored with the API,
@@ -286,13 +299,23 @@ arrives through the account's preapproval (`delivery:
 `acceptIncoming` takes it.
 
 **What it retries, and what it does not.** A submit is never re-sent blindly: the only
-retries are the ones the API says are safe, by `errorCode` (`SUBMISSION_TIMEOUT_RETRYABLE`,
-`PREPARED_SUBMISSION_EXPIRED`, `WALLET_TOO_FRAGMENTED`; a gateway that sends no code for them
-is read by the text of its message) — a timed-out submit is resubmitted with the same
-signatures, an accept whose prepared transaction expired before the submit is prepared and
-signed again once, and a swap refused as too fragmented is retried once after merging
-holdings. Anything else surfaces as a `CeremonyError` (with what the prepare had said) or a
-`SettleError` (with the last state seen).
+retries are the ones the API says are safe. Every decision is taken on the refusal's
+`errorCode`, in one place (`refusalOf`):
+
+| `errorCode` | What the account does |
+| --- | --- |
+| `SUBMISSION_TIMEOUT_RETRYABLE` | resubmits the same signatures (up to twice) — never prepares again; Canton deduplicates on the command id |
+| `PREPARED_SUBMISSION_EXPIRED` | prepares and signs again, once — only where that is safe (the counter-leg accepts of `make` / `take`) |
+| `WALLET_TOO_FRAGMENTED` | merges the token's holdings (up to three passes), then prepares the swap once more |
+| `COUNTER_PROPOSAL_NOT_READY` | waits a poll and asks again, until the deadline |
+| `COUNTER_PROPOSAL_ALREADY_ACCEPTED` | counts the counter leg as accepted |
+| `SWAP_ALREADY_SETTLED` | counts the claim as done and finishes the settle |
+| anything else | surfaces it |
+
+A gateway that sends no code for these six (mainnet, until backend CAN-1955 ships there) is
+read by the text of its message instead. What surfaces is a `CeremonyError` (with what the
+prepare had said, and the refusal's `errorCode` when it carried one) or a `SettleError` (with
+the last state seen).
 
 Canton↔Canton orders only: an EVM leg is locked by an EVM key, which is not this signer.
 
