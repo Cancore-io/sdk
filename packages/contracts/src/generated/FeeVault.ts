@@ -38,6 +38,11 @@ export const FEE_VAULT_ABI = [
   },
   {
     "inputs": [],
+    "name": "TransferFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "VoucherAlreadyUsed",
     "type": "error"
   },

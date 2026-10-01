@@ -8,8 +8,8 @@
  * branches on `kind` instead of on the id keeps working when a chain is added.
  *
  * Contract addresses live next door in `DEPLOYMENTS`, keyed by environment —
- * dev, testnet and mainnet each have their own HTLC — and `BYTECODE_HASHES`
- * (from `.`) is how a deployment at any of those addresses is verified.
+ * dev, testnet and mainnet each have their own HTLC. `BYTECODE_HASHES` (from `.`)
+ * pins the build of a release, not what an address runs (see `DEPLOYMENTS`).
  */
 
 export type NetworkKind = 'evm' | 'tron' | 'canton';
