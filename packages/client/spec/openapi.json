@@ -202,6 +202,124 @@
         },
         "type": "object"
       },
+      "AdminBackendIntentDto": {
+        "properties": {
+          "cantonContractId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "currentAttempt": {
+            "type": "number"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "feeBps": {
+            "type": "number"
+          },
+          "fillDeadline": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "inputAmount": {
+            "description": "uint256 as a decimal string",
+            "type": "string"
+          },
+          "inputToken": {
+            "type": "string"
+          },
+          "minReceived": {
+            "description": "uint256 as a decimal string",
+            "type": "string"
+          },
+          "openedRef": {
+            "nullable": true,
+            "type": "string"
+          },
+          "orderCreatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "orderHash": {
+            "type": "string"
+          },
+          "outputAsset": {
+            "type": "string"
+          },
+          "ownerParty": {
+            "description": "Canton source: the owner party",
+            "nullable": true,
+            "type": "string"
+          },
+          "recipient": {
+            "type": "string"
+          },
+          "refundAfter": {
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "requestId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "sourceChain": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "QUOTING",
+              "SIGNED",
+              "REJECTED",
+              "OPEN",
+              "DRAWING",
+              "OFFERED",
+              "ASSIGNED",
+              "FILLED",
+              "ATTESTED",
+              "SETTLED",
+              "EXPIRED",
+              "REFUNDED"
+            ],
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "userAddress": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "orderHash",
+          "status",
+          "sourceChain",
+          "destination",
+          "userAddress",
+          "ownerParty",
+          "inputToken",
+          "inputAmount",
+          "outputAsset",
+          "minReceived",
+          "recipient",
+          "feeBps",
+          "orderCreatedAt",
+          "fillDeadline",
+          "refundAfter",
+          "currentAttempt",
+          "openedRef",
+          "cantonContractId",
+          "requestId",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
       "AdminCantonIntentEventDto": {
         "properties": {
           "argument": {
@@ -248,6 +366,54 @@
           "contractId",
           "choice",
           "argument"
+        ],
+        "type": "object"
+      },
+      "AdminDomainEventDto": {
+        "properties": {
+          "finality": {
+            "nullable": true,
+            "type": "string"
+          },
+          "naturalKey": {
+            "nullable": true,
+            "type": "string"
+          },
+          "observedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "orderHash": {
+            "nullable": true,
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "description": "from, to, transition, forced, incident, reason and the fact",
+            "type": "object"
+          },
+          "seq": {
+            "description": "Journal position",
+            "type": "string"
+          },
+          "source": {
+            "example": "evm",
+            "type": "string"
+          },
+          "type": {
+            "example": "IntentOpened",
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "orderHash",
+          "source",
+          "finality",
+          "naturalKey",
+          "observedAt",
+          "payload"
         ],
         "type": "object"
       },
@@ -515,6 +681,11 @@
             "nullable": true,
             "type": "string"
           },
+          "attestorSetId": {
+            "description": "Owner-pinned attestor set id (Canton-source intents)",
+            "nullable": true,
+            "type": "string"
+          },
           "cantonEvents": {
             "items": {
               "$ref": "#/components/schemas/AdminCantonIntentEventDto"
@@ -616,12 +787,67 @@
           "amountDelivered",
           "payout",
           "fee",
+          "attestorSetId",
           "createdAt",
           "fillDeadline",
           "refundAfter",
           "updatedAt",
           "evmEvents",
           "cantonEvents"
+        ],
+        "type": "object"
+      },
+      "AdminIntentJournalDto": {
+        "properties": {
+          "byStatus": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "Intent count per status",
+            "type": "object"
+          },
+          "cursors": {
+            "items": {
+              "$ref": "#/components/schemas/AdminJournalCursorDto"
+            },
+            "type": "array"
+          },
+          "events": {
+            "description": "Tail of the journal, newest first, at most 500",
+            "items": {
+              "$ref": "#/components/schemas/AdminDomainEventDto"
+            },
+            "type": "array"
+          },
+          "intents": {
+            "description": "Newest activity first, at most 500",
+            "items": {
+              "$ref": "#/components/schemas/AdminBackendIntentDto"
+            },
+            "type": "array"
+          },
+          "maxSeq": {
+            "type": "string"
+          },
+          "parked": {
+            "description": "Chain facts waiting for their intent",
+            "items": {
+              "$ref": "#/components/schemas/AdminParkedFactDto"
+            },
+            "type": "array"
+          },
+          "totalEvents": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "intents",
+          "events",
+          "parked",
+          "cursors",
+          "byStatus",
+          "totalEvents",
+          "maxSeq"
         ],
         "type": "object"
       },
@@ -727,6 +953,62 @@
           "evm",
           "canton",
           "intents"
+        ],
+        "type": "object"
+      },
+      "AdminJournalCursorDto": {
+        "properties": {
+          "consumer": {
+            "example": "intent-status-socketio",
+            "type": "string"
+          },
+          "lag": {
+            "description": "Journal rows this consumer has not read yet",
+            "type": "number"
+          },
+          "lastSeq": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "consumer",
+          "lastSeq",
+          "lag",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "AdminParkedFactDto": {
+        "properties": {
+          "fact": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "naturalKey": {
+            "nullable": true,
+            "type": "string"
+          },
+          "orderHash": {
+            "type": "string"
+          },
+          "parkedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "orderHash",
+          "naturalKey",
+          "parkedAt",
+          "fact"
         ],
         "type": "object"
       },
@@ -1297,6 +1579,14 @@
       "BridgeInteractiveSubmitResponseDto": {
         "properties": {
           "error": {
+            "type": "string"
+          },
+          "errorCode": {
+            "description": "Machine-readable twin of `error`, for a caller that must not match message text. The only two codes BridgeInteractiveSubmissionFlow.submit returns: the stash was gone (expired, already submitted, or never prepared), or the submission timed out and is safe to retry with the same signature.",
+            "enum": [
+              "PREPARED_SUBMISSION_EXPIRED",
+              "SUBMISSION_TIMEOUT_RETRYABLE"
+            ],
             "type": "string"
           },
           "outcome": {
@@ -4763,6 +5053,106 @@
         ],
         "type": "object"
       },
+      "IntentViewDto": {
+        "properties": {
+          "attempt": {
+            "description": "Current draw attempt",
+            "type": "number"
+          },
+          "destination": {
+            "description": "bytes32 destination as in the order",
+            "type": "string"
+          },
+          "feeBps": {
+            "type": "number"
+          },
+          "fillDeadline": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "htlcFallback": {
+            "description": "The intent ended without a delivery (REFUNDED or REJECTED): offer the classic HTLC swap (frontend.md Э6)",
+            "type": "boolean"
+          },
+          "inputAmount": {
+            "description": "uint256 as a decimal string",
+            "type": "string"
+          },
+          "inputToken": {
+            "type": "string"
+          },
+          "minReceived": {
+            "description": "uint256 as a decimal string",
+            "type": "string"
+          },
+          "orderCreatedAt": {
+            "description": "order.createdAt, part of the order hash",
+            "format": "date-time",
+            "type": "string"
+          },
+          "orderHash": {
+            "example": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "type": "string"
+          },
+          "outputAsset": {
+            "type": "string"
+          },
+          "recipient": {
+            "description": "bytes32 as in the order",
+            "type": "string"
+          },
+          "refundAfter": {
+            "description": "From the open event; drives the UI refund timer",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "source": {
+            "example": "eip155:11155111",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "QUOTING",
+              "SIGNED",
+              "REJECTED",
+              "OPEN",
+              "DRAWING",
+              "OFFERED",
+              "ASSIGNED",
+              "FILLED",
+              "ATTESTED",
+              "SETTLED",
+              "EXPIRED",
+              "REFUNDED"
+            ],
+            "type": "string"
+          },
+          "user": {
+            "description": "order.user as hashed: the EVM address, or the label address of a Canton owner",
+            "type": "string"
+          }
+        },
+        "required": [
+          "orderHash",
+          "status",
+          "attempt",
+          "source",
+          "destination",
+          "user",
+          "inputToken",
+          "inputAmount",
+          "outputAsset",
+          "minReceived",
+          "recipient",
+          "feeBps",
+          "orderCreatedAt",
+          "fillDeadline",
+          "refundAfter",
+          "htlcFallback"
+        ],
+        "type": "object"
+      },
       "InternalUserIdDto": {
         "properties": {
           "userId": {
@@ -6863,7 +7253,8 @@
           "ACCOUNT_NOT_FOUND",
           "EMAIL_REGISTERED_AS_PASSWORD",
           "WALLET_MISMATCH",
-          "SIGNING_METHOD_UNSUPPORTED"
+          "SIGNING_METHOD_UNSUPPORTED",
+          "NOT_FOUND"
         ],
         "type": "string"
       },
@@ -7208,6 +7599,43 @@
           "error": {
             "description": "Error message if submission failed",
             "example": "Invalid signature",
+            "type": "string"
+          },
+          "errorCode": {
+            "description": "Machine-readable twin of `error` (SDK_ERROR_CODES) — present when the failure is coded (e.g. a retryable timeout), absent for a plain refusal.",
+            "enum": [
+              "REQUIRES_INTERACTIVE_SUBMISSION",
+              "SUBMISSION_TIMEOUT_RETRYABLE",
+              "PREPARED_SUBMISSION_EXPIRED",
+              "WALLET_TOO_FRAGMENTED",
+              "COUNTER_PROPOSAL_NOT_READY",
+              "COUNTER_PROPOSAL_ALREADY_ACCEPTED",
+              "SWAP_ALREADY_SETTLED",
+              "SWAP_FEE_PENDING",
+              "SWAP_FEE_ALREADY_PAID",
+              "SWAP_FEE_LEG_ALREADY_SUBMITTED",
+              "SWAP_FEE_LEG_MISMATCH",
+              "FEE_PAYMENT_ALREADY_USED",
+              "FEE_PAYMENT_NOT_VERIFIED",
+              "CC_PREAPPROVAL_REQUIRED",
+              "MIGRATION_REQUIRED",
+              "KEY_IN_USE",
+              "NOT_ELIGIBLE",
+              "DEFERRED_FEE_ALREADY_SETTLED",
+              "DEFERRED_FEE_LEG_MISMATCH",
+              "LP_WITHDRAW_FEE_LEG_MISMATCH",
+              "LP_WITHDRAW_FEE_ALREADY_SUBMITTED",
+              "WALLET_KEY_MISMATCH",
+              "PARTY_HOSTING_UNKNOWN",
+              "PARTY_NOT_HOSTED",
+              "LOOP_ACCEPT_AWAITS_FINALIZE",
+              "MAINTENANCE_MODE",
+              "MIGRATED_USE_WALLET",
+              "ACCOUNT_NOT_FOUND",
+              "EMAIL_REGISTERED_AS_PASSWORD",
+              "WALLET_MISMATCH",
+              "SIGNING_METHOD_UNSUPPORTED"
+            ],
             "type": "string"
           },
           "success": {
@@ -12063,6 +12491,39 @@
           }
         ],
         "summary": "Every on-chain intent with status, participants and raw events (CAN-1759)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/intents/journal": {
+      "get": {
+        "operationId": "AdminIntentJournalController_journal",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminIntentJournalDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin access required"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Intents table, journal tail, parked facts and consumer cursors (CAN-1353)",
         "tags": [
           "admin"
         ]
@@ -30589,6 +31050,43 @@
         "summary": "Update a trading pair (admin only)",
         "tags": [
           "trading-pairs"
+        ]
+      }
+    },
+    "/v1/intents/{orderHash}": {
+      "get": {
+        "operationId": "IntentsController_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "orderHash",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntentViewDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "description": "Not an order hash"
+          },
+          "404": {
+            "description": "NOT_FOUND: no intent with this order hash"
+          }
+        },
+        "summary": "Intent status and order by order hash (CAN-1353)",
+        "tags": [
+          "intents"
         ]
       }
     },

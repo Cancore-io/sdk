@@ -31,6 +31,7 @@ export const SDK_ERROR_CODES = [
   'EMAIL_REGISTERED_AS_PASSWORD',
   'WALLET_MISMATCH',
   'SIGNING_METHOD_UNSUPPORTED',
+  'NOT_FOUND',
 ] as const;
 
 export type SdkErrorCode = (typeof SDK_ERROR_CODES)[number];
