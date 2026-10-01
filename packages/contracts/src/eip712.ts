@@ -72,8 +72,9 @@ export interface FillProof {
 /**
  * The typed-data domain of a proof: the order's SOURCE router. `settle`
  * recomputes the digest in its own domain, so a proof never verifies on
- * another chain or another router.
+ * another chain or another router. A Canton source (Daml settles) is
+ * CANTON_ORIGIN_ID = 2^63 + n, above Number.MAX_SAFE_INTEGER: pass a bigint.
  */
-export function fillProofDomain(chainId: number, verifyingContract: `0x${string}`) {
+export function fillProofDomain(chainId: number | bigint, verifyingContract: `0x${string}`) {
   return { ...FILL_PROOF_DOMAIN, chainId, verifyingContract } as const;
 }

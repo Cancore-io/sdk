@@ -34,7 +34,7 @@ const concat = (...parts: Uint8Array[]) => {
   return out;
 };
 /** One static EIP-712 value as its 32-byte word: uintN and address left-padded, bytes32 as is. */
-const word = (type: string, value: string | number) => {
+const word = (type: string, value: string | number | bigint) => {
   if (type === 'bytes32') return bytes(String(value));
   const n = type === 'address' ? BigInt(String(value)) : BigInt(value);
   const bits = type === 'address' ? 160 : Number(type.slice(4));
