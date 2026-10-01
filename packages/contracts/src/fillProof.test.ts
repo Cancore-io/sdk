@@ -19,7 +19,8 @@ const spec = JSON.parse(readFileSync(join(__dirname, '..', 'spec', 'typed-data',
   domain: { name: string; version: string };
   typeString: string;
   types: typeof FILL_PROOF_TYPES;
-  vectors: { note: string; chainId: number; verifyingContract: string; message: Record<string, string | number>; digest: string }[];
+  // A string where a number would round: the Canton origin id is 2^63 + n.
+  vectors: { note: string; chainId: number | string; verifyingContract: string; message: Record<string, string | number>; digest: string }[];
 };
 
 const enc = new TextEncoder();
@@ -33,7 +34,7 @@ const concat = (...parts: Uint8Array[]) => {
   return out;
 };
 /** One static EIP-712 value as its 32-byte word: uintN and address left-padded, bytes32 as is. */
-const word = (type: string, value: string | number) => {
+const word = (type: string, value: string | number | bigint) => {
   if (type === 'bytes32') return bytes(String(value));
   const n = type === 'address' ? BigInt(String(value)) : BigInt(value);
   const bits = type === 'address' ? 160 : Number(type.slice(4));
@@ -44,7 +45,7 @@ const word = (type: string, value: string | number) => {
 function digest(v: (typeof spec.vectors)[number]) {
   const typeString = `FillProof(${FILL_PROOF_TYPES.FillProof.map((f) => `${f.type} ${f.name}`).join(',')})`;
   const structHash = keccak(concat(keccak(enc.encode(typeString)), ...FILL_PROOF_TYPES.FillProof.map((f) => word(f.type, v.message[f.name]!))));
-  const domain = fillProofDomain(v.chainId, v.verifyingContract as `0x${string}`);
+  const domain = fillProofDomain(BigInt(v.chainId), v.verifyingContract as `0x${string}`);
   const domainSeparator = keccak(
     concat(
       keccak(enc.encode('EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)')),
@@ -74,6 +75,17 @@ test('the vectors cover what a schema drift would hide: extremes, zeros, two rou
   expect(chains.size).toBeGreaterThan(1);
   expect(routers.size).toBeGreaterThan(1);
   expect(spec.vectors.some((v) => v.message.amountDelivered === ((1n << 256n) - 1n).toString())).toBe(true);
+});
+
+// canton-contracts AttestationVectors vDigestExpected: Daml settles a
+// Canton-source order in this domain (CANTON_ORIGIN_ID, CANTON_SOURCE_ANCHOR
+// of the test vector), so the SDK's domain must carry a chain id above 2^53.
+test('the Canton-source vector: chain id 2^63 + 1 survives the domain, digest is Daml\'s', () => {
+  const v = spec.vectors.find((x) => BigInt(x.chainId) === (1n << 63n) + 1n)!;
+  expect(typeof v.chainId).toBe('string');
+  expect(fillProofDomain(BigInt(v.chainId), v.verifyingContract as `0x${string}`).chainId).toBe((1n << 63n) + 1n);
+  expect(digest(v)).toBe(v.digest);
+  expect(digest({ ...v, chainId: 31337 })).not.toBe(v.digest);
 });
 
 test('the domain is the source router, and v1 settles one proof kind', () => {
