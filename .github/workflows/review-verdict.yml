@@ -17,6 +17,6 @@ jobs:
     runs-on: cancore-runners
     timeout-minutes: 3
     steps:
-      - uses: Cancore-io/.github/actions/review-verdict-notify@968f73a053292256e3dab9ff47d45f7a2487ae3f
+      - uses: Cancore-io/.github/actions/review-verdict-notify@05cafddbaa0a977a55c754b32e2fb166b74bb54c
         with:
           slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
