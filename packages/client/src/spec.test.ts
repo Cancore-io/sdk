@@ -81,6 +81,7 @@ async function routesTheClientCalls(): Promise<string[]> {
     acct.swapState('o1'), acct.incoming(), acct.acceptIncoming(), acct.consolidate(), acct.balance('CC'),
     acct.send({ receiverPartyId: 'p', amount: '1' }),
     acct.cashback.summary(), acct.cashback.claims(), acct.cashback.claim(), acct.cashback.collect(),
+    acct.faucet(),
   ]);
   await Promise.all([
     s.listOpen(), s.listMine(), s.get('o1'), s.create(offer),
@@ -172,6 +173,7 @@ const REQUEST_FIELDS: Record<string, string[]> = {
   ClaimHtlcDto: ['preimage'],
   QuoteDto: ['pairConfigId', 'sourceAmount'],
   ExecuteDto: ['quoteToken'],
+  FaucetClaimRequestDto: ['agreementSignature', 'agreementTimestamp'],
 };
 
 /**
@@ -261,6 +263,7 @@ const RESPONSE_FIELDS: Record<string, string[]> = {
     'marketRate', 'quotedRate', 'spreadPercent', 'subsidized', 'expiresInSec',
   ],
   ExecuteResultDto: ['orderId', 'recordId'],
+  FaucetClaimResponseDto: ['success', 'amountCc', 'recipientParty', 'txId', 'nextEligibleAt', 'remainingPoolCc'],
 };
 
 /**

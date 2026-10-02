@@ -89,6 +89,22 @@ wordlists (a mistyped word would otherwise derive a different, empty wallet) and
 the same shape-checked signer the app uses, which `@cancore/client/selfcustody` takes as
 it is. The legacy scheme derives one key per phrase and refuses any account but 0.
 
+The signer it returns has this shape, `PasskeySigningProvider`:
+
+```ts
+{
+  public_key: string;                                  // hex Ed25519 public key
+  signMessage(message: string): Promise<string>;       // binary string (one char per byte) → hex signature
+  signChallenge(challenge: string): Promise<string>;   // login challenge only → hex signature
+  signPreparedHash(hashB64: string): Promise<string>;  // 32-byte prepared hash, base64 → base64 signature
+}
+```
+
+The key is `public_key`, in snake case: the shape is the Loop provider's, so the app can pass
+this signer anywhere it takes Loop's. `deriveWalletKey` returns key material, not a signer, and calls the
+same key `publicKeyHex`. `cantonFingerprint(signer.public_key)` is the party namespace of a
+provider; `signer.publicKeyHex` is `undefined`.
+
 ### Restore
 
 A phrase alone does not say which derivation made the wallet, so restoring means trying both
