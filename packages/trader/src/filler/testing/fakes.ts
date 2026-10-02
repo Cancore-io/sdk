@@ -10,7 +10,8 @@ import { secp256k1 } from '@noble/curves/secp256k1';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import type { FillerEvent, EventSink } from '../events';
 import type { EvmRpc, EvmRpcRequest } from '../rpc';
-import type { Cancel, Clock, FillerSocket, FillerSocketHandlers, LogFields, Logger, WebSocketFactory } from '../runtime';
+import { gatewayMessageDigest } from '../protocol/frames';
+import type { Cancel, Clock, FillerSocket, FillerSocketHandlers, HttpFetch, HttpRequest, LogFields, Logger, WebSocketFactory } from '../runtime';
 import { addressOfPublicKey, type TypedDataSigner } from '../signer';
 
 // ---------------------------------------------------------------------------
@@ -199,4 +200,72 @@ export function createRecordingLogger(): Logger & { readonly entries: LogEntry[]
 export function createRecordingEventSink(): EventSink & { readonly events: FillerEvent[] } {
   const events: FillerEvent[] = [];
   return { events, emit: (event) => void events.push(event) };
+}
+
+// ---------------------------------------------------------------------------
+// filler-gateway frames
+// ---------------------------------------------------------------------------
+
+/** A crafted filler-gateway → filler frame body: `type` plus whatever fields the test wants. */
+export type FrameBody = { type: string } & Record<string, unknown>;
+
+/**
+ * Signs crafted filler-gateway → filler frames with a test key, the way
+ * filler-gateway does (`GatewayMessage{keccak256(JCS(frame without sig))}` in
+ * the protocol domain). Feed the result to `FakeSocket.receive` or serve it
+ * from a fake `HttpFetch` (sdk.md S15). Test keys only.
+ */
+export interface TestGatewaySigner {
+  readonly address: Hex;
+  /** `body` with `sentAt` (unless given) and `sig` added. */
+  frame<T extends FrameBody>(body: T): T & { sentAt: number; sig: Hex };
+  /** Signs `body` exactly as given (no `sentAt` added); any `sig` in it is replaced. */
+  sign<T extends FrameBody>(body: T): T & { sig: Hex };
+}
+
+export function createTestGatewaySigner(privateKey: Hex, clock: Clock = { now: () => 1_790_000_000_000, schedule: () => () => undefined }): TestGatewaySigner {
+  const key = hexToBytes(privateKey.slice(2));
+  const address = addressOfPublicKey(secp256k1.getPublicKey(key, false));
+  const sign = <T extends FrameBody>(body: T): T & { sig: Hex } => {
+    const { sig: _sig, ...unsigned } = body;
+    const digest = gatewayMessageDigest(unsigned);
+    const signature = secp256k1.sign(hexToBytes(digest.slice(2)), key, { lowS: true });
+    const sig: Hex = `0x${bytesToHex(signature.toCompactRawBytes())}${(27 + signature.recovery).toString(16)}`;
+    return { ...(unsigned as T), sig };
+  };
+  return {
+    address,
+    sign,
+    frame: <T extends FrameBody>(body: T) => sign({ sentAt: clock.now(), ...body }) as unknown as T & { sentAt: number; sig: Hex },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// HTTP
+// ---------------------------------------------------------------------------
+
+export interface RecordedRequest extends HttpRequest {
+  url: string;
+}
+
+export type FakeRoute = (request: RecordedRequest) => { status: number; body: unknown } | Promise<{ status: number; body: unknown }>;
+
+/**
+ * An `HttpFetch` answering from routes keyed `"METHOD /path"` (query string
+ * ignored for matching); an unrouted request answers 404. Every request is
+ * recorded in `requests`. A route's `body` is serialised with `JSON.stringify`
+ * unless it is already a string.
+ */
+export function createFakeFetch(routes: Record<string, FakeRoute> = {}): { fetch: HttpFetch; requests: RecordedRequest[]; routes: Record<string, FakeRoute> } {
+  const requests: RecordedRequest[] = [];
+  const fetch: HttpFetch = async (url, request) => {
+    const recorded: RecordedRequest = { url, ...request };
+    requests.push(recorded);
+    const { pathname } = new URL(url);
+    const route = routes[`${request.method} ${pathname}`];
+    const answer = route ? await route(recorded) : { status: 404, body: { type: 'error', code: 'NOT_FOUND', message: `no route ${pathname}` } };
+    const text = typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body);
+    return { status: answer.status, text: async () => text };
+  };
+  return { fetch, requests, routes };
 }

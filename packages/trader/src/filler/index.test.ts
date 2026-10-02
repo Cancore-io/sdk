@@ -127,7 +127,6 @@ describe('the skeleton of sdk.md §3.6', () => {
   });
 
   test.each([
-    ['start', 'CAN-1847', (f: Filler) => f.start()],
     ['selfSettle', 'CAN-1856', (f: Filler) => f.selfSettle('0x00')],
     ['verifyDraw', 'CAN-1848', (f: Filler) => f.verifyDraw('0x00')],
     ['verifyEscrow', 'CAN-1854', (f: Filler) => f.verifyEscrow({} as TicketIssued)],
@@ -140,6 +139,21 @@ describe('the skeleton of sdk.md §3.6', () => {
     );
     expect(error).toBeInstanceOf(NotImplementedError);
     expect(error).toMatchObject({ method, task });
+  });
+
+  test('start() without any fetch is a config error, not a ReferenceError', async () => {
+    const original = (globalThis as { fetch?: unknown }).fetch;
+    (globalThis as { fetch?: unknown }).fetch = undefined;
+    try {
+      await expect(withHooks().start()).rejects.toMatchObject({ name: 'FillerConfigError', field: 'fetch' });
+    } finally {
+      (globalThis as { fetch?: unknown }).fetch = original;
+    }
+  });
+
+  test('a malformed transport option is refused up front', () => {
+    expect(configErrorField(() => createFiller({ ...baseConfig(), transport: { heartbeatMisses: 0 } }))).toBe('transport.heartbeatMisses');
+    expect(configErrorField(() => createFiller({ ...baseConfig(), transport: { reconnect: { maxDelayMs: -1 } } }))).toBe('transport.reconnect.maxDelayMs');
   });
 
   test('stop() is safe before start()', async () => {

@@ -63,3 +63,43 @@ export class NotImplementedError extends Error {
     super(`@cancore/trader/filler: ${method}() is not implemented yet (${task})`);
   }
 }
+
+/**
+ * A refusal from filler-gateway: the `error` frame on WebSocket, or the error
+ * body of a non-2xx REST reply (protocol §3.5 «Errors»). `code` is open (V-2):
+ * a code this SDK does not know is kept as received, with `known` false, and
+ * handled as a generic refusal.
+ */
+export class GatewayError extends Error {
+  override readonly name: string = 'GatewayError';
+  constructor(
+    /** The protocol error code as received, e.g. `BAD_SIGNATURE`, `TICKET_CLOSED`. */
+    readonly code: string,
+    /** Whether `code` is one of `ERROR_CODES` of `@cancore/contracts`. */
+    readonly known: boolean,
+    message: string,
+    /** The `id` of the filler → filler-gateway message it answers, when it answers one. */
+    readonly re?: string,
+    /** The HTTP status, when it came over REST. */
+    readonly httpStatus?: number,
+  ) {
+    super(`filler-gateway ${code}: ${message}`);
+  }
+}
+
+/**
+ * filler-gateway does not serve the protocol version this SDK speaks (V-1). The
+ * session is not retried: reconnecting cannot help until the SDK is upgraded.
+ * `start()` rejects with it.
+ */
+export class UnsupportedVersionError extends GatewayError {
+  override readonly name = 'UnsupportedVersionError';
+}
+
+/** `stop()` was called while `start()` was still waiting for the first login. */
+export class FillerStoppedError extends Error {
+  override readonly name = 'FillerStoppedError';
+  constructor() {
+    super('@cancore/trader/filler: stopped before the first login completed');
+  }
+}
