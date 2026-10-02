@@ -26,6 +26,7 @@
     "packages/contracts/**",
     "packages/mcp/**",
     "packages/wallet/**",
-    "packages/test-kit/**"
+    "packages/test-kit/**",
+    "packages/trader/**"
   ]
 }

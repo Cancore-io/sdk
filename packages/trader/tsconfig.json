@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // A filler node runs on a machine, so Node types are allowed here, and only
+    // here (as for @cancore/mcp). The published declarations must not need them:
+    // CI typechecks a consumer of the tarball with neither `node` nor `DOM`.
+    "types": ["jest", "node"],
+    // @cancore/contracts imports its protocol schemas as JSON.
+    "resolveJsonModule": true,
+    // The sibling package's source, not its unbuilt `dist/`: typecheck runs
+    // before build, in CI and here.
+    "paths": {
+      "@cancore/contracts": ["../contracts/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  // The root config excludes this package (it is typechecked here instead);
+  // that exclude is inherited and would swallow these inputs too.
+  "exclude": []
+}
