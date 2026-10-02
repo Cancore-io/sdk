@@ -5,7 +5,9 @@
  */
 export { InMemoryFillerStore } from './memoryStore';
 export {
+  createFakeFetch,
   createFakeWebSocketFactory,
+  createTestGatewaySigner,
   createRecordingEventSink,
   createRecordingLogger,
   createTestTypedDataSigner,
@@ -13,4 +15,4 @@ export {
   FakeEvmRpc,
   FakeSocket,
 } from './fakes';
-export type { LogEntry, RpcHandler } from './fakes';
+export type { FakeRoute, FrameBody, LogEntry, RecordedRequest, RpcHandler, TestGatewaySigner } from './fakes';

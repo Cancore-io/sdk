@@ -20,9 +20,22 @@ export type {
   SelfSettleResult,
   TicketOfferDecision,
   TicketOfferHook,
+  TransportOptions,
 } from './filler';
 
-export { FillerConfigError, FillerStoreUnavailableError, NotImplementedError, SignatureContractError } from './errors';
+export {
+  FillerConfigError,
+  FillerStoppedError,
+  FillerStoreUnavailableError,
+  GatewayError,
+  NotImplementedError,
+  SignatureContractError,
+  UnsupportedVersionError,
+} from './errors';
+
+export { gatewayMessageDigest, verifyGatewayText } from './protocol/frames';
+export type { FrameCheck, FrameExpectations, FrameRejection, GatewayFrame, VerifiedFrame } from './protocol/frames';
+export type { ReconnectPolicy } from './protocol/session';
 export type { SignatureViolation } from './errors';
 
 export { evmChainNumber, isEvmChainId } from './chains';

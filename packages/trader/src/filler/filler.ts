@@ -8,6 +8,15 @@
 import type { DecString, Hex, QuoteReconfirm, QuoteRequest, StakeBindingRequest, TicketIssued, TicketOffer } from '@cancore/contracts';
 import { isEvmChainId, type EvmChainId } from './chains';
 import { FillerConfigError, NotImplementedError } from './errors';
+import { FillerProtocolClient, DEFAULT_REST_POLL_INTERVAL_MS } from './protocol/client';
+import { GatewayRest } from './protocol/rest';
+import {
+  DEFAULT_HEARTBEAT_MISSES,
+  DEFAULT_LOGIN_TIMEOUT_MS,
+  DEFAULT_RECONNECT,
+  GatewaySession,
+  type ReconnectPolicy,
+} from './protocol/session';
 import { noopEventSink, type EventSink } from './events';
 import type { CantonLedger } from './ledger';
 import type { EvmRpcMap } from './rpc';
@@ -57,6 +66,22 @@ export interface FillerConfig {
    * running process; defaults to a random UUID.
    */
   instanceId?: string;
+  /** Transport tuning. The defaults suit production; tests shorten them. */
+  transport?: TransportOptions;
+}
+
+/** Reconnect, heartbeat and fallback timing of the connection to filler-gateway. */
+export interface TransportOptions {
+  /** Exponential backoff with jitter between reconnects. Default 500 ms doubling to 30 s. */
+  reconnect?: Partial<ReconnectPolicy>;
+  /** Heartbeat intervals (`auth.ok.heartbeatIntervalMs`) without a frame before reconnecting. Default 3. */
+  heartbeatMisses?: number;
+  /** Time from connect to `auth.ok` before giving up on the connection. Default 15 s. */
+  loginTimeoutMs?: number;
+  /** `GET /v1/filler/tickets` poll interval while disconnected. Default 2 s. */
+  restPollIntervalMs?: number;
+  /** Jitter source in `[0, 1)`. Default `Math.random`. */
+  random?: () => number;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +158,11 @@ export interface Filler {
    * Login by challenge, heartbeat, reconnect, REST fallback; reconciles from
    * the store and the chain, then quotes, takes tickets, fills and settles every
    * won fill on its own. Requires all three hooks.
+   *
+   * Resolves at the first `auth.ok`; until then the session keeps retrying
+   * with backoff. Rejects with `UnsupportedVersionError` when filler-gateway
+   * does not serve protocol v1 (no retry), and with `FillerStoppedError` when
+   * `stop()` comes first. Calling it again returns the same promise.
    */
   start(): Promise<void>;
   /** Closes the session. In-flight work stays in the store for any replica to resume. */
@@ -228,6 +258,35 @@ function validate(config: FillerConfig): void {
   if (config.instanceId !== undefined && (typeof config.instanceId !== 'string' || config.instanceId.length === 0)) {
     throw new FillerConfigError('instanceId', 'expected a non-empty string');
   }
+  if (config.transport !== undefined) validateTransport(config.transport);
+}
+
+function validateTransport(transport: TransportOptions): void {
+  if (!isObject(transport as unknown)) throw new FillerConfigError('transport', 'expected an object');
+  const positive = (field: string, value: unknown) => {
+    if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)) {
+      throw new FillerConfigError(`transport.${field}`, 'expected a positive integer');
+    }
+  };
+  const reconnect: Partial<ReconnectPolicy> | undefined = transport.reconnect;
+  positive('reconnect.initialDelayMs', reconnect?.initialDelayMs);
+  positive('reconnect.maxDelayMs', reconnect?.maxDelayMs);
+  positive('heartbeatMisses', transport.heartbeatMisses);
+  positive('loginTimeoutMs', transport.loginTimeoutMs);
+  positive('restPollIntervalMs', transport.restPollIntervalMs);
+  if (transport.random !== undefined && typeof transport.random !== 'function') throw new FillerConfigError('transport.random', 'expected a function');
+}
+
+/**
+ * Frame ids (protocol §3.1): ≤ 64 characters, unique per connection and across
+ * this filler's sessions, because a reply may come back on another session.
+ * The replica id plus its start time keeps two replicas — and one replica
+ * before and after a restart — apart.
+ */
+export function createFrameIds(instanceId: string, startMs: number): () => string {
+  const prefix = `${instanceId.slice(0, 36)}:${startMs.toString(36)}`;
+  let sequence = 0;
+  return () => `${prefix}:${(sequence++).toString(36)}`;
 }
 
 /** The resolved dependencies every protocol component of this entry receives. */
@@ -238,6 +297,8 @@ export interface FillerContext {
   readonly events: EventSink;
   readonly fetch: HttpFetch | undefined;
   readonly instanceId: string;
+  /** The transport every protocol component sends and receives through. */
+  readonly protocol: FillerProtocolClient;
 }
 
 /**
@@ -247,18 +308,59 @@ export interface FillerContext {
  */
 export function createFiller(config: FillerConfig): Filler {
   validate(config);
-  const context: FillerContext = {
-    config,
-    clock: config.clock ?? systemClock,
-    logger: config.logger ?? silentLogger,
-    events: config.events ?? noopEventSink,
-    fetch: config.fetch ?? defaultFetch(),
-    instanceId: config.instanceId ?? defaultInstanceId(),
-  };
+  const clock = config.clock ?? systemClock;
+  const logger = config.logger ?? silentLogger;
+  const events = config.events ?? noopEventSink;
+  const fetch = config.fetch ?? defaultFetch();
+  const instanceId = config.instanceId ?? defaultInstanceId();
+  const transport = config.transport ?? {};
+  const nextId = createFrameIds(instanceId, clock.now());
+
+  const protocol = new FillerProtocolClient({
+    store: config.store,
+    clock,
+    logger,
+    events,
+    restPollIntervalMs: transport.restPollIntervalMs ?? DEFAULT_REST_POLL_INTERVAL_MS,
+  });
+  const session = new GatewaySession(
+    {
+      url: config.gatewayUrl,
+      fillerId: config.fillerId,
+      gatewaySigner: config.gatewaySigner,
+      quoteSigner: config.quoteSigner,
+      webSocket: config.webSocket,
+      clock,
+      logger,
+      random: transport.random ?? Math.random,
+      nextId,
+      reconnect: { ...DEFAULT_RECONNECT, ...transport.reconnect },
+      heartbeatMisses: transport.heartbeatMisses ?? DEFAULT_HEARTBEAT_MISSES,
+      loginTimeoutMs: transport.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS,
+    },
+    protocol,
+  );
+  const rest = new GatewayRest({
+    gatewayUrl: config.gatewayUrl,
+    fillerId: config.fillerId,
+    gatewaySigner: config.gatewaySigner,
+    quoteSigner: config.quoteSigner,
+    fetch: (url, request) => {
+      if (!fetch) throw new FillerConfigError('fetch', 'no global fetch; pass an HttpFetch for the REST fallback');
+      return fetch(url, request);
+    },
+    clock,
+    logger,
+    nextId,
+  });
+  protocol.attach(session, rest);
+
+  const context: FillerContext = { config, clock, logger, events, fetch, instanceId, protocol };
 
   let quoteHook: QuoteRequestHook | undefined;
   let reconfirmHook: ReconfirmHook | undefined;
   let ticketHook: TicketOfferHook | undefined;
+  let starting: Promise<void> | undefined;
 
   const hook = <T>(name: string, value: T): T => {
     if (typeof value !== 'function') throw new FillerConfigError(name, 'expected a function');
@@ -275,10 +377,12 @@ export function createFiller(config: FillerConfig): Filler {
       if (!quoteHook) throw new FillerConfigError('onQuoteRequest', 'register the hook before start()');
       if (!reconfirmHook) throw new FillerConfigError('onReconfirm', 'register the hook before start()');
       if (!ticketHook) throw new FillerConfigError('onTicketOffer', 'register the hook before start()');
-      throw new NotImplementedError('start', 'CAN-1847');
+      if (!context.fetch) throw new FillerConfigError('fetch', 'no global fetch; pass an HttpFetch for the REST fallback');
+      starting ??= protocol.start();
+      return starting;
     },
     async stop() {
-      // Nothing is open until start() exists (CAN-1847).
+      await protocol.stop();
     },
     selfSettle: async () => {
       throw new NotImplementedError('selfSettle', 'CAN-1856');
