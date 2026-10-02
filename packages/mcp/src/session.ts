@@ -97,15 +97,23 @@ export class CancoreSession {
 
     if (outcome.status === 'granted' && outcome.token) {
       this.#pending = undefined;
+      // The grant this one replaces (a forced reconnect). Ended only after the
+      // new one is stored: until then the old one is the only access there is.
+      const replaced = loadGrant(this.#grantPath, this.#config.apiBaseUrl);
+      const expiresMs = outcome.expiresAt ? Date.parse(outcome.expiresAt) : Number.NaN;
       saveGrant(this.#grantPath, this.#config.apiBaseUrl, {
         token: outcome.token,
         scopes: [...AGENT_SCOPES],
         appName,
+        ...(outcome.sessionId ? { sessionId: outcome.sessionId } : {}),
+        ...(Number.isFinite(expiresMs) ? { expiresAt: Math.floor(expiresMs / 1000) } : {}),
       });
+      const warning = replaced && replaced.token !== outcome.token ? await this.#revoke(replaced.token) : undefined;
       return {
         status: 'granted',
         scopes: [...AGENT_SCOPES],
         note: 'access is stored for this stand; the owner can revoke it in the wallet at any time',
+        ...(warning ? { warning } : {}),
       };
     }
     if (outcome.status === 'denied') {
@@ -150,6 +158,22 @@ export class CancoreSession {
 
   listIntents(): Promise<ToolResult> {
     return this.#call(async (client) => ({ intents: await client.listPending() }));
+  }
+
+  /**
+   * End a replaced grant on the server (CAN-2087). Overwriting the file alone
+   * left it alive for up to 30 days, usable by anything that had read it.
+   */
+  async #revoke(token: string): Promise<string | undefined> {
+    const client = new AgentQueueClient({ baseUrl: this.#config.apiBaseUrl, token, fetchImpl: this.#deps.fetchImpl });
+    try {
+      await client.revokeSelf();
+      return undefined;
+    } catch (err) {
+      // Already refused is exactly the state we wanted.
+      if (err instanceof UnauthorizedError) return undefined;
+      return 'the previous grant could not be revoked from here — the owner can revoke it in the wallet (sessions)';
+    }
   }
 
   async #queue(

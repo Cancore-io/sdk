@@ -135,6 +135,11 @@ export class AgentQueueClient {
     return out.intents ?? [];
   }
 
+  /** End the grant this client carries, and nothing else: a grant may always end itself. */
+  async revokeSelf(): Promise<void> {
+    await this.#call('DELETE', '/auth/sessions/current');
+  }
+
   async #call<T>(method: string, path: string, body?: unknown): Promise<T> {
     const res = await this.#fetch(`${this.#baseUrl}${path}`, {
       method,
