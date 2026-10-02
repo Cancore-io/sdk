@@ -9,7 +9,10 @@ import { NETWORKS, NETWORK_ALIASES, networkByChainId, networkKindOf, networkOf }
 
 const specDir = join(__dirname, '..', 'spec', 'abi');
 const snapshots = readdirSync(specDir).filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, ''));
-const constName = (name: string) => `${name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()}_ABI`;
+// The generator's naming rule, restated here so the test checks it rather than reuses it.
+const upper = (name: string) =>
+  name.replace(/([A-Z]{2,})([A-Z][a-z])/g, '$1_$2').replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase();
+const constName = (name: string) => `${upper(name)}_ABI`;
 
 // The TypeScript is generated from the JSON; if someone edits one and not the
 // other, the package ships an ABI nobody reviewed.
@@ -20,12 +23,20 @@ test.each(snapshots)('%s: the exported ABI equals the reviewed JSON snapshot', (
   expect(exported).toEqual(json);
 });
 
-// evm-contracts also has CNRXStaking and PointsClaim; they are published in a
-// follow-up PR of their own (review size), and a plain sync brings them in.
 test('the snapshot set is the whole contracts surface, not a sample of it', () => {
   expect(snapshots).toEqual([
-    'AttestorSet', 'CNRX', 'CancoreRouter', 'FeeVault', 'HTLC', 'IBurnMintERC20', 'ICancoreRouter', 'IHTLC', 'IPermit2',
-    'MultiBalanceChecker',
+    'AttestorSet', 'CNRX', 'CNRXStaking', 'CancoreRouter', 'FeeVault', 'HTLC', 'IBurnMintERC20', 'ICancoreRouter', 'IHTLC',
+    'IPermit2', 'MultiBalanceChecker', 'PointsClaim',
+  ]);
+});
+
+// Export names are API: once published they do not move. 0.1.0 shipped the
+// IBURN_MINT_ERC20 / IHTLC / IPERMIT2 spellings; CNRX_STAKING is the first name
+// the acronym rule splits.
+test('the ABI export names are exactly these', () => {
+  expect(Object.keys(abi).filter((k) => k.endsWith('_ABI')).sort()).toEqual([
+    'ATTESTOR_SET_ABI', 'CANCORE_ROUTER_ABI', 'CNRX_ABI', 'CNRX_STAKING_ABI', 'FEE_VAULT_ABI', 'HTLC_ABI',
+    'IBURN_MINT_ERC20_ABI', 'ICANCORE_ROUTER_ABI', 'IHTLC_ABI', 'IPERMIT2_ABI', 'MULTI_BALANCE_CHECKER_ABI', 'POINTS_CLAIM_ABI',
   ]);
 });
 
@@ -47,7 +58,7 @@ test('the error tables cover the router, its interface and the attestor set', ()
 
 test.each(withErrors)('%s: every custom error has its keccak selector, and nothing else is in the table', (name) => {
   const json = JSON.parse(readFileSync(join(specDir, `${name}.json`), 'utf8')) as Array<{ type: string; name: string; inputs: Input[] }>;
-  const table = (abi as unknown as Record<string, Readonly<Record<string, string>>>)[`${name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()}_ERRORS`];
+  const table = (abi as unknown as Record<string, Readonly<Record<string, string>>>)[`${upper(name)}_ERRORS`];
   const expected: Record<string, string> = {};
   for (const e of json.filter((x) => x.type === 'error')) {
     const sig = `${e.name}(${e.inputs.map(canonical).join(',')})`;

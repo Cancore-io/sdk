@@ -14,7 +14,11 @@ const canonicalType = (input) =>
     : input.type;
 const signature = (entry) => `${entry.name}(${(entry.inputs ?? []).map(canonicalType).join(',')})`;
 const selectorOf = (entry) => `0x${hex(keccak_256(new TextEncoder().encode(signature(entry))).slice(0, 4))}`;
-const constName = (name) => name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase();
+// `CancoreRouter` → `CANCORE_ROUTER`. An acronym of two or more capitals followed
+// by a word gets its own underscore (`CNRXStaking` → `CNRX_STAKING`); a single
+// leading capital does not (`IBurnMintERC20` → `IBURN_MINT_ERC20`, as published).
+const constName = (name) =>
+  name.replace(/([A-Z]{2,})([A-Z][a-z])/g, '$1_$2').replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase();
 
 /** src/generated/<Name>.ts; `source` is the path inside evm-contracts it was read from. */
 const renderAbiModule = (name, abi, source) =>

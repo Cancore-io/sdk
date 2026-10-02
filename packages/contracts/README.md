@@ -16,7 +16,7 @@ need one dependency, `@noble/hashes`.
 
 | Entry | Holds | Source of truth |
 | --- | --- | --- |
-| `@cancore/contracts/abi` | `HTLC_ABI`, `FEE_VAULT_ABI`, `CNRX_ABI`, `IHTLC_ABI`, `IBURN_MINT_ERC20_ABI`, `IPERMIT2_ABI`, `MULTI_BALANCE_CHECKER_ABI`, `CANCORE_ROUTER_ABI`, `ICANCORE_ROUTER_ABI`, `ATTESTOR_SET_ABI`; an `*_ERRORS` table for each contract that declares custom errors | `Cancore-io/evm-contracts/abi/*.json` — the reviewed snapshots that repository keeps in lock-step with its compiled contracts; `CNRX` and `IBurnMintERC20` from `evm-contracts/vendor/*.json`, a build of `cancore-token-evm` vendored there |
+| `@cancore/contracts/abi` | `HTLC_ABI`, `FEE_VAULT_ABI`, `CNRX_ABI`, `IHTLC_ABI`, `IBURN_MINT_ERC20_ABI`, `IPERMIT2_ABI`, `MULTI_BALANCE_CHECKER_ABI`, `CANCORE_ROUTER_ABI`, `ICANCORE_ROUTER_ABI`, `ATTESTOR_SET_ABI`, `CNRX_STAKING_ABI`, `POINTS_CLAIM_ABI`; an `*_ERRORS` table for each contract that declares custom errors | `Cancore-io/evm-contracts/abi/*.json` — the reviewed snapshots that repository keeps in lock-step with its compiled contracts; `CNRX` and `IBurnMintERC20` from `evm-contracts/vendor/*.json`, a build of `cancore-token-evm` vendored there |
 | `@cancore/contracts/networks` | `NETWORKS`, `networkOf`, `networkKindOf`, `networkByChainId` | the chain ids the Cancore API uses |
 | `@cancore/contracts` (filler protocol v1) | EIP-712 types and domains of the intent rail, `hashTypedData` / `jcs` / `gatewayBodyHash` / `requestIdHash`, `drawValue` / `drawWinner` / `firstRoundAtOrAfter`, wire message types and enums, `FILLER_GATEWAYS` | `docs/intents/protocol.md` and `auction-and-draw.md` in Cancore-io/meta; `CancoreRouter.sol` for the code types |
 | `@cancore/contracts` | all of the above, plus `DEPLOYMENTS` / `deploymentOf`, `FEE_CLAIM_TYPES` / `feeClaimDomain`, `FILL_PROOF_TYPES` / `fillProofDomain` / `FillProof`, `BYTECODE_HASHES`, `CONTRACTS_RELEASE`, `describeRevert` | the contracts repository's `version.json` and bytecode hashes; the FeeVault contract's own struct and domain; `evm-contracts/abi/typed-data/FillProof.json` for the router's `FillProof` |
@@ -252,6 +252,11 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.3` — adds the `CNRXStaking` and `PointsClaim` ABIs with their error tables
+  (`CNRX_STAKING_ABI`, `CNRX_STAKING_ERRORS`, `POINTS_CLAIM_ABI`, `POINTS_CLAIM_ERRORS`). The
+  generator now splits an acronym of two or more capitals from the word after it, which renames
+  nothing already exported. Additive only. Neither contract has an address in `DEPLOYMENTS`
+  yet; addresses come in a later release.
 - `0.2.0-rc.2` — adds the `CancoreRouter`, `ICancoreRouter` and `AttestorSet` ABIs with their error
   tables; `FeeVault` gains the `TransferFailed()` error and `IPermit2` gains
   `permitWitnessTransferFrom`; CNRX and IBurnMintERC20 are now read from `evm-contracts/vendor/`.
