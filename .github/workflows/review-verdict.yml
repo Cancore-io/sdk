@@ -1,0 +1,24 @@
+name: Review verdict receiver
+
+# BUG-1260. A review verdict (approved / changes_requested) on a ring PR goes to
+# Slack #dev with the ticket — the GitHub-side half of the review loop that only
+# CAEF had (CAN-1386). The logic lives in Cancore-io/.github/actions/
+# review-verdict-notify, pinned below; this file is only the wiring.
+# The action reads the event payload only: no checkout, no PR-head code runs.
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    # ubuntu-latest, not cancore-runners (CAN-1120): sdk is public, a self-hosted
+    # runner here would serve fork PRs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: Cancore-io/.github/actions/review-verdict-notify@05cafddbaa0a977a55c754b32e2fb166b74bb54c
+        with:
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
