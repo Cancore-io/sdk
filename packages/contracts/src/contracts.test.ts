@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as abi from './abi';
 import { FEE_CLAIM_TYPES } from './eip712';
-import { BYTECODE_HASHES, CONTRACTS_RELEASE, describeRevert } from './index';
+import { BUILD_HASHES, BYTECODE_HASHES, CONTRACTS_RELEASE, describeRevert } from './index';
 import { DEPLOYMENTS, deploymentOf } from './deployments';
 import { NETWORKS, NETWORK_ALIASES, networkByChainId, networkKindOf, networkOf } from './networks';
 
@@ -94,7 +94,26 @@ test('the HTLC selectors agree with the table the app maintained by hand', () =>
 test('the release identity names the contracts version and a build hash per contract in the release', () => {
   expect(CONTRACTS_RELEASE.version).toMatch(/^\d+\.\d+\.\d+/);
   for (const name of ['HTLC', 'FeeVault', 'CNRX', 'MultiBalanceChecker', 'CancoreRouter']) {
-    expect(BYTECODE_HASHES[name as keyof typeof BYTECODE_HASHES].deployedBytecodeHash).toMatch(/^[0-9a-f]{64}$/);
+    const build = BUILD_HASHES[name as keyof typeof BUILD_HASHES];
+    expect(build.creationHexSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(build.runtimeHexSha256).toMatch(/^[0-9a-f]{64}$/);
+    // The length of a 0x-prefixed hex text: even, and more than the prefix.
+    expect(build.runtimeHexLength % 2).toBe(0);
+    expect(build.runtimeHexLength).toBeGreaterThan(2);
+  }
+});
+
+// The deprecated name must keep serving exactly the values it always did, so a
+// consumer can move to BUILD_HASHES without anything changing underneath it.
+test('BYTECODE_HASHES is the same data as BUILD_HASHES under the old field names', () => {
+  expect(Object.keys(BYTECODE_HASHES)).toEqual(Object.keys(BUILD_HASHES));
+  for (const [name, old] of Object.entries(BYTECODE_HASHES)) {
+    expect(BUILD_HASHES[name as keyof typeof BUILD_HASHES]).toEqual({
+      creationHexSha256: old.bytecodeHash,
+      runtimeHexSha256: old.deployedBytecodeHash,
+      creationHexLength: old.bytecodeLength,
+      runtimeHexLength: old.deployedBytecodeLength,
+    });
   }
 });
 

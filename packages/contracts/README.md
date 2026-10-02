@@ -19,7 +19,7 @@ need one dependency, `@noble/hashes`.
 | `@cancore/contracts/abi` | `HTLC_ABI`, `FEE_VAULT_ABI`, `CNRX_ABI`, `IHTLC_ABI`, `IBURN_MINT_ERC20_ABI`, `IPERMIT2_ABI`, `MULTI_BALANCE_CHECKER_ABI`, `CANCORE_ROUTER_ABI`, `ICANCORE_ROUTER_ABI`, `ATTESTOR_SET_ABI`, `CNRX_STAKING_ABI`, `POINTS_CLAIM_ABI`; an `*_ERRORS` table for each contract that declares custom errors | `Cancore-io/evm-contracts/abi/*.json` — the reviewed snapshots that repository keeps in lock-step with its compiled contracts; `CNRX` and `IBurnMintERC20` from `evm-contracts/vendor/*.json`, a build of `cancore-token-evm` vendored there |
 | `@cancore/contracts/networks` | `NETWORKS`, `networkOf`, `networkKindOf`, `networkByChainId` | the chain ids the Cancore API uses |
 | `@cancore/contracts` (filler protocol v1) | EIP-712 types and domains of the intent rail, `hashTypedData` / `jcs` / `gatewayBodyHash` / `requestIdHash`, `drawValue` / `drawWinner` / `firstRoundAtOrAfter`, wire message types and enums, `FILLER_GATEWAYS` | `docs/intents/protocol.md` and `auction-and-draw.md` in Cancore-io/meta; `CancoreRouter.sol` for the code types |
-| `@cancore/contracts` | all of the above, plus `DEPLOYMENTS` / `deploymentOf`, `FEE_CLAIM_TYPES` / `feeClaimDomain`, `FILL_PROOF_TYPES` / `fillProofDomain` / `FillProof`, `BYTECODE_HASHES`, `CONTRACTS_RELEASE`, `describeRevert` | the contracts repository's `version.json` and bytecode hashes; the FeeVault contract's own struct and domain; `evm-contracts/abi/typed-data/FillProof.json` for the router's `FillProof` |
+| `@cancore/contracts` | all of the above, plus `DEPLOYMENTS` / `deploymentOf`, `FEE_CLAIM_TYPES` / `feeClaimDomain`, `FILL_PROOF_TYPES` / `fillProofDomain` / `FillProof`, `BUILD_HASHES` (and its deprecated alias `BYTECODE_HASHES`), `CONTRACTS_RELEASE`, `describeRevert` | the contracts repository's `version.json` and bytecode hashes; the FeeVault contract's own struct and domain; `evm-contracts/abi/typed-data/FillProof.json` for the router's `FillProof` |
 
 The ABIs and selector tables are **generated**, never edited: `npm run sync` reads a checkout
 of `evm-contracts` (`EVM_CONTRACTS_DIR`) and rewrites `spec/abi/*.json` and
@@ -180,7 +180,7 @@ decode against the same table.
 ## Deployments
 
 ```ts
-import { DEPLOYMENTS, deploymentOf, BYTECODE_HASHES } from '@cancore/contracts';
+import { DEPLOYMENTS, deploymentOf, BUILD_HASHES } from '@cancore/contracts';
 
 const { htlc, htlcBlock } = deploymentOf('mainnet', 'arbitrum')!;
 ```
@@ -188,11 +188,13 @@ const { htlc, htlcBlock } = deploymentOf('mainnet', 'arbitrum')!;
 Three environments, three independent deployments: what is on Sepolia for the dev stand is
 not what is on Sepolia for testnet. `htlcBlock` is the floor for an event scan.
 
-`BYTECODE_HASHES` pins the build each release was made from, as `evm-contracts` records it in
-`scripts/tools/check-bytecode-match.mjs`: `bytecodeHash` and `deployedBytecodeHash` are sha256
+`BUILD_HASHES` pins the build each release was made from, as `evm-contracts` records it in
+`scripts/tools/check-bytecode-match.mjs`: `creationHexSha256` and `runtimeHexSha256` are sha256
 of the UTF-8 text of the artifact's `0x`-prefixed hex (creation and runtime code) — not
-keccak256, and not of the bytes — and `bytecodeLength` / `deployedBytecodeLength` are the length
-of that text, `0x` included. It is not a hash of `eth_getCode`: a contract with
+keccak256, and not of the bytes — and `creationHexLength` / `runtimeHexLength` are the length
+of that text, `0x` included. `BYTECODE_HASHES` is the same data under the old field names
+(`bytecodeHash`, `deployedBytecodeHash`, `bytecodeLength`, `deployedBytecodeLength`); it is
+deprecated and goes before `0.2.0`. It is not a hash of `eth_getCode`: a contract with
 immutables (`CancoreRouter`, `FeeVault`) never matches one, so checking a live deployment
 against it means rebuilding the release, not hashing the address. `CONTRACTS_RELEASE` names the
 release.
@@ -252,6 +254,10 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.4` — adds `BUILD_HASHES`: the release's build hashes under names that say what they
+  are (`creationHexSha256`, `runtimeHexSha256`, `creationHexLength`, `runtimeHexLength`).
+  `BYTECODE_HASHES` keeps the same values under the old names, deprecated, and is removed before
+  `0.2.0`. Additive only.
 - `0.2.0-rc.3` — adds the `CNRXStaking` and `PointsClaim` ABIs with their error tables
   (`CNRX_STAKING_ABI`, `CNRX_STAKING_ERRORS`, `POINTS_CLAIM_ABI`, `POINTS_CLAIM_ERRORS`). The
   generator now splits an acronym of two or more capitals from the word after it, which renames

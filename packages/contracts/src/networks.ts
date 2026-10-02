@@ -8,7 +8,7 @@
  * branches on `kind` instead of on the id keeps working when a chain is added.
  *
  * Contract addresses live next door in `DEPLOYMENTS`, keyed by environment —
- * dev, testnet and mainnet each have their own HTLC. `BYTECODE_HASHES` (from `.`)
+ * dev, testnet and mainnet each have their own HTLC. `BUILD_HASHES` (from `.`)
  * pins the build of a release, not what an address runs (see `DEPLOYMENTS`).
  */
 

@@ -8,13 +8,71 @@ export const CONTRACTS_RELEASE = {
 } as const;
 
 /**
- * Per contract, the compiled creation and runtime bytecode of the release, as
- * evm-contracts scripts/tools/check-bytecode-match.mjs records them: each *Hash is
- * sha256 of the UTF-8 text of the artifact's 0x-prefixed hex (not keccak256, not of the
- * bytes), and each *Length is the length of that text including the 0x. It pins the
- * build a release was made from. It is not a hash of `eth_getCode` — a contract with
- * immutables (CancoreRouter, FeeVault) never matches one — so checking a live
- * deployment against it needs a rebuild, not a lookup.
+ * Per contract, the build of the release, as evm-contracts
+ * scripts/tools/check-bytecode-match.mjs records it. `creationHexSha256` and
+ * `runtimeHexSha256` are sha256 of the UTF-8 text of the artifact's 0x-prefixed hex of the
+ * creation and runtime bytecode (not keccak256, not of the bytes); `creationHexLength` and
+ * `runtimeHexLength` are the length of that text including the 0x. It pins the build a
+ * release was made from. It is not a hash of `eth_getCode` — a contract with immutables
+ * (CancoreRouter, FeeVault) never matches one — so checking a live deployment against it
+ * needs a rebuild, not a lookup.
+ */
+export const BUILD_HASHES = {
+  "HTLC": {
+    "creationHexSha256": "93a991d3a6451f7c3f02dfb70b365a48d29bebccc7f16d8dbe3d56d3dfee0af1",
+    "runtimeHexSha256": "40ab52456c3b5a04365fc1fad837eb79bbe4b85c8dbd990f549468ae48f97e3a",
+    "creationHexLength": 14976,
+    "runtimeHexLength": 14686
+  },
+  "FeeVault": {
+    "creationHexSha256": "1c97d27c8d3e584f879bb57549d75ef10394a56a298eaf4a772516b9316e2248",
+    "runtimeHexSha256": "0631177a64cde0829c2cec8426c08a507564f7d8b084e0237d724ed63faea0e9",
+    "creationHexLength": 13176,
+    "runtimeHexLength": 10968
+  },
+  "MultiBalanceChecker": {
+    "creationHexSha256": "c0a0326694f2a1594e332ba06120692cc98bc06c57d6d8981cb3768e01fad423",
+    "runtimeHexSha256": "93a1f0aa251715cc6a1b6a472f10762463b5c24668886630cbc6da5632e5739b",
+    "creationHexLength": 2456,
+    "runtimeHexLength": 2394
+  },
+  "CancoreRouter": {
+    "creationHexSha256": "615b6fb47a4255df9f7fdec963811cdfbefb53166645cd19466fa268df7fb39d",
+    "runtimeHexSha256": "dec1f5d541c6b383b95b6c53e278123cc3844bdeff3f977a166fb6e9cbf86343",
+    "creationHexLength": 43102,
+    "runtimeHexLength": 36984
+  },
+  "CNRXStaking": {
+    "creationHexSha256": "dfda056ee22b593e2f2e1fc4e679fbb9dc34b04964f389b46914402c422b40fb",
+    "runtimeHexSha256": "d11534242f166e52f4ad063b5b6b59146e31634d3932f7ad63db05d83a1485f6",
+    "creationHexLength": 7412,
+    "runtimeHexLength": 6240
+  },
+  "PointsClaim": {
+    "creationHexSha256": "0f29890b609f7e15ef4dbcda17a7f2cd7482d016a0057a5f6c4270d7780ff38d",
+    "runtimeHexSha256": "f2b10c4ec8458c0d6ab0f465481e645524f618f7a3327822e8ae5d3fd42fa46c",
+    "creationHexLength": 14300,
+    "runtimeHexLength": 11504
+  },
+  "BurnMintTokenPool": {
+    "creationHexSha256": "b5b19721149d9dd63e0650d0a1f95ac82affa4b9c650fdffd375db6ea361e416",
+    "runtimeHexSha256": "c9aaa6a40ef4f0caadeb66f0a9adc68b1191949e9e0bdb420f331132bf651c3a",
+    "creationHexLength": 41756,
+    "runtimeHexLength": 39936
+  },
+  "CNRX": {
+    "creationHexSha256": "61b4e114722e99f93aac4bd4ef3cfb7973dd050b66e6ffb326efad29d4cc8c95",
+    "runtimeHexSha256": "2b23774e41fb25f820227a50de4f48d7ad79b0bd131c1956aab07c100e0c3948",
+    "creationHexLength": 21266,
+    "runtimeHexLength": 17374
+  }
+} as const;
+
+/**
+ * @deprecated Use `BUILD_HASHES`: the same values under names that say what they are
+ * (bytecodeHash → creationHexSha256, deployedBytecodeHash → runtimeHexSha256,
+ * bytecodeLength → creationHexLength, deployedBytecodeLength → runtimeHexLength).
+ * Kept for one release candidate; removed before 0.2.0.
  */
 export const BYTECODE_HASHES = {
   "HTLC": {
