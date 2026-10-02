@@ -93,6 +93,7 @@ test('the HTLC selectors agree with the table the app maintained by hand', () =>
 
 test('the release identity names the contracts version and a build hash per contract in the release', () => {
   expect(CONTRACTS_RELEASE.version).toMatch(/^\d+\.\d+\.\d+/);
+  expect(CONTRACTS_RELEASE.commit).toMatch(/^[0-9a-f]{40}$/);
   for (const name of ['HTLC', 'FeeVault', 'CNRX', 'MultiBalanceChecker', 'CancoreRouter']) {
     const build = BUILD_HASHES[name as keyof typeof BUILD_HASHES];
     expect(build.creationHexSha256).toMatch(/^[0-9a-f]{64}$/);

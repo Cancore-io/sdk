@@ -243,6 +243,10 @@ EVM_CONTRACTS_DIR=../evm-contracts npm run sync   # then review the diff and rel
 EVM_CONTRACTS_DIR=../evm-contracts node scripts/sync.mjs
 ```
 
+`EVM_CONTRACTS_DIR` must be the root of a clean git checkout of `evm-contracts`: the sync records
+its `HEAD` as `CONTRACTS_RELEASE.commit` and refuses a directory that is not a checkout root or
+has uncommitted changes, so the release cannot name a commit its data did not come from.
+
 It reads `abi/*.json` except the two manifests (`bytecode-hashes.json`, `versions.json`) and
 `vendor/*.json` (the `.abi` field), and refuses to run when `spec/abi/` holds a snapshot the
 source no longer has — dropping a published ABI is a decision, not a side effect of a sync.
@@ -254,6 +258,9 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.5` — `CONTRACTS_RELEASE.commit`: the evm-contracts commit the data was synced from.
+  The sync takes it from the checkout's `HEAD` and refuses a directory that is not a clean
+  checkout root. Additive only.
 - `0.2.0-rc.4` — adds `BUILD_HASHES`: the release's build hashes under names that say what they
   are (`creationHexSha256`, `runtimeHexSha256`, `creationHexLength`, `runtimeHexLength`).
   `BYTECODE_HASHES` keeps the same values under the old names, deprecated, and is removed before
