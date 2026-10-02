@@ -18,6 +18,14 @@ export interface Grant {
   appName: string;
   /** Unix seconds. */
   obtainedAt: number;
+  /**
+   * Unix seconds; when the server stops accepting the grant. Absent in grants
+   * written before CAN-2087 or by the Go server, which keeps working: the server
+   * answers 401 then and the grant is dropped on the spot.
+   */
+  expiresAt?: number;
+  /** The app-session id the wallet lists and revokes the grant by. */
+  sessionId?: string;
 }
 
 /** Keyed by API base URL: a dev grant must never overwrite a mainnet one. */
@@ -38,9 +46,12 @@ function readFile(path: string): GrantFile {
   }
 }
 
-export function loadGrant(path: string, baseUrl: string): Grant | undefined {
+/** An expired grant is no grant: the server would refuse it on every call. */
+export function loadGrant(path: string, baseUrl: string, nowSeconds = Math.floor(Date.now() / 1000)): Grant | undefined {
   const grant = readFile(path)[baseUrl];
-  return grant?.token ? grant : undefined;
+  if (!grant?.token) return undefined;
+  if (grant.expiresAt !== undefined && grant.expiresAt <= nowSeconds) return undefined;
+  return grant;
 }
 
 /** Record the grant for one stand, leaving the other stands' grants alone. */

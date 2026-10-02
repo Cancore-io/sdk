@@ -21,6 +21,10 @@ export interface PollOutcome {
   status: PollStatus;
   /** Present only when status is 'granted'. */
   token?: string;
+  /** The app-session id behind the grant; backends from before CAN-2087 omit it. */
+  sessionId?: string;
+  /** ISO 8601; when the grant expires. Backends from before CAN-2087 omit it. */
+  expiresAt?: string;
 }
 
 /** Scopes this server asks for: queue a request, read the queue. Never sign. */
