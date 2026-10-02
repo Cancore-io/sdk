@@ -258,6 +258,9 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.6` — `auth.response` gains an optional `nonce` (bytes32): the `auth.challenge` nonce it
+  answers, so filler-gateway's REST login (`POST /v1/filler/auth`) finds the challenge without trying
+  every live one. Additive only (V-2); the `FillerAuth` type and every digest are unchanged.
 - `0.2.0-rc.5` — `CONTRACTS_RELEASE.commit`: the evm-contracts commit the data was synced from.
   The sync takes it from the checkout's `HEAD` and refuses a directory that is not a clean
   checkout root. Additive only.
