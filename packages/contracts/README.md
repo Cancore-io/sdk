@@ -254,6 +254,9 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.6` — `auth.response` gains an optional `nonce` (bytes32): the `auth.challenge` nonce it
+  answers, so filler-gateway's REST login (`POST /v1/filler/auth`) finds the challenge without trying
+  every live one. Additive only (V-2); the `FillerAuth` type and every digest are unchanged.
 - `0.2.0-rc.4` — adds `BUILD_HASHES`: the release's build hashes under names that say what they
   are (`creationHexSha256`, `runtimeHexSha256`, `creationHexLength`, `runtimeHexLength`).
   `BYTECODE_HASHES` keeps the same values under the old names, deprecated, and is removed before

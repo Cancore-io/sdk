@@ -115,6 +115,7 @@ describe('conditional shapes', () => {
   test.each([
     ['quote', 'requestId', 'has space'],
     ['auth.response', 'fillerId', 'Acme'],
+    ['auth.response', 'nonce', '0x01'],
     ['quote', 'nonce', '01'],
     ['quote', 'amountOut', '1'.repeat(79)],
     ['ticket.intent', 'attempt', 2 ** 32],

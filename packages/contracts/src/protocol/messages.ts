@@ -76,7 +76,15 @@ export interface F2SBase {
 }
 
 export interface AuthChallenge extends S2FBase { type: 'auth.challenge'; nonce: Hex; expiresAt: DecString }
-export interface AuthResponse extends F2SBase { type: 'auth.response'; fillerId: string; keyAddress: Hex; protocolVersion: '1'; sig: Hex }
+export interface AuthResponse extends F2SBase {
+  type: 'auth.response';
+  fillerId: string;
+  keyAddress: Hex;
+  protocolVersion: '1';
+  /** Optional: the `auth.challenge` nonce this answers, so the REST login finds its challenge directly. */
+  nonce?: Hex;
+  sig: Hex;
+}
 export interface AuthOk extends S2FBase { type: 'auth.ok'; fillerId: string; heartbeatIntervalMs: number }
 /** Heartbeat from the taker: unsigned, like every F→S frame. */
 export interface PingF2S { type: 'ping'; id: string }

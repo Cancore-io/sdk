@@ -109,6 +109,7 @@
         "fillerId": { "$ref": "#/$defs/fillerId" },
         "keyAddress": { "$ref": "#/$defs/address" },
         "protocolVersion": { "type": "string", "description": "the gateway answers UNSUPPORTED_VERSION to anything it does not serve; v1 senders send \"1\"" },
+        "nonce": { "$ref": "#/$defs/bytes32", "description": "optional: the auth.challenge nonce this response answers, so the REST login (POST /v1/filler/auth) finds its challenge without trying every live one; on WebSocket the challenge is the connection's own" },
         "sig": { "$ref": "#/$defs/sig65" }
       }
     },

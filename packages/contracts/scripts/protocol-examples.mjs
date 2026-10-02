@@ -59,7 +59,10 @@ export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHas
   const t = { orderHash, attempt: 0 };
   return {
     'auth.challenge': [{ type: 'auth.challenge', sentAt: 1789999980000, nonce: tx('cancore:test:auth-nonce:1'), expiresAt: '1790000030', sig: PLACEHOLDER_SIG }],
-    'auth.response': [{ type: 'auth.response', id: 'a-1', fillerId: 'acme-markets', keyAddress: QUOTE_KEY, protocolVersion: '1', sig: PLACEHOLDER_SIG }],
+    'auth.response': [
+      { type: 'auth.response', id: 'a-1', fillerId: 'acme-markets', keyAddress: QUOTE_KEY, protocolVersion: '1', sig: PLACEHOLDER_SIG },
+      { type: 'auth.response', id: 'a-2', fillerId: 'acme-markets', keyAddress: QUOTE_KEY, protocolVersion: '1', nonce: tx('cancore:test:auth-nonce:1'), sig: PLACEHOLDER_SIG },
+    ],
     'auth.ok': [{ type: 'auth.ok', ...S, sentAt: 1789999980200, re: 'a-1', heartbeatIntervalMs: 15000 }],
     ping: [{ type: 'ping', id: 'p-1' }, { type: 'ping', ...S, sentAt: 1789999995000, id: 'gp-1' }],
     pong: [{ type: 'pong', re: 'gp-1' }, { type: 'pong', ...S, sentAt: 1789999995100, re: 'p-1' }],
