@@ -18,7 +18,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "jest --selectProjects node web",
-    "typecheck": "tsc --build --force && tsc --noEmit -p packages/mcp/tsconfig.json && tsc --noEmit -p packages/wallet/tsconfig.json && tsc --noEmit -p packages/client/tsconfig.json && tsc --noEmit -p packages/contracts/tsconfig.json && tsc --noEmit -p packages/test-kit/tsconfig.json",
+    "typecheck": "tsc --build --force && tsc --noEmit -p packages/mcp/tsconfig.json && tsc --noEmit -p packages/wallet/tsconfig.json && tsc --noEmit -p packages/client/tsconfig.json && tsc --noEmit -p packages/contracts/tsconfig.json && tsc --noEmit -p packages/test-kit/tsconfig.json && tsc --noEmit -p packages/trader/tsconfig.json",
     "clean": "rm -rf packages/*/dist",
     "release:connector": "npm publish -w @cancore/dapp-connector --access public",
     "release:mcp": "npm publish -w @cancore/mcp --access public",

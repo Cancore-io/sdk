@@ -1,0 +1,58 @@
+{
+  "name": "@cancore/trader",
+  "version": "0.1.0-rc.1",
+  "type": "module",
+  "description": "Programmatic trading on Cancore. ./filler: the filler protocol v1 for a filler node — login, quotes, tickets, fills, attestations and settle — over injected signers, RPC, ledger and store. Holds no keys.",
+  "exports": {
+    "./filler": {
+      "types": "./dist/filler/index.d.ts",
+      "import": "./dist/filler/index.js",
+      "default": "./dist/filler/index.js"
+    },
+    "./filler/testing": {
+      "types": "./dist/filler/testing/index.d.ts",
+      "import": "./dist/filler/testing/index.js",
+      "default": "./dist/filler/testing/index.js"
+    }
+  },
+  "sideEffects": false,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cancore-io/sdk.git",
+    "directory": "packages/trader"
+  },
+  "homepage": "https://docs.cancore.io/sdk/trader",
+  "bugs": {
+    "url": "https://github.com/Cancore-io/sdk/issues"
+  },
+  "keywords": [
+    "cancore",
+    "canton",
+    "filler",
+    "intents",
+    "eip-712",
+    "cross-chain"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "prepack": "tsup --silent",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@cancore/contracts": "^0.2.0-rc.4",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

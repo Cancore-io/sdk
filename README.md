@@ -10,6 +10,7 @@ The packages a third-party dApp, an AI agent, or a wallet build installs from np
 | [`@cancore/client`](packages/client) | [`@cancore/client`](https://www.npmjs.com/package/@cancore/client) | A typed client for the API: orders and pool trades (`./swap`), the USDCx bridge (`./bridge`), live order updates over the gateway's socket (`./realtime`), scoped trading grants by device flow (`./auth`). Hands out hashes to sign, never holds a key. |
 | [`@cancore/wallet`](packages/wallet) | [`@cancore/wallet`](https://www.npmjs.com/package/@cancore/wallet) | The wallet core: key material, signing, storage contracts, the operations-envelope client. |
 | [`@cancore/test-kit`](packages/test-kit) | [`@cancore/test-kit`](https://www.npmjs.com/package/@cancore/test-kit) | A mock filler gateway for a taker's CI: protocol v1 over WebSocket and REST, signed with public TEST keys, a virtual clock, failure modes and a conformance check. Tests only. |
+| [`@cancore/trader`](packages/trader) | [`@cancore/trader`](https://www.npmjs.com/package/@cancore/trader) | Programmatic trading. `./filler`: filler protocol v1 for a filler node over injected signers, RPC, ledger and store. Holds no keys and no state of its own. Skeleton; not published yet. |
 
 **Full documentation: <https://docs.cancore.io/sdk/overview>.**
 
@@ -49,9 +50,11 @@ Two details worth knowing before a first change:
   wallet core and the connector are runtime-agnostic. The moment one of them
   needs a browser shim to pass, the extraction has failed. Only
   `packages/wallet/src/web` — IndexedDB and WebAuthn — runs under jsdom.
-- **Node types live in `packages/mcp/tsconfig.json`, not in the root config.**
-  The MCP server is the only package that runs on a machine; handing `node` to
-  every package would let a browser package reach for `fs` and still typecheck.
+- **Node types live in the tsconfig of a package that runs on a machine
+  (`packages/mcp`, `packages/trader`), not in the root config.** Handing `node`
+  to every package would let a browser package reach for `fs` and still
+  typecheck. `@cancore/trader`'s published declarations need neither Node nor
+  DOM types; CI checks that from the tarball.
 
 ESM only, everywhere. The connector's whole transport is `fetch`, `EventSource`
 and `postMessage`, and the wallet core is WebCrypto — a runtime old enough to

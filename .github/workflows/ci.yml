@@ -96,7 +96,18 @@ jobs:
                 console.log(specifier, 'exports:', names.join(', '));
               }
             "
-            test -f "node_modules/$name/dist/index.d.ts" || { echo "$name ships no types"; exit 1; }
+            # Every subpath ships its declarations — not just a root entry, which
+            # a package such as @cancore/trader (subpaths only) does not have.
+            node --input-type=module -e "
+              import { existsSync, readFileSync } from 'node:fs';
+              const manifest = JSON.parse(readFileSync('node_modules/$name/package.json', 'utf8'));
+              const targets = Object.entries(manifest.exports ?? {}).filter(([subpath]) => !subpath.includes('*'));
+              if (targets.length === 0) targets.push(['.', { types: manifest.types }]);
+              for (const [subpath, target] of targets) {
+                const types = typeof target === 'object' ? target.types : undefined;
+                if (!types || !existsSync('node_modules/$name/' + types)) throw new Error('$name ' + subpath + ' ships no types');
+              }
+            "
             if node -e "process.exit(require('./node_modules/$name/package.json').exports?.['./spec/*'] ? 0 : 1)"; then
               node --input-type=module -e "
                 const { default: s } = await import('$name/spec/protocol/messages.schema.json', { with: { type: 'json' } });
@@ -106,6 +117,32 @@ jobs:
             fi
             cd "$GITHUB_WORKSPACE"
           done
+
+      # A filler node is a Node program, so @cancore/trader may use Node types in
+      # its own tsconfig — but its published declarations must not need them, nor
+      # DOM: a consumer with neither, and with skipLibCheck off, must typecheck
+      # against both entries (CAN-1843).
+      - name: Typecheck @cancore/trader as a stranger with no Node or DOM types
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/trader-types" && mkdir -p "$RUNNER_TEMP/trader-types" && cd "$RUNNER_TEMP/trader-types"
+          npm init -y >/dev/null
+          npm pkg set type=module
+          npm install "$RUNNER_TEMP"/cancore-trader-*.tgz "$RUNNER_TEMP"/cancore-contracts-*.tgz --no-audit --no-fund
+          test ! -e node_modules/@types/node || { echo "@types/node arrived with @cancore/trader"; exit 1; }
+          cat > tsconfig.json <<'JSON'
+          { "compilerOptions": { "strict": true, "noEmit": true, "target": "ES2022", "lib": ["ES2022"],
+              "module": "NodeNext", "moduleResolution": "NodeNext", "types": [], "skipLibCheck": false },
+            "files": ["consumer.ts"] }
+          JSON
+          cat > consumer.ts <<'TS'
+          import { createFiller, type Filler, type FillerConfig, type FillerStore, type WebSocketFactory } from '@cancore/trader/filler';
+          import { InMemoryFillerStore, createFakeWebSocketFactory } from '@cancore/trader/filler/testing';
+          const store: FillerStore = new InMemoryFillerStore();
+          const webSocket: WebSocketFactory = createFakeWebSocketFactory().factory;
+          export const build = (config: Omit<FillerConfig, 'store' | 'webSocket'>): Filler => createFiller({ ...config, store, webSocket });
+          TS
+          "$GITHUB_WORKSPACE/node_modules/.bin/tsc" -p .
 
       # B16: what another repository's CI does — the mock from the tarball, one
       # command, ready and healthy within five seconds.
