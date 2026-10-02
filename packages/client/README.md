@@ -233,6 +233,7 @@ import { providerFromMnemonic } from '@cancore/wallet';
 import { createSelfCustody } from '@cancore/client/selfcustody';
 
 // One recovery phrase holds any number of accounts: m/44'/6767'/{account}'/0'/0'.
+// The signer is { public_key, signMessage, signChallenge, signPreparedHash } — see below.
 const signer = await providerFromMnemonic(process.env.PHRASE!, { account: 0 });
 const acct = createSelfCustody({ baseUrl: 'https://api.cancore.io', signer });
 
@@ -250,7 +251,9 @@ if (!accepted && requiredVersion) await acct.acceptTerms(requiredVersion, docume
 // process, another partner) settles the other. Each call returns when the swap has settled
 // and this account's proceeds are in.
 const order = await acct.swap.createForPair({ tradingPairId, sourceAmount: '100', targetAmount: '20' });
-const { swap, delivery } = await acct.make(order.id);
+// timeoutHours is optional: by default make picks the shortest offered timeout of at least
+// 15 minutes (see "How a trade settles"). Set it to one GET /htlc/timeout-options offers.
+const { swap, delivery } = await acct.make(order.id, { timeoutHours: 0.25 });
 // …elsewhere: await other.take(order.id);
 
 // Registry-token deliveries and cashback payouts wait for this account's signature.
@@ -270,9 +273,23 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `take(orderId, options?)` | taker: accept the order, fund the counter leg, wait for settlement, accept the delivery |
 | `incoming()` / `accept(transfer)` / `acceptIncoming(filter?)` | transfers waiting for this account's signature |
 | `send(input)` / `consolidate(tokenId?)` / `balance(instrumentId)` | move, merge and read this account's tokens |
+| `faucet()` | test CC from the dev stand's faucet, see [Test funds on dev](#test-funds-on-dev) |
 | `cashback.summary()` / `claims()` / `claim()` / `collect(options?)` | partner cashback (role `partner-bot`) |
 | `execute(type, params?)` | any operation of `GET /wallet/operations`: prepare, sign every leg, submit |
 | `swapState(swapId)` | `GET /htlc/{id}` |
+
+**The signer.** `createSelfCustody` and `createSession` take any object of this shape, and
+`providerFromMnemonic` (`@cancore/wallet`) returns exactly it:
+
+| Field | What it is |
+| --- | --- |
+| `public_key` | the hex Ed25519 public key, the account's identity. Snake case, because it is the Loop provider's field |
+| `signMessage(message)` | raw bytes as a binary string (one char per byte) → lowercase hex signature |
+| `signChallenge(challenge)` | optional; the login-challenge path, preferred over `signMessage` when present |
+| `signPreparedHash(hashB64)` | optional; base64 32-byte prepared-transaction hash → base64 signature |
+
+`deriveWalletKey` returns key material, not a signer, and names the same key `publicKeyHex`.
+Passing that object here is refused at once with a `TypeError` that names `public_key`.
 
 **Register with your invite code.** A partner gets a single-use code (`XXXX-XXXX-XXXX`) from
 Cancore and passes it to `register`. The code rides on the sign-up request itself: the account
@@ -289,7 +306,12 @@ backend CAN-1593 ships there) `register` signs up without it and then redeems it
 
 **How a trade settles.** `make` opens the swap with a fresh preimage, locking the order's
 source amount grossed up by the fee rate so the taker receives exactly what the order says;
-`take` does the same for the counter leg. The preimage is also stored with the API,
+`take` does the same for the counter leg. The counter leg gets half of whatever is left of the
+main leg's timeout when the taker accepts, and each side of a swap takes about 70 seconds end
+to end on dev. So by default `make` asks for the shortest timeout the stand offers that is at
+least 15 minutes, or the longest offered if none is that long. The 1-minute option left the
+counter leg 30–50 seconds, and the swap ended `counter_refunded`. An explicit `timeoutHours`
+is used as given, provided the stand offers it for the order. The preimage is also stored with the API,
 encrypted for the maker, so a maker process that dies mid-swap resumes it with another
 `make(order.id)`. The API releases it only once the taker's counter leg is locked, so a
 resumed `make` reads it back right before the claim, not when it starts. A CC delivery
@@ -310,14 +332,26 @@ retries are the ones the API says are safe. Every decision is taken on the refus
 | `COUNTER_PROPOSAL_NOT_READY` | waits a poll and asks again, until the deadline |
 | `COUNTER_PROPOSAL_ALREADY_ACCEPTED` | counts the counter leg as accepted |
 | `SWAP_ALREADY_SETTLED` | counts the claim as done and finishes the settle |
+| `ACCOUNT_NOT_FOUND` (at sign-in) | asks for a new challenge up to twice more, 1 s then 2 s apart. The gateway answers an existing key with this 404 when its challenge is slow (backend BUG-551), most often right after sign-up; three in a row surfaces it |
 | anything else | surfaces it |
 
-A gateway that sends no code for these six (mainnet, until backend CAN-1955 ships there) is
-read by the text of its message instead. What surfaces is a `CeremonyError` (with what the
+A gateway that sends no code for the first six (mainnet, until backend CAN-1955 ships there) is
+read by the text of its message instead. Mainnet already sends `ACCOUNT_NOT_FOUND` as a code. What surfaces is a `CeremonyError` (with what the
 prepare had said, and the refusal's `errorCode` when it carried one) or a `SettleError` (with
 the last state seen).
 
 Canton↔Canton orders only: an EVM leg is locked by an EVM key, which is not this signer.
+
+### Test funds on dev
+
+`acct.faucet()` asks the dev stand's faucet for test CC for this account's party. It signs the
+faucet terms with the account key and posts `POST /faucet/request` with
+`{ agreementSignature, agreementTimestamp }`. The signed text is
+`CANCORE_FAUCET_TERMS_OF_SERVICE_V1:<partyId>:<agreementTimestamp>`, where the timestamp is epoch
+milliseconds, and the signature is the `signMessage` hex. The faucet pays the party in the
+session's JWT, so run `onboard()` first. Today it pays 1,000 CC per party once every 48 hours.
+It answers `429` while the party is cooling down and `503` when the pool is empty or paused.
+The faucet pays CC only. Only dev runs one: testnet and mainnet answer `503`.
 
 ## `@cancore/client/realtime`
 
@@ -442,7 +476,7 @@ try {
 `errorCode` needs a gateway that publishes the registry: backend
 [#1907](https://github.com/Cancore-io/backend/pull/1907) (CAN-1955). On an older one it is
 `undefined` for every body that has no `code`, and the self-custody account falls back to the text
-of the message for the six refusals it acts on.
+of the message for the six swap refusals it acts on.
 
 ## Which API this was written against
 

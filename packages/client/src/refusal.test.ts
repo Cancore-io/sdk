@@ -12,6 +12,7 @@ describe('refusalOf, by code', () => {
     ['COUNTER_PROPOSAL_NOT_READY', 'counterNotReady'],
     ['COUNTER_PROPOSAL_ALREADY_ACCEPTED', 'counterAlreadyAccepted'],
     ['SWAP_ALREADY_SETTLED', 'alreadySettled'],
+    ['ACCOUNT_NOT_FOUND', 'retrySignIn'],
   ])('%s is %s, whatever the text says', (code, expected) => {
     expect(refusalOf(refused(400, { errorCode: code, code, message: 'wording the API may change tomorrow' }))).toBe(expected);
   });

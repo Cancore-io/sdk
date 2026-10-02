@@ -125,6 +125,16 @@ export interface CashbackClaim {
   payouts?: CashbackPayout[];
 }
 
+/** `FaucetClaimResponseDto` */
+export interface FaucetClaim {
+  success: boolean;
+  amountCc: number;
+  recipientParty: string;
+  txId: string;
+  nextEligibleAt: string;
+  remainingPoolCc: number;
+}
+
 export interface Executed<TMeta = Record<string, unknown>> {
   meta: TMeta | null;
   /** What the submit answered; null when the operation had nothing to sign. */
@@ -146,7 +156,10 @@ export interface Settled {
 }
 
 export interface SettleOptions {
-  /** HTLC timeout; must be one the stand offers for the order. Default: the shortest it offers. */
+  /**
+   * HTLC timeout; must be one the stand offers for the order. Default: the shortest
+   * offered that is at least 15 minutes, or the longest offered when none is.
+   */
   timeoutHours?: number;
   /** Give up waiting on the other side after this long. Default 45 minutes. */
   deadlineMs?: number;
@@ -157,7 +170,6 @@ export interface SettleOptions {
 export interface SelfCustodyOptions extends SessionOptions {
   /** Poll interval while waiting on the counterparty or the venue. Default 5 s. */
   pollMs?: number;
-  sleep?: (ms: number) => Promise<void>;
 }
 
 /** A settle that cannot finish: the swap went somewhere it cannot come back from, or time ran out. */
@@ -244,6 +256,8 @@ export interface SelfCustodyAccount {
   consolidate(tokenId?: string): Promise<number>;
   /** `GET /tokens/balance/{partyId}/{instrumentId}` */
   balance(instrumentId: string): Promise<{ balance: string; holdingsCount?: number }>;
+  /** Test CC from the dev stand's faucet (`POST /faucet/request`), with the faucet terms signed by this key. */
+  faucet(): Promise<FaucetClaim>;
   /** Partner cashback (role `partner-bot`). */
   readonly cashback: {
     summary(): Promise<CashbackSummary>;
@@ -265,6 +279,14 @@ const DEFAULT_DELIVERY_WAIT_MS = 5 * 60_000;
 const INCOMING_POLL_FACTOR = 3;
 /** Merge passes before one retry of a swap the API refused as too fragmented (one pass merges ~40 holdings). */
 const HEAL_MERGE_PASSES = 3;
+/**
+ * The shortest HTLC timeout `make` picks on its own. The counter leg gets half of
+ * what is left of the main leg when the taker accepts (backend `requireCounterTimeout`),
+ * and one side of a self-custody swap took ~70 s end to end on dev (2026-10-02: take
+ * 72.6 s, make 68.6 s). The 1-minute option left the counter leg 30–50 s and ended
+ * `counter_refunded` 3 runs out of 3; 15 minutes leaves it ~7 minutes.
+ */
+const MIN_DEFAULT_TIMEOUT_HOURS = 0.25;
 
 /** Still waiting on the taker: the maker's swap exists, nobody has accepted it. */
 const BEFORE_TAKER: ReadonlySet<HtlcStatus> = new Set(['init_request_created', 'proposal_created']);
@@ -372,9 +394,10 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       }
       return wanted;
     }
-    const shortest = Math.min(...timeoutHours);
-    if (!Number.isFinite(shortest)) throw new SettleError('the stand offers no HTLC timeout for this order', null);
-    return shortest;
+    if (timeoutHours.length === 0) throw new SettleError('the stand offers no HTLC timeout for this order', null);
+    const safe = timeoutHours.filter((h) => h >= MIN_DEFAULT_TIMEOUT_HOURS);
+    // Only short ones on offer: the longest of them gives the counter leg the best chance.
+    return safe.length > 0 ? Math.min(...safe) : Math.max(...timeoutHours);
   }
 
   /** The maker's swap: Flow B step 1 signed here, steps 2–3 finished by the venue inside the submit. */
@@ -575,7 +598,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   async function onboard(): Promise<AccountUser> {
     let user = await me();
     if (!user.partyId) {
-      await run('wallet.topology', { publicKey: signer.public_key }, false);
+      await run('wallet.topology', { publicKey: session.publicKey }, false);
       user = await me();
       if (!user.partyId) throw new Error('the party topology was submitted but the account has no party yet');
     }
@@ -593,12 +616,25 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     await http.post('/legal/consent', { version, documents, issuedAt, signature });
   }
 
-  async function balance(instrumentId: string) {
+  async function ownParty(): Promise<string> {
     const { partyId } = await me();
     if (!partyId) throw new Error('the account has no party yet — run onboard()');
+    return partyId;
+  }
+
+  async function balance(instrumentId: string) {
     return http.get<{ balance: string; holdingsCount?: number }>(
-      `/tokens/balance/${encodeURIComponent(partyId)}/${encodeURIComponent(instrumentId)}`,
+      `/tokens/balance/${encodeURIComponent(await ownParty())}/${encodeURIComponent(instrumentId)}`,
     );
+  }
+
+  async function faucet(): Promise<FaucetClaim> {
+    const agreementTimestamp = now();
+    // The text the app signs. The faucet keeps it as the record of the terms accepted;
+    // what it authorizes by is the party in the JWT.
+    const message = `CANCORE_FAUCET_TERMS_OF_SERVICE_V1:${await ownParty()}:${agreementTimestamp}`;
+    const agreementSignature = await signer.signMessage(utf8ToBinaryString(message));
+    return http.post<FaucetClaim>('/faucet/request', { agreementSignature, agreementTimestamp });
   }
 
   const cashbackClaims = () => http.get<CashbackClaim[]>('/partner/cashback/claims');
@@ -648,6 +684,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       run('tokens.send', { receiverPartyId, amount, ...(tokenId ? { tokenId } : {}), ...(description ? { description } : {}) }, false).then((r) => r.result),
     consolidate,
     balance,
+    faucet,
     cashback: {
       summary: () => http.get<CashbackSummary>('/partner/cashback/me'),
       claims: cashbackClaims,

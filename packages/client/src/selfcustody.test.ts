@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519';
-import { providerFromMnemonic } from '@cancore/wallet';
+import { deriveWalletKey, providerFromMnemonic } from '@cancore/wallet';
 import type { FetchLike } from './http';
 import {
   CeremonyError,
@@ -13,7 +13,7 @@ import {
   type IncomingTransfer,
   type SelfCustodyOptions,
 } from './selfcustody';
-import { createSession, expiresWithin } from './session';
+import { createSession, expiresWithin, type KeySigner } from './session';
 
 /**
  * A fake venue that settles one Canton↔Canton swap the way the API does: every
@@ -336,7 +336,7 @@ test('two self-custody accounts from one phrase register, onboard and settle a C
   expect(create).toMatchObject({
     tokenId: 'CBTC',
     amount: grossAmount('0.01', '0.005'),
-    timeoutHours: 1, // the shortest the stand offers for this order
+    timeoutHours: 1, // of the [4, 1, 2] offered, the shortest that is at least 15 minutes
     receiver: 'party-taker',
     orderId: 'o1',
   });
@@ -914,4 +914,93 @@ test('acceptIncoming skips what expired and what the filter drops, and one refus
   expect(failed.map((f) => f.transfer.contractId)).toEqual(['refused']);
   expect(failed[0]!.error).toBeInstanceOf(CeremonyError);
   expect(prepared).toEqual(['refused', 'fine']);
+});
+
+describe('the HTLC timeout make asks for', () => {
+  // What dev offered for an order on 2026-10-02 (`GET /htlc/timeout-options`).
+  const DEV = [0.01667, 0.0833, 0.1667, 0.25, 0.5, 1, 3, 6, 24];
+
+  test.each<[string, number[], number | undefined, number]>([
+    ['by default, the shortest that leaves the counter leg time to settle', DEV, undefined, 0.25],
+    ['by default, with only short ones offered, the longest of them', [0.01667, 0.0833, 0.1667], undefined, 0.1667],
+    ['asked for explicitly, exactly that one — even one the default would not pick', DEV, 0.01667, 0.01667],
+  ])('%s', async (_name, offered, timeoutHours, expected) => {
+    const asked: unknown[] = [];
+    const api = stub({
+      'GET /orders/o1': () => takenOrder(),
+      'GET /htlc/timeout-options': () => ({ timeoutHours: offered }),
+      'GET /htlc/fee-config': () => ({ feeRate: '0' }),
+      'POST /wallet/operations/prepare': (body) => {
+        asked.push((body.params as Record<string, unknown>).timeoutHours);
+        return refuse(400, 'the test stops at the prepare');
+      },
+    });
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast });
+    await expect(acct.make('o1', { timeoutHours })).rejects.toBeInstanceOf(CeremonyError);
+    expect(asked).toEqual([expected]);
+  });
+});
+
+describe('signing in right after sign-up', () => {
+  /** A gateway whose challenge answers the first `falseNotFounds` requests with the false "no account" 404. */
+  function gateway(falseNotFounds: number) {
+    const seen: string[] = [];
+    const pauses: number[] = [];
+    let left = falseNotFounds;
+    const fetchImpl: FetchLike = async (url) => {
+      const path = new URL(url).pathname;
+      seen.push(path);
+      if (path === '/auth/challenge') {
+        return left-- > 0
+          ? refuse(404, 'No Cancore account is linked to this wallet. Sign up to create one first.', 'ACCOUNT_NOT_FOUND')
+          : json({ challenge: 'Welcome to Cancore 2026-10-02 sig:1' });
+      }
+      if (path === '/auth/login-signature') return json({ token: jwt('u1'), user: { id: 'u1' } });
+      if (path === '/auth/me') return json({ id: 'u1', partyId: 'p::1220' });
+      return refuse(404, `no route ${path}`);
+    };
+    return { fetchImpl, seen, pauses, sleep: async (ms: number) => void pauses.push(ms) };
+  }
+
+  test('a false 404 ACCOUNT_NOT_FOUND from the challenge is asked again, and the first request goes through', async () => {
+    const g = gateway(1);
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: g.fetchImpl, sleep: g.sleep });
+    await expect(acct.me()).resolves.toMatchObject({ id: 'u1' });
+    expect(g.seen).toEqual(['/auth/challenge', '/auth/challenge', '/auth/login-signature', '/auth/me']);
+    expect(g.pauses).toEqual([1_000]);
+  });
+
+  test('three in a row is an account that does not exist: the 404 surfaces', async () => {
+    const g = gateway(3);
+    const session = createSession({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: g.fetchImpl, sleep: g.sleep });
+    await expect(session.login()).rejects.toMatchObject({ status: 404, errorCode: 'ACCOUNT_NOT_FOUND' });
+    expect(g.seen).toEqual(['/auth/challenge', '/auth/challenge', '/auth/challenge']);
+    expect(g.pauses).toEqual([1_000, 2_000]);
+  });
+});
+
+test('a signer without public_key is refused up front, naming the field it needs', () => {
+  // The raw key material calls it publicKeyHex; the signer the session takes calls it public_key.
+  const { publicKeyHex } = deriveWalletKey(PHRASE);
+  const wrong = { publicKeyHex, signMessage: async () => '00' } as unknown as KeySigner;
+  expect(() => createSelfCustody({ baseUrl, signer: wrong })).toThrow(/signer\.public_key.*publicKeyHex/s);
+});
+
+test('faucet signs the faucet terms for this account’s party and asks for test CC', async () => {
+  const signer = await providerFromMnemonic(PHRASE);
+  let posted: Record<string, unknown> | undefined;
+  const claim = { success: true, amountCc: 1000, recipientParty: 'p::1220', txId: 'tx', nextEligibleAt: '2026-10-04T10:00:00Z', remainingPoolCc: 199000 };
+  const api = stub({
+    'GET /auth/me': () => ({ id: 'u1', partyId: 'p::1220' }),
+    'POST /faucet/request': (body) => {
+      posted = body;
+      return claim;
+    },
+  });
+  const at = Date.parse('2026-10-02T10:00:00.000Z');
+  const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, now: () => at });
+  await expect(acct.faucet()).resolves.toEqual(claim);
+  expect(posted).toEqual({ agreementSignature: expect.any(String), agreementTimestamp: at });
+  const message = `CANCORE_FAUCET_TERMS_OF_SERVICE_V1:p::1220:${at}`;
+  expect(ed25519.verify(hex(String(posted!.agreementSignature)), new TextEncoder().encode(message), hex(signer.public_key))).toBe(true);
 });
