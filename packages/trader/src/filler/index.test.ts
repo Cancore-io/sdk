@@ -7,6 +7,8 @@ import {
   type EscrowVerification,
   type Filler,
   type FillerConfig,
+  type FillerQuoteRequest,
+  type FillerReconfirm,
   type FillerStatsSnapshot,
   type FillSigner,
   type SelfSettleResult,
@@ -165,8 +167,10 @@ describe('the skeleton of sdk.md §3.6', () => {
   test('types', () => {
     type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
     const assert = <T extends true>(): T => true as T;
-    assert<Equal<Parameters<Filler['onQuoteRequest']>[0], (request: QuoteRequest) => Promise<{ amountOut: bigint | string; validUntil: bigint | string } | null>>>();
-    assert<Equal<Parameters<Filler['onReconfirm']>[0], (reconfirm: QuoteReconfirm) => Promise<boolean>>>();
+    assert<Equal<Parameters<Filler['onQuoteRequest']>[0], (request: FillerQuoteRequest) => Promise<{ amountOut: bigint | string; validUntil: bigint | string } | null>>>();
+    assert<Equal<Parameters<Filler['onReconfirm']>[0], (reconfirm: FillerReconfirm) => Promise<boolean>>>();
+    assert<Equal<Omit<FillerQuoteRequest, 'payout' | 'fee'>, QuoteRequest>>();
+    assert<Equal<Omit<FillerReconfirm, 'payout' | 'fee'>, QuoteReconfirm>>();
     assert<Equal<Parameters<Filler['onTicketOffer']>[0], (offer: TicketOffer) => Promise<'accept' | 'decline'>>>();
     assert<Equal<ReturnType<Filler['start']>, Promise<void>>>();
     assert<Equal<ReturnType<Filler['selfSettle']>, Promise<SelfSettleResult>>>();
