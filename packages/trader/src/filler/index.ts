@@ -36,6 +36,9 @@ export {
 export { gatewayMessageDigest, verifyGatewayText } from './protocol/frames';
 export type { FrameCheck, FrameExpectations, FrameRejection, GatewayFrame, VerifiedFrame } from './protocol/frames';
 export type { ReconnectPolicy } from './protocol/session';
+
+export { cantonFillerPayout, evmFillerPayout } from './quotes';
+export type { FillerQuoteRequest, FillerReconfirm, QuoteSkipReason, ReconfirmDeclineReason } from './quotes';
 export type { SignatureViolation } from './errors';
 
 export { evmChainNumber, isEvmChainId } from './chains';

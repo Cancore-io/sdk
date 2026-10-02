@@ -55,8 +55,8 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 
 | Member | Returns | Does | Task |
 |---|---|---|---|
-| `onQuoteRequest(hook)` | `void` | price for a `quote.request`: `{ amountOut, validUntil }` or `null` | CAN-1852 |
-| `onReconfirm(hook)` | `void` | stand behind the quote for an opened order: `boolean` | CAN-1852 |
+| `onQuoteRequest(hook)` | `void` | price for a `quote.request` (with `payout` and `fee` added): `{ amountOut, validUntil }` or `null` | CAN-1852 |
+| `onReconfirm(hook)` | `void` | stand behind `order.minReceived` for an opened order (with `payout` and `fee` added): `boolean` | CAN-1852 |
 | `onTicketOffer(hook)` | `void` | take the ticket: `'accept'` or `'decline'` | CAN-1861 |
 | `start()` | `Promise<void>` | login by challenge, heartbeat, reconnect, REST fallback; reconcile from the store; then quote, take tickets, fill, settle. Needs all three hooks. Resolves at the first `auth.ok` | CAN-1847 |
 | `stop()` | `Promise<void>` | closes the session; in-flight work stays in the store for any replica | CAN-1847 |
@@ -100,6 +100,34 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 - **Errors.** An `error` frame or REST error body becomes a `GatewayError` (`code`, `known`, `re`,
   `httpStatus`). A code this SDK does not know keeps `known: false` and is handled as generic (V-2). Unknown
   frame types and unknown fields are ignored.
+
+## Quotes
+
+`quote.request` → `onQuoteRequest(request)` → a `FillerQuote` signed by the quote key (protocol §3.5 «Quotes»).
+
+- **Payout.** `request.payout` is what the source pays for `inputAmount` (the total `T`), fee taken;
+  `request.fee = T − payout` (§3.11). EVM source: `⌊T × 10 000 / (10 000 + feeBps)⌋` (`T = 105`,
+  `feeBps = 500` → 100), exported as `evmFillerPayout`. Canton source (T-12): the ledger formula,
+  `roundHalfEven(T × 10 000 / (10 000 + feeBps))` in 10⁻¹⁰ units (`1000.0` at `feeRate 0.003` →
+  `997.0089730808`, one unit above the EVM formula), exported as `cantonFillerPayout`. `quote.reconfirm`
+  uses the same split by the order's origin.
+- **Filler address.** `FillerQuote.filler` is the fill key of the destination chain; for a Canton destination,
+  the fill key of the source chain.
+- **Not sent** (stage event `quote.skipped` with the reason): at or after `windowCloseAt` — checked before
+  the hook, after it and after signing; `validUntil × 1000 < windowCloseAt + quoteTtlMs` (equality is fine);
+  `inputAmount` below the source router's `minInput` (T-16, once RouterReader supplies it); the hook returned
+  `null`, threw, or returned a zero or out-of-range amount; the kill-switch is on; the session is down (a quote
+  has no REST route); a byte-identical redelivery of a request already handled.
+- **Nonce.** `store.quotes.nextNonce(requestId, quoteKey)`: strictly increasing per request across replicas
+  and restarts, so a later quote in the window replaces the earlier one.
+- **Firm price.** Each sent quote is stored before it goes out and stays there as the firm price until its
+  `validUntil` (T-4); its `quote.ack` is attached when it arrives.
+- **Reconfirm.** `quote.reconfirm` is accepted only at `order.minReceived` — a frame whose `amountOut`
+  differs is declined without asking the hook (T-20) — and only before `replyBy`. An accepted reply signs
+  `FillerQuote{requestId, filler, minReceived, validUntil, nonce}` with a fresh nonce and
+  `validUntil = ⌈replyBy / 1000⌉ + ticketTtl + 30 s`. Declines carry no signature.
+- **Reconciliation.** After every login the SDK reads `GET /v1/filler/quotes?since=` (last 15 minutes),
+  attaches every verified ack the store missed and logs quotes filler-gateway holds that the store does not.
 
 ## Injected interfaces
 

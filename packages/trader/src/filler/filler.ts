@@ -5,11 +5,18 @@
  * registration, and the methods with their final signatures. The protocol
  * behind each method lands in its own task, named in its `NotImplementedError`.
  */
-import type { DecString, Hex, QuoteReconfirm, QuoteRequest, StakeBindingRequest, TicketIssued, TicketOffer } from '@cancore/contracts';
+import type { DecString, Hex, StakeBindingRequest, TicketIssued, TicketOffer } from '@cancore/contracts';
 import { isEvmChainId, type EvmChainId } from './chains';
 import { FillerConfigError, NotImplementedError } from './errors';
 import { FillerProtocolClient, DEFAULT_REST_POLL_INTERVAL_MS } from './protocol/client';
 import { GatewayRest } from './protocol/rest';
+import {
+  DEFAULT_RECONCILE_LOOKBACK_MS,
+  DEFAULT_RECONFIRM_MARGIN_S,
+  QuoteDesk,
+  type FillerQuoteRequest,
+  type FillerReconfirm,
+} from './quotes';
 import {
   DEFAULT_HEARTBEAT_MISSES,
   DEFAULT_LOGIN_TIMEOUT_MS,
@@ -96,11 +103,17 @@ export interface QuoteDecision {
   validUntil: bigint | DecString;
 }
 
-/** `null` skips the request. */
-export type QuoteRequestHook = (request: QuoteRequest) => Promise<QuoteDecision | null>;
+/**
+ * Prices a `quote.request`. `request.payout` is what the source router pays
+ * for `inputAmount`, fee already taken (protocol §3.11). `null` skips it.
+ */
+export type QuoteRequestHook = (request: FillerQuoteRequest) => Promise<QuoteDecision | null>;
 
-/** Whether the filler still stands behind its quote for the opened order. */
-export type ReconfirmHook = (reconfirm: QuoteReconfirm) => Promise<boolean>;
+/**
+ * Whether the filler stands behind `order.minReceived` for the opened order
+ * (T-20; the price does not change). `reconfirm.payout` is the order's payout.
+ */
+export type ReconfirmHook = (reconfirm: FillerReconfirm) => Promise<boolean>;
 
 export type TicketOfferDecision = 'accept' | 'decline';
 export type TicketOfferHook = (offer: TicketOffer) => Promise<TicketOfferDecision>;
@@ -299,6 +312,8 @@ export interface FillerContext {
   readonly instanceId: string;
   /** The transport every protocol component sends and receives through. */
   readonly protocol: FillerProtocolClient;
+  /** Frame ids, unique across replicas. */
+  readonly nextId: () => string;
 }
 
 /**
@@ -355,12 +370,29 @@ export function createFiller(config: FillerConfig): Filler {
   });
   protocol.attach(session, rest);
 
-  const context: FillerContext = { config, clock, logger, events, fetch, instanceId, protocol };
+  const context: FillerContext = { config, clock, logger, events, fetch, instanceId, protocol, nextId };
 
   let quoteHook: QuoteRequestHook | undefined;
   let reconfirmHook: ReconfirmHook | undefined;
   let ticketHook: TicketOfferHook | undefined;
   let starting: Promise<void> | undefined;
+
+  new QuoteDesk({
+    quoteSigner: config.quoteSigner,
+    fillSigners: config.fillSigners,
+    store: config.store,
+    protocol,
+    clock,
+    logger,
+    events,
+    nextId,
+    onQuoteRequest: () => quoteHook,
+    onReconfirm: () => reconfirmHook,
+    // The source router's minInput comes with RouterReader (CAN-1846); until then no floor is known.
+    minInput: async () => undefined,
+    reconfirmMarginS: DEFAULT_RECONFIRM_MARGIN_S,
+    reconcileLookbackMs: DEFAULT_RECONCILE_LOOKBACK_MS,
+  }).register();
 
   const hook = <T>(name: string, value: T): T => {
     if (typeof value !== 'function') throw new FillerConfigError(name, 'expected a function');

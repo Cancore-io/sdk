@@ -22,7 +22,7 @@ import type { EventSink, FillerStage } from '../events';
 import type { Clock, Logger } from '../runtime';
 import type { EvidenceEntry, FillerStore } from '../store';
 import { gatewayErrorOf, type VerifiedFrame } from './frames';
-import type { GatewayRest, TicketAction } from './rest';
+import type { GatewayRest, QuoteListItem, TicketAction } from './rest';
 import type { GatewaySession, SessionListener } from './session';
 
 /** Which channel delivered a frame. */
@@ -53,6 +53,7 @@ const isAttempt = (value: unknown): value is number => typeof value === 'number'
 export class FillerProtocolClient implements SessionListener {
   private readonly handlers = new Map<string, FrameHandler>();
   private readonly errorListeners: Array<(error: GatewayError) => void> = [];
+  private readonly readyListeners: Array<() => void> = [];
   private session: GatewaySession | undefined;
   private rest: GatewayRest | undefined;
   private started: { resolve: () => void; reject: (error: Error) => void } | undefined;
@@ -77,6 +78,16 @@ export class FillerProtocolClient implements SessionListener {
   /** Called with every `error` filler-gateway sends after login (logged regardless). */
   onGatewayError(listener: (error: GatewayError) => void): void {
     this.errorListeners.push(listener);
+  }
+
+  /** Called after every login (`auth.ok`), the first one included. */
+  onLogin(listener: () => void): void {
+    this.readyListeners.push(listener);
+  }
+
+  /** `GET /v1/filler/quotes?since=`: the quotes filler-gateway holds for this filler, acks verified. */
+  listQuotes(sinceMs: number): Promise<QuoteListItem[]> {
+    return this.requireRest().listQuotes(sinceMs);
   }
 
   get connected(): boolean {
@@ -156,6 +167,7 @@ export class FillerProtocolClient implements SessionListener {
     this.settleStart();
     // Whatever was sent while no session was live.
     void this.syncTickets();
+    for (const listener of this.readyListeners) this.safely(listener);
   }
 
   onDisconnected(info: { code: number; reason: string }): void {
