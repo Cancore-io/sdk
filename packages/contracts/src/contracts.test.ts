@@ -98,8 +98,10 @@ test('the release identity names the contracts version and a build hash per cont
     expect(build.creationHexSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(build.runtimeHexSha256).toMatch(/^[0-9a-f]{64}$/);
     // The length of a 0x-prefixed hex text: even, and more than the prefix.
-    expect(build.runtimeHexLength % 2).toBe(0);
-    expect(build.runtimeHexLength).toBeGreaterThan(2);
+    for (const length of [build.creationHexLength, build.runtimeHexLength]) {
+      expect(length % 2).toBe(0);
+      expect(length).toBeGreaterThan(2);
+    }
   }
 });
 
