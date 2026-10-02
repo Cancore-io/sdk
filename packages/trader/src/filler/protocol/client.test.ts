@@ -539,10 +539,10 @@ describe('REST fallback (protocol §3.6)', () => {
     expect(h.client.send({ type: 'fill.reported', id: 'f', orderHash: ORDER_HASH, attempt: 1, txRef: '0x01' })).toBe(false);
   });
 
-  test('restOrigin maps ws to http for the local stand', () => {
+  test('restOrigin maps ws to http for the local stand', async () => {
     const h = harness();
     const rest = new GatewayRest({ gatewayUrl: 'ws://localhost:3010/v1', fillerId: FILLER, gatewaySigner: h.gateway.address, quoteSigner: h.quoteSigner, fetch: h.http.fetch, clock: h.clock, logger: h.logger, nextId: () => 'x' });
-    void rest.listTickets();
+    await expect(rest.listTickets('OFFERED')).resolves.toEqual([]);
     expect(h.http.requests[0]!.url).toBe('http://localhost:3010/v1/filler/auth/challenge');
   });
 });
