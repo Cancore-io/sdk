@@ -181,12 +181,15 @@ export class GatewayRest {
       primaryType: 'FillerAuth',
       message: { fillerId: this.options.fillerId, nonce, expiresAt },
     });
-    const response: AuthResponse = {
+    // `nonce` names the challenge being answered, so filler-gateway finds it
+    // without trying every live one (optional field, @cancore/contracts 0.2.0-rc.6).
+    const response: AuthResponse & { nonce: Hex } = {
       type: 'auth.response',
       id: this.options.nextId(),
       fillerId: this.options.fillerId,
       keyAddress: this.options.quoteSigner.address.toLowerCase() as Hex,
       protocolVersion: PROTOCOL_VERSION,
+      nonce: nonce.toLowerCase() as Hex,
       sig,
     };
     const authPath = '/v1/filler/auth';

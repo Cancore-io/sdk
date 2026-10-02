@@ -468,7 +468,7 @@ describe('REST fallback (protocol §3.6)', () => {
     expect(new URL(challenge!.url).pathname).toBe('/v1/filler/auth/challenge');
     expect(challenge!.url.startsWith('https://filler-gateway.example/')).toBe(true);
     const body = JSON.parse(auth!.body!) as Record<string, unknown>;
-    expect(body).toMatchObject({ type: 'auth.response', fillerId: FILLER, keyAddress: h.quoteSigner.address, protocolVersion: '1' });
+    expect(body).toMatchObject({ type: 'auth.response', fillerId: FILLER, keyAddress: h.quoteSigner.address, protocolVersion: '1', nonce: `0x${'1'.padStart(64, '0')}` });
     const signer = recoverTypedDataSigner(
       { domain: FILLER_PROTOCOL_DOMAIN, types: FILLER_AUTH_TYPES, primaryType: 'FillerAuth', message: { fillerId: FILLER, nonce: `0x${'1'.padStart(64, '0')}`, expiresAt: String(Math.floor(h.clock.now() / 1000) + 30) } },
       body.sig as Hex,

@@ -85,7 +85,8 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
   `[0.5, 1)`, defaults 500 ms → 30 s, reset after a login. No `auth.ok` within `transport.loginTimeoutMs`
   (15 s) counts as a failed connection.
 - **REST fallback** (§3.6) on the same host (`wss` → `https`). The SDK logs in by
-  `GET /v1/filler/auth/challenge` + `POST /v1/filler/auth` and keeps the bearer token until shortly before
+  `GET /v1/filler/auth/challenge` + `POST /v1/filler/auth` (the `auth.response` names the challenge in its
+  optional `nonce`) and keeps the bearer token until shortly before
   it expires (renewed once on a 401). While the session is down it polls `GET /v1/filler/tickets` every
   `transport.restPollIntervalMs` (2 s), and sends ticket intents, receipts and declines as
   `POST /v1/filler/tickets/{orderHash}/{attempt}/{intent|receipt|decline}`. After every login it pulls once
