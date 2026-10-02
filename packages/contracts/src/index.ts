@@ -13,7 +13,7 @@ export * from './networks';
 export * from './deployments';
 export * from './eip712';
 export * from './protocol';
-export { BYTECODE_HASHES, CONTRACTS_RELEASE } from './generated/meta';
+export { BUILD_HASHES, BYTECODE_HASHES, CONTRACTS_RELEASE } from './generated/meta';
 
 /** Decode a revert's 4-byte selector into the custom error it names, if it is one of ours. */
 export function describeRevert(selectorOrData: string, tables: ReadonlyArray<Readonly<Record<string, string>>>): string | undefined {

@@ -7,7 +7,7 @@
  * the backend of that period talks to; `htlcBlock` is where to start an event
  * scan, not before.
  *
- * `BYTECODE_HASHES` pins the build of each release: sha256 of the UTF-8 text of
+ * `BUILD_HASHES` pins the build of each release: sha256 of the UTF-8 text of
  * the artifact's 0x-prefixed hex, not keccak256 and not over `eth_getCode`, so it
  * identifies what was built rather than proving what an address runs
  * (immutables alone change runtime code).
