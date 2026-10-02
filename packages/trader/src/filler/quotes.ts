@@ -3,8 +3,9 @@
  * `quote.reconfirm` → `onReconfirm` → `quote.reconfirm.reply` (protocol §3.5
  * «Quotes», fillers.md T-16, T-18, T-20).
  *
- * The SDK prices nothing; it hands the hook the payout the source router will
- * pay for the request (fee included, §3.11), then holds the hook's answer to
+ * The SDK prices nothing; it hands the hook the payout the source will pay
+ * for the request (fee included, §3.11: the router formula on an EVM source,
+ * the ledger formula on a Canton source, T-12), then holds the hook's answer to
  * the wire rules before it signs:
  *
  * - not after `windowCloseAt` (checked before and after the hook, and after signing);
@@ -48,15 +49,37 @@ const BPS = 10_000n;
 const UINT64 = 1n << 64n;
 const UINT256 = 1n << 256n;
 
+function checkPayoutInput(fn: string, total: bigint, feeBps: number): void {
+  if (total < 0n) throw new RangeError(`${fn}: total must be non-negative`);
+  if (!Number.isSafeInteger(feeBps) || feeBps < 0 || feeBps > 0xffff) throw new RangeError(`${fn}: feeBps must be a uint16`);
+}
+
 /**
  * What an EVM source router pays the filler for a deposited total `T`
  * (protocol §3.11, `CancoreRouter.sol:664-665`): `⌊T × 10 000 / (10 000 + feeBps)⌋`.
  * Rounding dust goes to the fee. `T = 105`, `feeBps = 500` → 100.
  */
 export function evmFillerPayout(total: bigint, feeBps: number): bigint {
-  if (total < 0n) throw new RangeError('evmFillerPayout: total must be non-negative');
-  if (!Number.isSafeInteger(feeBps) || feeBps < 0 || feeBps > 0xffff) throw new RangeError('evmFillerPayout: feeBps must be a uint16');
+  checkPayoutInput('evmFillerPayout', total, feeBps);
   return (total * BPS) / (BPS + BigInt(feeBps));
+}
+
+/**
+ * What a Canton-source `SwapIntent_Settle` pays the filler (protocol §3.11,
+ * T-12; `SwapIntent.daml:207-208`, `:598-601`). The ledger computes
+ * `amount − (amount − amount / (1.0 + feeRate))` in Daml `Numeric 10`, where
+ * only the division rounds — to nearest, ties to even. In the EVM-form units
+ * of §3.7 (`T = amount × 10¹⁰`, `feeBps = feeRate × 10 000`) that is
+ * `roundHalfEven(T × 10 000 / (10 000 + feeBps))`. It equals the EVM formula
+ * or exceeds it by one unit. `T = 1000.0`, `feeRate 0.003` → `997.0089730808`.
+ */
+export function cantonFillerPayout(total: bigint, feeBps: number): bigint {
+  checkPayoutInput('cantonFillerPayout', total, feeBps);
+  const divisor = BPS + BigInt(feeBps);
+  const numerator = total * BPS;
+  const quotient = numerator / divisor;
+  const twiceRemainder = 2n * (numerator % divisor);
+  return twiceRemainder > divisor || (twiceRemainder === divisor && quotient % 2n === 1n) ? quotient + 1n : quotient;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,7 +88,7 @@ export function evmFillerPayout(total: bigint, feeBps: number): bigint {
 
 /** A `quote.request` with the payout it implies. */
 export interface FillerQuoteRequest extends QuoteRequest {
-  /** What the source router pays the filler for `inputAmount`, source input base units (§3.11). */
+  /** What the source pays the filler for `inputAmount`, source input base units (§3.11; Canton source: T-12). */
   payout: bigint;
   /** `inputAmount − payout`. */
   fee: bigint;
@@ -73,7 +96,7 @@ export interface FillerQuoteRequest extends QuoteRequest {
 
 /** A `quote.reconfirm` with the payout of its opened order. */
 export interface FillerReconfirm extends QuoteReconfirm {
-  /** What the source router pays the filler for `order.inputAmount`, source input base units. */
+  /** What the source pays the filler for `order.inputAmount`, source input base units (§3.11; Canton source: T-12). */
   payout: bigint;
   /** `order.inputAmount − payout`. */
   fee: bigint;
@@ -90,8 +113,6 @@ export type QuoteSkipReason =
   | 'paused'
   /** Malformed request: `requestId`, amounts, `feeBps`, times. */
   | 'malformed'
-  /** Canton source: its payout formula is not implemented in the SDK yet. */
-  | 'canton-source'
   /** No fill key for the chain whose address the quote must name. */
   | 'no-fill-key'
   /** `inputAmount` below the source router's `minInput` (T-16). */
@@ -110,7 +131,7 @@ export type QuoteSkipReason =
   | 'disconnected';
 
 /** The decline reasons of a `quote.reconfirm`. */
-export type ReconfirmDeclineReason = 'paused' | 'malformed' | 'canton-source' | 'no-fill-key' | 'price-changed' | 'declined' | 'hook-failed';
+export type ReconfirmDeclineReason = 'paused' | 'malformed' | 'no-fill-key' | 'price-changed' | 'declined' | 'hook-failed';
 
 // ---------------------------------------------------------------------------
 // The desk
@@ -198,7 +219,7 @@ export class QuoteDesk {
 
     const parsed = this.parseRequest(request);
     if (typeof parsed === 'string') return skip(parsed === 'malformed' ? 'malformed' : parsed);
-    const { total, windowCloseAt, quoteTtlMs, filler } = parsed;
+    const { total, windowCloseAt, quoteTtlMs, filler, payoutOf } = parsed;
 
     if (this.options.clock.now() >= windowCloseAt) return skip('late');
     if ((await this.options.store.getOverrides()).paused) return skip('paused');
@@ -208,7 +229,7 @@ export class QuoteDesk {
 
     const hook = this.options.onQuoteRequest();
     if (!hook) return skip('hook-failed');
-    const payout = evmFillerPayout(total, request.feeBps);
+    const payout = payoutOf(total, request.feeBps);
     let decision: QuoteDecisionInput | null;
     try {
       decision = await hook({ ...request, payout, fee: total - payout });
@@ -287,7 +308,8 @@ export class QuoteDesk {
       return decline('malformed');
     }
     if (amountOut !== minReceived) return decline('price-changed');
-    if (origin >= CANTON_ORIGIN_FLOOR) return decline('canton-source');
+    // T-12: a Canton source pays by the ledger formula, never the EVM one.
+    const payoutOf = origin >= CANTON_ORIGIN_FLOOR ? cantonFillerPayout : evmFillerPayout;
     const filler = this.fillerForOrder(origin, order.destination);
     if (!filler) return decline('no-fill-key');
     if ((await this.options.store.getOverrides()).paused) return decline('paused');
@@ -296,7 +318,7 @@ export class QuoteDesk {
     if (!hook) return decline('hook-failed');
     let accept: boolean;
     try {
-      const payout = evmFillerPayout(total, feeBps);
+      const payout = payoutOf(total, feeBps);
       accept = (await hook({ ...reconfirm, payout, fee: total - payout })) === true;
     } catch (error) {
       this.options.logger.error('quotes: onReconfirm threw', { orderHash, error: String(error) });
@@ -356,7 +378,9 @@ export class QuoteDesk {
 
   // -------------------------------------------------------------------------
 
-  private parseRequest(request: QuoteRequest): { total: bigint; windowCloseAt: number; quoteTtlMs: number; filler: Hex } | QuoteSkipReason {
+  private parseRequest(
+    request: QuoteRequest,
+  ): { total: bigint; windowCloseAt: number; quoteTtlMs: number; filler: Hex; payoutOf: (total: bigint, feeBps: number) => bigint } | QuoteSkipReason {
     try {
       requestIdHash(request.requestId);
     } catch {
@@ -368,13 +392,16 @@ export class QuoteDesk {
     const route = request.route as { src?: unknown; dst?: unknown } | undefined;
     if (total === undefined || windowCloseAt === undefined || quoteTtlMs === undefined || typeof route?.src !== 'string' || typeof route.dst !== 'string') return 'malformed';
     if (!Number.isSafeInteger(request.feeBps) || request.feeBps < 0 || request.feeBps > 0xffff) return 'malformed';
-    if (!isEvmChainId(route.src)) return route.src.startsWith('canton:') ? 'canton-source' : 'malformed';
+    const cantonSource = route.src.startsWith('canton:');
+    if (!cantonSource && !isEvmChainId(route.src)) return 'malformed';
     // The filler address the ticket would name (§3.2): the fill key of an EVM
-    // destination; for a Canton destination, the address registered on the source router.
-    const chain = isEvmChainId(route.dst) ? route.dst : route.src;
-    const signer = this.options.fillSigners[chain];
+    // destination; for a Canton destination, the address registered on the (EVM) source router.
+    const chain = isEvmChainId(route.dst) ? route.dst : isEvmChainId(route.src) ? route.src : undefined;
+    const signer = chain ? this.options.fillSigners[chain] : undefined;
     if (!signer) return 'no-fill-key';
-    return { total, windowCloseAt, quoteTtlMs, filler: signer.address.toLowerCase() as Hex };
+    // T-12: a Canton source pays by the ledger formula, never the EVM one.
+    const payoutOf = cantonSource ? cantonFillerPayout : evmFillerPayout;
+    return { total, windowCloseAt, quoteTtlMs, filler: signer.address.toLowerCase() as Hex, payoutOf };
   }
 
   /** The filler address for an opened EVM-source order: by `destination` (`bytes32(chainId)` for EVM, §3.7). */

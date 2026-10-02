@@ -11,7 +11,7 @@ import {
 import { createFiller } from './filler';
 import type { Delivery, FillerProtocolClient } from './protocol/client';
 import type { QuoteListItem } from './protocol/rest';
-import { evmFillerPayout, QuoteDesk, type FillerQuoteRequest, type FillerReconfirm, type QuoteDeskOptions, type QuoteDecisionInput } from './quotes';
+import { cantonFillerPayout, evmFillerPayout, QuoteDesk, type FillerQuoteRequest, type FillerReconfirm, type QuoteDeskOptions, type QuoteDecisionInput } from './quotes';
 import { recoverTypedDataSigner, type FillSigner } from './signer';
 import {
   createFakeFetch,
@@ -61,6 +61,47 @@ describe('evmFillerPayout (protocol §3.11)', () => {
   test('refuses a negative total and a feeBps outside uint16', () => {
     expect(() => evmFillerPayout(-1n, 0)).toThrow(RangeError);
     expect(() => evmFillerPayout(1n, 70_000)).toThrow(RangeError);
+  });
+});
+
+describe('cantonFillerPayout (protocol §3.11, T-12: SwapIntent.daml, Numeric 10, half to even)', () => {
+  const units = (decimal: string): bigint => {
+    const [whole, frac = ''] = decimal.split('.');
+    return BigInt(whole!) * 10n ** 10n + BigInt(frac.padEnd(10, '0'));
+  };
+
+  test.each([
+    ['1000.0', 30, '997.0089730808', '2.9910269192'],
+    ['100.8000000063', 80, '100.0000000062', '0.8000000001'],
+    ['100.8000000189', 80, '100.0000000188', '0.8000000001'],
+    ['0.0000000002', 1000, '0.0000000002', '0.0'],
+  ])('amount %s, feeBps %d → payout %s, fee %s (daml test vectors)', (amount, feeBps, payout, fee) => {
+    const total = units(amount);
+    expect(cantonFillerPayout(total, feeBps)).toBe(units(payout));
+    expect(total - cantonFillerPayout(total, feeBps)).toBe(units(fee));
+  });
+
+  test('the first vector is one unit above the EVM formula', () => {
+    expect(evmFillerPayout(units('1000.0'), 30)).toBe(units('997.0089730807'));
+  });
+
+  test('for any T: the EVM payout or one unit above it, the fee never below ⌊T·feeBps/(10 000 + feeBps)⌋, and never a zero payout for T > 0', () => {
+    let seed = 0x1b873593;
+    const next = () => (seed = (seed * 1_103_515_245 + 12_345) & 0x7fffffff);
+    for (let i = 0; i < 2_000; i++) {
+      const total = (BigInt(next()) << 31n) ^ BigInt(next());
+      const feeBps = next() % 1_001;
+      const payout = cantonFillerPayout(total, feeBps);
+      const evm = evmFillerPayout(total, feeBps);
+      expect(payout === evm || payout === evm + 1n).toBe(true);
+      expect(total - payout).toBeGreaterThanOrEqual((total * BigInt(feeBps)) / (10_000n + BigInt(feeBps)));
+      if (total > 0n) expect(payout).toBeGreaterThan(0n);
+    }
+  });
+
+  test('refuses a negative total and a feeBps outside uint16', () => {
+    expect(() => cantonFillerPayout(-1n, 0)).toThrow(RangeError);
+    expect(() => cantonFillerPayout(1n, -1)).toThrow(RangeError);
   });
 });
 
@@ -166,6 +207,13 @@ describe('quote.request → onQuoteRequest → FillerQuote', () => {
     expect(h.events.events).toContainEqual(expect.objectContaining({ stage: 'quote.sent', requestId: 'rq-1' }));
   });
 
+  test('a Canton source is priced on the ledger formula (T-12): 1000.0 at feeRate 0.003 → 997.0089730808', async () => {
+    const h = desk();
+    await h.desk.onRequest(delivery(request(h.clock, { requestId: 'rq-cs', route: { src: 'canton:devnet', dst: 'eip155:1' }, inputAmount: '10000000000000', feeBps: 30 })));
+    expect(h.seenRequests[0]).toMatchObject({ payout: 9_970_089_730_808n, fee: 29_910_269_192n });
+    expect(h.protocol.sent[0]).toMatchObject({ type: 'quote', requestId: 'rq-cs', filler: h.fill1.address });
+  });
+
   test('the filler address is the fill key of the destination; for a Canton destination, of the source', async () => {
     const h = desk();
     await h.desk.onRequest(delivery(request(h.clock, { requestId: 'rq-c', route: { src: 'eip155:56', dst: 'canton:devnet' } })));
@@ -175,7 +223,9 @@ describe('quote.request → onQuoteRequest → FillerQuote', () => {
   test.each([
     ['after windowCloseAt', (c: FakeClock) => ({ windowCloseAt: c.now() - 1 }), 'late'],
     ['at windowCloseAt', (c: FakeClock) => ({ windowCloseAt: c.now() }), 'late'],
-    ['a Canton source (formula not in the SDK yet)', () => ({ route: { src: 'canton:devnet', dst: 'eip155:1' } }), 'canton-source'],
+    ['Canton to Canton (no EVM fill key names the filler)', () => ({ route: { src: 'canton:devnet', dst: 'canton:devnet' } }), 'no-fill-key'],
+    ['a source that is neither eip155 nor canton', () => ({ route: { src: 'solana:mainnet', dst: 'eip155:1' } }), 'malformed'],
+    ['a fractional feeBps (feeRate not a multiple of 0.0001)', () => ({ feeBps: 12.5 }), 'malformed'],
     ['no fill key for the destination', () => ({ route: { src: 'eip155:56', dst: 'eip155:10' } }), 'no-fill-key'],
     ['a malformed requestId', () => ({ requestId: 'has space' }), 'malformed'],
     ['inputAmount not a decimal string', () => ({ inputAmount: 105 }), 'malformed'],
@@ -347,10 +397,12 @@ describe('quote.reconfirm → onReconfirm → quote.reconfirm.reply (T-20)', () 
     expect([...h.protocol.sent, ...slow.protocol.sent]).toHaveLength(0);
   });
 
-  test('a Canton-source order and a redelivery', async () => {
+  test('a Canton-source order is reconfirmed on the ledger formula (T-12); a redelivery is ignored', async () => {
     const h = desk();
-    await h.desk.onReconfirm(delivery(reconfirm(h.clock, { order: order({ originChainId: '9223372036854775811' }) })));
-    expect(h.protocol.sent[0]).toMatchObject({ accept: false });
+    const canton = order({ originChainId: '9223372036854775811', inputAmount: '1008000000063', feeBps: '80' });
+    await h.desk.onReconfirm(delivery(reconfirm(h.clock, { order: canton })));
+    expect(h.seenReconfirms[0]).toMatchObject({ payout: 1_000_000_000_062n, fee: 8_000_000_001n });
+    expect(h.protocol.sent[0]).toMatchObject({ accept: true });
     await expect(h.desk.onReconfirm(delivery(reconfirm(h.clock), false))).resolves.toEqual({ skipped: 'redelivered' });
   });
 

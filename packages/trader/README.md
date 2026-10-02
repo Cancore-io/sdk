@@ -105,10 +105,12 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 
 `quote.request` → `onQuoteRequest(request)` → a `FillerQuote` signed by the quote key (protocol §3.5 «Quotes»).
 
-- **Payout.** `request.payout` is what the source router pays for `inputAmount` (the total `T`), fee taken:
-  `⌊T × 10 000 / (10 000 + feeBps)⌋` on an EVM source (§3.11; `T = 105`, `feeBps = 500` → 100);
-  `request.fee = T − payout`. Exported as `evmFillerPayout`. A Canton-source request is not quoted yet: its
-  ledger formula is not in the SDK.
+- **Payout.** `request.payout` is what the source pays for `inputAmount` (the total `T`), fee taken;
+  `request.fee = T − payout` (§3.11). EVM source: `⌊T × 10 000 / (10 000 + feeBps)⌋` (`T = 105`,
+  `feeBps = 500` → 100), exported as `evmFillerPayout`. Canton source (T-12): the ledger formula,
+  `roundHalfEven(T × 10 000 / (10 000 + feeBps))` in 10⁻¹⁰ units (`1000.0` at `feeRate 0.003` →
+  `997.0089730808`, one unit above the EVM formula), exported as `cantonFillerPayout`. `quote.reconfirm`
+  uses the same split by the order's origin.
 - **Filler address.** `FillerQuote.filler` is the fill key of the destination chain; for a Canton destination,
   the fill key of the source chain.
 - **Not sent** (stage event `quote.skipped` with the reason): at or after `windowCloseAt` — checked before
