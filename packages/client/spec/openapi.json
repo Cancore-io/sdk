@@ -624,6 +624,35 @@
         ],
         "type": "object"
       },
+      "AdminFeeDebtTxConflictDto": {
+        "properties": {
+          "accounts": {
+            "description": "Every account owing fee debt on the transaction",
+            "items": {
+              "$ref": "#/components/schemas/AdminFeeDebtAccountDto"
+            },
+            "type": "array"
+          },
+          "error": {
+            "example": "Conflict",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "statusCode": {
+            "example": 409,
+            "type": "number"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "accounts"
+        ],
+        "type": "object"
+      },
       "AdminFreezeDto": {
         "properties": {
           "flag": {
@@ -15477,6 +15506,16 @@
             }
           },
           {
+            "description": "Only rows tied to one transaction (CAN-2043): a Canton updateId (the paying or the source transaction), a TI contract id, the tr_… transfer id, or a swap/order id. Without an account selector the journal is searched across accounts and `account` is the one the rows belong to",
+            "in": "query",
+            "name": "txRef",
+            "required": false,
+            "schema": {
+              "pattern": "^[A-Za-z0-9_:.-]{1,255}$",
+              "type": "string"
+            }
+          },
+          {
             "in": "query",
             "name": "kind",
             "required": false,
@@ -15522,10 +15561,20 @@
             "description": ""
           },
           "400": {
-            "description": "No account selector, or a malformed userId"
+            "description": "Neither an account selector nor txRef, a malformed userId, or a malformed txRef"
           },
           "404": {
             "description": "Email matches no user, or several"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminFeeDebtTxConflictDto"
+                }
+              }
+            },
+            "description": "txRef without a selector matches the fee debt of several accounts; they are listed in the body"
           }
         },
         "security": [
