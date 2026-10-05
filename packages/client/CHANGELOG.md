@@ -61,15 +61,19 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
   `feeHoldingRequired`).
 - `splitForFee(tokenId, feeAmount)` (`./selfcustody`): gives the platform fee a holding of its
   own by sending `feeAmount` to the account itself, after checking the balance covers it plus the
-  send's network fee (an estimate that is not a decimal, or exceeds the fee, is refused). When the
-  API returns the send's transaction bytes they are verified before signing (`verified: true`);
-  until then the send is signed without local verification. CC only: the API refuses a
-  registry-token (CBTC, USDCx) send to oneself, so those are a `SettleError`.
+  send's cost (network fee and any fee debt the API collects, within `maxSplitCost`). The send's
+  transactions are verified from their bytes before signing (`verified: true`); without bytes the
+  split is refused unless `{ allowUnverified: true }`, and a partly readable send never signs. CC
+  only: the API refuses a registry-token (CBTC, USDCx) send to oneself, so those are a
+  `SettleError`.
 - `SettleOptions.autoSplitForFee` (default `false`): `take` heals `DVP_FEE_HOLDING_REQUIRED`
   naming this account as the payer — it splits the fee off once and takes once more, after
   holding the named fee to the order × `maxFeeRate` and checking the change still covers the
   trade leg. A failed split, or a second refusal, is a `SettleError`; a refusal naming another
-  payer splits nothing.
+  payer splits nothing. `SettleOptions.allowUnverifiedSplit` (default `false`) lets it split blind.
+- `SelfCustodyOptions.maxSplitCost` (default `'2'` CC), `SelfCustodyOptions.networkFeeRecipients`
+  and `DEFAULT_NETWORK_FEE_RECIPIENTS`: the ceiling on a split's cost and the pinned parties its
+  network-fee leg may pay.
 
 ### Migrating from 0.6.x
 

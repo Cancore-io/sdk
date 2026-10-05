@@ -24,11 +24,11 @@
 import { signLegs, type OperationLeg } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
-import { DEFAULT_INSTRUMENT_ADMINS, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
+import { DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
 import { DEFAULT_TRUSTED_PACKAGES, units, verifyDvpPrepared, verifySelfSendPrepared, type DvpOperation, type DvpTerms, type Instrument, type TrustedPackages } from './dvp-verify';
 
 export { DEFAULT_TRUSTED_PACKAGES, type TrustedPackages } from './dvp-verify';
-export { API_NETWORKS, DEFAULT_INSTRUMENT_ADMINS, type DvpNetwork } from './dvp-admins';
+export { API_NETWORKS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, type DvpNetwork } from './dvp-admins';
 import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
@@ -234,10 +234,14 @@ export interface SettleOptions {
    * `take` only: when the venue refuses the take because this account has no holding for the
    * platform fee separate from the one funding the trade (`DVP_FEE_HOLDING_REQUIRED`), split one
    * off (`splitForFee`, CC only) and take once more. The fee amount the venue names must be within
-   * the order's target amount × `maxFeeRate`. Default false: the API does not return the send's
-   * transaction bytes yet, so the split is signed without local verification until it does.
+   * the order's target amount × `maxFeeRate`. Default false.
    */
   autoSplitForFee?: boolean;
+  /**
+   * With `autoSplitForFee`: also split when the API does not return the send's transaction bytes,
+   * signing it without local verification. Default false — the split is refused instead.
+   */
+  allowUnverifiedSplit?: boolean;
 }
 
 export interface SelfCustodyOptions extends SessionOptions {
@@ -281,6 +285,17 @@ export interface SelfCustodyOptions extends SessionOptions {
    * token the SDK does not list for the network yet is refused until its admin is added here.
    */
   instrumentAdmins?: Record<string, string[]>;
+  /**
+   * More parties a fee split's network-fee leg may pay on this account's network. Added to
+   * `DEFAULT_NETWORK_FEE_RECIPIENTS`; a verified split paying anyone else is refused.
+   */
+  networkFeeRecipients?: string[];
+  /**
+   * The most a fee split may cost this account in CC beyond the fee holding itself: the network
+   * fee, any fee debt the API collects on the same leg, and the holding fee on what it spends.
+   * A split whose quote is above it is refused before anything is signed. Default `'2'`.
+   */
+  maxSplitCost?: string;
 }
 
 /** This SDK's default ceiling on the platform fee rate (1.5%): a policy of the SDK, not of the platform. */
@@ -371,12 +386,13 @@ export interface SelfCustodyAccount {
   /**
    * Give the platform fee a holding of its own: a DvP taker must fund the fee from a holding
    * separate from its trade leg. Always self-sends `feeAmount` (the change stays a second holding),
-   * once the balance is seen to cover it plus the send's own network fee. When the API returns the
-   * send's transaction bytes they are verified before signing (`verified: true`); until it does,
-   * the send is signed without local verification, as `send` is. CC only: the API refuses a
+   * once the balance covers it plus the send's cost, and that cost is within `maxSplitCost`. The
+   * send's transactions are verified from their bytes before signing (`verified: true`); an API
+   * that returns no bytes is refused unless `allowUnverified` is set, and then the send is signed
+   * without local verification (`verified: false`), as `send` is. CC only: the API refuses a
    * registry-token send to oneself.
    */
-  splitForFee(tokenId: string, feeAmount: string): Promise<{ verified: boolean }>;
+  splitForFee(tokenId: string, feeAmount: string, options?: { allowUnverified?: boolean }): Promise<{ verified: boolean }>;
   /** Merge small holdings into few, one signed batch per call. Returns how many merged; 0 means compact. */
   consolidate(tokenId?: string): Promise<number>;
   /** `GET /tokens/balance/{partyId}/{instrumentId}` */
@@ -411,12 +427,15 @@ const MIN_DEFAULT_TIMEOUT_HOURS = 0.25;
 /** An envelope leg, with the transaction its hash is of when the API returns it. */
 type PreparedLeg = OperationLeg & { preparedTransaction?: string };
 
+/** This SDK's default ceiling on what a fee split may cost, in CC beyond the fee holding itself. */
+const DEFAULT_MAX_SPLIT_COST = '2';
+
 /**
- * What a split may cost beyond the network fee the API quotes: Amulet's holding fee, accrued on
- * the holdings the send spends. ponytail: a flat 1 CC (about a year of holding fee on one
- * amulet); derive it from the spent amulets' age if it ever refuses an honest split.
+ * What a split may cost beyond the quoted network fee and fee debt: Amulet's holding fee, accrued
+ * on the holdings the send spends — 1% of the split, at most 1 CC. ponytail: a flat share; derive
+ * it from the spent amulets' age if it ever refuses an honest split.
  */
-const SPLIT_COST_SLACK = '1';
+const splitSlack = (fee: bigint) => (fee / 100n < units('1') ? fee / 100n : units('1'));
 
 /** `PreparedCommandDto`, the fields a self-custody signer reads. */
 interface PreparedCommand {
@@ -588,7 +607,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * `splitForFee`. `need` is what the change must still cover after the split (the trade leg the
    * fee is carved from), when the caller knows it.
    */
-  async function splitFee(tokenId: string, feeAmount: string, need?: bigint): Promise<{ verified: boolean }> {
+  async function splitFee(tokenId: string, feeAmount: string, need?: bigint, allowUnverified = false): Promise<{ verified: boolean }> {
     if (!isCc(tokenId)) {
       throw new SettleError(
         `${tokenId}: the API refuses a ${tokenId} send to oneself, so this account cannot split its own ${tokenId} for the platform fee; ` +
@@ -598,33 +617,53 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
     const fee = units(feeAmount);
     if (fee <= 0n) throw new RangeError(`splitForFee takes a positive decimal of at most ten places, got ${feeAmount}`);
-    const held = await balance(tokenId);
-    const { networkFee = 0 } = await http.get<{ networkFee?: number }>('/tokens/transfer/estimate-fee', { instrumentId: tokenId, amount: feeAmount });
-    const networkUnits = units(decimal(networkFee));
     const cannot = (why: string) => new SettleError(`cannot split ${feeAmount} ${tokenId} for the platform fee: ${why}`, null);
+    const ceiling = units(options.maxSplitCost ?? DEFAULT_MAX_SPLIT_COST);
+    if (ceiling < 0n) throw new RangeError(`maxSplitCost must be a decimal of at most ten places, got ${options.maxSplitCost}`);
+    const [held, quote, debt] = await Promise.all([
+      balance(tokenId),
+      http.get<{ networkFee?: number }>('/tokens/transfer/estimate-fee', { instrumentId: tokenId, amount: feeAmount }),
+      // The API collects the account's fee debt on the same fee leg (CAN-538): it is part of the cost.
+      http.get<{ outstandingCc?: string }>('/tokens/fee-debt'),
+    ]);
+    const networkFee = quote.networkFee ?? 0;
+    const [networkUnits, debtUnits] = [units(decimal(networkFee)), units(debt.outstandingCc ?? '0')];
     if (networkUnits < 0n) throw cannot(`the API's network fee estimate ${networkFee} is not a decimal`);
-    // A split that costs more than the fee it sets apart is a bad estimate, not a price worth paying.
-    if (networkUnits > fee) throw cannot(`the API's network fee estimate ${networkFee} is more than the fee itself`);
-    const left = units(decimal(held.balance)) - fee - networkUnits;
+    if (debtUnits < 0n) throw cannot(`the API's fee debt ${debt.outstandingCc} is not a decimal`);
+    if (networkUnits + debtUnits > ceiling) {
+      throw cannot(debtUnits > 0n
+        ? `this account owes ${debt.outstandingCc} CC of fee debt, which the API collects on the split's fee leg; with the network fee ` +
+            `${networkFee} that is above maxSplitCost ${fromUnits(ceiling)} — settle the fee debt first (an ordinary send collects it), or raise maxSplitCost`
+        : `the API's network fee estimate ${networkFee} is above maxSplitCost ${fromUnits(ceiling)}`);
+    }
+    const cost = networkUnits + debtUnits;
+    const left = units(decimal(held.balance)) - fee - cost;
     // Strictly more than nothing: a self-send of the whole balance leaves one holding, not two.
     if (left <= 0n || (need !== undefined && left < need)) {
       throw cannot(`insufficient balance — ${held.balance} does not cover the fee, the send's network fee ${networkFee}` +
-        `${need !== undefined ? ' and the trade leg' : ''}`);
+        `${debtUnits > 0n ? ` and fee debt ${debt.outstandingCc}` : ''}${need !== undefined ? ' and the trade leg' : ''}`);
     }
     const party = await ownParty();
     let verified = false;
     // Omitted means CC, whichever alias the order names it by.
-    await run<{ fee?: { recipientPartyId?: string } | null }>('tokens.send', { receiverPartyId: party, amount: feeAmount }, false, async (legs, meta) => {
-      if (!legs.every((l) => l.preparedTransaction)) return; // ponytail: blind until the API returns the bytes (backend CAN-2132)
+    await run('tokens.send', { receiverPartyId: party, amount: feeAmount }, false, async (legs) => {
+      const read = legs.filter((l) => l.preparedTransaction).length;
+      if (read === 0 && allowUnverified) return;
+      if (read !== legs.length) {
+        throw new Error(read === 0
+          ? 'the API returned the send without its transaction bytes, so it cannot be verified (allowUnverified signs it anyway)'
+          : `the API returned bytes for ${read} of the send's ${legs.length} legs; a partly readable send is never signed`);
+      }
       const dso = admins[instrumentKey('Amulet')] ?? [];
+      const recipients = [...(network ? DEFAULT_NETWORK_FEE_RECIPIENTS[network] : []), ...(options.networkFeeRecipients ?? [])];
       if (dso.length === 0) throw new Error(`no pinned CC admin for ${network ?? 'this network'} to verify the send against: pass instrumentAdmins`);
       await verifySelfSendPrepared(legs.map((l) => ({ kind: l.kind, preparedTransactionHash: l.hash, preparedTransaction: l.preparedTransaction })), {
         party,
         admins: dso,
         instrument: 'Amulet',
         amount: feeAmount,
-        maxCost: fromUnits(networkUnits + units(SPLIT_COST_SLACK)),
-        feeRecipient: meta?.fee?.recipientPartyId ?? null,
+        maxCost: fromUnits(cost + splitSlack(fee)),
+        feeRecipients: recipients,
       });
       verified = true;
     });
@@ -895,8 +934,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * Take the order. Refused for want of a fee holding of this account's own, it splits one off
    * and takes once more — once: a second refusal ends the take.
    */
-  async function acceptOrder(order: Order, self: string | undefined, autoSplit: boolean): Promise<Order> {
+  async function acceptOrder(order: Order, self: string | undefined, opts: SettleOptions): Promise<Order> {
     const what = `taking order ${order.id}`;
+    const autoSplit = opts.autoSplitForFee ?? false;
     let split: string | null = null;
     for (;;) {
       try {
@@ -915,7 +955,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
           throw new SettleError(`${what}: the venue asks for a fee holding of ${split}, more than ${order.targetAmount} × this account's ceiling ${ceiling} (maxFeeRate); nothing was split`, null, order);
         }
         try {
-          await splitFee(order.targetTokenAddress, split, target - fee);
+          await splitFee(order.targetTokenAddress, split, target - fee, opts.allowUnverifiedSplit ?? false);
         } catch (cause) {
           throw new SettleError(`${what}: the platform fee needs a holding of its own, and splitting ${split} off failed: ${(cause as Error).message}`, null, order);
         }
@@ -928,7 +968,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     let order = await swap.get(orderId);
     assertCantonOrder(order);
     const self = await me();
-    if (order.status === 'open') order = await acceptOrder(order, self.partyId ?? undefined, opts.autoSplitForFee ?? false);
+    if (order.status === 'open') order = await acceptOrder(order, self.partyId ?? undefined, opts);
     if (order.opponentUserId && order.opponentUserId !== self.id) {
       throw new SettleError(`order ${orderId} was taken by another account`, null, order);
     }
@@ -1055,7 +1095,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     acceptIncoming,
     send: ({ receiverPartyId, amount, tokenId, description }) =>
       run('tokens.send', { receiverPartyId, amount, ...(tokenId ? { tokenId } : {}), ...(description ? { description } : {}) }, false).then((r) => r.result),
-    splitForFee: (tokenId, feeAmount) => splitFee(tokenId, feeAmount),
+    splitForFee: (tokenId, feeAmount, splitOptions) => splitFee(tokenId, feeAmount, undefined, splitOptions?.allowUnverified ?? false),
     consolidate,
     balance,
     faucet,

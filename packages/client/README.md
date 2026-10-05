@@ -272,7 +272,7 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `swap.create(input)` / `swap.createForPair(input)` | `POST /orders` / `POST /orders/pair`; a Canton↔Canton order is always sent with `dvp: true` (for a pair, read from `GET /trading-pairs/{id}`) |
 | `incoming()` / `accept(transfer)` / `acceptIncoming(filter?)` | transfers waiting for this account's signature |
 | `send(input)` / `consolidate(tokenId?)` / `balance(instrumentId)` | move, merge and read this account's tokens |
-| `splitForFee(tokenId, feeAmount)` | give the DvP platform fee a holding of its own (a self-send; CC only; signed unverified until the API returns the send's bytes) |
+| `splitForFee(tokenId, feeAmount, { allowUnverified? })` | give the DvP platform fee a holding of its own (a self-send, verified from its bytes; CC only) |
 | `faucet()` | test CC from the dev stand's faucet, see [Test funds on dev](#test-funds-on-dev) |
 | `cashback.summary()` / `claims()` / `claim()` / `collect(options?)` | partner cashback (role `partner-bot`) |
 | `execute(type, params?)` | any operation of `GET /wallet/operations`: prepare, sign every leg, submit |
@@ -319,12 +319,18 @@ refusal is a `SettleError` that says why, before anything is signed:
   again. With `{ autoSplitForFee: true }` `take` does it itself and takes once more — once; a
   second refusal or a failed split is a `SettleError`. It first holds the fee the venue names to
   the order (at most the target amount × `maxFeeRate`) and checks the change still covers the
-  trade leg; nothing is sent otherwise. **The split's send is signed without local verification
-  until the API returns its transaction bytes** (backend change pending, CAN-2132); once it does,
-  the send is verified like a DvP step (only the account's own holdings spent, a holding of
-  exactly the fee created for it, nothing for anyone else but the network fee's recipient, the
-  cost bounded by the quoted network fee) and `splitForFee` resolves `{ verified: true }`. The
-  split is CC only: the API refuses a registry-token send to oneself, so a CBTC or USDCx taker
+  trade leg; nothing is sent otherwise. The split's send is read before it is signed, like a DvP
+  step: its hash recomputed from its bytes, only the account's own holdings spent, a holding of
+  exactly the fee created for it, nothing for anyone but the network fee's recipient (pinned per
+  network, `DEFAULT_NETWORK_FEE_RECIPIENTS`; add with `networkFeeRecipients`), and the whole cost
+  — the quoted network fee, any fee debt the API collects on the same leg, and a holding-fee
+  margin of 1% of the fee (at most 1 CC) — within `maxSplitCost` (default 2 CC). An account with
+  more fee debt than that is told to settle it first. **An API that does not return the send's
+  bytes** (until backend CAN-2132 is deployed) **gets the split refused**: pass
+  `{ allowUnverified: true }` to `splitForFee`, or `allowUnverifiedSplit: true` with
+  `autoSplitForFee`, to sign it without local verification (`verified: false`); a send with bytes
+  for some legs only is never signed. On testnet neither the CC admin nor the fee recipient is
+  pinned: pass `instrumentAdmins` and `networkFeeRecipients`. The split is CC only: the API refuses a registry-token send to oneself, so a CBTC or USDCx taker
   gets a separate holding by receiving that token in a second transfer. Against an older gateway
   that refuses only when the maker records the trade, `make` names the taker's party and the
   fee; the taker runs `splitForFee(tokenId, feeAmount)` and the maker runs `make()` again.
@@ -352,8 +358,8 @@ swapId } }`, a check of every prepared transaction the API returns, the account'
 over each one's hash (the same signer as every other ceremony), and
 `POST /canton-wallet/htlc/submit-signed`. The account names the swap and nothing else.
 
-**Every DvP step is read before it is signed.** (The fee split's send is the exception until the
-API returns its bytes — see above.) The signature covers the hash of a prepared transaction, so
+**Every DvP step is read before it is signed.** (So is the fee split's send, unless the caller
+allows it blind — see above.) The signature covers the hash of a prepared transaction, so
 before the key is used the account takes the transaction's bytes (`preparedTransactions[]`),
 recomputes the hash from them with Canton's hashing scheme v2 (`@canton-network/core-tx-visualizer`)
 and refuses on any difference. It then walks the whole decoded tree, not just its command:
@@ -459,7 +465,7 @@ retries are the ones the API says are safe. Every decision is taken on the refus
 | `SUBMISSION_TIMEOUT_RETRYABLE` | resubmits the same signatures (up to twice) — never prepares again; Canton deduplicates on the command id |
 | `PREPARED_SUBMISSION_EXPIRED` | prepares and signs again, once — only where that is safe (the DvP steps of `make` / `take`) |
 | `DVP_NOT_ALLOWED` | a `SettleError` wherever it comes (placing, taking, recording the trade): DvP is not open to this account on this stand |
-| `DVP_FEE_HOLDING_REQUIRED` | a `SettleError` saying who must split its balance: at `take`, this account (`splitForFee`, then `take()` again); at `make`, the taker (then `make()` again). With `autoSplitForFee: true`, `take` splits the fee off itself (CC, the send signed unverified until the API returns its bytes) and takes once more |
+| `DVP_FEE_HOLDING_REQUIRED` | a `SettleError` saying who must split its balance: at `take`, this account (`splitForFee`, then `take()` again); at `make`, the taker (then `make()` again). With `autoSplitForFee: true`, `take` splits the fee off itself (CC, the send verified from its bytes, or blind with `allowUnverifiedSplit`) and takes once more |
 | `ACCOUNT_NOT_FOUND` (at sign-in) | asks for a new challenge up to twice more, 1 s then 2 s apart. The gateway answers an existing key with this 404 when its challenge is slow (a known gateway issue), most often right after sign-up; three in a row surfaces it |
 | anything else | surfaces it |
 
