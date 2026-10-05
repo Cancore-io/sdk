@@ -324,7 +324,7 @@ export function withdrawTree(input: {
   /** The sender the exercise acts as, when not the leg's own. */
   actor?: string;
   /** What a hostile preparation changes: the choice, whether it consumes, who gets the holding back and how much, and whether it is locked again. */
-  tamper?: { choice?: string; consuming?: boolean; returnTo?: string; returnAmount?: string; relock?: boolean; noReturn?: boolean; extraArg?: boolean };
+  tamper?: { choice?: string; consuming?: boolean; returnTo?: string; returnAmount?: string; relock?: boolean; noReturn?: boolean; extraArg?: boolean; otherTemplate?: boolean };
 }) {
   const { leg } = input;
   const built = allocationTree({ ...input, balance: leg.amount });
@@ -340,7 +340,7 @@ export function withdrawTree(input: {
       lfVersion: '2.1',
       contractId: allocation.contractId,
       packageName: allocation.packageName,
-      templateId: allocation.templateId,
+      templateId: t.otherTemplate ? { ...allocation.templateId!, entityName: 'Other' } : allocation.templateId,
       interfaceId: { packageId: '3e'.repeat(32), moduleName: 'Splice.Api.Token.AllocationV1', entityName: 'Allocation' },
       signatories: allocation.signatories,
       stakeholders: allocation.stakeholders,

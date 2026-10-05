@@ -270,7 +270,7 @@ describe('withdrawing an allocation of a trade that ended unsettled (BUG-1291)',
     await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-main', { actor: TAKER }, TAKER)], terms(TAKER)), /not this account’s/);
   });
   test('a leg that is not part of the trade', async () => {
-    const leg = { sender: TAKER, receiver: THIEF, amount: '1', instrumentId: CC };
+    const leg = { sender: TAKER, receiver: TAKER, amount: '1', instrumentId: CC };
     const { nodes, inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId: 'leg-x', leg });
     await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await prepared(TAKER, nodes, inputs)], terms(TAKER)), /not part of this trade/);
   });
@@ -293,10 +293,9 @@ describe('withdrawing an allocation of a trade that ended unsettled (BUG-1291)',
   test('an argument beyond the registry context', async () => {
     await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { extraArg: true } })], terms(TAKER)), /more than its registry context/);
   });
-  test('a child that archives another allocation, or a holding of someone else', async () => {
-    const entity = { packageId: 'ab'.repeat(32), moduleName: 'Utility.Registry.V0.Holding.Allocation', entityName: 'DvpLegAllocation' };
-    const otherAllocation = { ...holding('77'.repeat(34), TAKER, CC, '0'), templateId: entity, signatories: [CC.admin, TAKER],
-      argument: { sum: { oneofKind: 'record' as const, record: { fields: [] } } } };
+  test('a child that archives another allocation (by its structure, whatever it is called), or a holding of someone else', async () => {
+    const { inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId: 'leg-counter', leg: LEGS['leg-counter']! });
+    const otherAllocation = { ...inputs[0]!, contractId: '77'.repeat(34), templateId: { ...inputs[0]!.templateId!, entityName: 'Renamed' } };
     await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', {
       extra: (id) => ({ nodes: [spend(id(0), otherAllocation, TAKER)], inputs: [otherAllocation] }),
     })], terms(TAKER)), /neither this allocation nor this account's holding/);
@@ -304,6 +303,29 @@ describe('withdrawing an allocation of a trade that ended unsettled (BUG-1291)',
     await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', {
       extra: (id) => ({ nodes: [spend(id(0), theirs, THIEF)], inputs: [theirs] }),
     })], terms(TAKER)), /involves thief|owned by thief/);
+  });
+  test('an unrelated holding of this account spent alongside the withdraw', async () => {
+    const own = holding('88'.repeat(34), TAKER, CC, '5');
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', {
+      extra: (id) => ({ nodes: [spend(id(0), own, TAKER)], inputs: [own] }),
+    })], terms(TAKER)), /does not lock/);
+  });
+  test('a sliver returned of a larger lock: what comes back is exactly what was locked', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { returnAmount: '0.0000000001' } })], terms(TAKER)), /not what the allocation locked/);
+  });
+  test('a withdraw run on another template than the allocation it names', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { otherTemplate: true } })], terms(TAKER)), /another template/);
+  });
+  test('a withdraw does not depend on the stand’s current fee policy: any rate, any fee receiver, none', async () => {
+    for (const over of [{ feeRate: '0.5' }, { feeParty: 'new-fee::1220' }, { feeParty: null, feeRate: '0' }]) {
+      await ok(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-fee')], terms(TAKER, over)));
+      await ok(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter')], terms(TAKER, over)));
+    }
+  });
+  test('a taker leg above the order’s amount is still refused', async () => {
+    const leg = { sender: TAKER, receiver: FEE, amount: '9000', instrumentId: CC };
+    const { nodes, inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId: 'leg-x', leg });
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await prepared(TAKER, nodes, inputs)], terms(TAKER)), /not within the order's/);
   });
   test('a child that creates a holding for a third party', async () => {
     const moved = holding('88'.repeat(34), THIEF, CC, '1');

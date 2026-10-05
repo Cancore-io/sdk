@@ -236,8 +236,10 @@ function checkWithdraw(root: ReturnType<typeof nodeType>, decoded: PreparedTrans
   const spec = (plain(allocation.argument) as { allocation?: { settlement?: { executor?: unknown; settlementRef?: { id?: unknown } }; transferLeg?: TransferLeg } })?.allocation;
   if (spec?.settlement?.executor !== terms.venue) return `the allocation hands settlement to ${String(spec?.settlement?.executor)}, not to the venue`;
   if (spec.settlement.settlementRef?.id !== terms.swapId) return 'the allocation is for another trade';
+  // Under Daml upgrades the command may run a newer version of the allocation's package: name, module and entity must match.
+  if (!sameTemplate(allocation, root.exercise)) return 'the withdrawal runs on another template than the allocation it names';
   const leg = spec.transferLeg;
-  const wrong = checkLeg(leg, terms);
+  const wrong = checkWithdrawnLeg(leg, terms);
   if (wrong) return wrong;
   if (leg!.sender !== terms.party) return 'the allocation is not this account’s';
   if (!allocation.signatories.includes(leg!.instrumentId.admin) || !allocation.signatories.includes(terms.party)) {
@@ -260,17 +262,52 @@ function checkWithdraw(root: ReturnType<typeof nodeType>, decoded: PreparedTrans
   }
   if (returned === 0n) return 'it returns no holding to this account';
   if (returned > units(leg!.amount)) return `it returns more than the leg's ${leg!.amount}`;
+  // What goes back is exactly what the allocation held: every holding of this account the tree consumes is a
+  // locked one, and together they are the amount returned, to the unit. An unrelated holding of the signer's
+  // spent, or a sliver returned of a larger lock, does not add up.
+  let released = 0n;
   for (const node of nodes.values()) {
     const type = nodeType(node)!;
     if (type.oneofKind !== 'exercise' || !type.exercise.consuming || type.exercise.contractId === root.exercise.contractId) continue;
     const target = inputs.get(type.exercise.contractId) ?? created.get(type.exercise.contractId);
     if (!target) return `it consumes contract ${type.exercise.contractId.slice(0, 16)}… without disclosing what it is`;
-    if (holdingOf(target)?.owner === terms.party) continue;
-    if (!target.signatories.includes(leg!.instrumentId.admin) || holdingOf(target) || /Allocation/.test(target.templateId?.entityName ?? '')) {
+    const holding = holdingOf(target);
+    if (holding?.owner === terms.party) {
+      if (!holding.locked) return 'it spends a holding of this account that the allocation does not lock';
+      released += holding.amount;
+      continue;
+    }
+    if (!target.signatories.includes(leg!.instrumentId.admin) || holding || looksLikeAllocation(target)) {
       return `it archives a ${target.templateId?.entityName ?? 'contract'} that is neither this allocation nor this account's holding`;
     }
   }
+  if (released !== returned) return 'what it returns is not what the allocation locked';
   return null;
+}
+
+/** An allocation by structure, not by name: a record carrying a settlement and a transfer leg. */
+function looksLikeAllocation(contract: Create): boolean {
+  const spec = fieldsOf(fieldsOf(contract.argument)?.get('allocation') ?? undefined);
+  return !!spec?.has('settlement') && !!spec.has('transferLeg');
+}
+
+/**
+ * A leg of the trade, as a withdraw sees it: by who it is from and to and in what, never by the stand's
+ * current fee policy. The maker's leg is exactly the order's source; the taker's legs (the trade leg and the
+ * fee) are the order's target, at most its amount. A fee that changed since the trade must not keep funds locked.
+ */
+function checkWithdrawnLeg(leg: TransferLeg | undefined, terms: DvpTerms): string | null {
+  if (!leg?.instrumentId) return 'a leg cannot be read';
+  const is = (i: Instrument) => leg.instrumentId.id === i.id && leg.instrumentId.admin === i.admin;
+  const amount = units(leg.amount);
+  if (amount < 0n) return `a leg amount (${String(leg.amount)}) cannot be read`;
+  if (leg.sender === terms.maker && leg.receiver === terms.taker) {
+    return is(terms.source) && amount === units(terms.source.amount) ? null : `the maker's leg is not the order's ${terms.source.amount} ${terms.source.id}`;
+  }
+  if (leg.sender === terms.taker && leg.receiver !== terms.taker) {
+    return is(terms.target) && amount <= units(terms.target.amount) ? null : `the taker's leg is not within the order's ${terms.target.amount} ${terms.target.id}`;
+  }
+  return `a leg from ${leg.sender} to ${leg.receiver} is not part of this trade`;
 }
 
 const sameInterface = (a: { moduleName: string; entityName: string } | undefined, b: { moduleName: string; entityName: string }) =>

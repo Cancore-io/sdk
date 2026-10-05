@@ -4958,6 +4958,11 @@
             "nullable": true,
             "type": "string"
           },
+          "orderId": {
+            "description": "The order this swap settles",
+            "nullable": true,
+            "type": "string"
+          },
           "preimage": {
             "description": "Preimage (only visible after claim)",
             "example": "secret",
@@ -8213,6 +8218,11 @@
           },
           "lockRef": {
             "description": "Lock reference: EVM tx hash or Canton update id",
+            "nullable": true,
+            "type": "string"
+          },
+          "legId": {
+            "description": "The id the DvP contract knows this leg by (DvP only)",
             "nullable": true,
             "type": "string"
           },

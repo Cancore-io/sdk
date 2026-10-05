@@ -238,7 +238,7 @@ export interface SettleOptions {
   deliveryWaitMs?: number;
   /**
    * When the trade expires with this account's allocation still locked, withdraw it (one signature per
-   * locked leg) before the `SettleError` is thrown. Default false: nothing is signed that was not asked for.
+   * locked leg) before the `SettleError` is thrown; that error is kept and carries `withdrawal`. Default false: nothing is signed that was not asked for.
    */
   autoWithdraw?: boolean;
 }
@@ -290,6 +290,17 @@ export interface SelfCustodyOptions extends SessionOptions {
 export const DEFAULT_MAX_FEE_RATE = '0.015';
 const DEFAULT_SETTLEMENT_WINDOW_MS = 3 * 60 * 60_000;
 
+/** What `withdrawAllocation` did, leg by leg: no leg's outcome hides another's. */
+export interface Withdrawal {
+  swapId: string;
+  /** Legs (by role) whose allocation this account's signature released. */
+  withdrawn: string[];
+  /** Legs already gone from the ledger when asked: nothing left to release. */
+  gone: string[];
+  /** Legs that could not be withdrawn, with why; the rest were still attempted. */
+  failed: Array<{ leg: string; error: unknown }>;
+}
+
 /** A settle that cannot finish: the swap went somewhere it cannot come back from, or time ran out. */
 export class SettleError extends Error {
   constructor(
@@ -298,6 +309,8 @@ export class SettleError extends Error {
     readonly last?: HtlcSwap | Order,
     /** The trade expired with this account's allocation still locked: `withdrawAllocation(swapId)` releases it. */
     readonly withdrawable = false,
+    /** What `autoWithdraw` did before this was thrown; absent when it was not asked for or not applicable. */
+    readonly withdrawal?: Withdrawal,
   ) {
     super(message);
     this.name = 'SettleError';
@@ -364,7 +377,7 @@ export interface SelfCustodyAccount {
    * leg, each checked to archive only this account's allocation and return its holding to it. Nothing
    * locked is `withdrawn: []`; a trade that is not expired is a `SettleError`.
    */
-  withdrawAllocation(swapId: string): Promise<{ swapId: string; withdrawn: string[] }>;
+  withdrawAllocation(swapId: string): Promise<Withdrawal>;
   /** Transfers waiting for this account's acceptance. */
   incoming(): Promise<IncomingTransfer[]>;
   /** Accept one incoming transfer with this account's signature. */
@@ -708,16 +721,18 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * configuration (rate, receiver and venue). Every prepared transaction is held
    * to it before the key signs.
    */
-  async function dvpTerms(order: Order, swapId: string | null, party: string, role: 'maker' | 'taker'): Promise<DvpTerms> {
+  async function dvpTerms(order: Order, swapId: string | null, party: string, role: 'maker' | 'taker', forWithdraw = false): Promise<DvpTerms> {
     const { source, target } = await dvpInstruments(order);
     const config = await http.get<{ feeRate?: string; feeRecipient?: string; venue?: string } | null>('/htlc/fee-config');
     const venue = options.venuePartyId ?? config?.venue;
-    const feeRate = config?.feeRate ?? '0';
+    // A withdraw returns this account's own funds and is held to the trade alone: the stand's CURRENT fee
+    // policy is not part of it, so a fee change after the trade can never keep the allocation locked.
+    const feeRate = forWithdraw ? '0' : (config?.feeRate ?? '0');
     const ceiling = options.maxFeeRate ?? DEFAULT_MAX_FEE_RATE;
-    if (!(units(feeRate) >= 0n && units(feeRate) <= units(ceiling))) {
+    if (!forWithdraw && !(units(feeRate) >= 0n && units(feeRate) <= units(ceiling))) {
       throw new SettleError(`the stand's platform fee rate ${feeRate} is above this account's ceiling ${ceiling} (maxFeeRate)`, swapId, order);
     }
-    if (options.feeRecipientPartyId !== undefined && config?.feeRecipient && config.feeRecipient !== options.feeRecipientPartyId) {
+    if (!forWithdraw && options.feeRecipientPartyId !== undefined && config?.feeRecipient && config.feeRecipient !== options.feeRecipientPartyId) {
       throw new SettleError(`the stand pays the platform fee to ${config.feeRecipient}, not to this account's feeRecipientPartyId`, swapId, order);
     }
     if (!venue) throw new SettleError('the venue party is unknown on this stand, so no allocation can be checked: pass venuePartyId', swapId);
@@ -731,7 +746,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       source: { ...source, amount: order.sourceAmount },
       target: { ...target, amount: order.targetAmount },
       venue,
-      feeParty: config?.feeRecipient ?? null,
+      feeParty: forWithdraw ? null : (config?.feeRecipient ?? null),
       feeRate,
       packages: { swap: mergeLists(DEFAULT_TRUSTED_PACKAGES.swap, options.trustedPackages?.swap) },
       now: now(),
@@ -868,12 +883,23 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       return await run();
     } catch (err) {
       if (!(err instanceof SettleError) || !err.withdrawable || !opts.autoWithdraw || !err.swapId) throw err;
-      const { withdrawn } = await withdrawAllocation(err.swapId);
+      let withdrawal: Withdrawal;
+      try {
+        withdrawal = await withdrawAllocation(err.swapId);
+      } catch (cause) {
+        // Not even the legs could be read: the trade's own error stays the one reported.
+        withdrawal = { swapId: err.swapId, withdrawn: [], gone: [], failed: [{ leg: 'all', error: cause }] };
+      }
+      const left = withdrawal.failed.length;
       throw new SettleError(
-        `swap ${err.swapId} is dvp_expired: the trade was not settled in time; this account's allocation(s) ` +
-          `(${withdrawn.join(', ')}) were withdrawn with its own signature (autoWithdraw)`,
+        `${err.message.split(', and this account')[0]}; autoWithdraw: ` +
+          (left === 0
+            ? `this account's allocation(s) (${[...withdrawal.withdrawn, ...withdrawal.gone].join(', ') || 'none locked'}) were released with its own signature`
+            : `${left} leg(s) could not be withdrawn (${withdrawal.failed.map((f) => `${f.leg}: ${f.error instanceof Error ? f.error.message : String(f.error)}`).join('; ')}); call withdrawAllocation('${err.swapId}') again`),
         err.swapId,
         err.last,
+        false,
+        withdrawal,
       );
     }
   }
@@ -881,7 +907,11 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   const make = (orderId: string, opts: SettleOptions = {}) => autoWithdrawing(opts, () => makeOnce(orderId, opts));
   const take = (orderId: string, opts: SettleOptions = {}) => autoWithdrawing(opts, () => takeOnce(orderId, opts));
 
-  async function withdrawAllocation(swapId: string): Promise<{ swapId: string; withdrawn: string[] }> {
+  /** The backend says so when a leg's allocation is already off the ledger (its own row not yet marked released). */
+  const alreadyGone = (err: unknown) =>
+    err instanceof CeremonyError && err.stage === 'prepare' && /nothing left to withdraw|no locked allocation/i.test(err.message);
+
+  async function withdrawAllocation(swapId: string): Promise<Withdrawal> {
     const info = await swapInfo(swapId);
     if (!isDvp(info.swap)) throw new SettleError(`swap ${swapId} is an HTLC swap (${info.swap.status}); only a DvP allocation is withdrawn here`, swapId, info.swap);
     // The venue settles or aborts a live trade; only a trade that ended unsettled leaves the owner to act.
@@ -890,19 +920,28 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
     const self = await me();
     const party = self.partyId ?? (await ownParty());
+    const result: Withdrawal = { swapId, withdrawn: [], gone: [], failed: [] };
     const locked = lockedLegs(info, party);
-    if (locked.length === 0) return { swapId, withdrawn: [] };
+    if (locked.length === 0) return result;
     if (!info.swap.orderId) throw new SettleError(`swap ${swapId} does not name its order, so the trade this account agreed to cannot be rebuilt`, swapId, info.swap);
     const order = await swap.get(info.swap.orderId);
     assertCantonOrder(order);
-    const terms = await dvpTerms(order, swapId, party, order.opponentUserId === self.id ? 'taker' : 'maker');
-    const withdrawn: string[] = [];
+    const terms = await dvpTerms(order, swapId, party, order.opponentUserId === self.id ? 'taker' : 'maker', true);
+    // One leg's refusal must not keep the next leg's funds locked: every leg is attempted and reported.
     for (const leg of locked) {
-      if (!leg.legId) throw new SettleError(`swap ${swapId}: a locked ${leg.role} leg does not name its id, so it cannot be withdrawn`, swapId, info.swap);
-      await signDvp('dvpWithdrawAllocation', swapId, terms, leg.legId);
-      withdrawn.push(leg.role);
+      if (!leg.legId) {
+        result.failed.push({ leg: leg.role, error: new Error('the leg does not name its id, so it cannot be withdrawn') });
+        continue;
+      }
+      try {
+        await signDvp('dvpWithdrawAllocation', swapId, terms, leg.legId);
+        result.withdrawn.push(leg.role);
+      } catch (error) {
+        if (alreadyGone(error)) result.gone.push(leg.role);
+        else result.failed.push({ leg: leg.role, error });
+      }
     }
-    return { swapId, withdrawn };
+    return result;
   }
 
   async function acceptIncoming(filter: (transfer: IncomingTransfer) => boolean = () => true) {

@@ -54,6 +54,10 @@ interface VenueOptions {
   tamperMakerAllocation?: 'hash' | 'amount' | 'receiver';
   /** The trade's window closes before anybody funds: the venue marks the swap dvp_expired. */
   expireAfterTrade?: boolean;
+  /** Legs (by id) whose allocation is off the ledger while the venue's row still says locked: prepare answers "nothing left to withdraw". */
+  archivedUnmarked?: string[];
+  /** Legs (by id) whose withdraw the venue cannot prepare right now. */
+  withdrawRefuses?: string[];
   /** The taker's first allocation submit finds its prepared stash already gone (success:false, as submit-signed answers). */
   staleAllocateOnce?: boolean;
   /** The taker's first allocation submit times out; the same signatures are safe to send again. */
@@ -83,6 +87,8 @@ function venue({
   refuseAt = {},
   feeConfig = { feeRate: '0.005', feeRecipient: FEE_PARTY, venue: VENUE, maxFeeRate: '0.01' },
   takerFundedThenExpired,
+  archivedUnmarked = [],
+  withdrawRefuses = [],
   tamperMakerAllocation,
   expireAfterTrade = false,
   staleAllocateOnce = false,
@@ -93,6 +99,7 @@ function venue({
 }: VenueOptions = {}) {
   const refusal = (status: number, prose: string, errorCode: string) =>
     coded ? refuse(status, 'refused', errorCode) : refuse(status, prose);
+  let currentFeeConfig = feeConfig;
   const accounts = new Map<string, Account>(); // by bearer token
   const byKey = new Map<string, Account>();
   /** Invite code → the public key that redeemed it (`invite_codes.used_by_public_key`), null while unused. */
@@ -251,7 +258,8 @@ function venue({
         if (swap.status !== 'dvp_expired') return refuse(400, `swap ${swapId} is ${String(swap.status)}: an allocation can only be withdrawn once the trade has ended without settling (dvp_expired)`);
         const named = legs.find((l) => l.legId === body.params.legId);
         if (!named || named.sender !== party) return refuse(400, `${party} is not the sender of leg ${String(body.params.legId)}`);
-        if (!named.lockRef || named.status === 'cancelled') return refuse(400, `leg ${named.legId} has nothing left to withdraw`);
+        if (!named.lockRef || named.status === 'cancelled' || archivedUnmarked.includes(named.legId)) return refuse(400, `leg ${named.legId} has nothing left to withdraw`);
+        if (withdrawRefuses.includes(named.legId)) return refuse(400, 'the registry cannot serve the withdraw context right now');
         owed = [named];
         break;
       }
@@ -435,7 +443,7 @@ function venue({
         ...(pairOff ? [] : [{ id: 'CBTC', symbol: 'CBTC', admin: ADMINS.CBTC }]),
       ]);
     }
-    if (route === 'GET /htlc/fee-config') return json(feeConfig);
+    if (route === 'GET /htlc/fee-config') return json(currentFeeConfig);
     if (route === 'POST /htlc/proposals') return propose(body);
     if (route === 'GET /htlc/swaps/s1/full') return full();
     if (route === 'POST /canton-wallet/htlc/prepare-command') return prepareDvp(caller, body);
@@ -451,7 +459,7 @@ function venue({
     order.swapId = 's1';
   }
 
-  return { fetchImpl, log, asked, proposals, routes, order, incoming, byKey, signUps, htlcOpenedEarlier, legs: () => legs };
+  return { fetchImpl, setFeeConfig: (next: Record<string, unknown>) => { currentFeeConfig = next; }, log, asked, proposals, routes, order, incoming, byKey, signUps, htlcOpenedEarlier, legs: () => legs };
 }
 
 // The dev API host: its network (devnet) chooses the pinned instrument admins.
@@ -829,7 +837,7 @@ describe('withdrawing an allocation the venue could not release (BUG-1291)', () 
     const { api, taker, error } = await strandedTaker([52, 53]);
     expect(error).toMatchObject({ swapId: 's1', withdrawable: true });
 
-    expect(await taker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: ['counter', 'fee'] });
+    expect(await taker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: ['counter', 'fee'], gone: [], failed: [] });
 
     // Each withdraw was its own prepare → verify → sign → submit, for exactly the leg it names.
     expect(api.log.filter((e) => e.type === 'dvp:dvpWithdrawAllocation').map((e) => [e.params.by, e.params.legIds])).toEqual([
@@ -838,7 +846,7 @@ describe('withdrawing an allocation the venue could not release (BUG-1291)', () 
     ]);
     expect(api.legs().filter((l) => l.sender === 'party-taker').map((l) => l.status)).toEqual(['cancelled', 'cancelled']);
     // Nothing is left locked, so a second call signs nothing.
-    expect(await taker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: [] });
+    expect(await taker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: [], gone: [], failed: [] });
     expect(api.log.filter((e) => e.type === 'dvp:dvpWithdrawAllocation')).toHaveLength(2);
   });
 
@@ -851,7 +859,7 @@ describe('withdrawing an allocation the venue could not release (BUG-1291)', () 
     await making;
 
     expect(error).toBeInstanceOf(SettleError);
-    expect(error).toMatchObject({ swapId: 's1', withdrawable: false, message: expect.stringMatching(/\(counter, fee\) were withdrawn with its own signature/) });
+    expect(error).toMatchObject({ swapId: 's1', withdrawable: false, message: expect.stringMatching(/dvp_expired.*autoWithdraw: this account's allocation\(s\) \(counter, fee\) were released with its own signature/), withdrawal: { withdrawn: ['counter', 'fee'], gone: [], failed: [] } });
     expect(api.log.filter((e) => e.type === 'dvp:dvpWithdrawAllocation')).toHaveLength(2);
   });
 
@@ -873,9 +881,50 @@ describe('withdrawing an allocation the venue could not release (BUG-1291)', () 
     expect(api.asked).not.toContain('dvpWithdrawAllocation');
   });
 
+  test('a leg already gone from the ledger is done, and the next leg is still released', async () => {
+    const api = venue({ takerFundedThenExpired: 'stillLocked', archivedUnmarked: ['leg-counter'] });
+    const { maker, taker } = await tradingPair(api, [62, 63]);
+    await taker.swap.accept('o1');
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    await taker.take('o1').catch((e: unknown) => e);
+    await making;
+
+    expect(await taker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: ['fee'], gone: ['counter'], failed: [] });
+  });
+
+  test('one leg that cannot be withdrawn is reported and does not keep the next one locked', async () => {
+    const api = venue({ takerFundedThenExpired: 'stillLocked', withdrawRefuses: ['leg-counter'] });
+    const { maker, taker } = await tradingPair(api, [64, 65]);
+    await taker.swap.accept('o1');
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    const error = await taker.take('o1', { autoWithdraw: true }).catch((e: unknown) => e);
+    await making;
+
+    // The trade's own SettleError is kept, with what the withdraw did attached.
+    expect(error).toBeInstanceOf(SettleError);
+    expect(error).toMatchObject({ swapId: 's1', last: { status: 'dvp_expired' } });
+    const { withdrawal } = error as SettleError;
+    expect(withdrawal?.withdrawn).toEqual(['fee']);
+    expect(withdrawal?.failed).toEqual([expect.objectContaining({ leg: 'counter', error: expect.any(CeremonyError) })]);
+    expect((error as Error).message).toMatch(/1 leg\(s\) could not be withdrawn \(counter:.*withdrawAllocation\('s1'\) again/);
+  });
+
+  test('the stand’s fee policy changing after the trade does not keep the allocation locked', async () => {
+    const api = venue({ takerFundedThenExpired: 'stillLocked' });
+    const { maker, taker } = await tradingPair(api, [66, 67]);
+    await taker.swap.accept('o1');
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    await taker.take('o1').catch((e: unknown) => e);
+    await making;
+    // A rate far above this account's ceiling, to another receiver: take() would refuse this stand now.
+    api.setFeeConfig({ feeRate: '0.5', feeRecipient: 'someone-else::1220', venue: VENUE, maxFeeRate: '0.9' });
+
+    expect(await taker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: ['counter', 'fee'], gone: [], failed: [] });
+  });
+
   test('the party that did not fund has nothing to withdraw', async () => {
     const { maker } = await strandedTaker([60, 61]);
-    expect(await maker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: [] });
+    expect(await maker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: [], gone: [], failed: [] });
   });
 });
 

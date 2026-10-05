@@ -13,9 +13,11 @@
 - `dvp-verify` holds a withdraw to its own expected tree before the key signs: exactly one consuming
   `Allocation_Withdraw` on an allocation of this trade, sent by this account, signed by the instrument
   admin and settled by the venue; only this account's allocation and holdings archived; the holding
-  returned to this account, unlocked and for no more than the leg locked; no party outside the trade.
+  returned to this account, unlocked and exactly the amount the allocation locked; no party outside the
+  trade. A withdraw is held to the trade alone, never to the stand's current fee configuration.
 - `SettleOptions.autoWithdraw`: `make` / `take` withdraw before throwing when the trade expired with
-  this account's allocation still locked. Off by default.
+  this account's allocation still locked. Off by default. The trade's `SettleError` is kept and carries
+  `withdrawal` (`withdrawn` / `gone` / `failed` per leg); `withdrawAllocation` attempts every leg and reports each.
 - `SettleError.withdrawable` is true when the expiry left this account's allocation locked.
   `SwapInfo.legs[]` carries `legId` and `userActionRequired`, `HtlcSwap` carries `orderId`.
 
