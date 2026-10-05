@@ -24,6 +24,7 @@
 import { signLegs, type OperationLeg } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
+import { verifyDvpPrepared, type DvpOperation, type DvpTerms, type Instrument } from './dvp-verify';
 import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
@@ -72,12 +73,50 @@ export interface HtlcSwap {
 export interface SwapInfo {
   swap: HtlcSwap;
   /** `SwapLegDto`: a DvP swap's trade legs, plus the platform-fee leg when one is charged. */
-  legs: Array<{ role: 'main' | 'counter' | 'fee'; sender: string; receiver: string; tokenId?: string | null; amount?: string | null; lockRef?: string | null }>;
+  legs: Array<{
+    role: 'main' | 'counter' | 'fee';
+    sender: string;
+    receiver: string;
+    tokenId?: string | null;
+    amount?: string | null;
+    /** The allocation holding this leg's funds; null until funded. */
+    lockRef?: string | null;
+    /** `cancelled` once the venue has released the allocation of an expired trade. */
+    status?: string;
+  }>;
   /** `DvpSwapFactsDto`; null for an HTLC swap. */
   dvp: { tradeCid?: string | null; awaitingApprovalFrom: string[]; allocateBefore?: string | null; settleBefore?: string | null } | null;
 }
 
 const isDvp = (swap: HtlcSwap) => swap.status.startsWith('dvp_');
+
+/** This party's allocations still holding funds: funded (a lock reference) and not released by the venue. */
+const lockedLegs = (info: SwapInfo, party: string) =>
+  info.legs.filter((l) => l.sender === party && l.lockRef && l.status !== 'cancelled');
+
+const RELEASE =
+  'The venue releases a DvP allocation when the trade is not settled by its deadline: its recovery aborts the trade ' +
+  '(SwapTrade_Abort), which cancels every allocation still live, a few minutes after the trade\'s settle deadline.';
+
+function lockedNote(info: SwapInfo, party: string): string {
+  const locked = lockedLegs(info, party);
+  if (locked.length === 0) return '';
+  return `; this account's allocation(s) (${locked.map((l) => l.role).join(', ')}) stay locked until then. ${RELEASE}`;
+}
+
+/** What an expired trade means for this account's funds, and what to do when they did not come back. */
+function expiredMessage(info: SwapInfo, party: string): string {
+  const head = `swap ${info.swap.id} is dvp_expired: the trade was not settled in time`;
+  const locked = lockedLegs(info, party);
+  const released = info.legs.filter((l) => l.sender === party && l.lockRef && l.status === 'cancelled');
+  if (locked.length > 0) {
+    return `${head}, and this account's allocation(s) (${locked.map((l) => l.role).join(', ')}) are still locked after the venue's recovery ` +
+      `(${info.swap.rejectReason ?? 'no reason recorded'}). This client cannot withdraw a DvP allocation itself: contact Cancore support ` +
+      `with the swap id ${info.swap.id} to have the holdings released.`;
+  }
+  if (released.length > 0) return `${head}; this account's allocation(s) (${released.map((l) => l.role).join(', ')}) were released by the venue's recovery`;
+  return `${head}; nothing of this account's was locked`;
+}
 
 /** `TransferInstructionResponseDto` — a transfer waiting for this account to accept it. */
 export interface IncomingTransfer {
@@ -192,6 +231,12 @@ export interface SettleOptions {
 export interface SelfCustodyOptions extends SessionOptions {
   /** Poll interval while waiting on the counterparty or the venue. Default 5 s. */
   pollMs?: number;
+  /**
+   * The venue party every DvP allocation must hand settlement to. Pin it from
+   * your own configuration to make it a trust boundary the API cannot move;
+   * by default it is read from `GET /htlc/fee-config`.
+   */
+  venuePartyId?: string;
 }
 
 /** A settle that cannot finish: the swap went somewhere it cannot come back from, or time ran out. */
@@ -306,8 +351,6 @@ const DEFAULT_DELIVERY_WAIT_MS = 5 * 60_000;
  */
 const MIN_DEFAULT_TIMEOUT_HOURS = 0.25;
 
-type DvpOperation = 'dvpCreateProposal' | 'dvpAcceptProposal' | 'dvpAllocateLeg';
-
 /** `PreparedCommandDto`, the fields a self-custody signer reads. */
 interface PreparedCommand {
   commandId: string;
@@ -317,10 +360,11 @@ interface PreparedCommand {
   applicationId: string;
   serializedForSigning: string;
   hashForSigning?: string;
-  /** Present when the acting party holds its own key: THE thing to sign. */
+  /** Present when the acting party holds its own key: THE thing to sign, and the transaction it is the hash of. */
   preparedTransactionHash?: string;
+  preparedTransaction?: string;
   /** Every transaction of the ceremony, in submit order — a funding side owes its trade leg and the fee leg. */
-  preparedTransactions?: Array<{ preparedTransactionHash: string }>;
+  preparedTransactions?: Array<{ preparedTransactionHash: string; preparedTransaction?: string }>;
 }
 
 export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccount {
@@ -333,6 +377,13 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   const swap: SwapClient = {
     ...orders,
     create: (input) => orders.create(input.sourceNetwork === 'canton' && input.targetNetwork === 'canton' ? { ...input, dvp: true } : input),
+    async createForPair(input) {
+      const pair = await http.get<{ baseToken?: { network?: string }; quoteToken?: { network?: string } }>(
+        `/trading-pairs/${encodeURIComponent(input.tradingPairId)}`,
+      );
+      const canton = pair.baseToken?.network === 'canton' && pair.quoteToken?.network === 'canton';
+      return orders.createForPair(canton ? { ...input, dvp: true } : input);
+    },
   };
 
   const me = () => http.get<AccountUser>('/auth/me');
@@ -393,7 +444,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * trade leg and the platform fee carved out of it) and signs both here, in one
    * pass on the same key the envelope ceremonies use.
    */
-  async function signDvp(operationType: DvpOperation, swapId: string): Promise<void> {
+  async function signDvp(operationType: DvpOperation, swapId: string, terms: DvpTerms): Promise<void> {
     const meta = { swapId };
     for (let attempt = 0; ; attempt++) {
       let prepared: PreparedCommand;
@@ -402,12 +453,17 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       } catch (err) {
         throw new CeremonyError(operationType, 'prepare', err, meta);
       }
-      const hashes = prepared.preparedTransactions?.map((t) => t.preparedTransactionHash) ??
-        (prepared.preparedTransactionHash ? [prepared.preparedTransactionHash] : []);
-      if (hashes.length === 0) {
-        // No prepared transaction means the API would submit for this party itself: not a self-custody party.
-        throw new CeremonyError(operationType, 'prepare', new Error('the API prepared no transaction for this key to sign'), meta);
+      const transactions = prepared.preparedTransactions ??
+        (prepared.preparedTransactionHash
+          ? [{ preparedTransactionHash: prepared.preparedTransactionHash, preparedTransaction: prepared.preparedTransaction }]
+          : []);
+      // Nothing is signed that was not read first: the hash recomputed from the bytes, the bytes held to the trade.
+      try {
+        await verifyDvpPrepared(operationType, transactions, terms);
+      } catch (err) {
+        throw new CeremonyError(operationType, 'prepare', err, meta);
       }
+      const hashes = transactions.map((t) => t.preparedTransactionHash);
       const signed = await signLegs(signer, hashes.map((hash, i) => ({ legId: String(i), hash, kind: 'transfer' as const })));
       const signatures = signed.map((s) => s.signature);
       const body = {
@@ -482,15 +538,28 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
   }
 
-  /** A 403 from a DvP route: the stand has not opened allocation-DvP to this account. */
-  function forbidden(err: unknown, order: Order): SettleError | null {
-    if (!(err instanceof CancoreApiError) || err.status !== 403) return null;
-    return new SettleError(
-      `allocation-DvP is not open to this account on this stand (${err.message}); ` +
-        `order ${order.id} is Canton↔Canton and settles only through DvP, never through HTLC`,
-      null,
-      order,
-    );
+  /** A DvP refusal that ends the trade before anything is signed, said in words a partner can act on. */
+  function dvpRefusal(err: unknown, order: Order): SettleError | null {
+    const refusal = refusalOf(err);
+    if (refusal === 'dvpNotAllowed' || (err instanceof CancoreApiError && err.status === 403)) {
+      return new SettleError(
+        `allocation-DvP is not open to this account on this stand (${(err as Error).message}); ` +
+          `order ${order.id} is Canton↔Canton and settles only through DvP, never through HTLC`,
+        null,
+        order,
+      );
+    }
+    if (refusal === 'feeHoldingRequired') {
+      // Only the taker can fix this, and only with its own key: the maker cannot act on it.
+      return new SettleError(
+        `order ${order.id}: the taker's wallet holds its ${order.targetTokenName || order.targetTokenAddress} in a single holding, ` +
+          'and the platform fee needs a holding of its own. The taker splits that balance into at least two holdings ' +
+          '(for example by sending part of it to itself); then run make() again.',
+        null,
+        order,
+      );
+    }
+    return null;
   }
 
   /**
@@ -499,28 +568,55 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * stand has switched on, and sits behind the same access guard as the DvP
    * routes. Without this, an unhonoured `dvp: true` falls through to HTLC.
    */
-  async function assertDvpPair(order: Order): Promise<void> {
-    let instruments: Array<{ id: string }>;
+  async function dvpInstruments(order: Order): Promise<{ source: Instrument; target: Instrument }> {
+    let instruments: Instrument[];
     try {
-      instruments = await http.get<Array<{ id: string }>>('/htlc/dvp/instruments');
+      instruments = await http.get<Instrument[]>('/htlc/dvp/instruments');
     } catch (err) {
-      throw forbidden(err, order) ?? err;
+      throw dvpRefusal(err, order) ?? err;
     }
-    const ids = new Set(instruments.map((i) => i.id));
-    const missing = [order.sourceTokenAddress, order.targetTokenAddress].filter((id) => !ids.has(id));
-    if (missing.length > 0) {
+    const find = (id: string) => instruments.find((i) => i.id === id);
+    const [source, target] = [find(order.sourceTokenAddress), find(order.targetTokenAddress)];
+    if (!source || !target) {
       throw new SettleError(
-        `${order.sourceTokenAddress}/${order.targetTokenAddress} is not enabled for allocation-DvP on this stand ` +
-          `(SWAP_FLOW_DVP_PAIRS; not offered: ${missing.join(', ')}); Canton↔Canton orders never fall back to HTLC`,
+        `${order.sourceTokenAddress}/${order.targetTokenAddress}: this pair is not enabled for DvP on this stand; ` +
+          'Canton↔Canton orders never fall back to HTLC',
         null,
         order,
       );
     }
+    return { source, target };
+  }
+
+  /**
+   * The trade this account agreed to, from sources other than the swap row: the
+   * order, the stand's instrument list (each instrument's admin) and its fee
+   * configuration (rate, receiver and venue). Every prepared transaction is held
+   * to it before the key signs.
+   */
+  async function dvpTerms(order: Order, swapId: string, party: string, role: 'maker' | 'taker'): Promise<DvpTerms> {
+    const { source, target } = await dvpInstruments(order);
+    const config = await http.get<{ feeRate?: string; feeRecipient?: string; venue?: string } | null>('/htlc/fee-config');
+    const venue = options.venuePartyId ?? config?.venue;
+    if (!venue) throw new SettleError('the venue party is unknown on this stand, so no allocation can be checked: pass venuePartyId', swapId);
+    const other = (role === 'maker' ? order.opponent : order.initiator) as { partyId?: string | null } | undefined;
+    if (!other?.partyId) throw new SettleError(`order ${order.id} does not name the counterparty's party`, swapId, order);
+    return {
+      swapId,
+      party,
+      maker: role === 'maker' ? party : other.partyId,
+      taker: role === 'taker' ? party : other.partyId,
+      source: { ...source, amount: order.sourceAmount },
+      target: { ...target, amount: order.targetAmount },
+      venue,
+      feeParty: config?.feeRecipient ?? null,
+      feeRate: config?.feeRate ?? '0',
+    };
   }
 
   /** The maker records the trade: `POST /htlc/proposals` with `dvp: true`, which the backend turns into a DvP draft. */
   async function proposeDvp(order: Order, opts: SettleOptions): Promise<string> {
-    await assertDvpPair(order);
+    await dvpInstruments(order);
     const receiver = (order.opponent as { partyId?: string | null } | undefined)?.partyId;
     if (!receiver) throw new SettleError(`order ${order.id} has no counterparty party yet`, null, order);
     let created: HtlcSwap;
@@ -529,6 +625,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         orderId: order.id,
         dvp: true,
         tokenId: order.sourceTokenAddress,
+        // A number because the request DTO takes one. Not a precision risk: the backend builds
+        // every leg of the trade from the order's own decimal strings, never from this field.
         amount: Number(order.sourceAmount),
         receiver,
         // Required by the request's validation and unused by DvP: no hash lock exists in a DvP trade.
@@ -536,7 +634,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         timeoutHours: await pickTimeout(order.id, opts.timeoutHours),
       });
     } catch (err) {
-      throw forbidden(err, order) ?? err;
+      throw dvpRefusal(err, order) ?? err;
     }
     if (!isDvp(created)) {
       throw new SettleError(`order ${order.id}: the venue opened swap ${created.id} as ${created.status}, not as allocation-DvP`, created.id, created);
@@ -545,15 +643,15 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   }
 
   /** Poll the swap until `done`; an expired or non-DvP swap ends the wait with a SettleError. */
-  async function waitDvp(swapId: string, done: (info: SwapInfo) => boolean, deadline: number, what: string): Promise<SwapInfo> {
+  async function waitDvp(swapId: string, party: string, done: (info: SwapInfo) => boolean, deadline: number, what: string): Promise<SwapInfo> {
     for (;;) {
       const info = await swapInfo(swapId);
       if (!isDvp(info.swap)) {
         throw new SettleError(`swap ${swapId} is an HTLC swap (${info.swap.status}); this client settles Canton↔Canton only through allocation-DvP`, swapId, info.swap);
       }
-      if (info.swap.status === 'dvp_expired') throw new SettleError(`swap ${swapId} is dvp_expired`, swapId, info.swap);
+      if (info.swap.status === 'dvp_expired') throw new SettleError(expiredMessage(info, party), swapId, info.swap);
       if (done(info)) return info;
-      if (now() >= deadline) throw new SettleError(`timed out waiting for ${what}`, swapId, info.swap);
+      if (now() >= deadline) throw new SettleError(`timed out waiting for ${what}${lockedNote(info, party)}`, swapId, info.swap);
       await sleep(pollMs);
     }
   }
@@ -561,9 +659,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   const owes = (info: SwapInfo, party: string) => info.legs.some((l) => l.sender === party && !l.lockRef);
 
   /** Fund every leg this party owes once the trade exists, then wait for the venue's atomic settle. */
-  async function fundAndSettle(swapId: string, party: string, info: SwapInfo, deadline: number): Promise<Settled> {
-    if (owes(info, party)) await signDvp('dvpAllocateLeg', swapId);
-    const settled = await waitDvp(swapId, (i) => i.swap.status === 'dvp_settled', deadline, `swap ${swapId} to settle`);
+  async function fundAndSettle(swapId: string, terms: DvpTerms, info: SwapInfo, deadline: number): Promise<Settled> {
+    if (owes(info, terms.party)) await signDvp('dvpAllocateLeg', swapId, terms);
+    const settled = await waitDvp(swapId, terms.party, (i) => i.swap.status === 'dvp_settled', deadline, `swap ${swapId} to settle`);
     // Allocation settlement moves the holdings themselves: there is no transfer left to accept.
     return { swap: settled.swap, delivery: 'direct', flow: 'dvp' };
   }
@@ -578,17 +676,19 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       swapId = await proposeDvp(order, opts);
     }
     const party = await ownParty();
-    let info = await waitDvp(swapId, () => true, deadline, `swap ${swapId}`);
+    let info = await waitDvp(swapId, party, () => true, deadline, `swap ${swapId}`);
+    const terms = await dvpTerms(order, swapId, party, 'maker');
     // The drafted row becomes a proposal only with the maker's own signature; a resumed make skips a done step.
-    if (!info.swap.proposalContractId && !info.dvp?.tradeCid) await signDvp('dvpCreateProposal', swapId);
-    // AUD-2: the taker funds first. Whoever allocates first gives the other side a free option to walk away.
+    if (!info.swap.proposalContractId && !info.dvp?.tradeCid) await signDvp('dvpCreateProposal', swapId, terms);
+    // The taker funds first: whoever allocates first gives the other side a free option to walk away.
     info = await waitDvp(
       swapId,
+      party,
       (i) => Boolean(i.dvp?.tradeCid) && i.legs.every((l) => l.sender === party || Boolean(l.lockRef)),
       deadline,
       'the taker to approve and fund its legs',
     );
-    return fundAndSettle(swapId, party, info, deadline);
+    return fundAndSettle(swapId, terms, info, deadline);
   }
 
   async function take(orderId: string, opts: SettleOptions = {}): Promise<Settled> {
@@ -612,11 +712,12 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     const swapId = order.swapId;
     if (!swapId) throw new SettleError(`order ${orderId} is ${order.status}`, null, order);
     // The maker's signature turns the draft into a proposal; this account's approval completes it.
-    let info = await waitDvp(swapId, (i) => Boolean(i.swap.proposalContractId || i.dvp?.tradeCid), deadline, 'the maker to sign the proposal');
-    if (!info.dvp?.tradeCid && info.dvp?.awaitingApprovalFrom.includes(party)) await signDvp('dvpAcceptProposal', swapId);
+    let info = await waitDvp(swapId, party, (i) => Boolean(i.swap.proposalContractId || i.dvp?.tradeCid), deadline, 'the maker to sign the proposal');
+    const terms = await dvpTerms(order, swapId, party, 'taker');
+    if (!info.dvp?.tradeCid && info.dvp?.awaitingApprovalFrom.includes(party)) await signDvp('dvpAcceptProposal', swapId, terms);
     // The venue turns a fully approved proposal into the trade on its next tick.
-    info = await waitDvp(swapId, (i) => Boolean(i.dvp?.tradeCid), deadline, 'the venue to open the trade');
-    return fundAndSettle(swapId, party, info, deadline);
+    info = await waitDvp(swapId, party, (i) => Boolean(i.dvp?.tradeCid), deadline, 'the venue to open the trade');
+    return fundAndSettle(swapId, terms, info, deadline);
   }
 
   async function acceptIncoming(filter: (transfer: IncomingTransfer) => boolean = () => true) {

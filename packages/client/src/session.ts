@@ -135,7 +135,7 @@ export function createSession({ baseUrl, signer, fetchImpl, now = Date.now, slee
   /*
    * ponytail: `/auth/challenge` answers an existing key with the unknown-key 404
    * ACCOUNT_NOT_FOUND whenever the gateway's challenge outruns its timing ceiling
-   * (BUG-551 padding, CAN-1418; ~8% on dev, seen right after sign-up). A real
+   * (a slow challenge answered as not found; ~8% on dev, seen right after sign-up). A real
    * "no account" is refused three times in a row, ~3 s later. Drop the retry once
    * the gateway stops answering a slow challenge with a 404.
    */

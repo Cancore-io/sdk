@@ -63,6 +63,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "publishConfig": {
@@ -79,5 +80,9 @@
     "prepack": "tsup --silent",
     "prepublishOnly": "npm run build",
     "spec:refresh": "node scripts/refresh-spec.mjs"
+  },
+  "dependencies": {
+    "@canton-network/core-ledger-proto": "^1.12.0",
+    "@canton-network/core-tx-visualizer": "^1.12.0"
   }
 }

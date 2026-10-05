@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519';
 import { deriveWalletKey, providerFromMnemonic } from '@cancore/wallet';
+import { allocate, prepared, proposalAccept, proposalCreate, type FixtureLeg } from './dvp-prepared.fixture';
 import type { FetchLike } from './http';
 import {
   CeremonyError,
@@ -39,8 +40,14 @@ interface Pending { type: string; params: Record<string, unknown>; legs: Leg[]; 
 interface VenueOptions {
   /** The stand has not opened allocation-DvP to these accounts: every DvP route answers 403, as `canUseDvp` does today for non-staff. */
   dvpForbidden?: boolean;
-  /** The stand settles CC through DvP but not CBTC (`SWAP_FLOW_DVP_PAIRS` without the pair). */
+  /** The stand settles CC through DvP but not CBTC: the pair is not enabled for DvP there. */
   pairOff?: boolean;
+  /** The maker's proposal is refused: the taker's wallet has no separate holding for the platform fee. */
+  feeHoldingRequired?: boolean;
+  /** The taker funds, the maker never does, and the trade expires: the venue's recovery then `released` the taker's allocations, or they are `stillLocked`. */
+  takerFundedThenExpired?: 'released' | 'stillLocked';
+  /** The API prepares something other than what the trade says, in this way, for the maker's allocation. */
+  tamperMakerAllocation?: 'hash' | 'amount' | 'receiver';
   /** The trade's window closes before anybody funds: the venue marks the swap dvp_expired. */
   expireAfterTrade?: boolean;
   /** The taker's first allocation submit finds its prepared stash already gone (success:false, as submit-signed answers). */
@@ -49,22 +56,27 @@ interface VenueOptions {
   timeoutAllocateOnce?: boolean;
   /** The refusals the SDK acts on carry their errorCode and a text that names no condition, as the registry gateway sends them. */
   coded?: boolean;
-  /** A gateway older than CAN-1593: its sign-up DTO has no `inviteCode`, so its validation pipe refuses the field. */
+  /** An older gateway: its sign-up DTO has no `inviteCode`, so its validation pipe refuses the field. */
   legacySignUp?: boolean;
   /** The first sign-up's activation fails: the account comes back FAILED, as the API answers it. */
   failActivationOnce?: boolean;
 }
 
 /** A DvP leg as the venue keeps it (`swap_legs`), keyed like the trade's TextMap. */
-interface DvpLeg { legId: string; role: 'main' | 'counter' | 'fee'; sender: string; receiver: string; tokenId: string; amount: string; lockRef: string | null }
+interface DvpLeg { legId: string; role: 'main' | 'counter' | 'fee'; sender: string; receiver: string; tokenId: string; amount: string; lockRef: string | null; status: string }
 /** One prepared DvP command: what the submit must come back signed for. */
 interface PreparedDvp { owner: Account; operationType: string; swapId: string; hashes: string[]; legIds: string[] }
 
 const FEE_PARTY = 'cancore-fee::1220';
+const VENUE = 'cancore-venue::1220';
+const ADMINS: Record<string, string> = { CC: 'dso::1220', CBTC: 'cbtc-admin::1220' };
 
 function venue({
   dvpForbidden = false,
   pairOff = false,
+  feeHoldingRequired = false,
+  takerFundedThenExpired,
+  tamperMakerAllocation,
   expireAfterTrade = false,
   staleAllocateOnce = false,
   timeoutAllocateOnce = false,
@@ -94,7 +106,7 @@ function venue({
     id: 'o1', status: 'open', sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceAmount: '0.01',
     targetNetwork: 'canton', targetTokenAddress: 'CC', targetAmount: '5000',
     initiatorUserId: 'maker', opponentUserId: null as string | null, opponent: null as { partyId: string } | null,
-    swapId: null as string | null, dvp: false,
+    initiator: null as { partyId: string } | null, swapId: null as string | null, dvp: false,
   };
   let swap: Record<string, unknown> | null = null;
   let legs: DvpLeg[] = [];
@@ -160,12 +172,16 @@ function venue({
       return refuse(400, 'CreateProposalDto validation failed');
     }
     if (dvpForbidden) return forbidden();
+    if (feeHoldingRequired) {
+      return refusal(409, 'The platform fee needs a holding of its own: split your balance into at least two holdings and retry.', 'DVP_FEE_HOLDING_REQUIRED');
+    }
     const maker = [...byKey.values()].find((a) => a.id === order.initiatorUserId)!;
+    order.initiator = { partyId: maker.partyId! };
     const taker = order.opponent!.partyId;
     legs = [
-      { legId: 'leg-main', role: 'main', sender: maker.partyId!, receiver: taker, tokenId: 'CBTC', amount: '0.01', lockRef: null },
-      { legId: 'leg-counter', role: 'counter', sender: taker, receiver: maker.partyId!, tokenId: 'CC', amount: '4975.1243781095', lockRef: null },
-      { legId: 'leg-fee', role: 'fee', sender: taker, receiver: FEE_PARTY, tokenId: 'CC', amount: '24.8756218905', lockRef: null },
+      { legId: 'leg-main', role: 'main', sender: maker.partyId!, receiver: taker, tokenId: 'CBTC', amount: '0.01', lockRef: null, status: 'active' },
+      { legId: 'leg-counter', role: 'counter', sender: taker, receiver: maker.partyId!, tokenId: 'CC', amount: '4975.1243781095', lockRef: null, status: 'active' },
+      { legId: 'leg-fee', role: 'fee', sender: taker, receiver: FEE_PARTY, tokenId: 'CC', amount: '24.8756218905', lockRef: null, status: 'active' },
     ];
     drafter = maker.partyId;
     swap = { id: 's1', status: 'dvp_proposed', sender: maker.partyId, receiver: taker, proposalContractId: null };
@@ -183,6 +199,11 @@ function venue({
       tradeCid = 'trade-1';
       // The window closed before anybody got to fund: recovery marks the swap expired.
       if (expireAfterTrade) swap.status = 'dvp_expired';
+    } else if (takerFundedThenExpired && legs.some((l) => l.lockRef) && swap.status !== 'dvp_expired') {
+      // Past the settle deadline the venue's recovery aborts the trade and closes the swap.
+      swap.status = 'dvp_expired';
+      swap.rejectReason = takerFundedThenExpired === 'released' ? 'aborted 2 allocation(s)' : 'abort refused';
+      if (takerFundedThenExpired === 'released') for (const l of legs) if (l.lockRef) l.status = 'cancelled';
     } else if (legs.every((l) => l.lockRef) && swap.status !== 'dvp_expired') {
       swap.status = 'dvp_settled';
     }
@@ -195,7 +216,7 @@ function venue({
   }
 
   /** `POST /canton-wallet/htlc/prepare-command`, with the refusals the three DvP step handlers raise. */
-  function prepareDvp(caller: Account, body: { operationType: string; params: { swapId?: string } }): Response {
+  async function prepareDvp(caller: Account, body: { operationType: string; params: { swapId?: string } }): Promise<Response> {
     if (dvpForbidden) return forbidden();
     const party = caller.partyId!;
     const swapId = String(body.params?.swapId);
@@ -218,7 +239,30 @@ function venue({
       default:
         return refuse(400, `unknown operation ${body.operationType}`);
     }
-    const hashes = owed.length > 1 ? owed.map(() => leg('transfer').hash) : [leg('transfer').hash];
+    // What the participant would prepare, built from the swap row: the bytes and the hash of them.
+    const asFixture = (l: DvpLeg): FixtureLeg => ({ sender: l.sender, receiver: l.receiver, amount: l.amount, instrumentId: { admin: ADMINS[l.tokenId]!, id: l.tokenId } });
+    const terms = Object.fromEntries(legs.map((l) => [l.legId, asFixture(l)]));
+    let transactions: Array<{ preparedTransaction: string; preparedTransactionHash: string }>;
+    if (body.operationType === 'dvpCreateProposal') {
+      transactions = [await prepared(party, [proposalCreate('0', { venue: VENUE, swapId, legs: terms, approvers: [party] })])];
+    } else if (body.operationType === 'dvpAcceptProposal') {
+      transactions = [await prepared(party, [
+        proposalAccept('0', party, ['1']),
+        proposalCreate('1', { venue: VENUE, swapId, legs: terms, approvers: [...approvers, party] }),
+      ])];
+    } else {
+      transactions = await Promise.all(owed.map(async (l) => {
+        const tampered = l.role === 'main' ? tamperMakerAllocation : undefined;
+        const leg = asFixture(l);
+        if (tampered === 'amount') leg.amount = '1';
+        if (tampered === 'receiver') leg.receiver = 'thief::1220';
+        const tx = await prepared(party, [allocate('0', { executor: VENUE, swapId, legId: l.legId, leg })]);
+        if (tampered !== 'hash') return tx;
+        const other = await prepared(party, [allocate('0', { executor: VENUE, swapId, legId: l.legId, leg: { ...leg, receiver: 'thief::1220' } })]);
+        return { ...tx, preparedTransactionHash: other.preparedTransactionHash };
+      }));
+    }
+    const hashes = transactions.map((t) => t.preparedTransactionHash);
     const commandId = `${body.operationType}-${++seq}`;
     preparedDvp.set(commandId, { owner: caller, operationType: body.operationType, swapId, hashes, legIds: owed.map((l) => l.legId) });
     return json({
@@ -229,9 +273,10 @@ function venue({
       applicationId: 'cancore',
       serializedForSigning: 'ab',
       hashForSigning: 'cd',
-      preparedTransactionHash: hashes[0],
+      preparedTransactionHash: transactions[0]!.preparedTransactionHash,
+      preparedTransaction: transactions[0]!.preparedTransaction,
       // Only a ceremony of several transactions lists them all.
-      ...(hashes.length > 1 ? { preparedTransactions: hashes.map((h) => ({ preparedTransactionHash: h, preparedTransaction: 'tx' })) } : {}),
+      ...(transactions.length > 1 ? { preparedTransactions: transactions } : {}),
     });
   }
 
@@ -346,10 +391,11 @@ function venue({
     if (route === 'GET /htlc/dvp/instruments') {
       if (dvpForbidden) return forbidden();
       return json([
-        { id: 'CC', symbol: 'CC', admin: 'dso::1220' },
-        ...(pairOff ? [] : [{ id: 'CBTC', symbol: 'CBTC', admin: 'cbtc-admin' }]),
+        { id: 'CC', symbol: 'CC', admin: ADMINS.CC },
+        ...(pairOff ? [] : [{ id: 'CBTC', symbol: 'CBTC', admin: ADMINS.CBTC }]),
       ]);
     }
+    if (route === 'GET /htlc/fee-config') return json({ feeRate: '0.005', feeRecipient: FEE_PARTY, venue: VENUE, maxFeeRate: '0.01' });
     if (route === 'POST /htlc/proposals') return propose(body);
     if (route === 'GET /htlc/swaps/s1/full') return full();
     if (route === 'POST /canton-wallet/htlc/prepare-command') return prepareDvp(caller, body);
@@ -433,6 +479,7 @@ test('two self-custody accounts from one phrase register, onboard and settle a C
   expect([...api.routes].sort()).toEqual([
     'get /auth/me',
     'get /htlc/dvp/instruments',
+    'get /htlc/fee-config',
     'get /htlc/swaps/{id}/full',
     'get /htlc/timeout-options',
     'get /orders/{id}',
@@ -469,6 +516,20 @@ test('an order with an EVM leg is placed as asked — no DvP flag — and make/t
   expect(api.hits.filter((r) => /dvp|canton-wallet|proposals|wallet\/operations/.test(r))).toEqual([]);
 });
 
+test('a pair order asks for DvP when both of the pair’s tokens are on Canton, and only then', async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const pair = (quote: string) => ({ id: 'p', baseToken: { network: 'canton' }, quoteToken: { network: quote } });
+  const api = stub({
+    'GET /trading-pairs/canton-pair': () => pair('canton'),
+    'GET /trading-pairs/evm-pair': () => pair('sepolia'),
+    'POST /orders/pair': (body) => (sent.push(body), { id: 'o3', ...body }),
+  });
+  const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast });
+  await acct.swap.createForPair({ tradingPairId: 'canton-pair', sourceAmount: '1', targetAmount: '2' });
+  await acct.swap.createForPair({ tradingPairId: 'evm-pair', sourceAmount: '1', targetAmount: '2' });
+  expect(sent.map((b) => b.dvp)).toEqual([true, undefined]);
+});
+
 /** Two accounts of one phrase, signed up and onboarded against `api`; `makerOptions` override the maker's clock and sleep. */
 async function tradingPair(api: ReturnType<typeof venue>, accounts: [number, number], makerOptions: Partial<SelfCustodyOptions> = {}) {
   const [makerKey, takerKey] = await Promise.all(accounts.map((account) => providerFromMnemonic(PHRASE, { account })));
@@ -495,11 +556,24 @@ describe('the paths where a mistake costs money', () => {
     expect(api.order.swapId).toBeNull();
   });
 
+  test.each([
+    ['by the text of the message', false, [52, 53]],
+    ['by errorCode alone', true, [54, 55]],
+  ] as const)('a taker with no separate holding for the fee: the maker is told the taker must split its balance (%s)', async (_, coded, accounts) => {
+    const api = venue({ feeHoldingRequired: true, coded });
+    const { maker, taker } = await tradingPair(api, [...accounts]);
+    await taker.swap.accept('o1');
+    const error = await maker.make('o1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SettleError);
+    expect((error as Error).message).toMatch(/taker's wallet holds its CC in a single holding.*splits that balance/);
+    expect(dvpSteps(api)).toEqual([]);
+  });
+
   test('a stand that does not settle the pair through DvP is refused before anything is recorded', async () => {
     const api = venue({ pairOff: true });
     const { maker, taker } = await tradingPair(api, [4, 5]);
     await taker.swap.accept('o1');
-    await expect(maker.make('o1')).rejects.toThrow(/CBTC\/CC is not enabled for allocation-DvP.*not offered: CBTC.*never fall back to HTLC/);
+    await expect(maker.make('o1')).rejects.toThrow(/CBTC\/CC: this pair is not enabled for DvP on this stand.*never fall back to HTLC/);
     expect(api.proposals).toEqual([]);
     expect(api.asked.filter((t) => t.startsWith('htlc.'))).toEqual([]);
   });
@@ -573,6 +647,66 @@ describe('the paths where a mistake costs money', () => {
     expect(made.swap.status).toBe('dvp_settled');
     expect(api.proposals).toHaveLength(1);
     expect(dvpSteps(api).filter((s) => s === 'dvp:dvpCreateProposal:maker')).toHaveLength(1);
+  });
+});
+
+describe('what the account signs is what it read', () => {
+  test.each([
+    ['a hash that is not the hash of the transaction it came with', 'hash', /does not hash to the hash/, [40, 41]],
+    ['an allocation of another amount', 'amount', /not the order's 0.01 CBTC/, [42, 43]],
+    ['an allocation to another receiver', 'receiver', /not part of this trade/, [44, 45]],
+  ] as const)('%s is refused before the key signs anything, and nothing is submitted', async (_, tamper, reason, accounts) => {
+    const api = venue({ tamperMakerAllocation: tamper });
+    const { maker, taker } = await tradingPair(api, [...accounts]);
+    const [made] = await Promise.allSettled([maker.make('o1', { deadlineMs: 3_000 }), taker.take('o1', { deadlineMs: 3_000 })]);
+    const error = (made as PromiseRejectedResult).reason;
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect(error).toMatchObject({ operation: 'dvpAllocateLeg', stage: 'prepare', message: expect.stringMatching(reason) });
+    // The taker's own honest steps went through; the maker's tampered allocation never reached the API.
+    expect(dvpSteps(api)).toEqual(['dvp:dvpCreateProposal:maker', 'dvp:dvpAcceptProposal:taker', 'dvp:dvpAllocateLeg:taker']);
+  });
+});
+
+describe('a taker that funded and a maker that did not', () => {
+  test('the trade expires and the taker is told the venue released its allocations', async () => {
+    const api = venue({ takerFundedThenExpired: 'released' });
+    const { maker, taker } = await tradingPair(api, [46, 47]);
+    await taker.swap.accept('o1');
+    // The maker records and proposes, then goes away before funding.
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    const error = await taker.take('o1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SettleError);
+    expect(error).toMatchObject({
+      swapId: 's1',
+      last: { status: 'dvp_expired' },
+      message: expect.stringMatching(/dvp_expired.*allocation\(s\) \(counter, fee\) were released by the venue's recovery/),
+    });
+    expect(dvpSteps(api)).toContain('dvp:dvpAllocateLeg:taker');
+    expect(dvpSteps(api)).not.toContain('dvp:dvpAllocateLeg:maker');
+    await making;
+  });
+
+  test('allocations the recovery could not release are named, with what to do about them', async () => {
+    const api = venue({ takerFundedThenExpired: 'stillLocked' });
+    const { maker, taker } = await tradingPair(api, [48, 49]);
+    await taker.swap.accept('o1');
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    const error = await taker.take('o1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SettleError);
+    expect((error as Error).message).toMatch(/\(counter, fee\) are still locked after the venue's recovery \(abort refused\).*cannot withdraw.*contact Cancore support with the swap id s1/);
+    await making;
+  });
+
+  test('a wait that ends before the deadline says the allocations stay locked until the venue releases them', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [50, 51]);
+    await taker.swap.accept('o1');
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    // The maker never funds: an instrumented maker that stops after proposing.
+    await making;
+    const error = await taker.take('o1', { deadlineMs: 500 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SettleError);
+    expect((error as Error).message).toMatch(/timed out.*stay locked until then\. The venue releases a DvP allocation.*SwapTrade_Abort/);
   });
 });
 

@@ -269,7 +269,7 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `legalStatus()` / `acceptTerms(version, documents)` | `GET` / signed `POST /legal/consent` |
 | `make(orderId, options?)` | maker: wait for the taker, record the DvP trade and sign its proposal, fund its leg after the taker, wait for the atomic settle |
 | `take(orderId, options?)` | taker: accept the order, sign the approval, fund its legs (the platform fee among them), wait for the atomic settle |
-| `swap.create(input)` | `POST /orders`; a Canton↔Canton order is always sent with `dvp: true` |
+| `swap.create(input)` / `swap.createForPair(input)` | `POST /orders` / `POST /orders/pair`; a Canton↔Canton order is always sent with `dvp: true` (for a pair, read from `GET /trading-pairs/{id}`) |
 | `incoming()` / `accept(transfer)` / `acceptIncoming(filter?)` | transfers waiting for this account's signature |
 | `send(input)` / `consolidate(tokenId?)` / `balance(instrumentId)` | move, merge and read this account's tokens |
 | `faucet()` | test CC from the dev stand's faucet, see [Test funds on dev](#test-funds-on-dev) |
@@ -299,15 +299,19 @@ finish), call `register` again with the same key and the same code: the API know
 as this key's and grants the role again instead of refusing it as used. A code the API does
 not know, or one another key redeemed, is refused (`404` / `409`) — the SDK never signs up
 without it. A `409` "Public key already registered" means an earlier sign-up went through:
-`login()` instead. Against a gateway whose sign-up does not take the code yet (mainnet until
-backend CAN-1593 ships there) `register` signs up without it and then redeems it with
+`login()` instead. Against a gateway whose sign-up does not take the code yet (mainnet, until the
+invite-on-sign-up change ships there) `register` signs up without it and then redeems it with
 `POST /auth/redeem-invite`, as before.
 
 **How a trade settles.** Every Canton↔Canton order settles through allocation-DvP: both legs
 (and the platform fee) move in one ledger transaction, with no hash lock, no escrow and no
-preimage. There is no HTLC fallback. If the stand has not opened DvP to the account (`403`) or
-does not settle the pair through DvP (`SWAP_FLOW_DVP_PAIRS`), `make` ends with a `SettleError`
-that says so before anything is recorded, and the order is never settled as HTLC. A swap an
+preimage. There is no HTLC fallback. If the stand has not opened DvP to the account (`403`,
+`DVP_NOT_ALLOWED`) or the pair is not enabled for DvP on this stand, `make` ends with a
+`SettleError` that says so before anything is recorded, and the order is never settled as
+HTLC. If the taker's wallet keeps the order's target token in a single holding, the stand
+refuses the trade (`DVP_FEE_HOLDING_REQUIRED`): the platform fee needs a holding of its own.
+`make` then ends with a `SettleError` saying the taker has to split that balance into at least
+two holdings, after which `make` is run again. A swap an
 earlier client opened as HTLC is refused the same way.
 
 ```
@@ -325,10 +329,23 @@ maker (make)                          API / venue                          taker
 ```
 
 Each `sign …` is `POST /canton-wallet/htlc/prepare-command` with `{ operationType, params: {
-swapId } }`, the account's signature over every prepared-transaction hash the API returns (the
-same signer as every other ceremony), and `POST /canton-wallet/htlc/submit-signed`. The API
-builds every command from its own record of the swap; the account names the swap and nothing
-else. What the account signs:
+swapId } }`, a check of every prepared transaction the API returns, the account's signature
+over each one's hash (the same signer as every other ceremony), and
+`POST /canton-wallet/htlc/submit-signed`. The account names the swap and nothing else.
+
+**Nothing is signed unread.** The signature covers the hash of a prepared transaction, so
+before the key is used the account takes the transaction's bytes (`preparedTransactions[]`),
+recomputes the hash from them with Canton's hashing scheme v2 (`@canton-network/core-tx-visualizer`)
+and refuses on any difference. It then decodes the transaction and holds it to the trade it
+agreed to, read from the order, `GET /htlc/dvp/instruments` (each instrument's admin) and
+`GET /htlc/fee-config` (fee rate, fee receiver and venue), never from the swap row: the
+transaction acts as this account only, is the one command the step is made of, and every leg
+in it is the order's main leg, the counter leg, or a platform fee within the published rate,
+with the counter leg and the fee adding up to the order's `targetAmount`. An allocation must
+hand settlement to the venue and name this trade. Anything else, a transaction it cannot
+decode included, is a `CeremonyError` at the `prepare` stage and nothing is signed. Pass
+`venuePartyId` to `createSelfCustody` to pin the venue from your own configuration instead of
+`GET /htlc/fee-config`. What the account signs:
 
 | Step | Who | What the signature authorises |
 | --- | --- | --- |
@@ -341,7 +358,17 @@ HTLC), so the taker's outflow is the order's `targetAmount` and the maker receiv
 the fee. The taker funds first and the maker last, so neither side hands the other a free
 option. The venue settles once every leg is funded. Proceeds land with the settle itself, so
 `delivery` is always `'direct'` and nothing is left to accept. A trade nobody funds in time
-ends `dvp_expired` (a `SettleError` on both sides), and the venue releases what was locked.
+ends `dvp_expired`, a `SettleError` on both sides.
+
+**Who releases a funded leg that never settles.** The taker funds first, so a maker that never
+funds leaves the taker's allocations (its leg and the fee) locked. They stay locked until the
+trade's settle deadline; a few minutes after it the venue's recovery aborts the trade
+(`SwapTrade_Abort`), which cancels every allocation still live in the same transaction, and
+the swap reads `dvp_expired`. The `SettleError` the taker gets says which happened: released,
+or still locked. If recovery could not release them (the abort was refused, or the trade was
+already gone), they are still locked: this client has no way to withdraw a DvP allocation
+itself yet, so contact Cancore support with the swap id. A `take` whose own deadline runs out
+first says the allocations stay locked until the venue releases them.
 `make` and `take` resume: an order whose trade exists picks up at the first step not yet
 done. `timeoutHours` only fills the proposal request's required field (one the stand offers,
 by default the shortest of at least 15 minutes); the trade's windows are the venue's.
@@ -354,10 +381,12 @@ retries are the ones the API says are safe. Every decision is taken on the refus
 | --- | --- |
 | `SUBMISSION_TIMEOUT_RETRYABLE` | resubmits the same signatures (up to twice) — never prepares again; Canton deduplicates on the command id |
 | `PREPARED_SUBMISSION_EXPIRED` | prepares and signs again, once — only where that is safe (the DvP steps of `make` / `take`) |
-| `ACCOUNT_NOT_FOUND` (at sign-in) | asks for a new challenge up to twice more, 1 s then 2 s apart. The gateway answers an existing key with this 404 when its challenge is slow (backend BUG-551), most often right after sign-up; three in a row surfaces it |
+| `DVP_NOT_ALLOWED` | ends the trade with a `SettleError`: DvP is not open to this account on this stand |
+| `DVP_FEE_HOLDING_REQUIRED` | ends `make` with a `SettleError` naming what the taker has to do (split its balance), then `make` again |
+| `ACCOUNT_NOT_FOUND` (at sign-in) | asks for a new challenge up to twice more, 1 s then 2 s apart. The gateway answers an existing key with this 404 when its challenge is slow (a known gateway issue), most often right after sign-up; three in a row surfaces it |
 | anything else | surfaces it |
 
-A gateway that sends no code for the first two (mainnet, until backend CAN-1955 ships there) is
+A gateway that sends no code for the first two (mainnet, until the error-code registry ships there) is
 read by the text of its message instead. Mainnet already sends `ACCOUNT_NOT_FOUND` as a code. What surfaces is a `CeremonyError` (with what the
 prepare had said, and the refusal's `errorCode` when it carried one) or a `SettleError` (with
 the last state seen).
@@ -497,7 +526,7 @@ try {
 ```
 
 `errorCode` needs a gateway that publishes the registry: backend
-[#1907](https://github.com/Cancore-io/backend/pull/1907) (CAN-1955). On an older one it is
+[#1907](https://github.com/Cancore-io/backend/pull/1907). On an older one it is
 `undefined` for every body that has no `code`, and the self-custody account falls back to the text
 of the message for the six swap refusals it acts on.
 
