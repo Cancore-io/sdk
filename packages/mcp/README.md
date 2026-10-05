@@ -74,7 +74,7 @@ mismatched code is normal, which is the one thing the consent page relies on you
 | --- | --- | --- |
 | `appName` | string, optional | how to introduce itself on the consent page |
 | `waitSeconds` | number, optional | how long to wait in this call, 5–300 (default 45) |
-| `force` | boolean, optional | ask again even if this stand is already authorized |
+| `force` | boolean, optional | ask again even if this stand is already authorized; once the new grant is stored, the old one is revoked on the server |
 
 Answers `{ status: 'granted' | 'denied' | 'pending', … }`. A `pending` answer carries
 `userCode`, `page`, whether the browser `opened`, and whether the request was `resumed`.
@@ -134,6 +134,12 @@ only noticed by what it does there.
 
 This is the same file, in the same format, that the Go server in `Cancore-io/mcp-server`
 writes. An owner who switches between the two runtimes does not approve twice.
+
+Against a backend that reports them, each entry also keeps the grant's `expiresAt` (Unix
+seconds) and `sessionId`. An expired grant is treated as absent. Reconnecting with `force`
+revokes the grant it replaces (`DELETE /auth/sessions/current`, sent with that grant) after the
+new one is stored; if the revoke fails, the answer carries a `warning` so the owner can end the
+old grant in the wallet.
 
 Two refusals are told apart on purpose:
 

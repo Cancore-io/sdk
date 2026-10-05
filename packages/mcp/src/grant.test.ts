@@ -48,3 +48,22 @@ test('a missing or unreadable file is no grant, not a crash', () => {
   writeFileSync(path, 'not json');
   expect(loadGrant(path, DEV)).toBeUndefined();
 });
+
+// CAN-2087: the backend says when a grant ends. A grant past that moment is
+// refused by the server anyway; carrying it only turns every call into a 401.
+test('an expired grant is no grant', () => {
+  const path = tempPath();
+  saveGrant(path, DEV, { token: 'old', scopes: [], appName: 'Claude', expiresAt: 1_000 });
+
+  expect(loadGrant(path, DEV, 1_000)).toBeUndefined();
+  expect(loadGrant(path, DEV, 999)?.token).toBe('old');
+});
+
+test('expiry and session id survive a round trip, and a grant without them still loads', () => {
+  const path = tempPath();
+  saveGrant(path, DEV, { token: 'tok', scopes: [], appName: 'Claude', expiresAt: 4_102_444_800, sessionId: 'ses_1' });
+  saveGrant(path, MAINNET, { token: 'legacy', scopes: [], appName: 'Claude' });
+
+  expect(loadGrant(path, DEV)).toMatchObject({ expiresAt: 4_102_444_800, sessionId: 'ses_1' });
+  expect(loadGrant(path, MAINNET)?.token).toBe('legacy');
+});
