@@ -1,6 +1,6 @@
 import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
 import { allocationTree, createNode, DEV, exercise, factoryContract, holding, prepared, proposalAccept, proposalCreate, spend, spendTransfer, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
-import { DEFAULT_INSTRUMENT_ADMINS, instrumentKey, mergeLists } from './dvp-admins';
+import { DEFAULT_INSTRUMENT_ADMINS, DEFAULT_VENUES, instrumentKey, mergeLists } from './dvp-admins';
 import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyDvpPrepared, type DvpTerms } from './dvp-verify';
 
 const MAKER = 'maker::1220aa';
@@ -368,4 +368,14 @@ test('overrides add to the pinned lists: one entry added keeps every default', (
   expect(merged.CBTC).toEqual([...DEFAULT_INSTRUMENT_ADMINS.devnet.CBTC!, 'extra::1220ab']);
   expect(merged.Amulet).toEqual(DEFAULT_INSTRUMENT_ADMINS.devnet.Amulet);
   expect(mergeLists(DEFAULT_TRUSTED_PACKAGES.swap, { 'cancore-swap': ['ff'.repeat(32)] })['cancore-swap']).toHaveLength(DEFAULT_TRUSTED_PACKAGES.swap['cancore-swap']!.length + 1);
+});
+
+test('the pinned venue of each network is exactly the stand’s own (BUG-1291)', () => {
+  expect(DEFAULT_VENUES).toEqual({
+    devnet: 'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b',
+    testnet: 'cancore::12207fca8abfbcb8b8d936539ef9272f0f86c7e4e39dd4a3ece8c0f9aa59ebcf5fc2',
+    mainnet: 'cancore::1220076a94e0a7f0256a32ffab227db7788d8075677d8afcdaa8386df8f2fa659906',
+  });
+  // Not the mainnet participant party, which shares the key and has another hint.
+  expect(Object.values(DEFAULT_VENUES).some((v) => v.startsWith('Cancore-mainnet-1'))).toBe(false);
 });
