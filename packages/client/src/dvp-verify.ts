@@ -22,6 +22,7 @@
  */
 import { decodePreparedTransaction, hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
 import type { DamlTransaction_Node, PreparedTransaction, Value } from '@canton-network/core-ledger-proto';
+import { instrumentKey } from './dvp-admins';
 
 export type DvpOperation = 'dvpCreateProposal' | 'dvpAcceptProposal' | 'dvpAllocateLeg';
 
@@ -54,16 +55,16 @@ export interface DvpTerms {
 }
 
 /**
- * The Daml packages whose code may run in a DvP transaction, by package name and, for each, the
- * package ids allowed. A package name alone is not an identity — anyone can upload a package with
- * any name — so a node passes only when both its name and its id are listed. `swap` runs the
- * proposal steps; `registries` the token registries an allocation runs in: CC (Splice Amulet) and
- * the Digital Asset utility registry. A registry upgrade brings a new package id: add it through
- * `trustedPackages` until this SDK ships it.
+ * The proposal steps' Daml package, by name and the package ids allowed: `cancore-swap` is ours,
+ * and a package name alone is not an identity (anyone can upload a package under any name), so a
+ * node passes only when both its name and its id are listed.
+ *
+ * Allocations are not pinned by package: the registries (the DSO for CC, the Digital Asset utility
+ * for registry tokens) upgrade their packages on their own schedule. Their trust anchor is the
+ * instrument admin instead — see `dvp-admins.ts`.
  */
 export interface TrustedPackages {
   swap: Record<string, string[]>;
-  registries: Record<string, string[]>;
 }
 
 export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = {
@@ -73,19 +74,6 @@ export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = {
       '2b8060d64191b963d7416e0e2d15d11b239f88ad31aca2f457c4eefa2e15e395', // 1.1.0
       '0164b8f54b26b673b24ba7ca6d141b65bd4dbc8c135cd61922477c871c927a2a', // 1.2.0
     ],
-  },
-  registries: {
-    'splice-amulet': [
-      '3ca1343ab26b453d38c8adb70dca5f1ead8440c42b59b68f070786955cbf9ec1', // 0.1.14
-      'fb10433a48c24f30076a7aee03a3e314b7ab02fe9a22e2069e3af92d2b6ac88a', // 0.1.22
-    ],
-    'utility-registry-app-v0': [
-      '2293eb12e82ceaeb3ff7f8fe3346dece8578e1e9fd7d46624aeb7bb07fa31eda', // 0.8.2
-      '1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b274b8c0', // 0.9.2
-    ],
-    'utility-registry-v0': ['1f80e086e9ce218cf93fdeed80943793e902ac35c521733d7373a5ba58813150'], // 0.7.1
-    'utility-registry-holding-v0': ['71fbaea211f07a65666892748498bd4a0d7462a9d75bbb215ba9fbdbba78efa7'], // 0.2.2
-    'utility-credential-v0': ['418370044b5c6cd76ec78b73b8553c592328dec0afb6defbd2fdc5909e024033'], // 0.1.1
   },
 };
 
@@ -206,9 +194,7 @@ function checkTransaction(operation: DvpOperation, decoded: PreparedTransaction,
       const factory = inputContracts(decoded).get(root.exercise.contractId);
       if (!factory) return 'the allocation factory is not among the contracts the transaction discloses';
       if (!sameId(factory.templateId, root.exercise.templateId)) return 'the command runs on another template than the factory it names';
-      if (!trusted(terms.packages.registries, factory.packageName, factory.templateId?.packageId)) {
-        return `the allocation factory comes from an untrusted package (${factory.packageName} ${factory.templateId?.packageId ?? ''})`;
-      }
+      // The leg's admin is the pinned one (checkLeg holds it to the instruments, which the caller pinned).
       if (!factory.signatories.includes(leg!.instrumentId.admin)) return 'the allocation factory is not signed by the instrument admin';
       const holdings = checkHoldings(decoded, nodes, terms, leg!, factory);
       if (holdings) return holdings;
@@ -240,12 +226,14 @@ function checkTree(operation: DvpOperation, decoded: PreparedTransaction, nodes:
   const wrong = visit(decoded.transaction!.roots[0]!);
   if (wrong) return wrong;
   if (reachable.size !== nodes.size) return 'it carries nodes outside its command';
-  const allowed = operation === 'dvpAllocateLeg' ? terms.packages.registries : terms.packages.swap;
   for (const node of nodes.values()) {
     const type = nodeType(node)!;
     if (type.oneofKind !== 'create' && type.oneofKind !== 'exercise' && type.oneofKind !== 'fetch') return `node ${node.nodeId} is of an unexpected kind`;
+    // An allocation's nodes all hang from the one exercise on the admin-signed factory (checked above:
+    // every node is reachable from the root), so they run the admin's code; the proposal steps run ours.
+    if (operation === 'dvpAllocateLeg') continue;
     const { packageName, templateId } = type.oneofKind === 'create' ? type.create : type.oneofKind === 'exercise' ? type.exercise : type.fetch;
-    if (!trusted(allowed, packageName, templateId?.packageId)) {
+    if (!trusted(terms.packages.swap, packageName, templateId?.packageId)) {
       return `node ${node.nodeId} runs code from an untrusted package (${packageName || 'unnamed'} ${templateId?.packageId ?? ''})`;
     }
   }
@@ -352,8 +340,6 @@ function holdingOf(contract: Create): { owner: string; instrument: string; amoun
   return null;
 }
 
-/** CC is listed as CC or as its ledger name, Amulet. */
-const instrumentKey = (id: string) => (id === 'CC' ? 'Amulet' : id);
 
 const sameId = (a: { packageId: string; moduleName: string; entityName: string } | undefined, b: { packageId: string; moduleName: string; entityName: string } | undefined) =>
   !!a && !!b && a.packageId === b.packageId && a.moduleName === b.moduleName && a.entityName === b.entityName;

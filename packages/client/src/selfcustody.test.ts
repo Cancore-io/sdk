@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519';
 import { deriveWalletKey, providerFromMnemonic } from '@cancore/wallet';
-import { allocationTree, prepared, proposalAccept, proposalCreate, type FixtureLeg } from './dvp-prepared.fixture';
+import { allocationTree, DEV, prepared, proposalAccept, proposalCreate, type FixtureLeg } from './dvp-prepared.fixture';
 import type { FetchLike } from './http';
 import {
   CeremonyError,
@@ -72,8 +72,9 @@ interface DvpLeg { legId: string; role: 'main' | 'counter' | 'fee'; sender: stri
 interface PreparedDvp { owner: Account; operationType: string; swapId: string; hashes: string[]; legIds: string[] }
 
 const FEE_PARTY = 'cancore-fee::1220';
-const VENUE = 'cancore-venue::1220';
-const ADMINS: Record<string, string> = { CC: 'dso::1220', CBTC: 'cbtc-admin::1220' };
+const VENUE = DEV.venue;
+// The dev stand's instrument admins: pinned in the SDK, so the venue must name exactly these.
+const ADMINS: Record<string, string> = { CC: DEV.dso, CBTC: DEV.cbtcRegistrar };
 
 function venue({
   dvpForbidden = false,
@@ -1065,7 +1066,7 @@ describe('refusals that come before anything is signed', () => {
   test('a timeout the stand does not offer for the order', async () => {
     const api = stub({
       'GET /orders/o1': () => takenOrder(),
-      'GET /htlc/dvp/instruments': () => [{ id: 'CBTC' }, { id: 'CC' }],
+      'GET /htlc/dvp/instruments': () => [{ id: 'CBTC', admin: DEV.cbtcRegistrar }, { id: 'CC', admin: DEV.dso }],
       'GET /auth/me': () => ({ id: 'me', partyId: 'party-maker' }),
       'GET /htlc/fee-config': () => ({ feeRate: '0', venue: 'venue::1220' }),
       'GET /htlc/timeout-options': () => ({ timeoutHours: [1, 2] }),
@@ -1132,20 +1133,50 @@ test('acceptIncoming skips what expired and what the filter drops, and one refus
   expect(prepared).toEqual(['refused', 'fine']);
 });
 
+describe('the instrument admin is the SDK’s to pin, not the API’s to name', () => {
+  const ROGUE = 'cbtc-network::1220aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const api = (proposed: unknown[]) => stub({
+    'GET /orders/o1': () => takenOrder(),
+    'GET /htlc/timeout-options': () => ({ timeoutHours: [1] }),
+    'GET /htlc/dvp/instruments': () => [{ id: 'CBTC', admin: ROGUE }, { id: 'CC', admin: DEV.dso }],
+    'GET /auth/me': () => ({ id: 'me', partyId: 'party-maker' }),
+    'GET /htlc/fee-config': () => ({ feeRate: '0', venue: 'venue::1220' }),
+    'POST /htlc/proposals': (body) => (proposed.push(body), refuse(400, 'the test stops at the proposal')),
+  });
+
+  test('an admin the SDK does not list for the instrument is refused before anything is recorded', async () => {
+    const proposed: unknown[] = [];
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api(proposed).fetchImpl, ...fast });
+    await expect(acct.make('o1')).rejects.toThrow(/names cbtc-network::1220a+ as the admin of CBTC, which is not an admin this SDK trusts/);
+    expect(proposed).toEqual([]);
+  });
+
+  test('an admin added with instrumentAdmins is trusted, next to the defaults rather than instead of them', async () => {
+    const proposed: unknown[] = [];
+    const acct = createSelfCustody({
+      baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api(proposed).fetchImpl, ...fast,
+      // Only CBTC is named: CC keeps its pinned DSO, which the stub still answers with.
+      instrumentAdmins: { CBTC: [ROGUE] },
+    });
+    await expect(acct.make('o1')).rejects.toMatchObject({ status: 400 });
+    expect(proposed).toHaveLength(1);
+  });
+});
+
 describe('the timeout the maker’s proposal request carries', () => {
   // What dev offered for an order on 2026-10-02 (`GET /htlc/timeout-options`).
-  const DEV = [0.01667, 0.0833, 0.1667, 0.25, 0.5, 1, 3, 6, 24];
+  const OFFERED_ON_DEV = [0.01667, 0.0833, 0.1667, 0.25, 0.5, 1, 3, 6, 24];
 
   test.each<[string, number[], number | undefined, number]>([
-    ['by default, the shortest that leaves the counter leg time to settle', DEV, undefined, 0.25],
+    ['by default, the shortest that leaves the counter leg time to settle', OFFERED_ON_DEV, undefined, 0.25],
     ['by default, with only short ones offered, the longest of them', [0.01667, 0.0833, 0.1667], undefined, 0.1667],
-    ['asked for explicitly, exactly that one — even one the default would not pick', DEV, 0.01667, 0.01667],
+    ['asked for explicitly, exactly that one — even one the default would not pick', OFFERED_ON_DEV, 0.01667, 0.01667],
   ])('%s', async (_name, offered, timeoutHours, expected) => {
     const asked: unknown[] = [];
     const api = stub({
       'GET /orders/o1': () => takenOrder(),
       'GET /htlc/timeout-options': () => ({ timeoutHours: offered }),
-      'GET /htlc/dvp/instruments': () => [{ id: 'CBTC' }, { id: 'CC' }],
+      'GET /htlc/dvp/instruments': () => [{ id: 'CBTC', admin: DEV.cbtcRegistrar }, { id: 'CC', admin: DEV.dso }],
       'GET /auth/me': () => ({ id: 'me', partyId: 'party-maker' }),
       'GET /htlc/fee-config': () => ({ feeRate: '0', venue: 'venue::1220' }),
       'POST /htlc/proposals': (body) => {

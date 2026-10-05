@@ -24,9 +24,11 @@
 import { signLegs, type OperationLeg } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
+import { DEFAULT_INSTRUMENT_ADMINS, instrumentKey, mergeLists } from './dvp-admins';
 import { DEFAULT_TRUSTED_PACKAGES, units, verifyDvpPrepared, type DvpOperation, type DvpTerms, type Instrument, type TrustedPackages } from './dvp-verify';
 
 export { DEFAULT_TRUSTED_PACKAGES, type TrustedPackages } from './dvp-verify';
+export { DEFAULT_INSTRUMENT_ADMINS } from './dvp-admins';
 import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
@@ -242,7 +244,7 @@ export interface SelfCustodyOptions extends SessionOptions {
   /**
    * The highest platform fee rate this account accepts, as a decimal (`'0.01'` is 1%). The rate
    * comes from `GET /htlc/fee-config`; a trade whose rate is above this ceiling is refused before
-   * anything is recorded or signed. Default `'0.015'` (1.5%, the platform's maximum).
+   * anything is recorded or signed. Default `'0.015'` (1.5%, this SDK's default ceiling).
    */
   maxFeeRate?: string;
   /**
@@ -256,15 +258,19 @@ export interface SelfCustodyOptions extends SessionOptions {
    */
   maxSettlementWindowMs?: number;
   /**
-   * The Daml packages (name and allowed ids) whose code may run in a DvP transaction this account
-   * signs; every node of every transaction must come from one of them. Defaults in
-   * `DEFAULT_TRUSTED_PACKAGES`; a field given here replaces that default. A registry upgrade
-   * brings a new package id: add it here until this SDK ships it.
+   * More package ids for the proposal steps' package (`cancore-swap`), by package name. Added to
+   * `DEFAULT_TRUSTED_PACKAGES`, never replacing it.
    */
   trustedPackages?: Partial<TrustedPackages>;
+  /**
+   * More instrument admins a DvP allocation may run under, by instrument id (`Amulet` for CC).
+   * Added to `DEFAULT_INSTRUMENT_ADMINS`, never replacing it: a network or token the SDK does not
+   * list yet is refused until its admin is added here.
+   */
+  instrumentAdmins?: Record<string, string[]>;
 }
 
-/** The platform's maximum fee rate: the default ceiling a trade's fee is held to. */
+/** This SDK's default ceiling on the platform fee rate (1.5%): a policy of the SDK, not of the platform. */
 export const DEFAULT_MAX_FEE_RATE = '0.015';
 const DEFAULT_SETTLEMENT_WINDOW_MS = 3 * 60 * 60_000;
 
@@ -402,6 +408,10 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   const session = createSession(options);
   const http: Http = createHttp({ baseUrl, request: session.request });
   const orders = createSwapClient(http);
+  const admins = mergeLists(
+    DEFAULT_INSTRUMENT_ADMINS,
+    Object.fromEntries(Object.entries(options.instrumentAdmins ?? {}).map(([id, list]) => [instrumentKey(id), list])),
+  );
   // Every Canton↔Canton order this account places asks for allocation-DvP: that is the only way it settles.
   const swap: SwapClient = {
     ...orders,
@@ -637,6 +647,17 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         order,
       );
     }
+    // The admin is the allocation's trust anchor, so the API's word for it is checked against the SDK's own list.
+    for (const instrument of [source, target]) {
+      if (!(admins[instrumentKey(instrument.id)] ?? []).includes(instrument.admin)) {
+        throw new SettleError(
+          `the stand names ${instrument.admin} as the admin of ${instrument.id}, which is not an admin this SDK trusts for it; ` +
+            'if it is genuinely the registry of this network, add it with instrumentAdmins',
+          null,
+          order,
+        );
+      }
+    }
     return { source, target };
   }
 
@@ -671,7 +692,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       venue,
       feeParty: config?.feeRecipient ?? null,
       feeRate,
-      packages: { ...DEFAULT_TRUSTED_PACKAGES, ...options.trustedPackages },
+      packages: { swap: mergeLists(DEFAULT_TRUSTED_PACKAGES.swap, options.trustedPackages?.swap) },
       now: now(),
       maxWindowMs: options.maxSettlementWindowMs ?? DEFAULT_SETTLEMENT_WINDOW_MS,
     };

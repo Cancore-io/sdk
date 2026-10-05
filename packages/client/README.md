@@ -346,18 +346,22 @@ before the key is used the account takes the transaction's bytes (`preparedTrans
 recomputes the hash from them with Canton's hashing scheme v2 (`@canton-network/core-tx-visualizer`)
 and refuses on any difference. It then walks the whole decoded tree, not just its command:
 
-- every node is reachable from the one command, none is rolled back, and every node runs code
-  from a trusted Daml package, by package name AND package id (`DEFAULT_TRUSTED_PACKAGES`:
-  `cancore-swap` for the proposal steps; Splice Amulet and the Digital Asset utility registry
-  for an allocation). A name alone is not trusted: anyone can upload a package under any name.
-  A registry upgrade brings a new package id; until this SDK ships it, add it with
-  `trustedPackages`;
-- the proposal steps are exactly their own shape (one create; one approval that recreates the
-  proposal);
-- an allocation goes through the token standard's `AllocationFactory` interface, pinned by its
-  package id, on a factory that is disclosed with the transaction, of the very template the
-  command exercises, and signed by the instrument admin — so the code that runs is the code the
-  admin deployed;
+- every node is reachable from the one command, and none is rolled back;
+- the proposal steps run Cancore's own swap package, pinned by package name AND package id
+  (`DEFAULT_TRUSTED_PACKAGES`; add ids with `trustedPackages`) — a name alone is not trusted,
+  since anyone can upload a package under any name — and are exactly their own shape (one
+  create; one approval that recreates the proposal);
+- an allocation's trust anchor is the instrument admin, not a package id: the registries (the
+  DSO for CC, the Digital Asset utility for registry tokens) upgrade their packages on their own
+  schedule. The allocation goes through the token standard's `AllocationFactory` interface,
+  pinned by its package id, on a factory that is disclosed with the transaction, of the very
+  template the command exercises, and signed by the instrument admin. Only the admin can create
+  such a contract, so every node under it runs code the admin deployed. The admin itself is
+  pinned in the SDK per instrument and network (`DEFAULT_INSTRUMENT_ADMINS`: the DSO party for
+  CC; the CBTC, USDCx and HECTO registrars), and the one the stand's
+  `GET /htlc/dvp/instruments` names must be on that list, or the trade is refused before
+  anything is recorded. A network or token not listed yet is added with `instrumentAdmins`
+  (added to the defaults, never replacing them);
 - in an allocation, no node may create a holding owned by anyone but this account; what is
   locked is at most the leg's amount; every holding spent is this account's and disclosed; no
   more of an instrument is spent than the leg locks; and no party appears in any created
@@ -377,8 +381,8 @@ to the order's `targetAmount`. An allocation must hand settlement to the venue a
 trade. Anything else, a transaction it cannot decode included, is a `CeremonyError` at the
 `prepare` stage and nothing is signed.
 
-The fee is held to a ceiling the API cannot move: `maxFeeRate`, default `'0.015'` (1.5%, the
-platform's maximum). A stand that publishes a higher rate is refused — by `make` before the
+The fee is held to a ceiling the API cannot move: `maxFeeRate`, default `'0.015'` (1.5%, this
+SDK's default ceiling). A stand that publishes a higher rate is refused — by `make` before the
 trade is recorded, by `take` before it signs. Pin from your own configuration, too:
 `venuePartyId` (the venue every allocation must hand settlement to) and `feeRecipientPartyId`
 (the only party the fee may be paid to).

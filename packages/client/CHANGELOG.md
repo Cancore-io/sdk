@@ -16,8 +16,8 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
   from the transaction's bytes and the transaction is held to the order (parties, instruments,
   amounts, fee within the published rate, the venue as executor). A transaction that does not
   hold is a `CeremonyError` at the `prepare` stage, and nothing is signed. The whole transaction
-  tree is walked: trusted packages only (by name and id), the step's own shape, a factory signed
-  by the instrument admin, no holding created for or spent from anyone but the signer beyond what
+  tree is walked: the swap package pinned by name and id, the step's own shape, an allocation
+  factory signed by a pinned instrument admin, no holding created for or spent from anyone but the signer beyond what
   the leg locks, no party outside the trade, and deadlines within a bounded window. New dependency:
   `@canton-network/core-tx-visualizer`.
 - `acct.swap.create` and `acct.swap.createForPair` send `dvp: true` for a Canton↔Canton order.
@@ -40,13 +40,16 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
 ### Added
 
 - `SelfCustodyOptions.venuePartyId`: pin the venue every allocation must hand settlement to.
-- `SelfCustodyOptions.maxFeeRate` (default `'0.015'`, `DEFAULT_MAX_FEE_RATE`): the highest
-  platform fee rate the account accepts.
+- `SelfCustodyOptions.maxFeeRate` (default `'0.015'`, `DEFAULT_MAX_FEE_RATE`, this SDK's default
+  ceiling): the highest platform fee rate the account accepts.
 - `SelfCustodyOptions.feeRecipientPartyId`: the only party the platform fee may be paid to.
 - `SelfCustodyOptions.maxSettlementWindowMs` (default 3 hours): how far ahead a proposal's or an
   allocation's deadline may lie.
-- `SelfCustodyOptions.trustedPackages` and `DEFAULT_TRUSTED_PACKAGES`: the Daml packages, by name
-  and package id, whose code may run in a transaction the account signs.
+- `SelfCustodyOptions.trustedPackages` and `DEFAULT_TRUSTED_PACKAGES`: the package ids of the
+  swap package the proposal steps may run, added to the defaults.
+- `SelfCustodyOptions.instrumentAdmins` and `DEFAULT_INSTRUMENT_ADMINS`: the instrument admins an
+  allocation may run under (the factory must be signed by one), pinned per instrument and
+  network, added to the defaults.
 - Refusal codes `DVP_NOT_ALLOWED` and `DVP_FEE_HOLDING_REQUIRED` (`refusalOf`: `dvpNotAllowed`,
   `feeHoldingRequired`).
 

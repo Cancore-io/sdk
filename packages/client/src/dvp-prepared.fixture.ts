@@ -7,12 +7,32 @@ import { PreparedTransaction, type Create, type DamlTransaction_Node, type Value
 import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
 import { ALLOCATION_FACTORY_INTERFACE, DEFAULT_TRUSTED_PACKAGES } from './dvp-verify';
 
-/** Package ids the fixture's nodes carry: the trusted ones, unless a test says otherwise. */
+/**
+ * The ids the dev stand actually runs, read from its own records (dev DB `swap_legs.details`
+ * allocation disclosures and `tokens.admin_party`, 2026-10-05): the honest trees are built from
+ * them, so a verifier pinned to anything else fails these tests.
+ */
 export const PKG = {
   swap: DEFAULT_TRUSTED_PACKAGES.swap['cancore-swap']!.at(-1)!,
-  amulet: DEFAULT_TRUSTED_PACKAGES.registries['splice-amulet']!.at(-1)!,
-  holding: DEFAULT_TRUSTED_PACKAGES.registries['utility-registry-holding-v0']!.at(-1)!,
+  /** splice-amulet: LockedAmulet, AmuletAllocation, ExternalPartyAmuletRules. */
+  amulet: '8fe7573f5535dc5b910a1f24d7d980da0e10ab38f8d29cb397146119bbfb7b3a',
+  /** utility-registry-holding-v0: Holding. */
+  holding: '415a1ec96a9e2839453e9aa1c5c71b6511c008c79511cb6f873e0b7393fe3b92',
+  /** utility-registry-v0: DvpLegAllocation. */
+  registry: '8c654487d9f5fb195fbcdd7b44cd8e365b1ea39c15ae62ce6c7a48343f1210dd',
+  /** utility-registry-app-v0 0.9.2: the allocation factory. */
+  registryApp: '1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b274b8c0',
 };
+
+/** Parties of the dev stand, as its ledger names them. */
+export const DEV = {
+  dso: 'DSO::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a',
+  cbtcRegistrar: 'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff',
+  utilityOperator: 'auth0_007c65f857f1c3d599cb6df73775::1220d2d732d042c281cee80f483ab80f3cbaa4782860ed5f4dc228ab03dedd2ee8f9',
+  venue: 'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b',
+};
+
+const isCc = (id: string) => id === 'Amulet' || id === 'CC';
 
 /** An instant relative to now, as the ledger writes it. */
 const at = (minutes: number) => new Date(Date.now() + minutes * 60_000).toISOString();
@@ -102,7 +122,9 @@ export function proposalAccept(nodeId: string, approver: string, children: strin
   });
 }
 
-export function allocate(nodeId: string, input: { executor: string; swapId: string; legId: string; leg: FixtureLeg; expectedAdmin?: string; factory?: Create; children?: string[]; settleBefore?: string; interfacePackageId?: string }): DamlTransaction_Node {
+export function allocate(nodeId: string, input: { executor: string; swapId: string; legId: string; leg: FixtureLeg; expectedAdmin?: string; factory?: Create; children?: string[]; settleBefore?: string; interfacePackageId?: string; windows?: Window }): DamlTransaction_Node {
+  const times: Record<string, string | null> = { requestedAt: at(0), allocateBefore: at(30), settleBefore: input.settleBefore ?? at(60), ...input.windows };
+  const settlementTimes = Object.fromEntries(Object.entries(times).flatMap(([k, t]) => (t === null ? [] : [[k, v.time(t)] as const])));
   const factory = input.factory ?? factoryContract(input.leg.instrumentId.admin);
   return node(nodeId, {
     oneofKind: 'exercise',
@@ -122,9 +144,7 @@ export function allocate(nodeId: string, input: { executor: string; swapId: stri
           settlement: v.record({
             executor: v.party(input.executor),
             settlementRef: v.record({ id: v.text(input.swapId), cid: v.none() }),
-            requestedAt: v.time(at(0)),
-            allocateBefore: v.time(at(30)),
-            settleBefore: v.time(input.settleBefore ?? at(60)),
+            ...settlementTimes,
             meta: meta(),
           }),
           transferLegId: v.text(input.legId),
@@ -143,22 +163,32 @@ export function allocate(nodeId: string, input: { executor: string; swapId: stri
 
 export const FACTORY_CID = '22'.repeat(34);
 
+/** Settlement instants to replace; null leaves the field out. */
+export type Window = Partial<Record<'requestedAt' | 'allocateBefore' | 'settleBefore', string | null>>;
+
 const createOf = (contractId: string, packageName: string, packageId: string, moduleName: string, entityName: string, argument: Value, signatories: string[]): Create => ({
   lfVersion: '2.1', contractId, packageName, templateId: template(moduleName, entityName, packageId), argument, signatories, stakeholders: signatories,
 });
 
-/** The registry's allocation factory, as the transaction discloses it: signed by `signatory`, naming `admin`. */
-export const factoryContract = (admin: string, over: { packageName?: string; packageId?: string; signatory?: string } = {}) =>
-  createOf(FACTORY_CID, over.packageName ?? 'splice-amulet', over.packageId ?? PKG.amulet, 'Splice.ExternalPartyAmuletRules', 'ExternalPartyAmuletRules',
-    v.record({ dso: v.party(admin) }), [over.signatory ?? admin]);
+/**
+ * The registry's allocation factory, as the transaction discloses it: for CC the DSO's
+ * ExternalPartyAmuletRules, for a registry token the utility's AllocationFactory, signed by the
+ * operator and the registrar. `signatory` replaces the admin among the signers.
+ */
+export const factoryContract = (admin: string, over: { instrument?: string; packageName?: string; packageId?: string; signatory?: string } = {}) =>
+  isCc(over.instrument ?? 'Amulet')
+    ? createOf(FACTORY_CID, over.packageName ?? 'splice-amulet', over.packageId ?? PKG.amulet, 'Splice.ExternalPartyAmuletRules', 'ExternalPartyAmuletRules',
+      v.record({ dso: v.party(admin) }), [over.signatory ?? admin])
+    : createOf(FACTORY_CID, over.packageName ?? 'utility-registry-app-v0', over.packageId ?? PKG.registryApp, 'Utility.Registry.App.V0.Service.AllocationFactory', 'AllocationFactory',
+      v.record({ operator: v.party(DEV.utilityOperator), provider: v.party(admin), registrar: v.party(admin) }), [DEV.utilityOperator, over.signatory ?? admin]);
 
 /** A holding: an Amulet for CC (its amount an ExpiringAmount), a registry holding otherwise. */
 export function holding(
   contractId: string, owner: string, instrument: { id: string; admin: string }, amount: string,
   over: { packageName?: string; packageId?: string; lockedTo?: string } = {},
 ): Create {
-  const lock = over.lockedTo ? v.record({ holders: v.list([v.party(over.lockedTo)]), expiresAt: v.time(at(60)) }) : undefined;
-  if (instrument.id === 'Amulet' || instrument.id === 'CC') {
+  const lock = over.lockedTo ? v.record({ holders: v.list([v.party(over.lockedTo)]), expiresAt: v.time(at(60)), context: v.text('allocation for settlement') }) : undefined;
+  if (isCc(instrument.id)) {
     const amulet = v.record({
       dso: v.party(instrument.admin),
       owner: v.party(owner),
@@ -168,13 +198,17 @@ export function holding(
       ? createOf(contractId, over.packageName ?? 'splice-amulet', over.packageId ?? PKG.amulet, 'Splice.Amulet', 'LockedAmulet', v.record({ amulet, lock }), [instrument.admin, owner])
       : createOf(contractId, over.packageName ?? 'splice-amulet', over.packageId ?? PKG.amulet, 'Splice.Amulet', 'Amulet', amulet, [instrument.admin, owner]);
   }
+  // The dev Holding's own shape: operator, provider, registrar, owner, instrument, label, amount, lock.
   return createOf(contractId, over.packageName ?? 'utility-registry-holding-v0', over.packageId ?? PKG.holding, 'Utility.Registry.Holding.V0.Holding', 'Holding', v.record({
+    operator: v.party(DEV.utilityOperator),
+    provider: v.party(instrument.admin),
     registrar: v.party(instrument.admin),
     owner: v.party(owner),
-    instrument: v.record({ source: v.party(instrument.admin), id: v.text(instrument.id) }),
+    instrument: v.record({ source: v.party(instrument.admin), id: v.text(instrument.id), scheme: v.text('RegistrarInternalScheme') }),
+    label: v.text(''),
     amount: v.numeric(numeric10(amount)),
     lock: lock ? { sum: { oneofKind: 'optional', optional: { value: lock } } } : v.none(),
-  }), [instrument.admin, owner]);
+  }), [DEV.utilityOperator, instrument.admin, owner]);
 }
 
 export const createNode = (nodeId: string, create: Create): DamlTransaction_Node => node(nodeId, { oneofKind: 'create', create });
@@ -214,21 +248,34 @@ export const spend = (nodeId: string, target: Create, actor: string): DamlTransa
 export function allocationTree(input: {
   executor: string; swapId: string; legId: string; leg: FixtureLeg; balance: string;
   extra?: (id: (n: number) => string) => { nodes: DamlTransaction_Node[]; inputs?: Create[] };
-  factory?: Create; settleBefore?: string; interfacePackageId?: string;
+  factory?: Create; settleBefore?: string; interfacePackageId?: string; windows?: Window;
 }) {
   const { leg } = input;
   const owned = holding('33'.repeat(34), leg.sender, leg.instrumentId, input.balance);
   const locked = holding('44'.repeat(34), leg.sender, leg.instrumentId, leg.amount, { lockedTo: input.executor });
   const change = holding('55'.repeat(34), leg.sender, leg.instrumentId, (Number(input.balance) - Number(leg.amount)).toFixed(10));
   const extra = input.extra?.((n) => String(10 + n)) ?? { nodes: [] };
-  const children = ['1', '2', '3', ...extra.nodes.map((n) => n.nodeId)];
-  const factory = input.factory ?? factoryContract(leg.instrumentId.admin);
+  const children = ['1', '2', '3', '4', ...extra.nodes.map((n) => n.nodeId)];
+  const factory = input.factory ?? factoryContract(leg.instrumentId.admin, { instrument: leg.instrumentId.id });
+  // The allocation the registry records: AmuletAllocation for CC, DvpLegAllocation for a registry token.
+  const spec = v.record({
+    settlement: v.record({ executor: v.party(input.executor), settlementRef: v.record({ id: v.text(input.swapId), cid: v.none() }) }),
+    transferLegId: v.text(input.legId),
+    transferLeg: legValue(leg),
+  });
+  const allocation = isCc(leg.instrumentId.id)
+    ? createOf('66'.repeat(34), 'splice-amulet', PKG.amulet, 'Splice.AmuletAllocation', 'AmuletAllocation',
+      v.record({ allocation: spec, lockedAmulet: { sum: { oneofKind: 'contractId', contractId: locked.contractId } } }), [leg.instrumentId.admin, leg.sender])
+    : createOf('66'.repeat(34), 'utility-registry-v0', PKG.registry, 'Utility.Registry.V0.Holding.Allocation', 'DvpLegAllocation',
+      v.record({ operator: v.party(DEV.utilityOperator), registrar: v.party(leg.instrumentId.admin), allocation: spec, lockedHolding: { sum: { oneofKind: 'contractId', contractId: locked.contractId } } }),
+      [DEV.utilityOperator, leg.instrumentId.admin, leg.sender]);
   return {
     nodes: [
       allocate('0', { ...input, factory, children }),
       spend('1', owned, leg.sender),
       createNode('2', locked),
       createNode('3', change),
+      createNode('4', allocation),
       ...extra.nodes,
     ],
     inputs: [factory, owned, ...(extra.inputs ?? [])],

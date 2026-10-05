@@ -1,13 +1,15 @@
 import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
-import { allocationTree, createNode, exercise, factoryContract, holding, prepared, proposalAccept, proposalCreate, spend, spendTransfer, type FixtureLeg } from './dvp-prepared.fixture';
+import { allocationTree, createNode, DEV, exercise, factoryContract, holding, prepared, proposalAccept, proposalCreate, spend, spendTransfer, type FixtureLeg } from './dvp-prepared.fixture';
+import { DEFAULT_INSTRUMENT_ADMINS, mergeLists } from './dvp-admins';
 import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyDvpPrepared, type DvpTerms } from './dvp-verify';
 
 const MAKER = 'maker::1220aa';
 const TAKER = 'taker::1220bb';
-const VENUE = 'venue::1220cc';
+// The dev stand's own parties: the honest trees below are built from what dev actually runs.
+const VENUE = DEV.venue;
 const FEE = 'fee::1220dd';
-const CBTC = { id: 'CBTC', admin: 'cbtc-admin::1220ee' };
-const CC = { id: 'Amulet', admin: 'dso::1220ff' };
+const CBTC = { id: 'CBTC', admin: DEV.cbtcRegistrar };
+const CC = { id: 'Amulet', admin: DEV.dso };
 
 const terms = (party: string, over: Partial<DvpTerms> = {}): DvpTerms => ({
   swapId: 'swap-1', party, maker: MAKER, taker: TAKER,
@@ -66,13 +68,15 @@ describe('the whole tree of an allocation, not just its root', () => {
   const funded = (over: Partial<Tree>) => fund('leg-main', undefined, VENUE, over);
   const withExtra = (extra: Extra) => funded({ extra });
 
-  test('a child node from a package nobody trusts', async () => {
-    const lookalike = holding('66'.repeat(34), MAKER, CBTC, '0', { packageName: 'utility-registry-holding-v0-evil' });
-    await refused(verifyDvpPrepared('dvpAllocateLeg', [await withExtra((id) => ({ nodes: [createNode(id(0), lookalike)] }))], terms(MAKER)), /untrusted package \(utility-registry-holding-v0-evil/);
+  test('an honest dev allocation of CC: ExternalPartyAmuletRules, LockedAmulet and AmuletAllocation from dev’s splice-amulet', async () => {
+    await expect(verifyDvpPrepared('dvpAllocateLeg', [await fund('leg-counter')], terms(TAKER))).resolves.toBeUndefined();
   });
-  test('a child node from a package with a trusted NAME and another id', async () => {
-    const spoofed = holding('66'.repeat(34), MAKER, CBTC, '0', { packageId: 'ab'.repeat(32) });
-    await refused(verifyDvpPrepared('dvpAllocateLeg', [await withExtra((id) => ({ nodes: [createNode(id(0), spoofed)] }))], terms(MAKER)), /untrusted package \(utility-registry-holding-v0 abab/);
+  test('an honest dev allocation of CBTC: the utility factory, Holding and DvpLegAllocation from dev’s registry packages', async () => {
+    await expect(verifyDvpPrepared('dvpAllocateLeg', [await fund('leg-main')], terms(MAKER))).resolves.toBeUndefined();
+  });
+  test('a registry upgrade (a package id nobody listed) under the admin-signed factory is still the admin’s code, and signs', async () => {
+    const upgraded = holding('66'.repeat(34), MAKER, CBTC, '0', { packageId: 'ab'.repeat(32) });
+    await expect(verifyDvpPrepared('dvpAllocateLeg', [await withExtra((id) => ({ nodes: [createNode(id(0), upgraded)] }))], terms(MAKER))).resolves.toBeUndefined();
   });
   test('an extra child that moves another of the signer’s holdings to someone else', async () => {
     const other = holding('77'.repeat(34), MAKER, CBTC, '5');
@@ -109,12 +113,12 @@ describe('the whole tree of an allocation, not just its root', () => {
       /involves thief/,
     );
   });
-  test('a factory whose package has the trusted name and another id', async () => {
-    const factory = factoryContract(CBTC.admin, { packageId: 'cd'.repeat(32) });
-    await refused(verifyDvpPrepared('dvpAllocateLeg', [await funded({ factory })], terms(MAKER)), /untrusted package \(splice-amulet cdcd/);
+  test('a look-alike factory from any package, signed by someone else than the admin', async () => {
+    const factory = factoryContract(CBTC.admin, { instrument: 'CBTC', packageName: 'utility-registry-app-v0', packageId: 'cd'.repeat(32), signatory: THIEF });
+    await refused(verifyDvpPrepared('dvpAllocateLeg', [await funded({ factory })], terms(MAKER)), /not signed by the instrument admin/);
   });
   test('a factory that names the admin in its argument but is signed by someone else', async () => {
-    const factory = factoryContract(CBTC.admin, { signatory: THIEF });
+    const factory = factoryContract(CBTC.admin, { instrument: 'CBTC', signatory: THIEF });
     await refused(verifyDvpPrepared('dvpAllocateLeg', [await funded({ factory })], terms(MAKER)), /not signed by the instrument admin/);
   });
   test('an allocation through a look-alike AllocationFactory interface', async () => {
@@ -123,6 +127,17 @@ describe('the whole tree of an allocation, not just its root', () => {
   test('an allocation whose settle deadline lies further ahead than the account allows', async () => {
     const settleBefore = new Date(Date.now() + 30 * 24 * 3_600_000).toISOString();
     await refused(verifyDvpPrepared('dvpAllocateLeg', [await funded({ settleBefore })], terms(MAKER)), /settleBefore is .* further ahead than this account allows/);
+  });
+  test('an allocation whose funding deadline lies further ahead than the account allows', async () => {
+    const allocateBefore = new Date(Date.now() + 30 * 24 * 3_600_000).toISOString();
+    await refused(verifyDvpPrepared('dvpAllocateLeg', [await funded({ windows: { allocateBefore } })], terms(MAKER)), /allocateBefore is .* further ahead/);
+  });
+  test('an allocation requested at a time further ahead than the account allows', async () => {
+    const requestedAt = new Date(Date.now() + 30 * 24 * 3_600_000).toISOString();
+    await refused(verifyDvpPrepared('dvpAllocateLeg', [await funded({ windows: { requestedAt } })], terms(MAKER)), /requestedAt is .* further ahead/);
+  });
+  test.each(['requestedAt', 'allocateBefore', 'settleBefore'] as const)('an allocation without its %s', async (field) => {
+    await refused(verifyDvpPrepared('dvpAllocateLeg', [await funded({ windows: { [field]: null } })], terms(MAKER)), new RegExp(`${field} is missing`));
   });
 });
 
@@ -177,6 +192,13 @@ describe('anything else is refused before the key is touched', () => {
     await refused(verifyDvpPrepared('dvpCreateProposal', [await create()], terms(MAKER, { packages: { ...DEFAULT_TRUSTED_PACKAGES, swap: { 'cancore-swap': ['00'.repeat(32)] } } })), /untrusted package \(cancore-swap/);
   });
   test('a create signed as an allocation', async () => {
-    await refused(verifyDvpPrepared('dvpAllocateLeg', [await create()], terms(MAKER)), /untrusted package \(cancore-swap/);
+    await refused(verifyDvpPrepared('dvpAllocateLeg', [await create()], terms(MAKER)), /not a token-standard allocation/);
   });
+});
+
+test('overrides add to the pinned lists: one entry added keeps every default', () => {
+  const merged = mergeLists(DEFAULT_INSTRUMENT_ADMINS, { CBTC: ['extra::1220ab'] });
+  expect(merged.CBTC).toEqual([...DEFAULT_INSTRUMENT_ADMINS.CBTC!, 'extra::1220ab']);
+  expect(merged.Amulet).toEqual(DEFAULT_INSTRUMENT_ADMINS.Amulet);
+  expect(mergeLists(DEFAULT_TRUSTED_PACKAGES.swap, { 'cancore-swap': ['ff'.repeat(32)] })['cancore-swap']).toHaveLength(DEFAULT_TRUSTED_PACKAGES.swap['cancore-swap']!.length + 1);
 });
