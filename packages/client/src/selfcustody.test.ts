@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519';
 import { deriveWalletKey, providerFromMnemonic } from '@cancore/wallet';
-import { allocationTree, DEV, prepared, proposalAccept, proposalCreate, type FixtureLeg } from './dvp-prepared.fixture';
+import { allocationTree, createNode, DEV, factoryContract, holding, prepared, proposalAccept, proposalCreate, spend, type FixtureLeg } from './dvp-prepared.fixture';
 import type { FetchLike } from './http';
 import {
   CeremonyError,
@@ -34,7 +34,7 @@ const refuse = (status: number, message: string, errorCode?: string) =>
   json({ statusCode: status, message, ...(errorCode ? { errorCode, code: errorCode } : {}) }, status);
 
 interface Account { publicKey: string; id: string; partyId: string | null; roles: string[]; status: 'ACTIVE' | 'FAILED' }
-interface Leg { legId: string; hash: string; kind: string }
+interface Leg { legId: string; hash: string; kind: string; preparedTransaction?: string }
 interface Pending { type: string; params: Record<string, unknown>; legs: Leg[]; owner: Account }
 
 interface VenueOptions {
@@ -50,10 +50,16 @@ interface VenueOptions {
    * CC; `feeHoldingOther` names another party as the fee payer.
    */
   refuseAt?: { create?: 'notAllowed'; accept?: 'notAllowed' | 'feeHolding' | 'feeHoldingUntilSplit' | 'feeHoldingOther' };
-  /** How many holdings `GET /tokens/balance` reports before any self-send. Default 1. */
-  holdingsCount?: number;
   /** `tokens.send` is refused at prepare. */
   failSend?: boolean;
+  /** `tokens.send` legs carry their transaction bytes: an honest self-send, one that pays a thief, or a fee leg taking 5 CC. */
+  sendBytes?: 'honest' | 'theft' | 'overcharge';
+  /** The taker's CC balance (`GET /tokens/balance`). Default 10000. */
+  balance?: number;
+  /** What `GET /tokens/transfer/estimate-fee` quotes. Default 0.125. */
+  networkFee?: number;
+  /** The fee amount the fee-holding refusal names. Default 24.8756218905. */
+  refusedFee?: string;
   /** What `GET /htlc/fee-config` answers. */
   feeConfig?: Record<string, unknown>;
   /** The taker funds, the maker never does, and the trade expires: the venue's recovery then `released` the taker's allocations, or they are `stillLocked`. */
@@ -96,8 +102,11 @@ function venue({
   staleAllocateOnce = false,
   timeoutAllocateOnce = false,
   coded = false,
-  holdingsCount = 1,
   failSend = false,
+  sendBytes,
+  balance = 10000,
+  networkFee = 0.125,
+  refusedFee = '24.8756218905',
   legacySignUp = false,
   failActivationOnce = false,
 }: VenueOptions = {}) {
@@ -149,7 +158,28 @@ function venue({
   const forbidden = () => refuse(403, 'Allocation-DvP is not open to this account on this stand.');
   const parties = (): string[] => [...new Set(legs.flatMap((l) => [l.sender, l.receiver]))];
 
-  function prepare(owner: Account, type: string, params: Record<string, unknown>): Response {
+  /** A CC self-send as the participant prepares it: the transfer (the split and its change) and the network-fee leg. */
+  async function selfSendLegs(party: string, amount: string, mode: 'honest' | 'theft' | 'overcharge'): Promise<Leg[]> {
+    const cc = { id: 'Amulet', admin: DEV.dso };
+    const rules = factoryContract(DEV.dso);
+    const tx = async (kind: string, input: string, outputs: Array<[string, string]>, ids: string) => {
+      const owned = holding(`${ids}0`.repeat(34), party, cc, input);
+      const root = spend('0', rules, party);
+      const exercise = (root.versionedNode as unknown as { v1: { nodeType: { exercise: { children: string[]; consuming: boolean } } } }).v1.nodeType.exercise;
+      exercise.consuming = false;
+      exercise.children = ['1', ...outputs.map((_, i) => String(i + 2))];
+      const nodes = [root, spend('1', owned, party), ...outputs.map(([owner, value], i) => createNode(String(i + 2), holding(`${ids}${i + 1}`.repeat(34), owner, cc, value)))];
+      const built = await prepared(party, nodes, [rules, owned]);
+      return { legId: `leg-${++seq}`, hash: built.preparedTransactionHash, kind, preparedTransaction: built.preparedTransaction };
+    };
+    const change = (balance - Number(amount)).toFixed(10);
+    return [
+      await tx('transfer', String(balance), [[mode === 'theft' ? 'thief::1220' : party, amount], [party, change]], 'a'),
+      await tx('fee', '10', mode === 'overcharge' ? [[FEE_PARTY, '5'], [party, '5']] : [[FEE_PARTY, '0.125'], [party, '9.875']], 'b'),
+    ];
+  }
+
+  async function prepare(owner: Account, type: string, params: Record<string, unknown>): Promise<Response> {
     let legs: Leg[];
     let meta: Record<string, unknown> = {};
     asked.push(type);
@@ -160,7 +190,8 @@ function venue({
       case 'tokens.accept': legs = [leg('transfer')]; break;
       case 'tokens.send':
         if (failSend) return refuse(400, 'Insufficient holdings for the transfer');
-        legs = [leg('transfer'), leg('fee')];
+        legs = sendBytes ? await selfSendLegs(owner.partyId!, String(params.amount), sendBytes) : [leg('transfer'), leg('fee')];
+        meta = { fee: { recipientPartyId: FEE_PARTY, amount: 0.125 } };
         break;
       // htlc.* among them: a Canton↔Canton order never reaches the HTLC ceremonies.
       default: return refuse(400, `unknown operation ${type}`);
@@ -409,15 +440,15 @@ function venue({
       return refusal(403, 'Allocation-DvP is not open to this account on this stand.', 'DVP_NOT_ALLOWED');
     }
     const selfSent = (party: string | null) => log.some((e) => e.type === 'tokens.send' && e.params.receiverPartyId === party);
-    if (route === 'GET /tokens/transfer/estimate-fee') return json({ networkFee: 0.125, networkFeeToken: 'CC' });
+    if (route === 'GET /tokens/transfer/estimate-fee') return json({ networkFee, networkFeeToken: 'CC' });
     if (route === `GET /tokens/balance/${caller.partyId}/CC`) {
-      return json({ partyId: caller.partyId, instrumentId: 'CC', balance: 10000, holdingsCount: selfSent(caller.partyId) ? 2 : holdingsCount });
+      return json({ partyId: caller.partyId, instrumentId: 'CC', balance, holdingsCount: selfSent(caller.partyId) ? 2 : 1 });
     }
     const feeRefusal = refuseAt.accept === 'feeHolding' || (refuseAt.accept === 'feeHoldingUntilSplit' && !selfSent(caller.partyId)) || refuseAt.accept === 'feeHoldingOther';
     if (route === 'POST /orders/o1/accept' && feeRefusal) {
       const payerPartyId = refuseAt.accept === 'feeHoldingOther' ? 'someone-else::1220' : caller.partyId;
       const prose = `Party ${caller.partyId} needs a separate holding for the platform fee: it must split its balance into at least two holdings, then the trade can be opened.`;
-      return json({ statusCode: 409, message: coded ? 'refused' : prose, payerPartyId, feeAmount: '24.8756218905', ...(coded ? { errorCode: 'DVP_FEE_HOLDING_REQUIRED', code: 'DVP_FEE_HOLDING_REQUIRED' } : {}) }, 409);
+      return json({ statusCode: 409, message: coded ? 'refused' : prose, payerPartyId, feeAmount: refusedFee, ...(coded ? { errorCode: 'DVP_FEE_HOLDING_REQUIRED', code: 'DVP_FEE_HOLDING_REQUIRED' } : {}) }, 409);
     }
     if (route === 'POST /orders') {
       Object.assign(order, body, { dvp: body.dvp === true });
@@ -645,21 +676,24 @@ describe('the paths where a mistake costs money', () => {
   ] as const)('a taker refused at take for want of a fee holding is told to split its own balance (%s)', async (_, coded, accounts) => {
     const api = venue({ refuseAt: { accept: 'feeHolding' }, coded });
     const { taker } = await tradingPair(api, [...accounts]);
-    const error = await taker.take('o1', { autoSplitForFee: false }).catch((e: unknown) => e);
+    const error = await taker.take('o1').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SettleError);
-    expect((error as Error).message).toMatch(/^taking order o1: the platform fee \(24.8756218905\) needs a holding of its own, and this account keeps its CC in a single holding.*then take\(\) again/);
+    expect((error as Error).message).toMatch(/^taking order o1: the platform fee \(24.8756218905\) needs a holding of its own, and this account keeps its CC in a single holding.*splitForFee\(tokenId, '24.8756218905'\).*then take\(\) again/);
+    // autoSplitForFee is off by default: nothing is sent.
     expect(api.asked).not.toContain('tokens.send');
   });
 
   const selfSends = (api: ReturnType<typeof venue>) => api.log.filter((e) => e.type === 'tokens.send');
+  const auto = { autoSplitForFee: true };
 
   test.each([
-    ['by the text of the message', false, [72, 73]],
-    ['by errorCode alone', true, [74, 75]],
-  ] as const)('a single-holding taker splits the fee off itself and the take goes through, end to end (%s)', async (_, coded, accounts) => {
-    const api = venue({ refuseAt: { accept: 'feeHoldingUntilSplit' }, coded });
+    ['by the text of the message, blind', false, [72, 73], undefined],
+    ['by errorCode alone, blind', true, [74, 75], undefined],
+    ['with the send verified from its bytes', true, [88, 89], 'honest'],
+  ] as const)('a single-holding taker that opts in splits the fee off itself and the take goes through, end to end (%s)', async (_, coded, accounts, sendBytes) => {
+    const api = venue({ refuseAt: { accept: 'feeHoldingUntilSplit' }, coded, sendBytes });
     const { maker, taker } = await tradingPair(api, [...accounts]);
-    const [made, taken] = await Promise.all([maker.make('o1'), taker.take('o1')]);
+    const [made, taken] = await Promise.all([maker.make('o1'), taker.take('o1', auto)]);
     expect(made.swap.status).toBe('dvp_settled');
     expect(taken.swap.status).toBe('dvp_settled');
     // Exactly the fee, to itself, CC by omission, signed by the taker's key (the venue verifies every leg).
@@ -667,33 +701,71 @@ describe('the paths where a mistake costs money', () => {
     expect(api.order.opponent).toEqual({ partyId: 'party-taker' });
   });
 
-  test('splitForFee does nothing for a balance already in two holdings, and splits a single one', async () => {
-    const api = venue({ holdingsCount: 2 });
-    const { taker } = await tradingPair(api, [76, 77]);
-    await expect(taker.splitForFee('CC', '24.8756218905')).resolves.toBe(false);
-    expect(api.asked).not.toContain('tokens.send');
+  test('a self-send whose bytes pay anyone else is refused before the key signs it', async () => {
+    const api = venue({ sendBytes: 'theft' });
+    const { taker } = await tradingPair(api, [90, 91]);
+    await expect(taker.splitForFee('CC', '24.8756218905')).rejects.toThrow(/tokens.send prepare failed: refusing to sign tokens.send: leg 0 creates a holding owned by thief::1220/);
+    expect(selfSends(api)).toEqual([]);
+    const greedy = venue({ sendBytes: 'overcharge' });
+    const { taker: other } = await tradingPair(greedy, [98, 99]);
+    await expect(other.splitForFee('CC', '24.8756218905')).rejects.toThrow(/the send costs this account more than 1.1250000000 Amulet/);
+    expect(selfSends(greedy)).toEqual([]);
+  });
 
-    const single = venue();
-    const { taker: other } = await tradingPair(single, [78, 79]);
-    await expect(other.splitForFee('CC', '24.8756218905')).resolves.toBe(true);
-    await expect(other.splitForFee('CC', '24.8756218905')).resolves.toBe(false);
-    expect(selfSends(single)).toHaveLength(1);
+  test('splitForFee splits whenever it is called, and says whether it read what it signed', async () => {
+    const blind = venue();
+    const { taker } = await tradingPair(blind, [76, 77]);
+    await expect(taker.splitForFee('CC', '24.8756218905')).resolves.toEqual({ verified: false });
+    await expect(taker.splitForFee('CC', '24.8756218905')).resolves.toEqual({ verified: false });
+    expect(selfSends(blind)).toHaveLength(2);
+
+    const read = venue({ sendBytes: 'honest' });
+    const { taker: other } = await tradingPair(read, [78, 79]);
+    await expect(other.splitForFee('CC', '24.8756218905')).resolves.toEqual({ verified: true });
   });
 
   test('splitForFee never sends more than the balance covers with the send’s own network fee, and refuses a registry token', async () => {
     const api = venue();
     const { taker } = await tradingPair(api, [80, 81]);
     // 9999.875 + 0.125 network fee = the whole 10000: nothing would be left as a second holding.
-    await expect(taker.splitForFee('CC', '9999.875')).rejects.toThrow(/balance 10000 does not cover it plus the send's network fee 0.125/);
+    await expect(taker.splitForFee('CC', '9999.875')).rejects.toThrow(/insufficient balance — 10000 does not cover the fee, the send's network fee 0.125/);
     await expect(taker.splitForFee('CBTC', '0.0001')).rejects.toThrow(/refuses a CBTC send to oneself/);
     await expect(taker.splitForFee('CC', '0')).rejects.toThrow(RangeError);
+    expect(api.asked).not.toContain('tokens.send');
+  });
+
+  test.each([
+    ['negative', -1, /is not a decimal/],
+    ['past exponent notation', 1e21, /is not a decimal/],
+    ['more than the fee itself', 30, /network fee estimate 30 is more than the fee itself/],
+  ] as const)('a network fee estimate that is %s is refused, and nothing is sent', async (_, networkFee, message) => {
+    const api = venue({ networkFee });
+    const { taker } = await tradingPair(api, [92, 93]);
+    await expect(taker.splitForFee('CC', '24.8756218905')).rejects.toThrow(message);
+    expect(api.asked).not.toContain('tokens.send');
+  });
+
+  test('a split whose change would not cover the trade leg is refused before anything is sent', async () => {
+    // 5000.05 − 24.8756218905 − 0.125 = 4975.0493781095 left, short of the 4975.1243781095 leg.
+    const api = venue({ refuseAt: { accept: 'feeHoldingUntilSplit' }, coded: true, balance: 5000.05 });
+    const { taker } = await tradingPair(api, [94, 95]);
+    await expect(taker.take('o1', auto)).rejects.toThrow(/splitting 24.8756218905 off failed: .*insufficient balance — 5000.05 does not cover the fee, the send's network fee 0.125 and the trade leg/);
+    expect(api.asked).not.toContain('tokens.send');
+    expect(api.takes()).toBe(1);
+  });
+
+  test('a fee the venue names above the order × the account’s fee ceiling is never split', async () => {
+    // 5000 × 0.015 = 75: a refusal asking for 100 is not the platform fee of this order.
+    const api = venue({ refuseAt: { accept: 'feeHoldingUntilSplit' }, coded: true, refusedFee: '100' });
+    const { taker } = await tradingPair(api, [96, 97]);
+    await expect(taker.take('o1', auto)).rejects.toThrow(/fee holding of 100, more than 5000 × this account's ceiling 0.015.*nothing was split/);
     expect(api.asked).not.toContain('tokens.send');
   });
 
   test('a split that fails ends the take with a SettleError, and nothing is tried twice', async () => {
     const api = venue({ refuseAt: { accept: 'feeHoldingUntilSplit' }, coded: true, failSend: true });
     const { taker } = await tradingPair(api, [82, 83]);
-    const error = await taker.take('o1').catch((e: unknown) => e);
+    const error = await taker.take('o1', auto).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SettleError);
     expect((error as Error).message).toMatch(/taking order o1: the platform fee needs a holding of its own, and splitting 24.8756218905 off failed: tokens.send prepare failed: .*Insufficient holdings/);
     expect(api.asked.filter((t) => t === 'tokens.send')).toHaveLength(1);
@@ -704,7 +776,7 @@ describe('the paths where a mistake costs money', () => {
   test('a venue that still refuses after the split ends the take: one split, one retry', async () => {
     const api = venue({ refuseAt: { accept: 'feeHolding' }, coded: true });
     const { taker } = await tradingPair(api, [84, 85]);
-    const error = await taker.take('o1').catch((e: unknown) => e);
+    const error = await taker.take('o1', auto).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SettleError);
     expect((error as Error).message).toMatch(/taking order o1: refused again after splitting 24.8756218905 into a holding of its own/);
     expect(api.takes()).toBe(2);
@@ -714,7 +786,7 @@ describe('the paths where a mistake costs money', () => {
   test('when the fee payer is the counterparty, the taker splits nothing and is told who must', async () => {
     const api = venue({ refuseAt: { accept: 'feeHoldingOther' }, coded: true });
     const { taker } = await tradingPair(api, [86, 87]);
-    const error = await taker.take('o1').catch((e: unknown) => e);
+    const error = await taker.take('o1', auto).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SettleError);
     expect((error as Error).message).toMatch(/someone-else::1220 \(the taker\) keeps its CC in a single holding/);
     expect(api.asked).not.toContain('tokens.send');

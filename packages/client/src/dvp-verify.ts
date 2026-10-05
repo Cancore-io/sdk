@@ -94,7 +94,7 @@ export interface PreparedToSign {
 
 /** A prepared transaction the account refuses to sign, with the reason. */
 export class UnverifiedTransactionError extends Error {
-  constructor(operation: DvpOperation, reason: string) {
+  constructor(operation: DvpOperation | 'tokens.send', reason: string) {
     super(`refusing to sign ${operation}: ${reason}`);
     this.name = 'UnverifiedTransactionError';
   }
@@ -543,3 +543,107 @@ export function units(decimal: unknown): bigint {
 }
 
 const ceilDiv = (a: bigint, b: bigint) => a / b + (a % b === 0n ? 0n : 1n);
+
+/** A self-send the account asked for, to split a holding off its own balance. Amounts are decimal strings. */
+export interface SelfSendTerms {
+  /** The account signing, and the only owner of every holding the send may leave behind. */
+  party: string;
+  /** The instrument's pinned admins (the DSO for CC): a choice on a contract one signs is the registry's own. */
+  admins: string[];
+  instrument: string;
+  /** The holding the send must create for the account, to the unit. */
+  amount: string;
+  /** The most the whole ceremony may cost the account: the network fee, plus whatever its fee leg pays. */
+  maxCost: string;
+  /** Who the ceremony's `fee` leg may pay, if anybody. */
+  feeRecipient: string | null;
+}
+
+/**
+ * Verify every transaction of a `tokens.send` to the account itself before its key signs them:
+ * each hash recomputed from its bytes, each acting as the account alone, every node reachable from
+ * one root with no rollback, and, over all of them:
+ *  - every holding created is the account's, except what the `fee` leg pays its recipient;
+ *  - every holding spent is the account's, and one the transaction discloses or creates;
+ *  - a contract the account signs is its own holding, and a choice it acts in is on a contract
+ *    it or the instrument admin signs;
+ *  - one holding of exactly `amount` is created for the account (the split itself);
+ *  - what the account ends up poorer, the fee leg's payment included, is at most `maxCost`.
+ */
+export async function verifySelfSendPrepared(legs: Array<PreparedToSign & { kind: string }>, terms: SelfSendTerms): Promise<void> {
+  const refuse = (reason: string): never => {
+    throw new UnverifiedTransactionError('tokens.send', reason);
+  };
+  if (legs.length === 0) refuse('the API prepared nothing to sign');
+  if (units(terms.amount) <= 0n || units(terms.maxCost) < 0n) refuse('the amount or the cost bound is not a decimal of at most ten places');
+  const key = instrumentKey(terms.instrument);
+  let net = 0n;
+  let split = false;
+  for (const [index, leg] of legs.entries()) {
+    const fee = leg.kind === 'fee';
+    if (!fee && leg.kind !== 'transfer') refuse(`leg ${index} is a ${leg.kind}, not a transfer or its fee`);
+    if (!leg.preparedTransaction) refuse(`leg ${index} came without its bytes, so its hash cannot be checked`);
+    let decoded: PreparedTransaction;
+    try {
+      decoded = decodePreparedTransaction(leg.preparedTransaction!);
+      if ((await hashPreparedTransaction(leg.preparedTransaction!, 'base64')) !== leg.preparedTransactionHash) refuse(`leg ${index} does not hash to the hash it came with`);
+    } catch (err) {
+      if (err instanceof UnverifiedTransactionError) throw err;
+      return refuse(`leg ${index} cannot be read (${err instanceof Error ? err.message : String(err)})`);
+    }
+    const actAs = decoded.metadata?.submitterInfo?.actAs ?? [];
+    if (actAs.length !== 1 || actAs[0] !== terms.party) refuse(`leg ${index} acts as ${actAs.join(', ') || 'nobody'}, not as this account`);
+    const transaction = decoded.transaction;
+    if (!transaction || transaction.roots.length !== 1) refuse(`leg ${index} is not one command`);
+    const nodes: Nodes = new Map(transaction!.nodes.map((n) => [n.nodeId, n]));
+    const reachable = new Set<string>();
+    const visit = (id: string) => {
+      const type = nodeType(nodes.get(id));
+      if (reachable.has(id) || !type || type.oneofKind === 'rollback') refuse(`leg ${index}: node ${id} is reached twice, unreadable or rolled back`);
+      reachable.add(id);
+      if (type!.oneofKind === 'exercise') type!.exercise.children.forEach(visit);
+    };
+    visit(transaction!.roots[0]!);
+    if (reachable.size !== nodes.size) refuse(`leg ${index} carries nodes outside its command`);
+    const inputs = inputContracts(decoded);
+    const created = new Map<string, Create>();
+    for (const node of nodes.values()) {
+      const type = nodeType(node)!;
+      if (type.oneofKind === 'create') created.set(type.create.contractId, type.create);
+    }
+    for (const node of nodes.values()) {
+      const type = nodeType(node)!;
+      if (type.oneofKind !== 'create' && type.oneofKind !== 'exercise' && type.oneofKind !== 'fetch') refuse(`leg ${index}: node ${node.nodeId} is of an unexpected kind`);
+      if (type.oneofKind === 'exercise') {
+        const target = inputs.get(type.exercise.contractId) ?? created.get(type.exercise.contractId);
+        if (type.exercise.actingParties.includes(terms.party)) {
+          if (!target) refuse(`leg ${index}: this account acts on a contract the transaction does not disclose`);
+          if (!target!.signatories.includes(terms.party) && !target!.signatories.some((p) => terms.admins.includes(p))) {
+            refuse(`leg ${index}: this account acts on a ${target!.templateId?.entityName ?? 'contract'} neither it nor the instrument admin signs`);
+          }
+        }
+        if (!type.exercise.consuming) continue;
+        if (!target) refuse(`leg ${index} consumes contract ${type.exercise.contractId.slice(0, 16)}… without disclosing what it is`);
+        const holding = holdingOf(target!);
+        if (!holding) continue;
+        if (holding.owner !== terms.party) refuse(`leg ${index} spends a holding owned by ${holding.owner}`);
+        if (holding.instrument !== key) refuse(`leg ${index} spends ${holding.instrument}, not ${key}`);
+        net += holding.amount;
+        continue;
+      }
+      if (type.oneofKind !== 'create') continue;
+      const holding = holdingOf(type.create);
+      if (holding && holding.instrument !== key) refuse(`leg ${index} creates ${holding.instrument}, not ${key}`);
+      if (holding?.owner === terms.party && !holding.locked) {
+        net -= holding.amount;
+        if (!fee && holding.amount === units(terms.amount)) split = true;
+        continue;
+      }
+      if (holding && fee && holding.owner === terms.feeRecipient && !holding.locked) continue;
+      if (holding) refuse(`leg ${index} creates a${holding.locked ? ' locked' : ''} holding owned by ${holding.owner}`);
+      if (type.create.signatories.includes(terms.party)) refuse(`leg ${index} creates a ${type.create.templateId?.entityName ?? 'contract'} signed by this account that is not its holding`);
+    }
+  }
+  if (!split) refuse(`no holding of exactly ${terms.amount} ${terms.instrument} is created for this account`);
+  if (net > units(terms.maxCost)) refuse(`the send costs this account more than ${terms.maxCost} ${terms.instrument}`);
+}
