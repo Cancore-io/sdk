@@ -13,6 +13,8 @@ describe('refusalOf, by code', () => {
     ['COUNTER_PROPOSAL_ALREADY_ACCEPTED', 'counterAlreadyAccepted'],
     ['SWAP_ALREADY_SETTLED', 'alreadySettled'],
     ['ACCOUNT_NOT_FOUND', 'retrySignIn'],
+    ['DVP_NOT_ALLOWED', 'dvpNotAllowed'],
+    ['DVP_FEE_HOLDING_REQUIRED', 'feeHoldingRequired'],
   ])('%s is %s, whatever the text says', (code, expected) => {
     expect(refusalOf(refused(400, { errorCode: code, code, message: 'wording the API may change tomorrow' }))).toBe(expected);
   });
@@ -44,6 +46,7 @@ describe('refusalOf, with no code on the body (prose fallback for a gateway that
     [400, 'Counter proposal not found on swap', 'counterNotReady'],
     [400, 'Counter proposal already accepted', 'counterAlreadyAccepted'],
     [400, 'swap is both_claimed', 'alreadySettled'],
+    [409, 'The platform fee needs a holding of its own: split your balance into at least two holdings and retry.', 'feeHoldingRequired'],
   ])('%i "%s" is %s', (status, message, expected) => {
     expect(refusalOf(refused(status, { statusCode: status, message }))).toBe(expected);
   });

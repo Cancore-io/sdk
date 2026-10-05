@@ -11,6 +11,8 @@ export type Refusal =
   | 'alreadySettled'
   | 'redeemInviteSeparately'
   | 'retrySignIn'
+  | 'dvpNotAllowed'
+  | 'feeHoldingRequired'
   | 'other';
 
 function assertNever(value: never): never {
@@ -40,6 +42,12 @@ export function refusalForCode(code: SdkErrorCode): Refusal {
     /** At sign-in, possibly a key the gateway knows but answered too slowly for (see `login` in session.ts). */
     case 'ACCOUNT_NOT_FOUND':
       return 'retrySignIn';
+    /** The stand has not opened allocation-DvP to this account: a Canton↔Canton trade cannot settle, and is never moved to HTLC. */
+    case 'DVP_NOT_ALLOWED':
+      return 'dvpNotAllowed';
+    /** The DvP fee leg needs a holding of its own on the paying (taker) side: that side splits its balance, then the trade is retried. */
+    case 'DVP_FEE_HOLDING_REQUIRED':
+      return 'feeHoldingRequired';
     case 'REQUIRES_INTERACTIVE_SUBMISSION':
     case 'SWAP_FEE_PENDING':
     case 'SWAP_FEE_ALREADY_PAID':
@@ -73,11 +81,10 @@ export function refusalForCode(code: SdkErrorCode): Refusal {
 
 /*
  * ponytail: prose fallback, only for a body with no code this client knows (none,
- * or one from a newer gateway). Dev serves a code for all six (CAN-1955: backend
- * #1874/#1875/#1877/#1907); mainnet does not until those ship dev → stage → main,
- * and names the conditions only in its message. Drop the message fallback once
- * mainnet serves CAN-1955 codes — and the invite rule with it, once mainnet's
- * sign-up takes `inviteCode` (CAN-1593, backend #1846/#1888).
+ * or one from a newer gateway). Dev serves a code for all six; mainnet does not
+ * until those ship there, and names the conditions only in its message. Drop the
+ * message fallback once mainnet serves the codes — and the invite rule with it,
+ * once mainnet's sign-up takes `inviteCode`.
  */
 function refusalFromProse(err: CancoreApiError): Refusal {
   const says = (status: number, text: string) => err.status === status && JSON.stringify(err.body ?? '').includes(text);
@@ -87,6 +94,7 @@ function refusalFromProse(err: CancoreApiError): Refusal {
   if (says(400, 'Counter proposal not found')) return 'counterNotReady';
   if (says(400, 'Counter proposal already accepted')) return 'counterAlreadyAccepted';
   if (says(400, 'both_claimed')) return 'alreadySettled';
+  if (says(409, 'needs a holding of its own') || says(409, 'separate holding for the platform fee')) return 'feeHoldingRequired';
   // A sign-up DTO without the field: the whitelisting validation pipe names it.
   if (says(400, 'property inviteCode should not exist')) return 'redeemInviteSeparately';
   return 'other';

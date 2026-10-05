@@ -81,7 +81,7 @@ async function routesTheClientCalls(): Promise<string[]> {
     acct.swapState('o1'), acct.incoming(), acct.acceptIncoming(), acct.consolidate(), acct.balance('CC'),
     acct.send({ receiverPartyId: 'p', amount: '1' }),
     acct.cashback.summary(), acct.cashback.claims(), acct.cashback.claim(), acct.cashback.collect(),
-    acct.faucet(),
+    acct.faucet(), acct.swap.createForPair({ tradingPairId: 'o1', sourceAmount: '1', targetAmount: '1' }),
   ]);
   await Promise.all([
     s.listOpen(), s.listMine(), s.get('o1'), s.create(offer),
@@ -154,7 +154,7 @@ const REQUEST_FIELDS: Record<string, string[]> = {
     'targetNetwork', 'targetTokenAddress', 'targetTokenName', 'targetAmount',
     'expirationHours', 'description', 'dvp',
   ],
-  CreatePairOrderDto: ['tradingPairId', 'sourceAmount', 'targetAmount', 'side', 'expirationHours', 'description'],
+  CreatePairOrderDto: ['tradingPairId', 'sourceAmount', 'targetAmount', 'side', 'expirationHours', 'description', 'dvp'],
   BridgeEstimateCostDto: ['operation', 'amount'],
   BridgeMintDirectDto: ['amount', 'evmTxHash', 'sourceChainId', 'retryOf'],
   BridgeBurnDirectDto: ['amount', 'ethRecipient', 'destinationChainId', 'retryOf'],
@@ -171,6 +171,13 @@ const REQUEST_FIELDS: Record<string, string[]> = {
   SubmitOperationDto: ['operationId', 'signatures'],
   OperationSignatureDto: ['legId', 'signature'],
   ClaimHtlcDto: ['preimage'],
+  // The DvP path of make/take (selfcustody.ts): the maker's trade request, and every signed step.
+  CreateProposalDto: ['orderId', 'dvp', 'tokenId', 'amount', 'receiver', 'hashLock', 'timeoutHours'],
+  PrepareCommandDto: ['operationType', 'params'],
+  SignedCommandDto: [
+    'commandId', 'operationType', 'actAs', 'commands', 'signature', 'signatures', 'publicKey',
+    'applicationId', 'serializedForSigning', 'hashForSigning',
+  ],
   QuoteDto: ['pairConfigId', 'sourceAmount'],
   ExecuteDto: ['quoteToken'],
   FaucetClaimRequestDto: ['agreementSignature', 'agreementTimestamp'],
@@ -242,8 +249,19 @@ const RESPONSE_FIELDS: Record<string, string[]> = {
   UserResponseDto: ['id', 'partyId', 'partyName', 'roles', 'status', 'signingMethod', 'email', 'walletPublicKey'],
   HtlcSwapResponseDto: [
     'id', 'status', 'sender', 'receiver', 'tokenId', 'amount', 'counterTokenId', 'counterAmount',
-    'hashLock', 'timeout', 'counterTimeout', 'rejectReason',
+    'hashLock', 'timeout', 'counterTimeout', 'rejectReason', 'proposalContractId',
   ],
+  FullSwapInfoDto: ['swap', 'legs', 'dvp'],
+  SwapLegDto: ['role', 'sender', 'receiver', 'tokenId', 'amount', 'lockRef', 'status'],
+  TradingPairResponseDto: ['baseToken', 'quoteToken'],
+  TradingPairTokenDto: ['network'],
+  DvpSwapFactsDto: ['tradeCid', 'awaitingApprovalFrom', 'allocateBefore', 'settleBefore'],
+  DvpInstrumentDto: ['id'],
+  PreparedCommandDto: [
+    'commandId', 'operationType', 'actAs', 'commands', 'applicationId', 'serializedForSigning',
+    'hashForSigning', 'preparedTransactionHash', 'preparedTransactions',
+  ],
+  SignedCommandResponseDto: ['success', 'error', 'errorCode'],
   TransferInstructionResponseDto: [
     'contractId', 'templateId', 'transferId', 'sender', 'receiver', 'amount', 'instrumentId',
     'instrumentAdmin', 'memo', 'requestedAt', 'executeBefore', 'swapContext',

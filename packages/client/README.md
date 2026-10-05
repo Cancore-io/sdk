@@ -218,7 +218,7 @@ plain one before showing it to anyone.
 saw, so you are never left with a bare timeout.
 
 **What `accept` does not do.** It is a POST. Where the swap that follows needs your
-signature — self-custody HTLC legs — that ceremony runs through
+signature — self-custody legs — that ceremony runs through
 `@cancore/wallet/operations` (or the dApp connector), not through this client.
 
 ## `@cancore/client/selfcustody`
@@ -249,11 +249,9 @@ if (!accepted && requiredVersion) await acct.acceptTerms(requiredVersion, docume
 
 // The maker places the order and settles its side; the taker (another account, another
 // process, another partner) settles the other. Each call returns when the swap has settled
-// and this account's proceeds are in.
+// (allocation-DvP, see "How a trade settles") and this account's proceeds are in.
 const order = await acct.swap.createForPair({ tradingPairId, sourceAmount: '100', targetAmount: '20' });
-// timeoutHours is optional: by default make picks the shortest offered timeout of at least
-// 15 minutes (see "How a trade settles"). Set it to one GET /htlc/timeout-options offers.
-const { swap, delivery } = await acct.make(order.id, { timeoutHours: 0.25 });
+const { swap, flow } = await acct.make(order.id);   // swap.status 'dvp_settled', flow 'dvp'
 // …elsewhere: await other.take(order.id);
 
 // Registry-token deliveries and cashback payouts wait for this account's signature.
@@ -269,8 +267,9 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `me()` | `GET /auth/me` |
 | `onboard()` | `wallet.topology` (the party, signed by the key) then `tokens.preapproval` (CC receipts, venue-paid); skips what exists |
 | `legalStatus()` / `acceptTerms(version, documents)` | `GET` / signed `POST /legal/consent` |
-| `make(orderId, options?)` | maker: wait for the taker, open the swap, accept the counter leg, claim — both legs settle at once |
-| `take(orderId, options?)` | taker: accept the order, fund the counter leg, wait for settlement, accept the delivery |
+| `make(orderId, options?)` | maker: wait for the taker, record the DvP trade and sign its proposal, fund its leg after the taker, wait for the atomic settle |
+| `take(orderId, options?)` | taker: accept the order, sign the approval, fund its legs (the platform fee among them), wait for the atomic settle |
+| `swap.create(input)` / `swap.createForPair(input)` | `POST /orders` / `POST /orders/pair`; a Canton↔Canton order is always sent with `dvp: true` (for a pair, read from `GET /trading-pairs/{id}`) |
 | `incoming()` / `accept(transfer)` / `acceptIncoming(filter?)` | transfers waiting for this account's signature |
 | `send(input)` / `consolidate(tokenId?)` / `balance(instrumentId)` | move, merge and read this account's tokens |
 | `faucet()` | test CC from the dev stand's faucet, see [Test funds on dev](#test-funds-on-dev) |
@@ -300,25 +299,144 @@ finish), call `register` again with the same key and the same code: the API know
 as this key's and grants the role again instead of refusing it as used. A code the API does
 not know, or one another key redeemed, is refused (`404` / `409`) — the SDK never signs up
 without it. A `409` "Public key already registered" means an earlier sign-up went through:
-`login()` instead. Against a gateway whose sign-up does not take the code yet (mainnet until
-backend CAN-1593 ships there) `register` signs up without it and then redeems it with
+`login()` instead. Against a gateway whose sign-up does not take the code yet (mainnet, until the
+invite-on-sign-up change ships there) `register` signs up without it and then redeems it with
 `POST /auth/redeem-invite`, as before.
 
-**How a trade settles.** `make` opens the swap with a fresh preimage, locking the order's
-source amount grossed up by the fee rate so the taker receives exactly what the order says;
-`take` does the same for the counter leg. The counter leg gets half of whatever is left of the
-main leg's timeout when the taker accepts, and each side of a swap takes about 70 seconds end
-to end on dev. So by default `make` asks for the shortest timeout the stand offers that is at
-least 15 minutes, or the longest offered if none is that long. The 1-minute option left the
-counter leg 30–50 seconds, and the swap ended `counter_refunded`. An explicit `timeoutHours`
-is used as given, provided the stand offers it for the order. The preimage is also stored with the API,
-encrypted for the maker, so a maker process that dies mid-swap resumes it with another
-`make(order.id)`. The API releases it only once the taker's counter leg is locked, so a
-resumed `make` reads it back right before the claim, not when it starts. A CC delivery
-arrives through the account's preapproval (`delivery:
-'direct'`); a registry-token delivery (CBTC, USDCx) is a transfer this account accepts
-(`'accepted'`), or `'pending'` if it did not arrive within `deliveryWaitMs` — the next
-`acceptIncoming` takes it.
+**How a trade settles.** Every Canton↔Canton order settles through allocation-DvP: both legs
+(and the platform fee) move in one ledger transaction, with no hash lock, no escrow and no
+preimage. There is no HTLC fallback. The stand refuses at the earliest point it can, and each
+refusal is a `SettleError` that says why, before anything is signed:
+
+- DvP not open to the account (`403`, `DVP_NOT_ALLOWED`): when placing the order
+  (`swap.create` / `createForPair`), when taking it (`take`), or when the maker records the trade.
+- The pair not enabled for DvP on this stand: `make` refuses before the trade is recorded.
+- The taker's wallet keeps the order's target token in a single holding
+  (`DVP_FEE_HOLDING_REQUIRED`): the platform fee needs a holding of its own. `take` is refused
+  and says this account must split that balance into at least two holdings, then `take()`
+  again; against an older gateway that refuses only when the maker records the trade, `make`
+  names the taker's party and the fee instead. This client has no split operation of its own:
+  the taker can send part of the balance to itself.
+
+A swap an earlier client opened as HTLC is refused the same way, and so is an order placed
+without `dvp: true`: the order's own choice decides the mechanic, so place Canton↔Canton orders
+with `acct.swap.create` / `createForPair`, which ask for DvP.
+
+```
+maker (make)                          API / venue                          taker (take)
+  │                                       │   POST /orders/{id}/accept          │
+  │  GET  /htlc/dvp/instruments           │◄────────────────────────────────────│
+  │  POST /htlc/proposals {dvp:true}  ───►│  draft: legs main, counter, fee     │
+  │  sign dvpCreateProposal ─────────────►│  SwapProposal (maker's signature)   │
+  │                                       │◄──────────── sign dvpAcceptProposal │
+  │                                       │  venue: proposal → SwapTrade        │
+  │                                       │◄─ sign dvpAllocateLeg (counter+fee) │
+  │  sign dvpAllocateLeg (main) ─────────►│  all legs allocated                 │
+  │                                       │  venue: SwapTrade_Settle (1 tx)     │
+  │  GET /htlc/swaps/{id}/full … dvp_settled                    … dvp_settled │
+```
+
+Each `sign …` is `POST /canton-wallet/htlc/prepare-command` with `{ operationType, params: {
+swapId } }`, a check of every prepared transaction the API returns, the account's signature
+over each one's hash (the same signer as every other ceremony), and
+`POST /canton-wallet/htlc/submit-signed`. The account names the swap and nothing else.
+
+**Nothing is signed unread.** The signature covers the hash of a prepared transaction, so
+before the key is used the account takes the transaction's bytes (`preparedTransactions[]`),
+recomputes the hash from them with Canton's hashing scheme v2 (`@canton-network/core-tx-visualizer`)
+and refuses on any difference. It then walks the whole decoded tree, not just its command:
+
+- every node is reachable from the one command, and none is rolled back;
+- the proposal steps run Cancore's own swap package, pinned by package name AND package id
+  (`DEFAULT_TRUSTED_PACKAGES`; add ids with `trustedPackages`) — a name alone is not trusted,
+  since anyone can upload a package under any name — and are exactly their own shape (one
+  create; one approval that recreates the proposal);
+- an allocation's trust anchor is the instrument admin, not a package id: the registries (the
+  DSO for CC, the Digital Asset utility for registry tokens) upgrade their packages on their own
+  schedule. The allocation goes through the token standard's `AllocationFactory` interface,
+  pinned by its package id, on a factory that is disclosed with the transaction, of the same
+  template (package name, module, entity; under a Daml upgrade it may run a newer package id
+  than it was created with) and signed by the instrument admin. The admin is pinned in the SDK
+  per network and instrument (`DEFAULT_INSTRUMENT_ADMINS`: the DSO party for CC; the CBTC,
+  USDCx and HECTO registrars), and the one the stand's `GET /htlc/dvp/instruments` names must
+  be on that network's list, or the trade is refused before anything is recorded. The network
+  comes from `baseUrl` for the Cancore API hosts (`API_NETWORKS`) or from the `network` option;
+  an unknown host without it trusts no admin. A token not listed for the network is added with
+  `instrumentAdmins` (added to the defaults, never replacing them). CC on testnet has no pinned
+  admin yet: pass the testnet DSO party there;
+- a contract the signer signs must look like its own holding (an `owner` that is the signer and
+  an amount) or be the allocation record of exactly this leg (executor, trade, sender, receiver,
+  amount and instrument as checked), and a choice it acts in must be the factory's, one on its
+  own holding, or one on a contract the instrument admin signed. This is a check of shape, not of
+  template: a contract shaped like a holding passes it whatever its code;
+- in an allocation, no node may create a holding owned by anyone but this account; what is
+  locked is at most the leg's amount, of the leg's instrument and nothing else; every holding spent is this account's and disclosed; no
+  more of an instrument is spent than the leg locks; and no party appears in any created
+  contract or choice argument but this account, the venue, the leg's receiver and the
+  registry's own parties (the factory's signatories and stakeholders) — a transfer, lock or
+  instruction for anyone else is refused;
+- every deadline in it (the proposal's expiry, the allocation's `allocateBefore` and
+  `settleBefore`) lies between now (less five minutes of clock skew) and
+  `maxSettlementWindowMs` ahead (default 3 hours), and `requestedAt` within that window before
+  now: the API cannot keep the account's funds locked for longer.
+
+**What this guarantees, and what it still trusts.** Against a dishonest or compromised API, the
+account signs only: the proposal and approval of exactly the order's trade (its amounts,
+instruments, parties, the venue, and a fee no higher than the ceiling), and allocations that,
+as far as the transaction shows, lock at most each leg's amount for this trade's executor, under
+a factory its pinned instrument admin signed, with no holding leaving the account in that
+transaction and no deadline beyond the window.
+
+What it trusts is each listed instrument admin, and with more than its token. The allocation
+record the account signs is executed later (`Allocation_ExecuteTransfer`, triggered by the
+executor) by the admin's code with the sender's authority, and the admin's code also runs the
+allocation itself. Checking the transaction cannot bound that code: an honest admin's
+participants re-run it and refuse anything else, but a dishonest admin on the list could act
+with the account's authority. Trade only tokens whose registry you trust that far, and add
+admins with `instrumentAdmins` only on the same terms.
+
+It then holds the command to the trade it agreed to, read from the order,
+`GET /htlc/dvp/instruments` (each instrument's admin) and `GET /htlc/fee-config` (fee rate, fee
+receiver and venue), never from the swap row: the transaction acts as this account only, is
+the one command the step is made of, and every leg in it is the order's main leg, the counter
+leg, or a platform fee within the published rate, with the counter leg and the fee adding up
+to the order's `targetAmount`. An allocation must hand settlement to the venue and name this
+trade. Anything else, a transaction it cannot decode included, is a `CeremonyError` at the
+`prepare` stage and nothing is signed.
+
+The fee is held to a ceiling the API cannot move: `maxFeeRate`, default `'0.015'` (1.5%, this
+SDK's default ceiling). A stand that publishes a higher rate is refused — by `make` before the
+trade is recorded, by `take` before it signs. Pin from your own configuration, too:
+`venuePartyId` (the venue every allocation must hand settlement to) and `feeRecipientPartyId`
+(the only party the fee may be paid to).
+
+What the account signs:
+
+| Step | Who | What the signature authorises |
+| --- | --- | --- |
+| `dvpCreateProposal` | maker | the trade proposal with every leg's terms, approved by the maker |
+| `dvpAcceptProposal` | taker | the taker's approval of those terms |
+| `dvpAllocateLeg` | taker, then maker | one allocation per leg it sends, each locking the leg's holdings for the venue to settle; the taker signs two, its leg and the platform fee |
+
+The platform fee is a third leg carved out of the leg delivering to the maker (the same rate as
+HTLC), so the taker's outflow is the order's `targetAmount` and the maker receives it net of
+the fee. The taker funds first and the maker last, so neither side hands the other a free
+option. The venue settles once every leg is funded. Proceeds land with the settle itself, so
+`delivery` is always `'direct'` and nothing is left to accept. A trade nobody funds in time
+ends `dvp_expired`, a `SettleError` on both sides.
+
+**Who releases a funded leg that never settles.** The taker funds first, so a maker that never
+funds leaves the taker's allocations (its leg and the fee) locked. They stay locked until the
+trade's settle deadline; a few minutes after it the venue's recovery aborts the trade
+(`SwapTrade_Abort`), which cancels every allocation still live in the same transaction, and
+the swap reads `dvp_expired`. The `SettleError` the taker gets says which happened: released,
+or still locked. If recovery could not release them (the abort was refused, or the trade was
+already gone), they are still locked: this client has no way to withdraw a DvP allocation
+itself yet, so contact Cancore support with the swap id. A `take` whose own deadline runs out
+first says the allocations stay locked until the venue releases them.
+`make` and `take` resume: an order whose trade exists picks up at the first step not yet
+done. `timeoutHours` only fills the proposal request's required field (one the stand offers,
+by default the shortest of at least 15 minutes); the trade's windows are the venue's.
 
 **What it retries, and what it does not.** A submit is never re-sent blindly: the only
 retries are the ones the API says are safe. Every decision is taken on the refusal's
@@ -327,20 +445,19 @@ retries are the ones the API says are safe. Every decision is taken on the refus
 | `errorCode` | What the account does |
 | --- | --- |
 | `SUBMISSION_TIMEOUT_RETRYABLE` | resubmits the same signatures (up to twice) — never prepares again; Canton deduplicates on the command id |
-| `PREPARED_SUBMISSION_EXPIRED` | prepares and signs again, once — only where that is safe (the counter-leg accepts of `make` / `take`) |
-| `WALLET_TOO_FRAGMENTED` | merges the token's holdings (up to three passes), then prepares the swap once more |
-| `COUNTER_PROPOSAL_NOT_READY` | waits a poll and asks again, until the deadline |
-| `COUNTER_PROPOSAL_ALREADY_ACCEPTED` | counts the counter leg as accepted |
-| `SWAP_ALREADY_SETTLED` | counts the claim as done and finishes the settle |
-| `ACCOUNT_NOT_FOUND` (at sign-in) | asks for a new challenge up to twice more, 1 s then 2 s apart. The gateway answers an existing key with this 404 when its challenge is slow (backend BUG-551), most often right after sign-up; three in a row surfaces it |
+| `PREPARED_SUBMISSION_EXPIRED` | prepares and signs again, once — only where that is safe (the DvP steps of `make` / `take`) |
+| `DVP_NOT_ALLOWED` | a `SettleError` wherever it comes (placing, taking, recording the trade): DvP is not open to this account on this stand |
+| `DVP_FEE_HOLDING_REQUIRED` | a `SettleError` saying who must split its balance: at `take`, this account (then `take()` again); at `make`, the taker (then `make()` again) |
+| `ACCOUNT_NOT_FOUND` (at sign-in) | asks for a new challenge up to twice more, 1 s then 2 s apart. The gateway answers an existing key with this 404 when its challenge is slow (a known gateway issue), most often right after sign-up; three in a row surfaces it |
 | anything else | surfaces it |
 
-A gateway that sends no code for the first six (mainnet, until backend CAN-1955 ships there) is
+A gateway that sends no code for the first two (mainnet, until the error-code registry ships there) is
 read by the text of its message instead. Mainnet already sends `ACCOUNT_NOT_FOUND` as a code. What surfaces is a `CeremonyError` (with what the
 prepare had said, and the refusal's `errorCode` when it carried one) or a `SettleError` (with
 the last state seen).
 
-Canton↔Canton orders only: an EVM leg is locked by an EVM key, which is not this signer.
+Canton↔Canton orders only: an EVM leg is locked by an EVM key, which is not this signer, so
+`make` / `take` refuse an order with one before anything is signed.
 
 ### Test funds on dev
 
@@ -474,7 +591,7 @@ try {
 ```
 
 `errorCode` needs a gateway that publishes the registry: backend
-[#1907](https://github.com/Cancore-io/backend/pull/1907) (CAN-1955). On an older one it is
+[#1907](https://github.com/Cancore-io/backend/pull/1907). On an older one it is
 `undefined` for every body that has no `code`, and the self-custody account falls back to the text
 of the message for the six swap refusals it acts on.
 

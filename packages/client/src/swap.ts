@@ -106,6 +106,7 @@ export interface CreatePairOrderInput {
   side?: 'buy' | 'sell';
   expirationHours?: number;
   description?: string;
+  dvp?: boolean;
 }
 
 /** `PaginatedOrderResponseDto` */
