@@ -310,9 +310,13 @@ preimage. There is no HTLC fallback. If the stand has not opened DvP to the acco
 `SettleError` that says so before anything is recorded, and the order is never settled as
 HTLC. If the taker's wallet keeps the order's target token in a single holding, the stand
 refuses the trade (`DVP_FEE_HOLDING_REQUIRED`): the platform fee needs a holding of its own.
-`make` then ends with a `SettleError` saying the taker has to split that balance into at least
-two holdings, after which `make` is run again. A swap an
-earlier client opened as HTLC is refused the same way.
+`make` then ends with a `SettleError` naming the taker's party and the fee, and saying the
+taker has to split that balance into at least two holdings, after which `make` is run again.
+This client has no split operation of its own: the taker can send part of the balance to
+itself. A swap an
+earlier client opened as HTLC is refused the same way, and so is an order placed without
+`dvp: true`: the order's own choice decides the mechanic, so place Canton↔Canton orders with
+`acct.swap.create` / `createForPair`, which ask for DvP.
 
 ```
 maker (make)                          API / venue                          taker (take)

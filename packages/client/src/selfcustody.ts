@@ -550,11 +550,14 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       );
     }
     if (refusal === 'feeHoldingRequired') {
-      // Only the taker can fix this, and only with its own key: the maker cannot act on it.
+      // The payer is the side owing the leg that delivers to the maker — the taker — and only its own
+      // key can split its balance: this side can only say who has to act. Nothing was recorded.
+      const body = (err as CancoreApiError).body as { payerPartyId?: string; feeAmount?: string } | undefined;
+      const payer = body?.payerPartyId ?? 'the taker';
       return new SettleError(
-        `order ${order.id}: the taker's wallet holds its ${order.targetTokenName || order.targetTokenAddress} in a single holding, ` +
-          'and the platform fee needs a holding of its own. The taker splits that balance into at least two holdings ' +
-          '(for example by sending part of it to itself); then run make() again.',
+        `order ${order.id}: the platform fee${body?.feeAmount ? ` (${body.feeAmount})` : ''} needs a holding of its own, and ${payer} ` +
+          `(the taker) keeps its ${order.targetTokenName || order.targetTokenAddress} in a single holding. The taker splits that balance ` +
+          'into at least two holdings (for example by sending part of it to itself); then run make() again.',
         null,
         order,
       );
@@ -616,6 +619,15 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
 
   /** The maker records the trade: `POST /htlc/proposals` with `dvp: true`, which the backend turns into a DvP draft. */
   async function proposeDvp(order: Order, opts: SettleOptions): Promise<string> {
+    // The order's own choice decides the mechanic: one placed without `dvp: true` would be opened as HTLC.
+    if (!order.dvp) {
+      throw new SettleError(
+        `order ${order.id} was placed without dvp: true, so the venue would settle it as HTLC; Canton↔Canton orders settle ` +
+          'only through DvP here. Cancel it and place it again with acct.swap.create / createForPair.',
+        null,
+        order,
+      );
+    }
     await dvpInstruments(order);
     const receiver = (order.opponent as { partyId?: string | null } | undefined)?.partyId;
     if (!receiver) throw new SettleError(`order ${order.id} has no counterparty party yet`, null, order);

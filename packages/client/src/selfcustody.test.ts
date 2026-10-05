@@ -106,7 +106,7 @@ function venue({
     id: 'o1', status: 'open', sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceAmount: '0.01',
     targetNetwork: 'canton', targetTokenAddress: 'CC', targetAmount: '5000',
     initiatorUserId: 'maker', opponentUserId: null as string | null, opponent: null as { partyId: string } | null,
-    initiator: null as { partyId: string } | null, swapId: null as string | null, dvp: false,
+    initiator: null as { partyId: string } | null, swapId: null as string | null, dvp: true,
   };
   let swap: Record<string, unknown> | null = null;
   let legs: DvpLeg[] = [];
@@ -173,7 +173,9 @@ function venue({
     }
     if (dvpForbidden) return forbidden();
     if (feeHoldingRequired) {
-      return refusal(409, 'The platform fee needs a holding of its own: split your balance into at least two holdings and retry.', 'DVP_FEE_HOLDING_REQUIRED');
+      const payerPartyId = order.opponent!.partyId;
+      const prose = `Party ${payerPartyId} needs a separate holding for the platform fee: it must split its balance into at least two holdings, then the trade can be opened.`;
+      return json({ statusCode: 409, message: coded ? 'refused' : prose, payerPartyId, feeAmount: '24.8756218905', ...(coded ? { errorCode: 'DVP_FEE_HOLDING_REQUIRED', code: 'DVP_FEE_HOLDING_REQUIRED' } : {}) }, 409);
     }
     const maker = [...byKey.values()].find((a) => a.id === order.initiatorUserId)!;
     order.initiator = { partyId: maker.partyId! };
@@ -565,8 +567,17 @@ describe('the paths where a mistake costs money', () => {
     await taker.swap.accept('o1');
     const error = await maker.make('o1').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SettleError);
-    expect((error as Error).message).toMatch(/taker's wallet holds its CC in a single holding.*splits that balance/);
+    expect((error as Error).message).toMatch(/platform fee \(24.8756218905\) needs a holding of its own, and party-taker \(the taker\) keeps its CC in a single holding.*splits that balance/);
     expect(dvpSteps(api)).toEqual([]);
+  });
+
+  test('an order placed without dvp: true is refused before anything is recorded — it would be opened as HTLC', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [56, 57]);
+    await taker.swap.accept('o1');
+    api.order.dvp = false;
+    await expect(maker.make('o1')).rejects.toThrow(/placed without dvp: true.*place it again/);
+    expect(api.proposals).toEqual([]);
   });
 
   test('a stand that does not settle the pair through DvP is refused before anything is recorded', async () => {
@@ -954,7 +965,7 @@ function stub(handlers: Record<string, (body: Record<string, unknown>) => unknow
 const takenOrder = (over: Record<string, unknown> = {}) => ({
   id: 'o1', status: 'accepted', sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceAmount: '0.01',
   targetNetwork: 'canton', targetTokenAddress: 'CC', targetAmount: '5000', initiatorUserId: 'maker',
-  opponentUserId: 'me', opponent: { partyId: 'party-taker' }, swapId: null, ...over,
+  opponentUserId: 'me', opponent: { partyId: 'party-taker' }, swapId: null, dvp: true, ...over,
 });
 
 describe('refusals that come before anything is signed', () => {

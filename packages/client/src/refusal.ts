@@ -94,7 +94,7 @@ function refusalFromProse(err: CancoreApiError): Refusal {
   if (says(400, 'Counter proposal not found')) return 'counterNotReady';
   if (says(400, 'Counter proposal already accepted')) return 'counterAlreadyAccepted';
   if (says(400, 'both_claimed')) return 'alreadySettled';
-  if (says(409, 'needs a holding of its own')) return 'feeHoldingRequired';
+  if (says(409, 'needs a holding of its own') || says(409, 'separate holding for the platform fee')) return 'feeHoldingRequired';
   // A sign-up DTO without the field: the whitelisting validation pipe names it.
   if (says(400, 'property inviteCode should not exist')) return 'redeemInviteSeparately';
   return 'other';

@@ -40,6 +40,8 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
 - **Finish open HTLC swaps with 0.6.x.** A swap 0.6.x opened as HTLC is refused by 0.7.0
   (`SettleError`, "is an HTLC swap") on both sides. Run `make` / `take` from 0.6.x until it is
   settled or refunded, then upgrade.
+- An order placed without `dvp: true` (by 0.6.x, or by hand) is refused by `make`: cancel it
+  and place it again with `acct.swap.create` / `createForPair`.
 - Code that branched on `delivery === 'accepted' | 'pending'` after `make` / `take` can drop
   those branches.
 - Use against a live stand needs the stand to open DvP to self-custody accounts and to enable
