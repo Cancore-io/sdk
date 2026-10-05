@@ -218,7 +218,7 @@ plain one before showing it to anyone.
 saw, so you are never left with a bare timeout.
 
 **What `accept` does not do.** It is a POST. Where the swap that follows needs your
-signature — self-custody HTLC legs — that ceremony runs through
+signature — self-custody legs — that ceremony runs through
 `@cancore/wallet/operations` (or the dApp connector), not through this client.
 
 ## `@cancore/client/selfcustody`
@@ -249,11 +249,9 @@ if (!accepted && requiredVersion) await acct.acceptTerms(requiredVersion, docume
 
 // The maker places the order and settles its side; the taker (another account, another
 // process, another partner) settles the other. Each call returns when the swap has settled
-// and this account's proceeds are in.
+// (allocation-DvP, see "How a trade settles") and this account's proceeds are in.
 const order = await acct.swap.createForPair({ tradingPairId, sourceAmount: '100', targetAmount: '20' });
-// timeoutHours is optional: by default make picks the shortest offered timeout of at least
-// 15 minutes (see "How a trade settles"). Set it to one GET /htlc/timeout-options offers.
-const { swap, delivery } = await acct.make(order.id, { timeoutHours: 0.25 });
+const { swap, flow } = await acct.make(order.id);   // swap.status 'dvp_settled', flow 'dvp'
 // …elsewhere: await other.take(order.id);
 
 // Registry-token deliveries and cashback payouts wait for this account's signature.
@@ -269,8 +267,9 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `me()` | `GET /auth/me` |
 | `onboard()` | `wallet.topology` (the party, signed by the key) then `tokens.preapproval` (CC receipts, venue-paid); skips what exists |
 | `legalStatus()` / `acceptTerms(version, documents)` | `GET` / signed `POST /legal/consent` |
-| `make(orderId, options?)` | maker: wait for the taker, open the swap, accept the counter leg, claim — both legs settle at once |
-| `take(orderId, options?)` | taker: accept the order, fund the counter leg, wait for settlement, accept the delivery |
+| `make(orderId, options?)` | maker: wait for the taker, record the DvP trade and sign its proposal, fund its leg after the taker, wait for the atomic settle |
+| `take(orderId, options?)` | taker: accept the order, sign the approval, fund its legs (the platform fee among them), wait for the atomic settle |
+| `swap.create(input)` | `POST /orders`; a Canton↔Canton order is always sent with `dvp: true` |
 | `incoming()` / `accept(transfer)` / `acceptIncoming(filter?)` | transfers waiting for this account's signature |
 | `send(input)` / `consolidate(tokenId?)` / `balance(instrumentId)` | move, merge and read this account's tokens |
 | `faucet()` | test CC from the dev stand's faucet, see [Test funds on dev](#test-funds-on-dev) |
@@ -304,21 +303,48 @@ without it. A `409` "Public key already registered" means an earlier sign-up wen
 backend CAN-1593 ships there) `register` signs up without it and then redeems it with
 `POST /auth/redeem-invite`, as before.
 
-**How a trade settles.** `make` opens the swap with a fresh preimage, locking the order's
-source amount grossed up by the fee rate so the taker receives exactly what the order says;
-`take` does the same for the counter leg. The counter leg gets half of whatever is left of the
-main leg's timeout when the taker accepts, and each side of a swap takes about 70 seconds end
-to end on dev. So by default `make` asks for the shortest timeout the stand offers that is at
-least 15 minutes, or the longest offered if none is that long. The 1-minute option left the
-counter leg 30–50 seconds, and the swap ended `counter_refunded`. An explicit `timeoutHours`
-is used as given, provided the stand offers it for the order. The preimage is also stored with the API,
-encrypted for the maker, so a maker process that dies mid-swap resumes it with another
-`make(order.id)`. The API releases it only once the taker's counter leg is locked, so a
-resumed `make` reads it back right before the claim, not when it starts. A CC delivery
-arrives through the account's preapproval (`delivery:
-'direct'`); a registry-token delivery (CBTC, USDCx) is a transfer this account accepts
-(`'accepted'`), or `'pending'` if it did not arrive within `deliveryWaitMs` — the next
-`acceptIncoming` takes it.
+**How a trade settles.** Every Canton↔Canton order settles through allocation-DvP: both legs
+(and the platform fee) move in one ledger transaction, with no hash lock, no escrow and no
+preimage. There is no HTLC fallback. If the stand has not opened DvP to the account (`403`) or
+does not settle the pair through DvP (`SWAP_FLOW_DVP_PAIRS`), `make` ends with a `SettleError`
+that says so before anything is recorded, and the order is never settled as HTLC. A swap an
+earlier client opened as HTLC is refused the same way.
+
+```
+maker (make)                          API / venue                          taker (take)
+  │                                       │   POST /orders/{id}/accept          │
+  │  GET  /htlc/dvp/instruments           │◄────────────────────────────────────│
+  │  POST /htlc/proposals {dvp:true}  ───►│  draft: legs main, counter, fee     │
+  │  sign dvpCreateProposal ─────────────►│  SwapProposal (maker's signature)   │
+  │                                       │◄──────────── sign dvpAcceptProposal │
+  │                                       │  venue: proposal → SwapTrade        │
+  │                                       │◄─ sign dvpAllocateLeg (counter+fee) │
+  │  sign dvpAllocateLeg (main) ─────────►│  all legs allocated                 │
+  │                                       │  venue: SwapTrade_Settle (1 tx)     │
+  │  GET /htlc/swaps/{id}/full … dvp_settled                    … dvp_settled │
+```
+
+Each `sign …` is `POST /canton-wallet/htlc/prepare-command` with `{ operationType, params: {
+swapId } }`, the account's signature over every prepared-transaction hash the API returns (the
+same signer as every other ceremony), and `POST /canton-wallet/htlc/submit-signed`. The API
+builds every command from its own record of the swap; the account names the swap and nothing
+else. What the account signs:
+
+| Step | Who | What the signature authorises |
+| --- | --- | --- |
+| `dvpCreateProposal` | maker | the trade proposal with every leg's terms, approved by the maker |
+| `dvpAcceptProposal` | taker | the taker's approval of those terms |
+| `dvpAllocateLeg` | taker, then maker | one allocation per leg it sends, each locking the leg's holdings for the venue to settle; the taker signs two, its leg and the platform fee |
+
+The platform fee is a third leg carved out of the leg delivering to the maker (the same rate as
+HTLC), so the taker's outflow is the order's `targetAmount` and the maker receives it net of
+the fee. The taker funds first and the maker last, so neither side hands the other a free
+option. The venue settles once every leg is funded. Proceeds land with the settle itself, so
+`delivery` is always `'direct'` and nothing is left to accept. A trade nobody funds in time
+ends `dvp_expired` (a `SettleError` on both sides), and the venue releases what was locked.
+`make` and `take` resume: an order whose trade exists picks up at the first step not yet
+done. `timeoutHours` only fills the proposal request's required field (one the stand offers,
+by default the shortest of at least 15 minutes); the trade's windows are the venue's.
 
 **What it retries, and what it does not.** A submit is never re-sent blindly: the only
 retries are the ones the API says are safe. Every decision is taken on the refusal's
@@ -327,20 +353,17 @@ retries are the ones the API says are safe. Every decision is taken on the refus
 | `errorCode` | What the account does |
 | --- | --- |
 | `SUBMISSION_TIMEOUT_RETRYABLE` | resubmits the same signatures (up to twice) — never prepares again; Canton deduplicates on the command id |
-| `PREPARED_SUBMISSION_EXPIRED` | prepares and signs again, once — only where that is safe (the counter-leg accepts of `make` / `take`) |
-| `WALLET_TOO_FRAGMENTED` | merges the token's holdings (up to three passes), then prepares the swap once more |
-| `COUNTER_PROPOSAL_NOT_READY` | waits a poll and asks again, until the deadline |
-| `COUNTER_PROPOSAL_ALREADY_ACCEPTED` | counts the counter leg as accepted |
-| `SWAP_ALREADY_SETTLED` | counts the claim as done and finishes the settle |
+| `PREPARED_SUBMISSION_EXPIRED` | prepares and signs again, once — only where that is safe (the DvP steps of `make` / `take`) |
 | `ACCOUNT_NOT_FOUND` (at sign-in) | asks for a new challenge up to twice more, 1 s then 2 s apart. The gateway answers an existing key with this 404 when its challenge is slow (backend BUG-551), most often right after sign-up; three in a row surfaces it |
 | anything else | surfaces it |
 
-A gateway that sends no code for the first six (mainnet, until backend CAN-1955 ships there) is
+A gateway that sends no code for the first two (mainnet, until backend CAN-1955 ships there) is
 read by the text of its message instead. Mainnet already sends `ACCOUNT_NOT_FOUND` as a code. What surfaces is a `CeremonyError` (with what the
 prepare had said, and the refusal's `errorCode` when it carried one) or a `SettleError` (with
 the last state seen).
 
-Canton↔Canton orders only: an EVM leg is locked by an EVM key, which is not this signer.
+Canton↔Canton orders only: an EVM leg is locked by an EVM key, which is not this signer, so
+`make` / `take` refuse an order with one before anything is signed.
 
 ### Test funds on dev
 

@@ -171,6 +171,13 @@ const REQUEST_FIELDS: Record<string, string[]> = {
   SubmitOperationDto: ['operationId', 'signatures'],
   OperationSignatureDto: ['legId', 'signature'],
   ClaimHtlcDto: ['preimage'],
+  // The DvP path of make/take (selfcustody.ts): the maker's trade request, and every signed step.
+  CreateProposalDto: ['orderId', 'dvp', 'tokenId', 'amount', 'receiver', 'hashLock', 'timeoutHours'],
+  PrepareCommandDto: ['operationType', 'params'],
+  SignedCommandDto: [
+    'commandId', 'operationType', 'actAs', 'commands', 'signature', 'signatures', 'publicKey',
+    'applicationId', 'serializedForSigning', 'hashForSigning',
+  ],
   QuoteDto: ['pairConfigId', 'sourceAmount'],
   ExecuteDto: ['quoteToken'],
   FaucetClaimRequestDto: ['agreementSignature', 'agreementTimestamp'],
@@ -242,8 +249,17 @@ const RESPONSE_FIELDS: Record<string, string[]> = {
   UserResponseDto: ['id', 'partyId', 'partyName', 'roles', 'status', 'signingMethod', 'email', 'walletPublicKey'],
   HtlcSwapResponseDto: [
     'id', 'status', 'sender', 'receiver', 'tokenId', 'amount', 'counterTokenId', 'counterAmount',
-    'hashLock', 'timeout', 'counterTimeout', 'rejectReason',
+    'hashLock', 'timeout', 'counterTimeout', 'rejectReason', 'proposalContractId',
   ],
+  FullSwapInfoDto: ['swap', 'legs', 'dvp'],
+  SwapLegDto: ['role', 'sender', 'receiver', 'tokenId', 'amount', 'lockRef'],
+  DvpSwapFactsDto: ['tradeCid', 'awaitingApprovalFrom', 'allocateBefore', 'settleBefore'],
+  DvpInstrumentDto: ['id'],
+  PreparedCommandDto: [
+    'commandId', 'operationType', 'actAs', 'commands', 'applicationId', 'serializedForSigning',
+    'hashForSigning', 'preparedTransactionHash', 'preparedTransactions',
+  ],
+  SignedCommandResponseDto: ['success', 'error', 'errorCode'],
   TransferInstructionResponseDto: [
     'contractId', 'templateId', 'transferId', 'sender', 'receiver', 'amount', 'instrumentId',
     'instrumentAdmin', 'memo', 'requestedAt', 'executeBefore', 'swapContext',

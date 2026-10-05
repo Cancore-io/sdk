@@ -15,8 +15,11 @@
  *   const order = await acct.swap.createForPair({ tradingPairId, sourceAmount, targetAmount });
  *   await acct.make(order.id);                     // … while the other side runs take(order.id)
  *
- * Canton↔Canton orders only: an EVM leg is locked by an EVM key, which is not
- * this signer.
+ * Canton↔Canton orders only, and every one of them settles through
+ * allocation-DvP: both legs move in one ledger transaction, with no hash lock
+ * and no escrow. There is no HTLC fallback — a stand that will not settle the
+ * pair through DvP is a SettleError. An EVM leg is locked by an EVM key, which
+ * is not this signer.
  */
 import { signLegs, type OperationLeg } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
@@ -44,10 +47,13 @@ export type HtlcStatus =
   | 'counter_refunded'
   | 'escrow_compromised';
 
-/** `HtlcSwapResponseDto`, the fields a trading program reads. */
+/** Where an allocation-DvP swap is: proposed, legs funded, settled in one transaction — or expired. */
+export type DvpStatus = 'dvp_proposed' | 'dvp_allocated_partial' | 'dvp_allocated' | 'dvp_settled' | 'dvp_expired';
+
+/** `HtlcSwapResponseDto`, the fields a trading program reads. A DvP swap is the same row with a `dvp_*` status. */
 export interface HtlcSwap {
   id: string;
-  status: HtlcStatus;
+  status: HtlcStatus | DvpStatus;
   sender: string;
   receiver: string;
   tokenId: string;
@@ -58,7 +64,20 @@ export interface HtlcSwap {
   timeout: string;
   counterTimeout?: string | null;
   rejectReason?: string | null;
+  /** The proposal this swap waits on; for DvP, set once the maker has signed it. */
+  proposalContractId?: string | null;
 }
+
+/** `FullSwapInfoDto` (`GET /htlc/swaps/{id}/full`), the fields DvP settlement reads. */
+export interface SwapInfo {
+  swap: HtlcSwap;
+  /** `SwapLegDto`: a DvP swap's trade legs, plus the platform-fee leg when one is charged. */
+  legs: Array<{ role: 'main' | 'counter' | 'fee'; sender: string; receiver: string; tokenId?: string | null; amount?: string | null; lockRef?: string | null }>;
+  /** `DvpSwapFactsDto`; null for an HTLC swap. */
+  dvp: { tradeCid?: string | null; awaitingApprovalFrom: string[]; allocateBefore?: string | null; settleBefore?: string | null } | null;
+}
+
+const isDvp = (swap: HtlcSwap) => swap.status.startsWith('dvp_');
 
 /** `TransferInstructionResponseDto` — a transfer waiting for this account to accept it. */
 export interface IncomingTransfer {
@@ -143,7 +162,7 @@ export interface Executed<TMeta = Record<string, unknown>> {
 
 /** How a settled swap's proceeds reached this account. */
 export type Delivery =
-  /** CC arrives through the account's own TransferPreapproval — nothing to accept. */
+  /** The holdings landed with the settle itself (every DvP settle, CC or registry token) — nothing to accept. */
   | 'direct'
   /** A registry-token delivery, accepted by this account's signature. */
   | 'accepted'
@@ -153,17 +172,20 @@ export type Delivery =
 export interface Settled {
   swap: HtlcSwap;
   delivery: Delivery;
+  /** How it settled: always allocation-DvP for a Canton↔Canton order. */
+  flow: 'dvp';
 }
 
 export interface SettleOptions {
   /**
-   * HTLC timeout; must be one the stand offers for the order. Default: the shortest
-   * offered that is at least 15 minutes, or the longest offered when none is.
+   * The `timeoutHours` the maker's proposal request carries; must be one the stand offers
+   * for the order. A DvP trade's own windows are the venue's, so this only satisfies the
+   * request. Default: the shortest offered of at least 15 minutes, or the longest offered.
    */
   timeoutHours?: number;
   /** Give up waiting on the other side after this long. Default 45 minutes. */
   deadlineMs?: number;
-  /** After settlement, how long to wait for a registry-token delivery to accept. Default 5 minutes. */
+  /** @deprecated DvP settlement delivers the holdings themselves; there is nothing to wait for. */
   deliveryWaitMs?: number;
 }
 
@@ -225,16 +247,17 @@ export interface SelfCustodyAccount {
   execute<TMeta = Record<string, unknown>>(type: string, params?: Record<string, unknown>): Promise<Executed<TMeta>>;
   swapState(swapId: string): Promise<HtlcSwap>;
   /**
-   * The maker's whole side of a Canton↔Canton order: wait until it is taken,
-   * open the swap (the escrowed main leg), accept the taker's counter leg and
-   * claim — which settles both legs at once. Resumes an order whose swap
-   * already exists.
+   * The maker's whole side of a Canton↔Canton order, through allocation-DvP:
+   * wait until it is taken, record the trade (`POST /htlc/proposals`, `dvp: true`)
+   * and sign its proposal, wait for the taker to approve and fund, fund its own
+   * leg, then wait for the venue's atomic settle. Resumes an order whose swap
+   * already exists, skipping every step already done.
    */
   make(orderId: string, options?: SettleOptions): Promise<Settled>;
   /**
    * The taker's whole side: take the order (unless this account already has),
-   * wait for the maker's swap, accept it and fund the counter leg, then wait for
-   * settlement and accept the delivery.
+   * wait for the maker's proposal, sign its approval, fund its own legs (the
+   * platform fee among them) once the trade exists, then wait for the settle.
    */
   take(orderId: string, options?: SettleOptions): Promise<Settled>;
   /** Transfers waiting for this account's acceptance. */
@@ -274,48 +297,54 @@ export interface SelfCustodyAccount {
 }
 
 const DEFAULT_DEADLINE_MS = 45 * 60_000;
+/** How long `cashback.collect` waits for payouts by default. */
 const DEFAULT_DELIVERY_WAIT_MS = 5 * 60_000;
-/** Incoming transfers are read from the venue's ledger view — poll them slower than the swap. */
-const INCOMING_POLL_FACTOR = 3;
-/** Merge passes before one retry of a swap the API refused as too fragmented (one pass merges ~40 holdings). */
-const HEAL_MERGE_PASSES = 3;
 /**
- * The shortest HTLC timeout `make` picks on its own. The counter leg gets half of
- * what is left of the main leg when the taker accepts (backend `requireCounterTimeout`),
- * and one side of a self-custody swap took ~70 s end to end on dev (2026-10-02: take
- * 72.6 s, make 68.6 s). The 1-minute option left the counter leg 30–50 s and ended
- * `counter_refunded` 3 runs out of 3; 15 minutes leaves it ~7 minutes.
+ * The shortest proposal timeout `make` picks on its own. A DvP trade's own windows
+ * are set by the venue, not by this value; `POST /htlc/proposals` still validates
+ * `timeoutHours` against the offered list, so one of them is sent.
  */
 const MIN_DEFAULT_TIMEOUT_HOURS = 0.25;
 
-/** Still waiting on the taker: the maker's swap exists, nobody has accepted it. */
-const BEFORE_TAKER: ReadonlySet<HtlcStatus> = new Set(['init_request_created', 'proposal_created']);
-/** The maker's counter accept has landed — or the swap is past it. */
-const COUNTER_DONE: ReadonlySet<HtlcStatus> = new Set(['counter_accepted', 'main_claimed', 'htlc_claimed', 'both_claimed']);
-/** A swap that will not settle any more. */
-const DEAD: ReadonlySet<HtlcStatus> = new Set([
-  'proposal_rejected',
-  'proposal_cancelled',
-  'htlc_refunded',
-  'counter_refunded',
-  'escrow_compromised',
-]);
+type DvpOperation = 'dvpCreateProposal' | 'dvpAcceptProposal' | 'dvpAllocateLeg';
+
+/** `PreparedCommandDto`, the fields a self-custody signer reads. */
+interface PreparedCommand {
+  commandId: string;
+  operationType: DvpOperation;
+  actAs: string[];
+  commands: unknown[];
+  applicationId: string;
+  serializedForSigning: string;
+  hashForSigning?: string;
+  /** Present when the acting party holds its own key: THE thing to sign. */
+  preparedTransactionHash?: string;
+  /** Every transaction of the ceremony, in submit order — a funding side owes its trade leg and the fee leg. */
+  preparedTransactions?: Array<{ preparedTransactionHash: string }>;
+}
 
 export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccount {
   const { baseUrl, signer, pollMs = 5_000, now = Date.now } = options;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const session = createSession(options);
   const http: Http = createHttp({ baseUrl, request: session.request });
-  const swap = createSwapClient(http);
+  const orders = createSwapClient(http);
+  // Every Canton↔Canton order this account places asks for allocation-DvP: that is the only way it settles.
+  const swap: SwapClient = {
+    ...orders,
+    create: (input) => orders.create(input.sourceNetwork === 'canton' && input.targetNetwork === 'canton' ? { ...input, dvp: true } : input),
+  };
 
   const me = () => http.get<AccountUser>('/auth/me');
   const swapState = (swapId: string) => http.get<HtlcSwap>(`/htlc/${encodeURIComponent(swapId)}`);
+  const swapInfo = (swapId: string) => http.get<SwapInfo>(`/htlc/swaps/${encodeURIComponent(swapId)}/full`);
   const incoming = () => http.get<IncomingTransfer[]>('/tokens/transfer-requests/incoming');
 
-  async function submit(operationId: string, signatures: Array<{ legId: string; signature: string }>): Promise<unknown> {
+  /** Resubmit only what the API says is safe to resubmit: the same signatures after a timeout. */
+  async function retrying<T>(send: () => Promise<T>): Promise<T> {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await http.post('/wallet/operations/submit', { operationId, signatures });
+        return await send();
       } catch (err) {
         if (attempt < 2 && refusalOf(err) === 'retrySameSignatures') {
           await sleep(pollMs);
@@ -344,7 +373,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       if (prepared.legs.length === 0) return { meta: prepared.meta, result: null };
       const signatures = await signLegs(signer, prepared.legs);
       try {
-        return { meta: prepared.meta, result: await submit(prepared.operationId, signatures) };
+        const result = await retrying(() => http.post('/wallet/operations/submit', { operationId: prepared.operationId, signatures }));
+        return { meta: prepared.meta, result };
       } catch (err) {
         if (rerunOnStalePrepare && attempt === 0 && refusalOf(err) === 'rerunCeremony') continue;
         throw new CeremonyError(type, 'submit', err, prepared.meta as Record<string, unknown> | null);
@@ -354,6 +384,59 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
 
   const execute = <TMeta = Record<string, unknown>>(type: string, params?: Record<string, unknown>) =>
     run<TMeta>(type, params, false);
+
+  /**
+   * One DvP step on this account's key: `POST /canton-wallet/htlc/prepare-command`
+   * → sign every prepared transaction → `POST /canton-wallet/htlc/submit-signed`.
+   * The backend builds each command from its own record of the swap; the caller
+   * names the swap and nothing else. A funding side gets two transactions (its
+   * trade leg and the platform fee carved out of it) and signs both here, in one
+   * pass on the same key the envelope ceremonies use.
+   */
+  async function signDvp(operationType: DvpOperation, swapId: string): Promise<void> {
+    const meta = { swapId };
+    for (let attempt = 0; ; attempt++) {
+      let prepared: PreparedCommand;
+      try {
+        prepared = await http.post('/canton-wallet/htlc/prepare-command', { operationType, params: { swapId } });
+      } catch (err) {
+        throw new CeremonyError(operationType, 'prepare', err, meta);
+      }
+      const hashes = prepared.preparedTransactions?.map((t) => t.preparedTransactionHash) ??
+        (prepared.preparedTransactionHash ? [prepared.preparedTransactionHash] : []);
+      if (hashes.length === 0) {
+        // No prepared transaction means the API would submit for this party itself: not a self-custody party.
+        throw new CeremonyError(operationType, 'prepare', new Error('the API prepared no transaction for this key to sign'), meta);
+      }
+      const signed = await signLegs(signer, hashes.map((hash, i) => ({ legId: String(i), hash, kind: 'transfer' as const })));
+      const signatures = signed.map((s) => s.signature);
+      const body = {
+        commandId: prepared.commandId,
+        operationType: prepared.operationType,
+        actAs: prepared.actAs,
+        commands: prepared.commands,
+        signature: signatures[0],
+        ...(signatures.length > 1 ? { signatures } : {}),
+        publicKey: session.publicKey,
+        applicationId: prepared.applicationId,
+        serializedForSigning: prepared.serializedForSigning,
+        ...(prepared.hashForSigning ? { hashForSigning: prepared.hashForSigning } : {}),
+      };
+      try {
+        await retrying(async () => {
+          const path = '/canton-wallet/htlc/submit-signed';
+          const answer = await http.post<{ success: boolean; error?: string; errorCode?: string }>(path, body);
+          // A ledger rejection comes back 200 with success:false — never a pass. Raised as the 400 the
+          // same refusal is on the envelope routes, so `refusalOf` reads its code, or its text, alike.
+          if (!answer.success) throw new CancoreApiError(400, 'POST', path, { message: answer.error ?? 'submit refused', errorCode: answer.errorCode });
+        });
+        return;
+      } catch (err) {
+        if (attempt === 0 && refusalOf(err) === 'rerunCeremony') continue;
+        throw new CeremonyError(operationType, 'submit', err, meta);
+      }
+    }
+  }
 
   async function accept(transfer: IncomingTransfer): Promise<void> {
     await run('tokens.accept', {
@@ -380,12 +463,6 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
   }
 
-  async function feeRate(): Promise<string> {
-    // Null when the stand has no fee configured: nothing to cover.
-    const config = await http.get<{ feeRate?: string } | null>('/htlc/fee-config');
-    return config?.feeRate ?? '0';
-  }
-
   async function pickTimeout(orderId: string, wanted?: number): Promise<number> {
     const { timeoutHours } = await http.get<{ timeoutHours: number[] }>('/htlc/timeout-options', { orderId });
     if (wanted !== undefined) {
@@ -394,128 +471,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       }
       return wanted;
     }
-    if (timeoutHours.length === 0) throw new SettleError('the stand offers no HTLC timeout for this order', null);
+    if (timeoutHours.length === 0) throw new SettleError('the stand offers no timeout for this order', null);
     const safe = timeoutHours.filter((h) => h >= MIN_DEFAULT_TIMEOUT_HOURS);
-    // Only short ones on offer: the longest of them gives the counter leg the best chance.
     return safe.length > 0 ? Math.min(...safe) : Math.max(...timeoutHours);
-  }
-
-  /** The maker's swap: Flow B step 1 signed here, steps 2–3 finished by the venue inside the submit. */
-  async function openSwap(order: Order, preimage: string, timeoutHours: number): Promise<string> {
-    const receiver = (order.opponent as { partyId?: string | null } | undefined)?.partyId;
-    if (!receiver) throw new SettleError(`order ${order.id} has no counterparty party yet`, null, order);
-    const params = {
-      tokenId: order.sourceTokenAddress,
-      amount: grossAmount(order.sourceAmount, await feeRate()),
-      timeoutHours,
-      hashLock: await sha256Hex(preimage),
-      receiver,
-      orderId: order.id,
-      // Plaintext: the API stores it encrypted for this account, so a maker that
-      // loses the preimage mid-swap reads it back (`GET /htlc/{id}/preimage`)
-      // instead of waiting out the timeout for a refund.
-      encryptedPreimage: preimage,
-    };
-    for (let healed = false; ; healed = true) {
-      try {
-        const { meta } = await run<{ swapId?: string }>('htlc.flow-b-create', params, false);
-        if (meta?.swapId) return meta.swapId;
-        throw new SettleError('the swap was created but the API did not name it', null, order);
-      } catch (err) {
-        if (!(err instanceof CeremonyError)) throw err;
-        // Too many small holdings for one command: only this key can merge them.
-        if (!healed && err.stage === 'prepare' && refusalOf(err.cause) === 'mergeThenRetry') {
-          let merged = 0;
-          for (let pass = 0; pass < HEAL_MERGE_PASSES; pass++) {
-            const n = await consolidate(order.sourceTokenAddress);
-            merged += n;
-            if (n === 0) break;
-          }
-          if (merged > 0) continue;
-        }
-        // A submit failure leaves the swap row the prepare made: it may still
-        // commit, so follow it instead of preparing a second swap.
-        const swapId = typeof err.meta?.swapId === 'string' ? err.meta.swapId : null;
-        if (err.stage === 'submit' && swapId) {
-          const recovered = await waitFor(
-            () => swapState(swapId),
-            (s) => s.status !== 'init_request_created',
-            now() + 2 * 60_000,
-            'the swap to recover after a failed submit',
-            swapId,
-          ).catch(() => null);
-          if (recovered && !DEAD.has(recovered.status)) return swapId;
-        }
-        throw err;
-      }
-    }
-  }
-
-  /** The maker accepts the counter leg once the venue has proposed it (a moment after the taker's accept). */
-  async function acceptCounter(swapId: string, deadline: number): Promise<void> {
-    let state = await waitFor(() => swapState(swapId), (s) => !BEFORE_TAKER.has(s.status), deadline, 'the taker to accept', swapId);
-    for (;;) {
-      if (COUNTER_DONE.has(state.status)) return;
-      if (DEAD.has(state.status)) throw new SettleError(`swap ${swapId} is ${state.status}`, swapId, state);
-      try {
-        await run('htlc.accept-counter', { swapId }, true);
-        return;
-      } catch (err) {
-        const cause = err instanceof CeremonyError ? err.cause : err;
-        if (refusalOf(cause) === 'counterAlreadyAccepted') return;
-        if (refusalOf(cause) !== 'counterNotReady') throw err;
-      }
-      if (now() >= deadline) throw new SettleError('timed out waiting for the counter proposal', swapId, state);
-      await sleep(pollMs);
-      state = await swapState(swapId);
-    }
-  }
-
-  /**
-   * Wait for the swap to settle while accepting its delivery to this account.
-   * The two are watched together because settlement can wait on the delivery:
-   * accepting only after `both_claimed` could stall a swap that needs it first.
-   */
-  async function finish(swapId: string, deliveredTokenId: string, deadline: number, deliveryWaitMs: number): Promise<Settled> {
-    let delivery: Delivery = isCc(deliveredTokenId) ? 'direct' : 'pending';
-    let settledAt: number | null = null;
-    let lastIncomingRead = -Infinity;
-    for (;;) {
-      const state = await swapState(swapId);
-      if (DEAD.has(state.status)) throw new SettleError(`swap ${swapId} is ${state.status}`, swapId, state);
-      if (delivery === 'pending' && COUNTER_DONE.has(state.status) && now() - lastIncomingRead >= pollMs * INCOMING_POLL_FACTOR) {
-        lastIncomingRead = now();
-        const ours = (await incoming()).find((t) => t.swapContext?.swapId === swapId);
-        if (ours) {
-          await accept(ours);
-          delivery = 'accepted';
-        }
-      }
-      if (state.status === 'both_claimed') {
-        settledAt ??= now();
-        if (delivery !== 'pending' || now() - settledAt >= deliveryWaitMs) return { swap: state, delivery };
-      } else if (now() >= deadline) {
-        throw new SettleError(`timed out waiting for swap ${swapId} to settle`, swapId, state);
-      }
-      await sleep(pollMs);
-    }
-  }
-
-  /**
-   * The preimage of a swap this account opened in an earlier run, stored by the
-   * API at `openSwap`. The API releases it to the sender only once the counter
-   * leg is locked too (BUG-137 atomicity gate: before that it would let the main
-   * leg be claimed with nothing locked in return), so it is read only when the
-   * claim is next, and waited for while the API still answers null.
-   */
-  async function storedPreimage(swapId: string, deadline: number): Promise<string> {
-    for (;;) {
-      const stored = await http.get<{ senderPreimage?: string | null; preimage?: string | null }>(`/htlc/${encodeURIComponent(swapId)}/preimage`);
-      const preimage = stored.senderPreimage ?? stored.preimage;
-      if (preimage) return preimage;
-      if (now() >= deadline) throw new SettleError(`swap ${swapId} exists but its preimage is not recoverable`, swapId);
-      await sleep(pollMs);
-    }
   }
 
   function assertCantonOrder(order: Order): void {
@@ -524,29 +482,113 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
   }
 
+  /** A 403 from a DvP route: the stand has not opened allocation-DvP to this account. */
+  function forbidden(err: unknown, order: Order): SettleError | null {
+    if (!(err instanceof CancoreApiError) || err.status !== 403) return null;
+    return new SettleError(
+      `allocation-DvP is not open to this account on this stand (${err.message}); ` +
+        `order ${order.id} is Canton↔Canton and settles only through DvP, never through HTLC`,
+      null,
+      order,
+    );
+  }
+
+  /**
+   * Refuse before anything is created when the stand will not settle this pair
+   * through DvP: `/htlc/dvp/instruments` lists only instruments of pairs the
+   * stand has switched on, and sits behind the same access guard as the DvP
+   * routes. Without this, an unhonoured `dvp: true` falls through to HTLC.
+   */
+  async function assertDvpPair(order: Order): Promise<void> {
+    let instruments: Array<{ id: string }>;
+    try {
+      instruments = await http.get<Array<{ id: string }>>('/htlc/dvp/instruments');
+    } catch (err) {
+      throw forbidden(err, order) ?? err;
+    }
+    const ids = new Set(instruments.map((i) => i.id));
+    const missing = [order.sourceTokenAddress, order.targetTokenAddress].filter((id) => !ids.has(id));
+    if (missing.length > 0) {
+      throw new SettleError(
+        `${order.sourceTokenAddress}/${order.targetTokenAddress} is not enabled for allocation-DvP on this stand ` +
+          `(SWAP_FLOW_DVP_PAIRS; not offered: ${missing.join(', ')}); Canton↔Canton orders never fall back to HTLC`,
+        null,
+        order,
+      );
+    }
+  }
+
+  /** The maker records the trade: `POST /htlc/proposals` with `dvp: true`, which the backend turns into a DvP draft. */
+  async function proposeDvp(order: Order, opts: SettleOptions): Promise<string> {
+    await assertDvpPair(order);
+    const receiver = (order.opponent as { partyId?: string | null } | undefined)?.partyId;
+    if (!receiver) throw new SettleError(`order ${order.id} has no counterparty party yet`, null, order);
+    let created: HtlcSwap;
+    try {
+      created = await http.post<HtlcSwap>('/htlc/proposals', {
+        orderId: order.id,
+        dvp: true,
+        tokenId: order.sourceTokenAddress,
+        amount: Number(order.sourceAmount),
+        receiver,
+        // Required by the request's validation and unused by DvP: no hash lock exists in a DvP trade.
+        hashLock: await sha256Hex(randomHex(32)),
+        timeoutHours: await pickTimeout(order.id, opts.timeoutHours),
+      });
+    } catch (err) {
+      throw forbidden(err, order) ?? err;
+    }
+    if (!isDvp(created)) {
+      throw new SettleError(`order ${order.id}: the venue opened swap ${created.id} as ${created.status}, not as allocation-DvP`, created.id, created);
+    }
+    return created.id;
+  }
+
+  /** Poll the swap until `done`; an expired or non-DvP swap ends the wait with a SettleError. */
+  async function waitDvp(swapId: string, done: (info: SwapInfo) => boolean, deadline: number, what: string): Promise<SwapInfo> {
+    for (;;) {
+      const info = await swapInfo(swapId);
+      if (!isDvp(info.swap)) {
+        throw new SettleError(`swap ${swapId} is an HTLC swap (${info.swap.status}); this client settles Canton↔Canton only through allocation-DvP`, swapId, info.swap);
+      }
+      if (info.swap.status === 'dvp_expired') throw new SettleError(`swap ${swapId} is dvp_expired`, swapId, info.swap);
+      if (done(info)) return info;
+      if (now() >= deadline) throw new SettleError(`timed out waiting for ${what}`, swapId, info.swap);
+      await sleep(pollMs);
+    }
+  }
+
+  const owes = (info: SwapInfo, party: string) => info.legs.some((l) => l.sender === party && !l.lockRef);
+
+  /** Fund every leg this party owes once the trade exists, then wait for the venue's atomic settle. */
+  async function fundAndSettle(swapId: string, party: string, info: SwapInfo, deadline: number): Promise<Settled> {
+    if (owes(info, party)) await signDvp('dvpAllocateLeg', swapId);
+    const settled = await waitDvp(swapId, (i) => i.swap.status === 'dvp_settled', deadline, `swap ${swapId} to settle`);
+    // Allocation settlement moves the holdings themselves: there is no transfer left to accept.
+    return { swap: settled.swap, delivery: 'direct', flow: 'dvp' };
+  }
+
   async function make(orderId: string, opts: SettleOptions = {}): Promise<Settled> {
     const deadline = now() + (opts.deadlineMs ?? DEFAULT_DEADLINE_MS);
     const order = await waitFor(() => swap.get(orderId), (o) => o.status !== 'open', deadline, `order ${orderId} to be taken`, null);
     assertCantonOrder(order);
     let swapId = order.swapId ?? null;
-    // A fresh swap keeps its preimage in memory; a resumed one reads it back right before the claim.
-    let preimage: string | null = null;
     if (!swapId) {
       if (TERMINAL_ORDER_STATUSES.has(order.status)) throw new SettleError(`order ${orderId} is ${order.status}`, null, order);
-      preimage = randomHex(32);
-      swapId = await openSwap(order, preimage, await pickTimeout(orderId, opts.timeoutHours));
+      swapId = await proposeDvp(order, opts);
     }
-    await acceptCounter(swapId, deadline);
-    // The maker's claim at counter_accepted settles both legs in one transaction;
-    // any later status means a claim already happened, and there is only settling to wait for.
-    const state = await swapState(swapId);
-    if (state.status === 'counter_accepted') {
-      preimage ??= await storedPreimage(swapId, deadline);
-      await http.post(`/htlc/${encodeURIComponent(swapId)}/claim`, { preimage }).catch((err: unknown) => {
-        if (refusalOf(err) !== 'alreadySettled') throw err;
-      });
-    }
-    return finish(swapId, order.targetTokenAddress, deadline, opts.deliveryWaitMs ?? DEFAULT_DELIVERY_WAIT_MS);
+    const party = await ownParty();
+    let info = await waitDvp(swapId, () => true, deadline, `swap ${swapId}`);
+    // The drafted row becomes a proposal only with the maker's own signature; a resumed make skips a done step.
+    if (!info.swap.proposalContractId && !info.dvp?.tradeCid) await signDvp('dvpCreateProposal', swapId);
+    // AUD-2: the taker funds first. Whoever allocates first gives the other side a free option to walk away.
+    info = await waitDvp(
+      swapId,
+      (i) => Boolean(i.dvp?.tradeCid) && i.legs.every((l) => l.sender === party || Boolean(l.lockRef)),
+      deadline,
+      'the taker to approve and fund its legs',
+    );
+    return fundAndSettle(swapId, party, info, deadline);
   }
 
   async function take(orderId: string, opts: SettleOptions = {}): Promise<Settled> {
@@ -558,25 +600,23 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     if (order.opponentUserId && order.opponentUserId !== self.id) {
       throw new SettleError(`order ${orderId} was taken by another account`, null, order);
     }
-    // The maker has 30 minutes from the accept to open the swap before the order is cancelled.
+    if (!self.partyId) throw new Error('the account has no party yet — run onboard()');
+    const party = self.partyId;
     order = await waitFor(
       () => swap.get(orderId),
       (o) => Boolean(o.swapId) || TERMINAL_ORDER_STATUSES.has(o.status),
       deadline,
-      'the maker to open the swap',
+      'the maker to open the trade',
       null,
     );
     const swapId = order.swapId;
     if (!swapId) throw new SettleError(`order ${orderId} is ${order.status}`, null, order);
-    const state = await waitFor(() => swapState(swapId), (s) => s.status !== 'init_request_created', deadline, 'the maker swap', swapId);
-    if (state.status === 'proposal_created') {
-      await run('htlc.accept-deposit-counter', {
-        swapId,
-        counterTokenId: order.targetTokenAddress,
-        counterAmount: grossAmount(order.targetAmount, await feeRate()),
-      }, true);
-    }
-    return finish(swapId, order.sourceTokenAddress, deadline, opts.deliveryWaitMs ?? DEFAULT_DELIVERY_WAIT_MS);
+    // The maker's signature turns the draft into a proposal; this account's approval completes it.
+    let info = await waitDvp(swapId, (i) => Boolean(i.swap.proposalContractId || i.dvp?.tradeCid), deadline, 'the maker to sign the proposal');
+    if (!info.dvp?.tradeCid && info.dvp?.awaitingApprovalFrom.includes(party)) await signDvp('dvpAcceptProposal', swapId);
+    // The venue turns a fully approved proposal into the trade on its next tick.
+    info = await waitDvp(swapId, (i) => Boolean(i.dvp?.tradeCid), deadline, 'the venue to open the trade');
+    return fundAndSettle(swapId, party, info, deadline);
   }
 
   async function acceptIncoming(filter: (transfer: IncomingTransfer) => boolean = () => true) {

@@ -9,7 +9,6 @@ import {
   grossAmount,
   legalConsentMessage,
   SettleError,
-  sha256Hex,
   type IncomingTransfer,
   type SelfCustodyOptions,
 } from './selfcustody';
@@ -38,40 +37,38 @@ interface Leg { legId: string; hash: string; kind: string }
 interface Pending { type: string; params: Record<string, unknown>; legs: Leg[]; owner: Account }
 
 interface VenueOptions {
-  /** The first accept-deposit submit finds its prepared stash already gone. */
-  staleDepositOnce?: boolean;
-  /**
-   * The swap prepare is refused as too fragmented: `once` until the maker merges its 40 small
-   * holdings; `always`, with holdings that never compact; `unmergeable`, with nothing to merge.
-   */
-  fragmented?: 'once' | 'always' | 'unmergeable';
-  /**
-   * The swap submit answers 500 although the swap row exists; the command then `commits` a few
-   * polls later, stays `stuck` in init_request_created, or lands `cancelled`.
-   */
-  flowBSubmitFails?: 'commits' | 'stuck' | 'cancelled';
-  /** The proposal is rejected on the ledger right after it is created. */
-  rejectAfterCreate?: boolean;
-  /** The counter leg is accepted by an earlier attempt: the next accept says so. */
-  counterAcceptedElsewhere?: boolean;
+  /** The stand has not opened allocation-DvP to these accounts: every DvP route answers 403, as `canUseDvp` does today for non-staff. */
+  dvpForbidden?: boolean;
+  /** The stand settles CC through DvP but not CBTC (`SWAP_FLOW_DVP_PAIRS` without the pair). */
+  pairOff?: boolean;
+  /** The trade's window closes before anybody funds: the venue marks the swap dvp_expired. */
+  expireAfterTrade?: boolean;
+  /** The taker's first allocation submit finds its prepared stash already gone (success:false, as submit-signed answers). */
+  staleAllocateOnce?: boolean;
+  /** The taker's first allocation submit times out; the same signatures are safe to send again. */
+  timeoutAllocateOnce?: boolean;
   /** The refusals the SDK acts on carry their errorCode and a text that names no condition, as the registry gateway sends them. */
   coded?: boolean;
-  /** The maker's claim finds the swap already settled by an earlier attempt's claim. */
-  claimedElsewhere?: boolean;
   /** A gateway older than CAN-1593: its sign-up DTO has no `inviteCode`, so its validation pipe refuses the field. */
   legacySignUp?: boolean;
   /** The first sign-up's activation fails: the account comes back FAILED, as the API answers it. */
   failActivationOnce?: boolean;
 }
 
+/** A DvP leg as the venue keeps it (`swap_legs`), keyed like the trade's TextMap. */
+interface DvpLeg { legId: string; role: 'main' | 'counter' | 'fee'; sender: string; receiver: string; tokenId: string; amount: string; lockRef: string | null }
+/** One prepared DvP command: what the submit must come back signed for. */
+interface PreparedDvp { owner: Account; operationType: string; swapId: string; hashes: string[]; legIds: string[] }
+
+const FEE_PARTY = 'cancore-fee::1220';
+
 function venue({
-  staleDepositOnce = false,
-  fragmented,
-  flowBSubmitFails,
-  rejectAfterCreate = false,
-  counterAcceptedElsewhere = false,
+  dvpForbidden = false,
+  pairOff = false,
+  expireAfterTrade = false,
+  staleAllocateOnce = false,
+  timeoutAllocateOnce = false,
   coded = false,
-  claimedElsewhere = false,
   legacySignUp = false,
   failActivationOnce = false,
 }: VenueOptions = {}) {
@@ -85,29 +82,28 @@ function venue({
   /** Every sign-up body the API received. */
   const signUps: Array<Record<string, unknown>> = [];
   const pending = new Map<string, Pending>();
+  /** Every envelope operation submitted, and every DvP step submitted (`dvp:<operationType>` by `<account>`). */
   const log: Array<{ type: string; params: Record<string, unknown> }> = [];
-  const prepared: string[] = [];
-  /** Every prepare asked for, refused or not. */
+  /** Every envelope operation asked for, refused or not. */
   const asked: string[] = [];
-  /** What the preimage route answered the sender, each time it asked: null while the gate withholds it. */
-  const preimageReads: Array<string | null> = [];
+  /** Every request body `POST /htlc/proposals` received. */
+  const proposals: Array<Record<string, unknown>> = [];
   const routes = new Set<string>();
-  let staleDeposit = staleDepositOnce;
   const challenges = new Set<string>();
   const order = {
     id: 'o1', status: 'open', sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceAmount: '0.01',
     targetNetwork: 'canton', targetTokenAddress: 'CC', targetAmount: '5000',
     initiatorUserId: 'maker', opponentUserId: null as string | null, opponent: null as { partyId: string } | null,
-    swapId: null as string | null,
+    swapId: null as string | null, dvp: false,
   };
   let swap: Record<string, unknown> | null = null;
-  let counterPollsLeft = 0;
-  let mergeable = fragmented === 'once' || fragmented === 'always' ? 40 : 0;
-  let fragmentedRefusals = 0;
-  let commitPollsLeft = 0;
-  let storedPreimage: string | null = null;
-  let counterLocked = false;
-  const claims: string[] = [];
+  let legs: DvpLeg[] = [];
+  let drafter: string | null = null;
+  let tradeCid: string | null = null;
+  const approvers = new Set<string>();
+  const preparedDvp = new Map<string, PreparedDvp>();
+  let staleAllocate = staleAllocateOnce;
+  let timeoutAllocate = timeoutAllocateOnce;
   const incoming: IncomingTransfer[] = [];
   let seq = 0;
 
@@ -120,6 +116,8 @@ function venue({
     if (kind === 'topology') raw.set([0x12, 0x20]);
     return { legId: `leg-${++seq}`, hash: b64(raw), kind };
   };
+  const forbidden = () => refuse(403, 'Allocation-DvP is not open to this account on this stand.');
+  const parties = (): string[] => [...new Set(legs.flatMap((l) => [l.sender, l.receiver]))];
 
   function prepare(owner: Account, type: string, params: Record<string, unknown>): Response {
     let legs: Leg[];
@@ -128,33 +126,12 @@ function venue({
     switch (type) {
       case 'wallet.topology': legs = [leg('topology', 34), leg('topology', 34)]; break;
       case 'tokens.preapproval': legs = owner.roles.includes('has-preapproval') ? [] : [leg('setup')]; meta = { alreadyExists: legs.length === 0 }; break;
-      case 'htlc.flow-b-create':
-        if (fragmented && (fragmented !== 'once' || fragmentedRefusals === 0)) {
-          // A heal loop that never ends would spin here forever: the fifth refusal is one the SDK does not heal.
-          if (++fragmentedRefusals > 4) return refuse(400, 'the fake venue ends a heal loop that does not end');
-          return refusal(409, 'Wallet too fragmented: the deposit leg needs more holdings than Canton allows in one command.', 'WALLET_TOO_FRAGMENTED');
-        }
-        legs = [leg('escrow'), leg('transfer')];
-        meta = { swapId: 's1' };
-        break;
-      case 'tokens.consolidate':
-        legs = mergeable > 0 ? [leg('transfer')] : [];
-        meta = mergeable > 0 ? { mergedCount: mergeable } : {};
-        break;
-      case 'htlc.accept-deposit-counter': legs = [leg('transfer'), leg('escrow'), leg('transfer')]; break;
-      case 'htlc.accept-counter':
-        if (counterAcceptedElsewhere) {
-          swap!.status = 'counter_accepted';
-          return refusal(400, 'Counter proposal already accepted', 'COUNTER_PROPOSAL_ALREADY_ACCEPTED');
-        }
-        if (counterPollsLeft > 0) return refusal(400, 'Counter proposal not found on swap', 'COUNTER_PROPOSAL_NOT_READY');
-        legs = [leg('transfer')];
-        break;
+      case 'tokens.consolidate': legs = []; break;
       case 'tokens.accept': legs = [leg('transfer')]; break;
+      // htlc.* among them: a Canton↔Canton order never reaches the HTLC ceremonies.
       default: return refuse(400, `unknown operation ${type}`);
     }
     const operationId = `op-${++seq}`;
-    prepared.push(type);
     pending.set(operationId, { type, params, legs, owner });
     return json({ operationId, legs, meta });
   }
@@ -164,32 +141,134 @@ function venue({
     if (!op || op.owner !== caller) return refuse(404, 'unknown operation');
     for (const l of op.legs) verify(caller, l, signatures.find((s) => s.legId === l.legId)?.signature ?? '');
     pending.delete(operationId);
-    if (op.type === 'htlc.accept-deposit-counter' && staleDeposit) {
-      staleDeposit = false;
-      return refusal(400, 'No pending accept-deposit submission found for this key', 'PREPARED_SUBMISSION_EXPIRED');
-    }
     log.push({ type: op.type, params: op.params });
     switch (op.type) {
       case 'wallet.topology': caller.partyId = `party-${caller.id}`; break;
       case 'tokens.preapproval': caller.roles.push('has-preapproval'); break;
-      case 'htlc.flow-b-create':
-        swap = { id: 's1', status: 'proposal_created', sender: caller.partyId, receiver: op.params.receiver, hashLock: op.params.hashLock };
-        order.swapId = 's1';
-        storedPreimage = String(op.params.encryptedPreimage);
-        if (rejectAfterCreate) swap.status = 'proposal_rejected';
-        if (flowBSubmitFails) {
-          // The row exists and the command is still in flight: it lands a few polls later, or never.
-          swap.status = 'init_request_created';
-          commitPollsLeft = flowBSubmitFails === 'stuck' ? 0 : 3;
-          return refuse(500, 'Canton did not answer in time');
-        }
-        break;
-      case 'tokens.consolidate': if (fragmented !== 'always') mergeable = 0; break;
-      case 'htlc.accept-deposit-counter': swap!.status = 'htlc_active'; counterLocked = true; counterPollsLeft = 2; break;
-      case 'htlc.accept-counter': swap!.status = 'counter_accepted'; break;
       case 'tokens.accept': incoming.splice(incoming.findIndex((t) => t.contractId === op.params.instructionCid), 1); break;
     }
     return json({ ok: true });
+  }
+
+  /** `POST /htlc/proposals` for a DvP order: record the trade (`draft`), with the fee carved out of the leg to the maker. */
+  function propose(body: Record<string, unknown>): Response {
+    proposals.push(body);
+    if (body.dvp !== true || body.orderId !== 'o1') return refuse(400, 'the fake venue settles order o1 through DvP only');
+    // CreateProposalDto validation runs on the DvP path too.
+    if (typeof body.hashLock !== 'string' || typeof body.amount !== 'number' || typeof body.tokenId !== 'string' ||
+      typeof body.receiver !== 'string' || ![1, 2, 4].includes(Number(body.timeoutHours))) {
+      return refuse(400, 'CreateProposalDto validation failed');
+    }
+    if (dvpForbidden) return forbidden();
+    const maker = [...byKey.values()].find((a) => a.id === order.initiatorUserId)!;
+    const taker = order.opponent!.partyId;
+    legs = [
+      { legId: 'leg-main', role: 'main', sender: maker.partyId!, receiver: taker, tokenId: 'CBTC', amount: '0.01', lockRef: null },
+      { legId: 'leg-counter', role: 'counter', sender: taker, receiver: maker.partyId!, tokenId: 'CC', amount: '4975.1243781095', lockRef: null },
+      { legId: 'leg-fee', role: 'fee', sender: taker, receiver: FEE_PARTY, tokenId: 'CC', amount: '24.8756218905', lockRef: null },
+    ];
+    drafter = maker.partyId;
+    swap = { id: 's1', status: 'dvp_proposed', sender: maker.partyId, receiver: taker, proposalContractId: null };
+    order.swapId = 's1';
+    order.status = 'swap_created';
+    return json(swap, 201);
+  }
+
+  /** `GET /htlc/swaps/s1/full` — and, like the venue's watchers, it moves the trade on between reads. */
+  function full(): Response {
+    if (!swap) return refuse(404, 'Swap not found');
+    // The fee party is ours: the venue approves for it, and it is never awaited.
+    const awaiting = tradeCid ? [] : parties().filter((p) => p !== FEE_PARTY && !approvers.has(p));
+    if (!tradeCid && awaiting.length === 0) {
+      tradeCid = 'trade-1';
+      // The window closed before anybody got to fund: recovery marks the swap expired.
+      if (expireAfterTrade) swap.status = 'dvp_expired';
+    } else if (legs.every((l) => l.lockRef) && swap.status !== 'dvp_expired') {
+      swap.status = 'dvp_settled';
+    }
+    return json({
+      swap,
+      legs: legs.map(({ legId: _legId, ...l }) => l),
+      dvp: { tradeCid, awaitingApprovalFrom: awaiting, allocateBefore: null, settleBefore: null },
+      swapStatus: 'incomplete',
+    });
+  }
+
+  /** `POST /canton-wallet/htlc/prepare-command`, with the refusals the three DvP step handlers raise. */
+  function prepareDvp(caller: Account, body: { operationType: string; params: { swapId?: string } }): Response {
+    if (dvpForbidden) return forbidden();
+    const party = caller.partyId!;
+    const swapId = String(body.params?.swapId);
+    if (!swap || swapId !== swap.id) return refuse(404, `Swap ${swapId} not found`);
+    let owed: DvpLeg[] = [];
+    switch (body.operationType) {
+      case 'dvpCreateProposal':
+        if (swap.proposalContractId) return refuse(400, `swap ${swapId} already has a proposal`);
+        if (drafter !== party) return refuse(403, `${party} did not draft swap ${swapId}`);
+        break;
+      case 'dvpAcceptProposal':
+        if (!swap.proposalContractId) return refuse(400, `swap ${swapId} has no proposal recorded yet`);
+        if (!parties().includes(party)) return refuse(403, `${party} is not a party to swap ${swapId}`);
+        break;
+      case 'dvpAllocateLeg':
+        if (!tradeCid) return refuse(400, `swap ${swapId} has no trade yet`);
+        owed = legs.filter((l) => l.sender === party && !l.lockRef);
+        if (owed.length === 0) return refuse(400, `${party} has no unallocated leg on swap ${swapId}`);
+        break;
+      default:
+        return refuse(400, `unknown operation ${body.operationType}`);
+    }
+    const hashes = owed.length > 1 ? owed.map(() => leg('transfer').hash) : [leg('transfer').hash];
+    const commandId = `${body.operationType}-${++seq}`;
+    preparedDvp.set(commandId, { owner: caller, operationType: body.operationType, swapId, hashes, legIds: owed.map((l) => l.legId) });
+    return json({
+      commandId,
+      operationType: body.operationType,
+      actAs: [party],
+      commands: [{ ExerciseCommand: { choice: body.operationType } }],
+      applicationId: 'cancore',
+      serializedForSigning: 'ab',
+      hashForSigning: 'cd',
+      preparedTransactionHash: hashes[0],
+      // Only a ceremony of several transactions lists them all.
+      ...(hashes.length > 1 ? { preparedTransactions: hashes.map((h) => ({ preparedTransactionHash: h, preparedTransaction: 'tx' })) } : {}),
+    });
+  }
+
+  /** `POST /canton-wallet/htlc/submit-signed`: every hash signed by the key of the party that prepared it. */
+  function submitDvp(caller: Account, body: Record<string, unknown>): Response {
+    for (const field of ['commandId', 'actAs', 'commands', 'signature', 'publicKey', 'applicationId']) {
+      if (body[field] === undefined) return refuse(400, `${field} should not be empty`);
+    }
+    const op = preparedDvp.get(String(body.commandId));
+    if (!op) return json({ success: false, error: 'Command not found or expired. Please prepare again.' });
+    if (op.owner !== caller) return json({ success: false, error: 'This command was prepared by another party' });
+    if (body.publicKey !== caller.publicKey) return refuse(400, 'publicKey is not this account’s');
+    const signatures = (body.signatures as string[] | undefined) ?? [String(body.signature)];
+    if (signatures.length !== op.hashes.length) throw new Error(`${op.operationType}: ${signatures.length} signatures for ${op.hashes.length} transactions`);
+    op.hashes.forEach((hash, i) => verify(caller, { legId: String(i), hash, kind: 'transfer' }, signatures[i]!));
+    if (op.operationType === 'dvpAllocateLeg' && timeoutAllocate) {
+      timeoutAllocate = false;
+      // The stash is kept for the retry: the same signatures go through.
+      return json({ success: false, error: 'submission timed out — safe to retry with the same signature', ...(coded ? { errorCode: 'SUBMISSION_TIMEOUT_RETRYABLE' } : {}) });
+    }
+    preparedDvp.delete(String(body.commandId));
+    if (op.operationType === 'dvpAllocateLeg' && staleAllocate) {
+      staleAllocate = false;
+      return json(coded
+        ? { success: false, error: 'refused', errorCode: 'PREPARED_SUBMISSION_EXPIRED' }
+        : { success: false, error: 'No pending interactive submission found for this command' });
+    }
+    log.push({ type: `dvp:${op.operationType}`, params: { by: caller.id, swapId: op.swapId, legIds: op.legIds } });
+    switch (op.operationType) {
+      case 'dvpCreateProposal': swap!.proposalContractId = 'proposal-1'; approvers.add(caller.partyId!); break;
+      case 'dvpAcceptProposal': swap!.proposalContractId = `proposal-${approvers.size + 1}`; approvers.add(caller.partyId!); break;
+      case 'dvpAllocateLeg':
+        for (const id of op.legIds) legs.find((l) => l.legId === id)!.lockRef = `alloc-${id}`;
+        swap!.status = legs.every((l) => l.lockRef) ? 'dvp_allocated' : 'dvp_allocated_partial';
+        break;
+    }
+    return json({ success: true, transactionId: `tx-${++seq}`, swapId: op.swapId });
   }
 
   const fetchImpl: FetchLike = async (url, init) => {
@@ -250,6 +329,10 @@ function venue({
     if (route === 'GET /auth/me') return json(caller);
     if (route === 'POST /wallet/operations/prepare') return prepare(caller, body.type, body.params ?? {});
     if (route === 'POST /wallet/operations/submit') return submit(caller, body.operationId, body.signatures);
+    if (route === 'POST /orders') {
+      Object.assign(order, body, { dvp: body.dvp === true });
+      return json(order, 201);
+    }
     if (route === 'GET /orders/o1') return json(order);
     if (route === 'POST /orders/o1/accept') {
       order.status = 'accepted';
@@ -257,60 +340,39 @@ function venue({
       order.opponent = { partyId: caller.partyId! };
       return json(order);
     }
-    if (route === 'GET /htlc/fee-config') return json({ feeRate: '0.0050000000' });
     if (route === 'GET /htlc/timeout-options') {
       return searchParams.get('orderId') === 'o1' ? json({ timeoutHours: [4, 1, 2] }) : refuse(400, 'no order');
     }
-    if (route === 'GET /htlc/s1') {
-      if (counterPollsLeft > 0) counterPollsLeft--;
-      if (commitPollsLeft > 0 && --commitPollsLeft === 0) swap!.status = flowBSubmitFails === 'cancelled' ? 'proposal_cancelled' : 'proposal_created';
-      return json(swap);
+    if (route === 'GET /htlc/dvp/instruments') {
+      if (dvpForbidden) return forbidden();
+      return json([
+        { id: 'CC', symbol: 'CC', admin: 'dso::1220' },
+        ...(pairOff ? [] : [{ id: 'CBTC', symbol: 'CBTC', admin: 'cbtc-admin' }]),
+      ]);
     }
-    if (route === 'GET /htlc/s1/preimage') {
-      // Decrypted for the sender only, and — the API's BUG-137 atomicity gate — before a claim only
-      // once the counter leg is locked: earlier, it would let the main leg be claimed with nothing in return.
-      if (caller.partyId !== swap?.sender) return refuse(403, 'not the sender');
-      const gated = (swap.status === 'proposal_created' || swap.status === 'htlc_active') && !counterLocked;
-      const senderPreimage = gated ? null : storedPreimage;
-      preimageReads.push(senderPreimage);
-      return json({ revealed: false, senderPreimage });
-    }
-    if (route === 'POST /htlc/s1/claim') {
-      claims.push(body.preimage);
-      if (swap!.status !== 'counter_accepted') return refuse(400, `swap is ${swap!.status}`);
-      if ((await sha256Hex(body.preimage)) !== swap!.hashLock) return refuse(400, 'wrong preimage');
-      swap!.status = 'both_claimed';
-      // An earlier attempt's claim landed and this one lost the answer: the swap settled all the same.
-      const answer = claimedElsewhere ? refusal(400, 'swap is both_claimed', 'SWAP_ALREADY_SETTLED') : json(swap);
-      // CBTC to the taker is a registry transfer the taker must accept; CC to the maker is direct.
-      incoming.push({
-        contractId: 'ti-delivery', templateId: 'Splice.Api.Token.TransferInstruction', transferId: 't1',
-        sender: 'escrow', receiver: String(swap!.receiver), amount: '0.01', instrumentId: 'CBTC',
-        instrumentAdmin: 'cbtc-admin', memo: '', requestedAt: new Date().toISOString(),
-        executeBefore: new Date(Date.now() + 3_600_000).toISOString(),
-        swapContext: { swapId: 's1', orderId: 'o1', swapStatus: 'both_claimed', leg: 'main' },
-      });
-      return answer;
-    }
+    if (route === 'POST /htlc/proposals') return propose(body);
+    if (route === 'GET /htlc/swaps/s1/full') return full();
+    if (route === 'POST /canton-wallet/htlc/prepare-command') return prepareDvp(caller, body);
+    if (route === 'POST /canton-wallet/htlc/submit-signed') return submitDvp(caller, body);
     if (route === 'GET /tokens/transfer-requests/incoming') return json(incoming.filter((t) => t.receiver === caller.partyId));
     return refuse(404, `no route ${route}`);
   };
 
-  /** A swap the maker opened before its process died: the row, the order link, the stored preimage (unless none was stored). */
-  async function openedEarlier(makerParty: string, takerParty: string, preimage: string, { status = 'proposal_created', stored = true } = {}) {
-    swap = { id: 's1', status, sender: makerParty, receiver: takerParty, hashLock: await sha256Hex(preimage) };
+  /** A swap opened by an earlier client as HTLC, before every Canton↔Canton order settled through DvP. */
+  function htlcOpenedEarlier(makerParty: string, takerParty: string) {
+    swap = { id: 's1', status: 'proposal_created', sender: makerParty, receiver: takerParty, hashLock: '00' };
+    order.status = 'swap_created';
     order.swapId = 's1';
-    storedPreimage = stored ? preimage : null;
   }
 
-  return { fetchImpl, log, prepared, asked, preimageReads, routes, order, incoming, byKey, claims, signUps, openedEarlier };
+  return { fetchImpl, log, asked, proposals, routes, order, incoming, byKey, signUps, htlcOpenedEarlier, legs: () => legs };
 }
 
 const baseUrl = 'https://api.example';
 // Yield a macrotask per wait: an instantly-resolving sleep would starve jest's own timers.
 const fast = { pollMs: 1, sleep: () => new Promise<void>((resolve) => setImmediate(resolve)) };
 
-test('two self-custody accounts from one phrase register, onboard and settle a Canton↔Canton order end to end', async () => {
+test('two self-custody accounts from one phrase register, onboard and settle a Canton↔Canton order end to end through DvP', async () => {
   const api = venue();
   const [makerKey, takerKey] = await Promise.all([
     providerFromMnemonic(PHRASE, { account: 0 }),
@@ -330,26 +392,34 @@ test('two self-custody accounts from one phrase register, onboard and settle a C
   expect(api.log.filter((e) => e.type === 'wallet.topology')).toHaveLength(2);
   expect(api.log.filter((e) => e.type === 'tokens.preapproval')).toHaveLength(2);
 
+  // A Canton↔Canton order this account places asks for DvP.
+  const placed = await maker.swap.create({
+    sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+    targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+  });
+  expect(placed.dvp).toBe(true);
+
   const [made, taken] = await Promise.all([maker.make('o1'), taker.take('o1')]);
 
-  const create = api.log.find((e) => e.type === 'htlc.flow-b-create')!.params;
-  expect(create).toMatchObject({
-    tokenId: 'CBTC',
-    amount: grossAmount('0.01', '0.005'),
-    timeoutHours: 1, // of the [4, 1, 2] offered, the shortest that is at least 15 minutes
-    receiver: 'party-taker',
-    orderId: 'o1',
-  });
-  expect(await sha256Hex(String(create.encryptedPreimage))).toBe(create.hashLock);
-  expect(api.log.find((e) => e.type === 'htlc.accept-deposit-counter')!.params).toEqual({
-    swapId: 's1', counterTokenId: 'CC', counterAmount: grossAmount('5000', '0.005'),
-  });
-  expect(made).toMatchObject({ swap: { status: 'both_claimed' }, delivery: 'direct' });
-  expect(taken).toMatchObject({ swap: { status: 'both_claimed' }, delivery: 'accepted' });
-  expect(api.log.find((e) => e.type === 'tokens.accept')!.params).toMatchObject({
-    instructionCid: 'ti-delivery', templateId: 'Splice.Api.Token.TransferInstruction', adminPartyId: 'cbtc-admin',
-  });
-  expect(api.incoming).toHaveLength(0);
+  expect(made).toMatchObject({ swap: { id: 's1', status: 'dvp_settled' }, delivery: 'direct', flow: 'dvp' });
+  expect(taken).toMatchObject({ swap: { id: 's1', status: 'dvp_settled' }, delivery: 'direct', flow: 'dvp' });
+  // The maker recorded the trade once, asking for DvP, with a request the proposal DTO accepts.
+  expect(api.proposals).toEqual([expect.objectContaining({
+    orderId: 'o1', dvp: true, tokenId: 'CBTC', amount: 0.01, receiver: 'party-taker', timeoutHours: 1,
+  })]);
+  // Every step signed by the side that owes it, in the order the trade needs: the maker's proposal,
+  // the taker's approval, the taker's funding (its leg and the fee carved out of it, two signatures
+  // checked against the taker's key), and the maker's funding last (AUD-2).
+  expect(api.log.filter((e) => e.type.startsWith('dvp:')).map((e) => [e.type, e.params.by, e.params.legIds])).toEqual([
+    ['dvp:dvpCreateProposal', 'maker', []],
+    ['dvp:dvpAcceptProposal', 'taker', []],
+    ['dvp:dvpAllocateLeg', 'taker', ['leg-counter', 'leg-fee']],
+    ['dvp:dvpAllocateLeg', 'maker', ['leg-main']],
+  ]);
+  expect(api.legs().every((l) => l.lockRef)).toBe(true);
+  // No HTLC ceremony and no delivery to accept: allocation settlement moves the holdings itself.
+  expect(api.asked.filter((t) => t.startsWith('htlc.'))).toEqual([]);
+  expect(api.log.filter((e) => e.type === 'tokens.accept')).toEqual([]);
 
   // Every route the whole flow touched is one the gateway documents, with that method.
   const spec = JSON.parse(readFileSync(join(__dirname, '..', 'spec', 'openapi.json'), 'utf8')) as {
@@ -362,14 +432,16 @@ test('two self-custody accounts from one phrase register, onboard and settle a C
   // Registration signs the account in, so the flow never needs login-signature.
   expect([...api.routes].sort()).toEqual([
     'get /auth/me',
-    'get /htlc/fee-config',
+    'get /htlc/dvp/instruments',
+    'get /htlc/swaps/{id}/full',
     'get /htlc/timeout-options',
-    'get /htlc/{id}',
     'get /orders/{id}',
-    'get /tokens/transfer-requests/incoming',
     'post /auth/register',
     'post /auth/register-challenge',
-    'post /htlc/{id}/claim',
+    'post /canton-wallet/htlc/prepare-command',
+    'post /canton-wallet/htlc/submit-signed',
+    'post /htlc/proposals',
+    'post /orders',
     'post /orders/{id}/accept',
     'post /wallet/operations/prepare',
     'post /wallet/operations/submit',
@@ -377,21 +449,155 @@ test('two self-custody accounts from one phrase register, onboard and settle a C
   expect(undocumented).toEqual([]);
 });
 
-test('a deposit whose prepared stash expired before the submit is prepared and signed again, once', async () => {
-  const api = venue({ staleDepositOnce: true });
-  const [makerKey, takerKey] = await Promise.all([
-    providerFromMnemonic(PHRASE, { account: 2 }),
-    providerFromMnemonic(PHRASE, { account: 3 }),
-  ]);
-  const maker = createSelfCustody({ baseUrl, signer: makerKey, fetchImpl: api.fetchImpl, ...fast });
-  const taker = createSelfCustody({ baseUrl, signer: takerKey, fetchImpl: api.fetchImpl, ...fast });
+test('an order with an EVM leg is placed as asked — no DvP flag — and make/take still refuse it before anything is signed', async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const api = stub({
+    'POST /orders': (body) => (sent.push(body), { id: 'o2', ...body }),
+    'GET /orders/o1': () => takenOrder({ targetNetwork: 'sepolia' }),
+  });
+  const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast });
+  const offer = {
+    sourceNetwork: 'canton', sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: '1',
+    targetNetwork: 'sepolia', targetTokenAddress: '0x0', targetTokenName: 'USDC', targetAmount: '1',
+  };
+  await acct.swap.create(offer);
+  await acct.swap.create({ ...offer, targetNetwork: 'canton', targetTokenAddress: 'CBTC', dvp: false });
+  // EVM leg: untouched. Canton↔Canton: DvP, whatever the caller passed.
+  expect(sent.map((b) => b.dvp)).toEqual([undefined, true]);
+  await expect(acct.make('o1')).rejects.toThrow(/only Canton↔Canton/);
+  await expect(acct.take('o1')).rejects.toThrow(/only Canton↔Canton/);
+  expect(api.hits.filter((r) => /dvp|canton-wallet|proposals|wallet\/operations/.test(r))).toEqual([]);
+});
+
+/** Two accounts of one phrase, signed up and onboarded against `api`; `makerOptions` override the maker's clock and sleep. */
+async function tradingPair(api: ReturnType<typeof venue>, accounts: [number, number], makerOptions: Partial<SelfCustodyOptions> = {}) {
+  const [makerKey, takerKey] = await Promise.all(accounts.map((account) => providerFromMnemonic(PHRASE, { account })));
+  const maker = createSelfCustody({ baseUrl, signer: makerKey!, fetchImpl: api.fetchImpl, ...fast, ...makerOptions });
+  const taker = createSelfCustody({ baseUrl, signer: takerKey!, fetchImpl: api.fetchImpl, ...fast });
   await maker.session.register({ partyName: 'maker' });
   await taker.session.register({ partyName: 'taker' });
   await Promise.all([maker.onboard(), taker.onboard()]);
+  return { maker, taker };
+}
 
-  const [, taken] = await Promise.all([maker.make('o1'), taker.take('o1')]);
-  expect(api.prepared.filter((t) => t === 'htlc.accept-deposit-counter')).toHaveLength(2);
-  expect(taken.swap.status).toBe('both_claimed');
+const dvpSteps = (api: ReturnType<typeof venue>) => api.log.filter((e) => e.type.startsWith('dvp:')).map((e) => `${e.type}:${e.params.by}`);
+
+describe('the paths where a mistake costs money', () => {
+  test('a stand that has not opened DvP to the account ends both sides with a clear error — and no HTLC is opened instead', async () => {
+    const api = venue({ dvpForbidden: true });
+    const { maker, taker } = await tradingPair(api, [2, 3]);
+    await taker.swap.accept('o1');
+    const error = await maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SettleError);
+    expect((error as Error).message).toMatch(/allocation-DvP is not open to this account.*never through HTLC/);
+    expect(api.proposals).toEqual([]);
+    expect(api.asked.filter((t) => t.startsWith('htlc.'))).toEqual([]);
+    expect(api.order.swapId).toBeNull();
+  });
+
+  test('a stand that does not settle the pair through DvP is refused before anything is recorded', async () => {
+    const api = venue({ pairOff: true });
+    const { maker, taker } = await tradingPair(api, [4, 5]);
+    await taker.swap.accept('o1');
+    await expect(maker.make('o1')).rejects.toThrow(/CBTC\/CC is not enabled for allocation-DvP.*not offered: CBTC.*never fall back to HTLC/);
+    expect(api.proposals).toEqual([]);
+    expect(api.asked.filter((t) => t.startsWith('htlc.'))).toEqual([]);
+  });
+
+  test('a taker whose approval the stand refuses gets a CeremonyError naming the step and the 403', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [6, 7]);
+    await taker.swap.accept('o1');
+    // The maker records and signs the trade; then the stand closes DvP to the taker.
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    const error = await createSelfCustody({
+      baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 7 }), ...fast,
+      fetchImpl: async (url, init) => (new URL(url).pathname === '/canton-wallet/htlc/prepare-command'
+        ? refuse(403, 'Allocation-DvP is not open to this account on this stand.')
+        : api.fetchImpl(url, init)),
+    }).take('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect(error).toMatchObject({ operation: 'dvpAcceptProposal', stage: 'prepare', cause: { status: 403 }, meta: { swapId: 's1' } });
+    expect(await making).toBeInstanceOf(SettleError);
+    expect(dvpSteps(api)).toEqual(['dvp:dvpCreateProposal:maker']);
+  });
+
+  test('a window that closes before anybody funds ends both sides with a SettleError naming the swap — nothing is locked', async () => {
+    const api = venue({ expireAfterTrade: true });
+    const { maker, taker } = await tradingPair(api, [8, 9]);
+    const [made, taken] = await Promise.allSettled([maker.make('o1'), taker.take('o1')]);
+    for (const outcome of [made, taken]) {
+      expect(outcome.status).toBe('rejected');
+      const reason = (outcome as PromiseRejectedResult).reason;
+      expect(reason).toBeInstanceOf(SettleError);
+      expect(reason).toMatchObject({ swapId: 's1', message: expect.stringMatching(/dvp_expired/), last: { status: 'dvp_expired' } });
+    }
+    expect(dvpSteps(api)).not.toContain('dvp:dvpAllocateLeg:taker');
+    expect(api.legs().some((l) => l.lockRef)).toBe(false);
+  });
+
+  test('a swap an earlier client opened as HTLC is refused on both sides, not settled as HTLC', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [10, 11]);
+    await taker.swap.accept('o1');
+    api.htlcOpenedEarlier((await maker.me()).partyId!, (await taker.me()).partyId!);
+    // The HTLC row is served by the full route as-is.
+    const spy: FetchLike = async (url, init) => (new URL(url).pathname === '/htlc/swaps/s1/full'
+      ? json({ swap: { id: 's1', status: 'proposal_created' }, legs: [], dvp: null })
+      : api.fetchImpl(url, init));
+    for (const account of [10, 11]) {
+      const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account }), fetchImpl: spy, ...fast });
+      await expect(account === 10 ? acct.make('o1') : acct.take('o1')).rejects.toThrow(/s1 is an HTLC swap.*only through allocation-DvP/);
+    }
+    expect(api.asked).not.toContain('htlc.accept-counter');
+    expect(dvpSteps(api)).toEqual([]);
+  });
+
+  test('a maker restarted after signing the proposal resumes the trade and signs nothing twice', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [12, 13]);
+    await taker.swap.accept('o1');
+    // The first run dies right after its proposal landed.
+    const crashing = createSelfCustody({
+      baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 12 }), ...fast,
+      fetchImpl: async (url, init) => {
+        const answer = await api.fetchImpl(url, init);
+        if (new URL(url).pathname === '/canton-wallet/htlc/submit-signed') throw new Error('process died');
+        return answer;
+      },
+    });
+    await expect(crashing.make('o1')).rejects.toThrow(/process died/);
+    expect(dvpSteps(api)).toEqual(['dvp:dvpCreateProposal:maker']);
+
+    const [made] = await Promise.all([maker.make('o1'), taker.take('o1')]);
+    expect(made.swap.status).toBe('dvp_settled');
+    expect(api.proposals).toHaveLength(1);
+    expect(dvpSteps(api).filter((s) => s === 'dvp:dvpCreateProposal:maker')).toHaveLength(1);
+  });
+});
+
+describe('submit refusals of a DvP step, by text and by errorCode alone', () => {
+  test.each([
+    ['by the text of the message', false, [14, 15]],
+    ['by errorCode alone', true, [16, 17]],
+  ] as const)('an allocation whose prepared stash expired is prepared and signed again, once (%s)', async (_, coded, accounts) => {
+    const api = venue({ staleAllocateOnce: true, coded });
+    const { maker, taker } = await tradingPair(api, [...accounts]);
+    const [, taken] = await Promise.all([maker.make('o1', { deadlineMs: 3_000 }), taker.take('o1', { deadlineMs: 3_000 })]);
+    expect(taken.swap.status).toBe('dvp_settled');
+    expect(dvpSteps(api).filter((s) => s === 'dvp:dvpAllocateLeg:taker')).toHaveLength(1);
+  });
+
+  test.each([
+    ['by the text of the message', false, [18, 19]],
+    ['by errorCode alone', true, [20, 21]],
+  ] as const)('an allocation submit that timed out is resubmitted with the same signatures (%s)', async (_, coded, accounts) => {
+    const api = venue({ timeoutAllocateOnce: true, coded });
+    const { maker, taker } = await tradingPair(api, [...accounts]);
+    const [made] = await Promise.all([maker.make('o1', { deadlineMs: 3_000 }), taker.take('o1', { deadlineMs: 3_000 })]);
+    expect(made.swap.status).toBe('dvp_settled');
+    expect(dvpSteps(api).filter((s) => s === 'dvp:dvpAllocateLeg:taker')).toHaveLength(1);
+  });
 });
 
 test('the session renews an expiring token and signs in again after a 401', async () => {
@@ -555,219 +761,6 @@ test('expiresWithin reads exp from a JWT and leaves an unreadable one to the 401
   expect(expiresWithin('not-a-jwt', 60_000, 0)).toBe(false);
 });
 
-/** Two accounts of one phrase, signed up and onboarded against `api`; `makerOptions` override the maker's clock and sleep. */
-async function tradingPair(api: ReturnType<typeof venue>, accounts: [number, number], makerOptions: Partial<SelfCustodyOptions> = {}) {
-  const [makerKey, takerKey] = await Promise.all(accounts.map((account) => providerFromMnemonic(PHRASE, { account })));
-  const maker = createSelfCustody({ baseUrl, signer: makerKey!, fetchImpl: api.fetchImpl, ...fast, ...makerOptions });
-  const taker = createSelfCustody({ baseUrl, signer: takerKey!, fetchImpl: api.fetchImpl, ...fast });
-  await maker.session.register({ partyName: 'maker' });
-  await taker.session.register({ partyName: 'taker' });
-  await Promise.all([maker.onboard(), taker.onboard()]);
-  return { maker, taker };
-}
-
-const swapsOpened = (api: ReturnType<typeof venue>) => api.prepared.filter((t) => t === 'htlc.flow-b-create').length;
-const askedFor = (api: ReturnType<typeof venue>, type: string) => api.asked.filter((t) => t === type).length;
-
-/** A clock that moves only while the SDK sleeps: a wait minutes long ends in a few dozen polls. */
-function sleepingClock(stepMs = 10_000) {
-  let clock = 0;
-  return {
-    now: () => clock,
-    sleep: () => {
-      clock += stepMs;
-      return fast.sleep();
-    },
-  };
-}
-
-describe('the paths where a mistake costs money', () => {
-  test('a wallet too fragmented for one command is merged by its own key, then the swap is prepared once more', async () => {
-    const api = venue({ fragmented: 'once' });
-    const { maker, taker } = await tradingPair(api, [4, 5]);
-    const [made] = await Promise.all([maker.make('o1'), taker.take('o1')]);
-    expect(made.swap.status).toBe('both_claimed');
-    // The refused prepare opened nothing; the merge ran on the maker's key; then exactly one swap.
-    const order = api.log.map((e) => e.type);
-    expect(order.indexOf('tokens.consolidate')).toBeLessThan(order.indexOf('htlc.flow-b-create'));
-    expect(api.log.find((e) => e.type === 'tokens.consolidate')!.params).toEqual({ tokenId: 'CBTC' });
-    expect(swapsOpened(api)).toBe(1);
-  });
-
-  test('a wallet that stays too fragmented is healed once — the swap is retried once, then the refusal surfaces', async () => {
-    const api = venue({ fragmented: 'always' });
-    const { maker, taker } = await tradingPair(api, [14, 15]);
-    await taker.swap.accept('o1');
-    const error = await maker.make('o1').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(CeremonyError);
-    expect(error).toMatchObject({ operation: 'htlc.flow-b-create', stage: 'prepare', cause: { status: 409 } });
-    // One heal of three merge passes (each merged something), one retry — never a second round of paid merges.
-    expect(api.log.filter((e) => e.type === 'tokens.consolidate')).toHaveLength(3);
-    expect(askedFor(api, 'htlc.flow-b-create')).toBe(2);
-    expect(swapsOpened(api)).toBe(0);
-  });
-
-  test('a wallet refused as too fragmented with nothing to merge is not retried', async () => {
-    const api = venue({ fragmented: 'unmergeable' });
-    const { maker, taker } = await tradingPair(api, [16, 17]);
-    await taker.swap.accept('o1');
-    const error = await maker.make('o1').catch((e: unknown) => e);
-    expect(error).toMatchObject({ operation: 'htlc.flow-b-create', stage: 'prepare', cause: { status: 409 } });
-    // The first merge pass found nothing: no more passes, and no retry of a swap that would be refused again.
-    expect(askedFor(api, 'tokens.consolidate')).toBe(1);
-    expect(askedFor(api, 'htlc.flow-b-create')).toBe(1);
-  });
-
-  test('a swap submit that fails but commits later is followed — a second swap is never opened', async () => {
-    const api = venue({ flowBSubmitFails: 'commits' });
-    const { maker, taker } = await tradingPair(api, [6, 7]);
-    const [made, taken] = await Promise.all([maker.make('o1'), taker.take('o1')]);
-    expect(swapsOpened(api)).toBe(1);
-    expect(made.swap.status).toBe('both_claimed');
-    expect(taken.delivery).toBe('accepted');
-  });
-
-  test.each([
-    ['never leaves init_request_created within the recovery window', 'stuck', [22, 23]],
-    ['lands cancelled', 'cancelled', [24, 25]],
-  ] as const)('a swap submit that fails and then %s surfaces the failure — a second swap is never prepared', async (_, outcome, accounts) => {
-    const api = venue({ flowBSubmitFails: outcome });
-    const { maker, taker } = await tradingPair(api, [...accounts], sleepingClock());
-    await taker.swap.accept('o1');
-    const error = await maker.make('o1').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(CeremonyError);
-    expect(error).toMatchObject({ operation: 'htlc.flow-b-create', stage: 'submit', meta: { swapId: 's1' } });
-    expect(askedFor(api, 'htlc.flow-b-create')).toBe(1);
-  });
-
-  test('a maker restarted before the taker deposits resumes the swap, reads the preimage back for the claim, and opens nothing new', async () => {
-    const api = venue();
-    let waitingOnTaker!: () => void;
-    const waiting = new Promise<void>((resolve) => (waitingOnTaker = resolve));
-    const { maker, taker } = await tradingPair(api, [8, 9], {
-      sleep: () => {
-        waitingOnTaker();
-        return fast.sleep();
-      },
-    });
-    await taker.swap.accept('o1');
-    const preimage = 'ab'.repeat(32);
-    await api.openedEarlier((await maker.me()).partyId!, (await taker.me()).partyId!, preimage);
-
-    // Back while the swap is proposal_created and the counter leg is not locked: the API would answer
-    // the preimage with null, so the maker waits on the taker without asking for it.
-    const making = maker.make('o1');
-    await Promise.race([waiting, making]);
-    expect(api.preimageReads).toEqual([]);
-
-    const [made] = await Promise.all([making, taker.take('o1')]);
-    expect(made.swap.status).toBe('both_claimed');
-    expect(swapsOpened(api)).toBe(0);
-    expect(api.preimageReads).toEqual([preimage]);
-    expect(api.claims).toEqual([preimage]);
-  });
-
-  test('the venue, like the API, withholds the maker’s preimage until the counter leg is locked', async () => {
-    const api = venue();
-    const { maker, taker } = await tradingPair(api, [18, 19]);
-    await taker.swap.accept('o1');
-    const preimage = 'cd'.repeat(32);
-    await api.openedEarlier((await maker.me()).partyId!, (await taker.me()).partyId!, preimage);
-    const read = async () =>
-      ((await (await maker.session.request(`${baseUrl}/htlc/s1/preimage`, { method: 'GET', headers: {} })).json()) as { senderPreimage: string | null })
-        .senderPreimage;
-
-    expect(await read()).toBeNull();
-    await taker.execute('htlc.accept-deposit-counter', { swapId: 's1', counterTokenId: 'CC', counterAmount: grossAmount('5000', '0.005') });
-    expect(await read()).toBe(preimage);
-  });
-
-  test('a resumed swap whose preimage the API never releases ends in a SettleError at the deadline, and nothing is claimed', async () => {
-    const api = venue();
-    const { maker, taker } = await tradingPair(api, [20, 21], sleepingClock());
-    await taker.swap.accept('o1');
-    // The maker died after accepting the counter leg, and the API kept no preimage for it.
-    await api.openedEarlier((await maker.me()).partyId!, (await taker.me()).partyId!, 'ef'.repeat(32), {
-      status: 'counter_accepted',
-      stored: false,
-    });
-    const error = await maker.make('o1', { deadlineMs: 10 * 60_000 }).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(SettleError);
-    expect(error).toMatchObject({ swapId: 's1', message: expect.stringMatching(/preimage is not recoverable/) });
-    // A null is waited on until the deadline, not taken as final on the first read.
-    expect(api.preimageReads.length).toBeGreaterThan(1);
-    expect(api.claims).toEqual([]);
-  });
-
-  test('a proposal rejected on the ledger ends both sides with a SettleError naming the swap — nothing funded, nothing claimed', async () => {
-    const api = venue({ rejectAfterCreate: true });
-    const { maker, taker } = await tradingPair(api, [10, 11]);
-    const [made, taken] = await Promise.allSettled([maker.make('o1'), taker.take('o1')]);
-    for (const outcome of [made, taken]) {
-      expect(outcome.status).toBe('rejected');
-      const reason = (outcome as PromiseRejectedResult).reason;
-      expect(reason).toBeInstanceOf(SettleError);
-      expect(reason).toMatchObject({ swapId: 's1', message: expect.stringMatching(/proposal_rejected/) });
-    }
-    expect(api.prepared).not.toContain('htlc.accept-deposit-counter');
-    expect(api.claims).toEqual([]);
-  });
-
-  test('a counter leg an earlier attempt already accepted counts as accepted, and the swap settles', async () => {
-    const api = venue({ counterAcceptedElsewhere: true });
-    const { maker, taker } = await tradingPair(api, [12, 13]);
-    const [made] = await Promise.all([maker.make('o1'), taker.take('o1')]);
-    expect(made.swap.status).toBe('both_claimed');
-    // Asked once, answered "already accepted", and taken at its word: the claim followed, once.
-    expect(askedFor(api, 'htlc.accept-counter')).toBe(1);
-    expect(api.claims).toHaveLength(1);
-  });
-});
-
-describe('the same refusals, carried by errorCode with no condition in the text', () => {
-  // A refusal this SDK fails to act on would leave the other side polling for the default 45 minutes.
-  const SHORT = { deadlineMs: 3_000 };
-
-  test('a wallet too fragmented is merged, then the swap is prepared once more', async () => {
-    const api = venue({ fragmented: 'once', coded: true });
-    const { maker, taker } = await tradingPair(api, [26, 27]);
-    const [made] = await Promise.all([maker.make('o1', SHORT), taker.take('o1', SHORT)]);
-    expect(made.swap.status).toBe('both_claimed');
-    expect(askedFor(api, 'tokens.consolidate')).toBeGreaterThan(0);
-    expect(swapsOpened(api)).toBe(1);
-  });
-
-  test('a deposit whose prepared stash expired is prepared and signed again, once', async () => {
-    const api = venue({ staleDepositOnce: true, coded: true });
-    const { maker, taker } = await tradingPair(api, [28, 29]);
-    const [, taken] = await Promise.all([maker.make('o1', SHORT), taker.take('o1', SHORT)]);
-    expect(api.prepared.filter((t) => t === 'htlc.accept-deposit-counter')).toHaveLength(2);
-    expect(taken.swap.status).toBe('both_claimed');
-  });
-
-  test('a counter leg an earlier attempt already accepted counts as accepted, and the swap settles', async () => {
-    const api = venue({ counterAcceptedElsewhere: true, coded: true });
-    const { maker, taker } = await tradingPair(api, [30, 31]);
-    const [made] = await Promise.all([maker.make('o1', SHORT), taker.take('o1', SHORT)]);
-    expect(made.swap.status).toBe('both_claimed');
-    expect(askedFor(api, 'htlc.accept-counter')).toBe(1);
-    expect(api.claims).toHaveLength(1);
-  });
-});
-
-test.each([
-  ['by the text of the message', false, [32, 33]],
-  ['by errorCode alone', true, [34, 35]],
-] as const)('a claim refused as already settled (%s) is a settled swap, not a failure', async (_, coded, accounts) => {
-  const api = venue({ claimedElsewhere: true, coded });
-  const { maker, taker } = await tradingPair(api, [...accounts]);
-  const [made, taken] = await Promise.all([maker.make('o1', { deadlineMs: 3_000 }), taker.take('o1', { deadlineMs: 3_000 })]);
-  expect(made.swap.status).toBe('both_claimed');
-  expect(taken.delivery).toBe('accepted');
-  // Taken at its word: no second claim.
-  expect(api.claims).toHaveLength(1);
-});
-
 describe('signing up with an invite code', () => {
   const CODE = 'ABCD-EFGH-JKMN';
 
@@ -852,6 +845,7 @@ describe('refusals that come before anything is signed', () => {
   test('a timeout the stand does not offer for the order', async () => {
     const api = stub({
       'GET /orders/o1': () => takenOrder(),
+      'GET /htlc/dvp/instruments': () => [{ id: 'CBTC' }, { id: 'CC' }],
       'GET /htlc/timeout-options': () => ({ timeoutHours: [1, 2] }),
     });
     const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast });
@@ -916,7 +910,7 @@ test('acceptIncoming skips what expired and what the filter drops, and one refus
   expect(prepared).toEqual(['refused', 'fine']);
 });
 
-describe('the HTLC timeout make asks for', () => {
+describe('the timeout the maker’s proposal request carries', () => {
   // What dev offered for an order on 2026-10-02 (`GET /htlc/timeout-options`).
   const DEV = [0.01667, 0.0833, 0.1667, 0.25, 0.5, 1, 3, 6, 24];
 
@@ -929,14 +923,14 @@ describe('the HTLC timeout make asks for', () => {
     const api = stub({
       'GET /orders/o1': () => takenOrder(),
       'GET /htlc/timeout-options': () => ({ timeoutHours: offered }),
-      'GET /htlc/fee-config': () => ({ feeRate: '0' }),
-      'POST /wallet/operations/prepare': (body) => {
-        asked.push((body.params as Record<string, unknown>).timeoutHours);
-        return refuse(400, 'the test stops at the prepare');
+      'GET /htlc/dvp/instruments': () => [{ id: 'CBTC' }, { id: 'CC' }],
+      'POST /htlc/proposals': (body) => {
+        asked.push(body.timeoutHours);
+        return refuse(400, 'the test stops at the proposal');
       },
     });
     const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast });
-    await expect(acct.make('o1', { timeoutHours })).rejects.toBeInstanceOf(CeremonyError);
+    await expect(acct.make('o1', { timeoutHours })).rejects.toMatchObject({ status: 400 });
     expect(asked).toEqual([expected]);
   });
 });
