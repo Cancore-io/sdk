@@ -21,6 +21,12 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
   the leg locks, no party outside the trade, and deadlines within a bounded window. New dependency:
   `@canton-network/core-tx-visualizer`.
 - `acct.swap.create` and `acct.swap.createForPair` send `dvp: true` for a Canton↔Canton order.
+- The DvP fee terms (rate, receiver, venue) are read for the order's own pool:
+  `GET /htlc/fee-config?orderId=` with the account's session, after accept. A partner order is
+  held to the partner fee party, a retail order to the retail one, and a fee leg to any other
+  party is refused before signing. A backend that refuses `orderId` with 400 (older than the
+  per-order route) is asked again without it. The pool's `maxFeeRate` never lifts the account's
+  own ceiling (`maxFeeRate`, default 1.5%).
 - `Settled` gains `flow: 'dvp'`. `delivery` is always `'direct'`: the settle moves the holdings
   themselves, so `'accepted'` and `'pending'` are no longer produced by `make` / `take`
   (`acceptIncoming` still accepts any transfer that arrives otherwise).

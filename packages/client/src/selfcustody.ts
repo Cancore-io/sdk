@@ -278,6 +278,8 @@ export interface SelfCustodyOptions extends SessionOptions {
 /** This SDK's default ceiling on the platform fee rate (1.5%): a policy of the SDK, not of the platform. */
 export const DEFAULT_MAX_FEE_RATE = '0.015';
 const DEFAULT_SETTLEMENT_WINDOW_MS = 3 * 60 * 60_000;
+/** What `GET /htlc/fee-config` answers; its `maxFeeRate` is not read: the ceiling is `maxFeeRate` of this account. */
+type FeeConfig = { feeRate?: string; feeRecipient?: string; venue?: string };
 
 /** A settle that cannot finish: the swap went somewhere it cannot come back from, or time ran out. */
 export class SettleError extends Error {
@@ -683,6 +685,21 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   }
 
   /**
+   * The fee configuration of the order's pool (`?orderId=`): a partner order pays its fee to the
+   * partner fee party, a retail one to the retail party. The pool is fixed at accept, and every
+   * caller here runs after it. A backend older than the per-order route refuses the unknown
+   * parameter with 400; it has one pool only, so its public configuration is the order's.
+   */
+  async function feeConfig(orderId: string): Promise<FeeConfig | null> {
+    try {
+      return await http.get<FeeConfig | null>('/htlc/fee-config', { orderId });
+    } catch (err) {
+      if (!(err instanceof CancoreApiError && err.status === 400)) throw err;
+      return http.get<FeeConfig | null>('/htlc/fee-config');
+    }
+  }
+
+  /**
    * The trade this account agreed to, from sources other than the swap row: the
    * order, the stand's instrument list (each instrument's admin) and its fee
    * configuration (rate, receiver and venue). Every prepared transaction is held
@@ -690,7 +707,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    */
   async function dvpTerms(order: Order, swapId: string | null, party: string, role: 'maker' | 'taker'): Promise<DvpTerms> {
     const { source, target } = await dvpInstruments(order);
-    const config = await http.get<{ feeRate?: string; feeRecipient?: string; venue?: string } | null>('/htlc/fee-config');
+    const config = await feeConfig(order.id);
     const venue = options.venuePartyId ?? config?.venue;
     const feeRate = config?.feeRate ?? '0';
     const ceiling = options.maxFeeRate ?? DEFAULT_MAX_FEE_RATE;

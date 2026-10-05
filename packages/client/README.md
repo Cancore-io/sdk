@@ -396,8 +396,9 @@ with the account's authority. Trade only tokens whose registry you trust that fa
 admins with `instrumentAdmins` only on the same terms.
 
 It then holds the command to the trade it agreed to, read from the order,
-`GET /htlc/dvp/instruments` (each instrument's admin) and `GET /htlc/fee-config` (fee rate, fee
-receiver and venue), never from the swap row: the transaction acts as this account only, is
+`GET /htlc/dvp/instruments` (each instrument's admin) and `GET /htlc/fee-config?orderId=` (fee
+rate, fee receiver and venue of the order's own pool, fixed at accept: a partner order pays the
+partner fee party, a retail order the retail one), never from the swap row: the transaction acts as this account only, is
 the one command the step is made of, and every leg in it is the order's main leg, the counter
 leg, or a platform fee within the published rate, with the counter leg and the fee adding up
 to the order's `targetAmount`. An allocation must hand settlement to the venue and name this
@@ -408,7 +409,8 @@ The fee is held to a ceiling the API cannot move: `maxFeeRate`, default `'0.015'
 SDK's default ceiling). A stand that publishes a higher rate is refused — by `make` before the
 trade is recorded, by `take` before it signs. Pin from your own configuration, too:
 `venuePartyId` (the venue every allocation must hand settlement to) and `feeRecipientPartyId`
-(the only party the fee may be paid to).
+(the only party the fee may be paid to). A backend without the per-order fee configuration
+refuses `orderId` with 400; the SDK then reads the public one, which is that backend's only pool.
 
 What the account signs:
 
