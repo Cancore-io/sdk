@@ -248,8 +248,9 @@ export interface SelfCustodyOptions extends SessionOptions {
   pollMs?: number;
   /**
    * The venue party every DvP allocation must hand settlement to. Pin it from
-   * your own configuration to make it a trust boundary the API cannot move;
-   * by default it is read from `GET /htlc/fee-config`.
+   * your own configuration to make it a trust boundary the API cannot move.
+   * Default: `make` / `take` read it from `GET /htlc/fee-config`; `withdrawAllocation` uses the venue
+   * this SDK pins for the network (`DEFAULT_VENUES`) and never calls fee-config.
    */
   venuePartyId?: string;
   /**
