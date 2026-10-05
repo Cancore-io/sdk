@@ -24,11 +24,11 @@
 import { signLegs, type OperationLeg } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
-import { DEFAULT_INSTRUMENT_ADMINS, instrumentKey, mergeLists } from './dvp-admins';
+import { DEFAULT_INSTRUMENT_ADMINS, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
 import { DEFAULT_TRUSTED_PACKAGES, units, verifyDvpPrepared, type DvpOperation, type DvpTerms, type Instrument, type TrustedPackages } from './dvp-verify';
 
 export { DEFAULT_TRUSTED_PACKAGES, type TrustedPackages } from './dvp-verify';
-export { DEFAULT_INSTRUMENT_ADMINS } from './dvp-admins';
+export { API_NETWORKS, DEFAULT_INSTRUMENT_ADMINS, type DvpNetwork } from './dvp-admins';
 import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
@@ -263,9 +263,14 @@ export interface SelfCustodyOptions extends SessionOptions {
    */
   trustedPackages?: Partial<TrustedPackages>;
   /**
-   * More instrument admins a DvP allocation may run under, by instrument id (`Amulet` for CC).
-   * Added to `DEFAULT_INSTRUMENT_ADMINS`, never replacing it: a network or token the SDK does not
-   * list yet is refused until its admin is added here.
+   * The network this account trades on; it chooses which pinned instrument admins are trusted.
+   * Derived from `baseUrl` for the Cancore API hosts (`API_NETWORKS`); any other host must say.
+   */
+  network?: DvpNetwork;
+  /**
+   * More instrument admins a DvP allocation may run under on this account's network, by
+   * instrument id (`Amulet` for CC). Added to `DEFAULT_INSTRUMENT_ADMINS`, never replacing it: a
+   * token the SDK does not list for the network yet is refused until its admin is added here.
    */
   instrumentAdmins?: Record<string, string[]>;
 }
@@ -408,8 +413,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   const session = createSession(options);
   const http: Http = createHttp({ baseUrl, request: session.request });
   const orders = createSwapClient(http);
+  const network = options.network ?? networkOf(baseUrl);
   const admins = mergeLists(
-    DEFAULT_INSTRUMENT_ADMINS,
+    network ? DEFAULT_INSTRUMENT_ADMINS[network] : {},
     Object.fromEntries(Object.entries(options.instrumentAdmins ?? {}).map(([id, list]) => [instrumentKey(id), list])),
   );
   // Every Canton↔Canton order this account places asks for allocation-DvP: that is the only way it settles.
@@ -648,8 +654,23 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       );
     }
     // The admin is the allocation's trust anchor, so the API's word for it is checked against the SDK's own list.
+    if (!network && !options.instrumentAdmins) {
+      throw new SettleError(
+        `cannot tell which network ${baseUrl} serves, so no instrument admin can be trusted: pass network ('devnet', 'testnet' or 'mainnet')`,
+        null,
+        order,
+      );
+    }
     for (const instrument of [source, target]) {
-      if (!(admins[instrumentKey(instrument.id)] ?? []).includes(instrument.admin)) {
+      const pinned = admins[instrumentKey(instrument.id)] ?? [];
+      if (pinned.length === 0) {
+        throw new SettleError(
+          `${instrument.id} admin for ${network ?? 'this network'} not configured — pass instrumentAdmins`,
+          null,
+          order,
+        );
+      }
+      if (!pinned.includes(instrument.admin)) {
         throw new SettleError(
           `the stand names ${instrument.admin} as the admin of ${instrument.id}, which is not an admin this SDK trusts for it; ` +
             'if it is genuinely the registry of this network, add it with instrumentAdmins',

@@ -48,8 +48,11 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
 - `SelfCustodyOptions.trustedPackages` and `DEFAULT_TRUSTED_PACKAGES`: the package ids of the
   swap package the proposal steps may run, added to the defaults.
 - `SelfCustodyOptions.instrumentAdmins` and `DEFAULT_INSTRUMENT_ADMINS`: the instrument admins an
-  allocation may run under (the factory must be signed by one), pinned per instrument and
-  network, added to the defaults.
+  allocation may run under (the factory must be signed by one), pinned per network and
+  instrument, added to the defaults.
+- `SelfCustodyOptions.network` and `API_NETWORKS`: the network the account trades on, derived
+  from `baseUrl` for the Cancore API hosts. Any other host must pass it, or no admin is trusted.
+  CC on testnet has no pinned admin yet: pass the testnet DSO party with `instrumentAdmins`.
 - Refusal codes `DVP_NOT_ALLOWED` and `DVP_FEE_HOLDING_REQUIRED` (`refusalOf`: `dvpNotAllowed`,
   `feeHoldingRequired`).
 

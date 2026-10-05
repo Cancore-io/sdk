@@ -354,23 +354,40 @@ and refuses on any difference. It then walks the whole decoded tree, not just it
 - an allocation's trust anchor is the instrument admin, not a package id: the registries (the
   DSO for CC, the Digital Asset utility for registry tokens) upgrade their packages on their own
   schedule. The allocation goes through the token standard's `AllocationFactory` interface,
-  pinned by its package id, on a factory that is disclosed with the transaction, of the very
-  template the command exercises, and signed by the instrument admin. Only the admin can create
-  such a contract, so every node under it runs code the admin deployed. The admin itself is
-  pinned in the SDK per instrument and network (`DEFAULT_INSTRUMENT_ADMINS`: the DSO party for
-  CC; the CBTC, USDCx and HECTO registrars), and the one the stand's
-  `GET /htlc/dvp/instruments` names must be on that list, or the trade is refused before
-  anything is recorded. A network or token not listed yet is added with `instrumentAdmins`
-  (added to the defaults, never replacing them);
+  pinned by its package id, on a factory that is disclosed with the transaction, of the same
+  template (package name, module, entity; under a Daml upgrade it may run a newer package id
+  than it was created with) and signed by the instrument admin. The admin is pinned in the SDK
+  per network and instrument (`DEFAULT_INSTRUMENT_ADMINS`: the DSO party for CC; the CBTC,
+  USDCx and HECTO registrars), and the one the stand's `GET /htlc/dvp/instruments` names must
+  be on that network's list, or the trade is refused before anything is recorded. The network
+  comes from `baseUrl` for the Cancore API hosts (`API_NETWORKS`) or from the `network` option;
+  an unknown host without it trusts no admin. A token not listed for the network is added with
+  `instrumentAdmins` (added to the defaults, never replacing them). CC on testnet has no pinned
+  admin yet: pass the testnet DSO party there;
+- the signer's authority goes no further than the allocation: a contract it signs must be its
+  own holding or the allocation record of exactly this leg (executor, trade, sender, receiver,
+  amount and instrument as checked), and a choice it acts in must be the factory's, one on its
+  own holding, or one on a contract the instrument admin signed. A proxy the signer would sign
+  and someone else control is refused;
 - in an allocation, no node may create a holding owned by anyone but this account; what is
-  locked is at most the leg's amount; every holding spent is this account's and disclosed; no
+  locked is at most the leg's amount, of the leg's instrument and nothing else; every holding spent is this account's and disclosed; no
   more of an instrument is spent than the leg locks; and no party appears in any created
   contract or choice argument but this account, the venue, the leg's receiver and the
   registry's own parties (the factory's signatories and stakeholders) — a transfer, lock or
   instruction for anyone else is refused;
-- every deadline in it (the proposal's expiry, the allocation's `requestedAt`,
-  `allocateBefore`, `settleBefore`) lies within `maxSettlementWindowMs` of now (default 3
-  hours): the API cannot keep the account's funds locked for longer.
+- every deadline in it (the proposal's expiry, the allocation's `allocateBefore` and
+  `settleBefore`) lies between now (less five minutes of clock skew) and
+  `maxSettlementWindowMs` ahead (default 3 hours), and `requestedAt` within that window before
+  now: the API cannot keep the account's funds locked for longer.
+
+**What this guarantees, and what it still trusts.** Against a dishonest or compromised API, the
+account signs only: the proposal and approval of exactly the order's trade (its amounts,
+instruments, parties, the venue, and a fee no higher than the ceiling), and allocations that
+lock at most each leg's amount, for this trade's executor, under a factory its pinned instrument
+admin signed — with no holding leaving the account, no authority handed to anyone beyond the
+allocation, and no deadline beyond the window. What it trusts is the instrument admin's own
+code: the token's registry decides how a lock and an allocation are carried out, as it does
+for every holder of that token. A registry the caller does not trust should not be traded.
 
 It then holds the command to the trade it agreed to, read from the order,
 `GET /htlc/dvp/instruments` (each instrument's admin) and `GET /htlc/fee-config` (fee rate, fee

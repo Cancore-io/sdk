@@ -122,7 +122,7 @@ export function proposalAccept(nodeId: string, approver: string, children: strin
   });
 }
 
-export function allocate(nodeId: string, input: { executor: string; swapId: string; legId: string; leg: FixtureLeg; expectedAdmin?: string; factory?: Create; children?: string[]; settleBefore?: string; interfacePackageId?: string; windows?: Window }): DamlTransaction_Node {
+export function allocate(nodeId: string, input: { executor: string; swapId: string; legId: string; leg: FixtureLeg; expectedAdmin?: string; factory?: Create; children?: string[]; settleBefore?: string; interfacePackageId?: string; windows?: Window; inputHoldingCids?: string[]; exercisedPackageId?: string; exercisedPackageName?: string }): DamlTransaction_Node {
   const times: Record<string, string | null> = { requestedAt: at(0), allocateBefore: at(30), settleBefore: input.settleBefore ?? at(60), ...input.windows };
   const settlementTimes = Object.fromEntries(Object.entries(times).flatMap(([k, t]) => (t === null ? [] : [[k, v.time(t)] as const])));
   const factory = input.factory ?? factoryContract(input.leg.instrumentId.admin);
@@ -131,8 +131,9 @@ export function allocate(nodeId: string, input: { executor: string; swapId: stri
     exercise: {
       lfVersion: '2.1',
       contractId: factory.contractId,
-      packageName: factory.packageName,
-      templateId: factory.templateId,
+      // Under a Daml upgrade the factory is exercised under a newer package than it was created with.
+      packageName: input.exercisedPackageName ?? factory.packageName,
+      templateId: { ...factory.templateId!, packageId: input.exercisedPackageId ?? factory.templateId!.packageId },
       interfaceId: { ...ALLOCATION_FACTORY_INTERFACE, packageId: input.interfacePackageId ?? ALLOCATION_FACTORY_INTERFACE.packageId },
       signatories: factory.signatories,
       stakeholders: factory.stakeholders,
@@ -151,7 +152,7 @@ export function allocate(nodeId: string, input: { executor: string; swapId: stri
           transferLeg: legValue(input.leg),
         }),
         requestedAt: v.time(at(0)),
-        inputHoldingCids: v.list([]),
+        inputHoldingCids: v.list((input.inputHoldingCids ?? []).map((cid) => ({ sum: { oneofKind: 'contractId', contractId: cid } }))),
         extraArgs: v.record({ context: v.record({ values: v.textMap({}) }), meta: meta() }),
       }),
       consuming: false,
@@ -249,6 +250,7 @@ export function allocationTree(input: {
   executor: string; swapId: string; legId: string; leg: FixtureLeg; balance: string;
   extra?: (id: (n: number) => string) => { nodes: DamlTransaction_Node[]; inputs?: Create[] };
   factory?: Create; settleBefore?: string; interfacePackageId?: string; windows?: Window;
+  exercisedPackageId?: string; exercisedPackageName?: string;
 }) {
   const { leg } = input;
   const owned = holding('33'.repeat(34), leg.sender, leg.instrumentId, input.balance);
@@ -269,16 +271,30 @@ export function allocationTree(input: {
     : createOf('66'.repeat(34), 'utility-registry-v0', PKG.registry, 'Utility.Registry.V0.Holding.Allocation', 'DvpLegAllocation',
       v.record({ operator: v.party(DEV.utilityOperator), registrar: v.party(leg.instrumentId.admin), allocation: spec, lockedHolding: { sum: { oneofKind: 'contractId', contractId: locked.contractId } } }),
       [DEV.utilityOperator, leg.instrumentId.admin, leg.sender]);
+  // What splice-amulet adds around the lock: an interface fetch of each input holding, the transfer on
+  // the DSO's AmuletRules acting as the sender, and a reward coupon signed by the DSO.
+  const cc = isCc(leg.instrumentId.id);
+  const rules = createOf('77'.repeat(34) + 'aa', 'splice-amulet', PKG.amulet, 'Splice.AmuletRules', 'AmuletRules', v.record({ dso: v.party(leg.instrumentId.admin) }), [leg.instrumentId.admin]);
+  const coupon = createOf('88'.repeat(34) + 'aa', 'splice-amulet', PKG.amulet, 'Splice.Amulet', 'ValidatorRewardCoupon',
+    v.record({ dso: v.party(leg.instrumentId.admin), user: v.party(leg.sender), amount: v.numeric('0.0000000001') }), [leg.instrumentId.admin]);
+  const ccNodes = cc
+    ? [
+      node('5', { oneofKind: 'fetch', fetch: { lfVersion: '2.1', contractId: owned.contractId, packageName: owned.packageName, templateId: owned.templateId, signatories: owned.signatories, stakeholders: owned.stakeholders, actingParties: [leg.sender], interfaceId: { packageId: '718a0f77e505a8de22f188bd4c87fe74101274e9d4cb1bfac7d09aec7158d35b', moduleName: 'Splice.Api.Token.HoldingV1', entityName: 'Holding' } } }),
+      node('6', { oneofKind: 'exercise', exercise: { lfVersion: '2.1', contractId: rules.contractId, packageName: rules.packageName, templateId: rules.templateId, signatories: rules.signatories, stakeholders: rules.stakeholders, actingParties: [leg.sender], choiceId: 'AmuletRules_Transfer', chosenValue: v.record({ sender: v.party(leg.sender) }), consuming: false, children: [], choiceObservers: [] } }),
+      createNode('7', coupon),
+    ]
+    : [];
   return {
     nodes: [
-      allocate('0', { ...input, factory, children }),
+      allocate('0', { ...input, factory, children: [...children, ...ccNodes.map((n) => n.nodeId)], inputHoldingCids: [owned.contractId] }),
       spend('1', owned, leg.sender),
       createNode('2', locked),
       createNode('3', change),
       createNode('4', allocation),
       ...extra.nodes,
+      ...ccNodes,
     ],
-    inputs: [factory, owned, ...(extra.inputs ?? [])],
+    inputs: [factory, owned, ...(cc ? [rules] : []), ...(extra.inputs ?? [])],
   };
 }
 

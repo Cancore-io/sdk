@@ -193,10 +193,12 @@ function checkTransaction(operation: DvpOperation, decoded: PreparedTransaction,
       // contract, so the code the whole tree runs is the code the admin deployed.
       const factory = inputContracts(decoded).get(root.exercise.contractId);
       if (!factory) return 'the allocation factory is not among the contracts the transaction discloses';
-      if (!sameId(factory.templateId, root.exercise.templateId)) return 'the command runs on another template than the factory it names';
+      // Under Daml upgrades the command may run a newer version of the factory's package than the one the
+      // factory was created with: the package NAME, module and entity must match, the id may differ.
+      if (!sameTemplate(factory, root.exercise)) return 'the command runs on another template than the factory it names';
       // The leg's admin is the pinned one (checkLeg holds it to the instruments, which the caller pinned).
       if (!factory.signatories.includes(leg!.instrumentId.admin)) return 'the allocation factory is not signed by the instrument admin';
-      const holdings = checkHoldings(decoded, nodes, terms, leg!, factory);
+      const holdings = checkHoldings(decoded, nodes, terms, leg!, factory, root.exercise.contractId);
       if (holdings) return holdings;
       funded.push(leg!);
       return null;
@@ -259,31 +261,49 @@ function checkTree(operation: DvpOperation, decoded: PreparedTransaction, nodes:
  *  - per instrument, what is consumed and not recreated is at most what the leg locks;
  *  - no party appears in any created contract or any choice argument but the signer, the venue,
  *    the leg's receiver and the registry's own parties (the factory's signatories and
- *    stakeholders): a transfer, lock or instruction for anyone else is refused.
+ *    stakeholders): a transfer, lock or instruction for anyone else is refused;
+ *  - the signer's authority goes no further than this allocation: a contract the signer signs is
+ *    either its own holding or the allocation record of exactly this leg, and a choice the signer
+ *    acts in is the factory's own, one on its own holding, or one on a contract the instrument
+ *    admin signed. Anything else — a proxy the signer signs and someone else controls, a choice on
+ *    a stranger's contract — would be authority lasting beyond this transaction, and is refused.
  */
-function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, terms: DvpTerms, leg: TransferLeg, factory: Create): string | null {
+function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, terms: DvpTerms, leg: TransferLeg, factory: Create, factoryCid: string): string | null {
   const party = terms.party;
   const inputs = inputContracts(decoded);
   const allowedParties = new Set([party, terms.venue, leg.receiver, leg.instrumentId.admin, ...factory.signatories, ...factory.stakeholders]);
   const created = new Map<string, Create>();
   const net = new Map<string, bigint>();
   const add = (key: string, amount: bigint) => net.set(key, (net.get(key) ?? 0n) + amount);
-  let locked = 0n;
+  const locked = new Map<string, bigint>();
+  for (const node of nodes.values()) {
+    const type = nodeType(node)!;
+    if (type.oneofKind === 'create') created.set(type.create.contractId, type.create);
+  }
   for (const node of nodes.values()) {
     const type = nodeType(node)!;
     const values = type.oneofKind === 'create' ? [type.create.argument] : type.oneofKind === 'exercise' ? [type.exercise.chosenValue] : [];
     const parties = [...(type.oneofKind === 'exercise' ? type.exercise.actingParties : []), ...values.flatMap((v) => [...partiesIn(v)])];
     const stranger = parties.find((p) => !allowedParties.has(p));
     if (stranger) return `node ${node.nodeId} involves ${stranger}, who is not part of this allocation`;
+    if (type.oneofKind === 'exercise' && type.exercise.actingParties.includes(party)) {
+      const wrong = signerActs(type.exercise.contractId, inputs, created, party, leg.instrumentId.admin, factoryCid);
+      if (wrong) return `node ${node.nodeId}: ${wrong}`;
+    }
     if (type.oneofKind !== 'create') continue;
-    created.set(type.create.contractId, type.create);
     const holding = holdingOf(type.create);
+    if (type.create.signatories.includes(party) && !(holding?.owner === party) && !isThisAllocation(type.create, terms, leg)) {
+      return `node ${node.nodeId} creates a ${type.create.templateId?.entityName ?? 'contract'} signed by this account that is neither its holding nor this allocation`;
+    }
     if (!holding) continue;
     if (holding.owner !== party) return `it creates a holding owned by ${holding.owner}`;
     add(holding.instrument, -holding.amount);
-    if (holding.locked) locked += holding.amount;
+    if (holding.locked) locked.set(holding.instrument, (locked.get(holding.instrument) ?? 0n) + holding.amount);
   }
-  if (locked > units(leg.amount)) return `it locks more than the leg's ${leg.amount}`;
+  const legKey = instrumentKey(leg.instrumentId.id);
+  for (const [instrument, amount] of locked) {
+    if (amount > (instrument === legKey ? units(leg.amount) : 0n)) return `it locks more ${instrument} than the leg's ${leg.amount}`;
+  }
   for (const node of nodes.values()) {
     const type = nodeType(node)!;
     if (type.oneofKind !== 'exercise' || !type.exercise.consuming) continue;
@@ -294,7 +314,6 @@ function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, terms: DvpTer
     if (holding.owner !== party) return `it spends a holding owned by ${holding.owner}`;
     add(holding.instrument, holding.amount);
   }
-  const legKey = instrumentKey(leg.instrumentId.id);
   for (const [instrument, spent] of net) {
     const allowance = instrument === legKey ? units(leg.amount) : 0n;
     if (spent > allowance) return `it spends more ${instrument} than the leg locks`;
@@ -303,6 +322,31 @@ function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, terms: DvpTer
 }
 
 type Create = Extract<NonNullable<ReturnType<typeof nodeType>>, { oneofKind: 'create' }>['create'];
+
+/** Why the signer may not act in a choice on this contract, or null when it may. */
+function signerActs(cid: string, inputs: Map<string, Create>, created: Map<string, Create>, party: string, admin: string, factoryCid: string): string | null {
+  if (cid === factoryCid) return null;
+  const target = inputs.get(cid) ?? created.get(cid);
+  if (!target) return 'this account acts on a contract the transaction does not disclose';
+  if (holdingOf(target)?.owner === party) return null;
+  if (target.signatories.includes(admin)) return null;
+  return `this account acts on a ${target.templateId?.entityName ?? 'contract'} that is neither its holding nor the instrument admin's`;
+}
+
+/** The allocation record of exactly the verified leg: executor, trade and leg as checked at the root. */
+function isThisAllocation(contract: Create, terms: DvpTerms, leg: TransferLeg): boolean {
+  let arg: unknown;
+  try {
+    arg = plain(contract.argument);
+  } catch {
+    return false;
+  }
+  const spec = (arg as { allocation?: { settlement?: { executor?: unknown; settlementRef?: { id?: unknown } }; transferLeg?: TransferLeg } })?.allocation;
+  const l = spec?.transferLeg;
+  return spec?.settlement?.executor === terms.venue && spec.settlement.settlementRef?.id === terms.swapId &&
+    !!l && l.sender === leg.sender && l.receiver === leg.receiver && units(l.amount) === units(leg.amount) &&
+    l.instrumentId?.id === leg.instrumentId.id && l.instrumentId.admin === leg.instrumentId.admin;
+}
 
 function inputContracts(decoded: PreparedTransaction): Map<string, Create> {
   const out = new Map<string, Create>();
@@ -341,6 +385,11 @@ function holdingOf(contract: Create): { owner: string; instrument: string; amoun
 }
 
 
+/** Same template across Daml upgrades: package name, module and entity; the package id may be a newer version. */
+const sameTemplate = (contract: Create, exercise: { packageName: string; templateId?: { moduleName: string; entityName: string } }) =>
+  contract.packageName === exercise.packageName && !!contract.templateId && !!exercise.templateId &&
+  contract.templateId.moduleName === exercise.templateId.moduleName && contract.templateId.entityName === exercise.templateId.entityName;
+
 const sameId = (a: { packageId: string; moduleName: string; entityName: string } | undefined, b: { packageId: string; moduleName: string; entityName: string } | undefined) =>
   !!a && !!b && a.packageId === b.packageId && a.moduleName === b.moduleName && a.entityName === b.entityName;
 
@@ -362,13 +411,25 @@ function partiesIn(value: Value | undefined, found = new Set<string>()): Set<str
   return found;
 }
 
-/** A deadline later than the clock allows, or a time that is not a time, among these fields. */
+/** Clock skew tolerated between this process and the ledger. */
+const CLOCK_SKEW_MS = 5 * 60_000;
+
+/**
+ * An instant outside its bounds, or one that is not there. A deadline lies between now (less the
+ * clock skew; one already past is a trade that cannot settle) and `maxWindowMs` ahead; `requestedAt`
+ * is when the trade was requested, so it lies between `maxWindowMs` ago and now (plus the skew).
+ */
 function lateDeadline(record: Map<string, Value> | null, labels: string[], terms: DvpTerms): string | null {
   for (const label of labels) {
     const value = record?.get(label);
     if (value?.sum.oneofKind !== 'timestamp') return `${label} is missing`;
     const at = Number(BigInt(value.sum.timestamp) / 1000n);
-    if (at > terms.now + terms.maxWindowMs) return `${label} is ${new Date(at).toISOString()}, further ahead than this account allows`;
+    const when = new Date(at).toISOString();
+    const [lo, hi] = label === 'requestedAt'
+      ? [terms.now - terms.maxWindowMs, terms.now + CLOCK_SKEW_MS]
+      : [terms.now - CLOCK_SKEW_MS, terms.now + terms.maxWindowMs];
+    if (at > hi) return `${label} is ${when}, further ahead than this account allows`;
+    if (at < lo) return `${label} is ${when}, already in the past`;
   }
   return null;
 }

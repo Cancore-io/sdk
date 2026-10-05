@@ -436,7 +436,8 @@ function venue({
   return { fetchImpl, log, asked, proposals, routes, order, incoming, byKey, signUps, htlcOpenedEarlier, legs: () => legs };
 }
 
-const baseUrl = 'https://api.example';
+// The dev API host: its network (devnet) chooses the pinned instrument admins.
+const baseUrl = 'https://api-dev.cancore.app';
 // Yield a macrotask per wait: an instantly-resolving sleep would starve jest's own timers.
 const fast = { pollMs: 1, sleep: () => new Promise<void>((resolve) => setImmediate(resolve)) };
 
@@ -1160,6 +1161,30 @@ describe('the instrument admin is the SDK’s to pin, not the API’s to name', 
     });
     await expect(acct.make('o1')).rejects.toMatchObject({ status: 400 });
     expect(proposed).toHaveLength(1);
+  });
+});
+
+describe('the network decides which admins are trusted', () => {
+  const api = (cbtcAdmin: string) => stub({
+    'GET /orders/o1': () => takenOrder(),
+    'GET /htlc/dvp/instruments': () => [{ id: 'CBTC', admin: cbtcAdmin }, { id: 'CC', admin: DEV.dso }],
+    'GET /auth/me': () => ({ id: 'me', partyId: 'party-maker' }),
+  });
+  const account = async (url: string, cbtcAdmin = DEV.cbtcRegistrar, over: Partial<SelfCustodyOptions> = {}) =>
+    createSelfCustody({ baseUrl: url, signer: await providerFromMnemonic(PHRASE), fetchImpl: api(cbtcAdmin).fetchImpl, ...fast, ...over });
+
+  test('a host the SDK does not know, with no network given, trusts no admin', async () => {
+    await expect((await account('https://api.example')).make('o1')).rejects.toThrow(/cannot tell which network https:\/\/api.example serves.*pass network/);
+  });
+  test('a devnet admin is not trusted on mainnet', async () => {
+    await expect((await account('https://api.cancore.io')).make('o1')).rejects.toThrow(/as the admin of CBTC, which is not an admin this SDK trusts/);
+  });
+  test('CC on testnet: its admin is not configured, and the error says how to configure it', async () => {
+    const testnetCbtc = 'cbtc-network::12201b1741b63e2494e4214cf0bedc3d5a224da53b3bf4d76dba468f8e97eb15508f';
+    await expect((await account('https://api-testnet.cancore.app', testnetCbtc)).make('o1')).rejects.toThrow(/CC admin for testnet not configured — pass instrumentAdmins/);
+  });
+  test('the network option speaks for a host the SDK does not know', async () => {
+    await expect((await account('https://api.example', DEV.cbtcRegistrar, { network: 'mainnet' })).make('o1')).rejects.toThrow(/not an admin this SDK trusts/);
   });
 });
 
