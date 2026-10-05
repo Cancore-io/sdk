@@ -230,6 +230,12 @@ export interface SettleOptions {
   deadlineMs?: number;
   /** @deprecated DvP settlement delivers the holdings themselves; there is nothing to wait for. */
   deliveryWaitMs?: number;
+  /**
+   * `take` only: when the venue refuses the take because this account has no holding for the
+   * platform fee separate from the one funding the trade (`DVP_FEE_HOLDING_REQUIRED`), split one
+   * off (`splitForFee`) and take once more. Default true.
+   */
+  autoSplitForFee?: boolean;
 }
 
 export interface SelfCustodyOptions extends SessionOptions {
@@ -360,6 +366,15 @@ export interface SelfCustodyAccount {
   }>;
   /** Send from this account. `tokenId` omitted sends CC. */
   send(input: { receiverPartyId: string; amount: string; tokenId?: string; description?: string }): Promise<unknown>;
+  /**
+   * Give the platform fee a holding of its own: a DvP taker must fund the fee from a holding
+   * separate from its trade leg. Self-sends `feeAmount` (the change stays a second holding),
+   * unless the balance already sits in two or more holdings — the API exposes their count, not
+   * their sizes, so that is the check; `take` splits on the venue's refusal regardless. The
+   * self-send's own network fee is taken into account. Resolves true when it split, false when
+   * it had nothing to do. CC only: the API refuses a registry-token send to oneself.
+   */
+  splitForFee(tokenId: string, feeAmount: string): Promise<boolean>;
   /** Merge small holdings into few, one signed batch per call. Returns how many merged; 0 means compact. */
   consolidate(tokenId?: string): Promise<number>;
   /** `GET /tokens/balance/{partyId}/{instrumentId}` */
@@ -549,6 +564,30 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       adminPartyId: transfer.instrumentAdmin,
       executeBefore: transfer.executeBefore,
     }, false);
+  }
+
+  /** `splitForFee`; `force` skips the holdings-count check, for when the venue has already said a split is needed. */
+  async function splitFee(tokenId: string, feeAmount: string, force: boolean): Promise<boolean> {
+    if (!isCc(tokenId)) {
+      throw new SettleError(
+        `${tokenId}: the API refuses a ${tokenId} send to oneself, so this account cannot split its own ${tokenId} for the platform fee; ` +
+          `receive ${tokenId} in a second transfer to get a separate holding`,
+        null,
+      );
+    }
+    const fee = units(feeAmount);
+    if (fee <= 0n) throw new RangeError(`splitForFee takes a positive decimal of at most ten places, got ${feeAmount}`);
+    const held = await balance(tokenId);
+    if (!force && (held.holdingsCount ?? 0) >= 2) return false;
+    const { networkFee = 0 } = await http.get<{ networkFee?: number }>('/tokens/transfer/estimate-fee', { instrumentId: tokenId, amount: feeAmount });
+    const cost = fee + units(decimal(networkFee));
+    // Strictly more: a self-send of the whole balance leaves one holding, not two.
+    if (units(decimal(held.balance)) <= cost) {
+      throw new SettleError(`cannot split ${feeAmount} ${tokenId} for the platform fee: the balance ${held.balance} does not cover it plus the send's network fee ${networkFee}`, null);
+    }
+    // Omitted means CC, whichever alias the order names it by.
+    await run('tokens.send', { receiverPartyId: await ownParty(), amount: feeAmount }, false);
+    return true;
   }
 
   async function consolidate(tokenId?: string): Promise<number> {
@@ -807,18 +846,38 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     return fundAndSettle(swapId, terms, info, deadline);
   }
 
+  /**
+   * Take the order. Refused for want of a fee holding of this account's own, it splits one off
+   * and takes once more — once: a second refusal ends the take.
+   */
+  async function acceptOrder(order: Order, self: string | undefined, autoSplit: boolean): Promise<Order> {
+    const what = `taking order ${order.id}`;
+    let split: string | null = null;
+    for (;;) {
+      try {
+        return await swap.accept(order.id);
+      } catch (err) {
+        const refused = dvpRefusal(err, what, order, self);
+        const body = (err as CancoreApiError).body as { payerPartyId?: string; feeAmount?: string } | undefined;
+        const mine = refusalOf(err) === 'feeHoldingRequired' && self !== undefined && body?.payerPartyId === self && body.feeAmount;
+        if (split !== null && refused) throw new SettleError(`${what}: refused again after splitting ${split} into a holding of its own — ${refused.message}`, null, order);
+        if (!autoSplit || !mine) throw refused ?? err;
+        split = body!.feeAmount!;
+        try {
+          await splitFee(order.targetTokenAddress, split, true);
+        } catch (cause) {
+          throw new SettleError(`${what}: the platform fee needs a holding of its own, and splitting ${split} off failed: ${(cause as Error).message}`, null, order);
+        }
+      }
+    }
+  }
+
   async function take(orderId: string, opts: SettleOptions = {}): Promise<Settled> {
     const deadline = now() + (opts.deadlineMs ?? DEFAULT_DEADLINE_MS);
     let order = await swap.get(orderId);
     assertCantonOrder(order);
     const self = await me();
-    if (order.status === 'open') {
-      try {
-        order = await swap.accept(orderId);
-      } catch (err) {
-        throw dvpRefusal(err, `taking order ${orderId}`, order, self.partyId ?? undefined) ?? err;
-      }
-    }
+    if (order.status === 'open') order = await acceptOrder(order, self.partyId ?? undefined, opts.autoSplitForFee ?? true);
     if (order.opponentUserId && order.opponentUserId !== self.id) {
       throw new SettleError(`order ${orderId} was taken by another account`, null, order);
     }
@@ -945,6 +1004,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     acceptIncoming,
     send: ({ receiverPartyId, amount, tokenId, description }) =>
       run('tokens.send', { receiverPartyId, amount, ...(tokenId ? { tokenId } : {}), ...(description ? { description } : {}) }, false).then((r) => r.result),
+    splitForFee: (tokenId, feeAmount) => splitFee(tokenId, feeAmount, false),
     consolidate,
     balance,
     faucet,
@@ -956,6 +1016,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     },
   };
 }
+
+/** A decimal the API sends as a JSON number, as the exact text `units` reads (never exponent notation). */
+const decimal = (value: unknown) => (typeof value === 'number' ? value.toFixed(10) : String(value));
 
 /** CC under the aliases the API uses for it: it is delivered through the preapproval, never as a transfer to accept. */
 export function isCc(instrumentId: string): boolean {

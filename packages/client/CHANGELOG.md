@@ -59,6 +59,13 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
   CC on testnet has no pinned admin yet: pass the testnet DSO party with `instrumentAdmins`.
 - Refusal codes `DVP_NOT_ALLOWED` and `DVP_FEE_HOLDING_REQUIRED` (`refusalOf`: `dvpNotAllowed`,
   `feeHoldingRequired`).
+- `splitForFee(tokenId, feeAmount)` (`./selfcustody`): gives the platform fee a holding of its
+  own by sending `feeAmount` to the account itself, after checking the balance covers it plus the
+  send's network fee; a no-op when the balance already sits in two or more holdings. CC only: the
+  API refuses a registry-token (CBTC, USDCx) send to oneself, so those are a `SettleError`.
+- `take` heals `DVP_FEE_HOLDING_REQUIRED` naming this account as the payer: it splits the fee off
+  once and takes once more (`SettleOptions.autoSplitForFee`, default `true`). A failed split, or a
+  second refusal, is a `SettleError`; a refusal naming another payer splits nothing.
 
 ### Migrating from 0.6.x
 

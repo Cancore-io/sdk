@@ -272,6 +272,7 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `swap.create(input)` / `swap.createForPair(input)` | `POST /orders` / `POST /orders/pair`; a Canton↔Canton order is always sent with `dvp: true` (for a pair, read from `GET /trading-pairs/{id}`) |
 | `incoming()` / `accept(transfer)` / `acceptIncoming(filter?)` | transfers waiting for this account's signature |
 | `send(input)` / `consolidate(tokenId?)` / `balance(instrumentId)` | move, merge and read this account's tokens |
+| `splitForFee(tokenId, feeAmount)` | give the DvP platform fee a holding of its own (a self-send; CC only) — `take` does it on its own |
 | `faucet()` | test CC from the dev stand's faucet, see [Test funds on dev](#test-funds-on-dev) |
 | `cashback.summary()` / `claims()` / `claim()` / `collect(options?)` | partner cashback (role `partner-bot`) |
 | `execute(type, params?)` | any operation of `GET /wallet/operations`: prepare, sign every leg, submit |
@@ -312,11 +313,15 @@ refusal is a `SettleError` that says why, before anything is signed:
   (`swap.create` / `createForPair`), when taking it (`take`), or when the maker records the trade.
 - The pair not enabled for DvP on this stand: `make` refuses before the trade is recorded.
 - The taker's wallet keeps the order's target token in a single holding
-  (`DVP_FEE_HOLDING_REQUIRED`): the platform fee needs a holding of its own. `take` is refused
-  and says this account must split that balance into at least two holdings, then `take()`
-  again; against an older gateway that refuses only when the maker records the trade, `make`
-  names the taker's party and the fee instead. This client has no split operation of its own:
-  the taker can send part of the balance to itself.
+  (`DVP_FEE_HOLDING_REQUIRED`): the platform fee needs a holding of its own. `take` heals this
+  itself: it sends the fee amount to this account (`splitForFee`), leaving the fee and the change
+  in two holdings, and takes once more — once; a second refusal or a failed split is a
+  `SettleError`. Pass `{ autoSplitForFee: false }` to get the `SettleError` straight away. The
+  split is CC only: the API refuses a registry-token send to oneself, so a CBTC or USDCx taker
+  gets a separate holding by receiving that token in a second transfer. Against an older gateway
+  that refuses only when the maker records the trade, `make` names the taker's party and the
+  fee; the taker runs `splitForFee(tokenId, feeAmount)` (a no-op when the balance already sits in
+  two or more holdings) and the maker runs `make()` again.
 
 A swap an earlier client opened as HTLC is refused the same way, and so is an order placed
 without `dvp: true`: the order's own choice decides the mechanic, so place Canton↔Canton orders
@@ -447,7 +452,7 @@ retries are the ones the API says are safe. Every decision is taken on the refus
 | `SUBMISSION_TIMEOUT_RETRYABLE` | resubmits the same signatures (up to twice) — never prepares again; Canton deduplicates on the command id |
 | `PREPARED_SUBMISSION_EXPIRED` | prepares and signs again, once — only where that is safe (the DvP steps of `make` / `take`) |
 | `DVP_NOT_ALLOWED` | a `SettleError` wherever it comes (placing, taking, recording the trade): DvP is not open to this account on this stand |
-| `DVP_FEE_HOLDING_REQUIRED` | a `SettleError` saying who must split its balance: at `take`, this account (then `take()` again); at `make`, the taker (then `make()` again) |
+| `DVP_FEE_HOLDING_REQUIRED` | at `take`, naming this account: splits the fee off (`splitForFee`, CC) and takes once more; otherwise a `SettleError` saying who must split its balance (at `make`, the taker, then `make()` again) |
 | `ACCOUNT_NOT_FOUND` (at sign-in) | asks for a new challenge up to twice more, 1 s then 2 s apart. The gateway answers an existing key with this 404 when its challenge is slow (a known gateway issue), most often right after sign-up; three in a row surfaces it |
 | anything else | surfaces it |
 
