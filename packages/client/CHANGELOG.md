@@ -15,7 +15,9 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
 - Every DvP transaction is checked before the account's key signs it: the hash is recomputed
   from the transaction's bytes and the transaction is held to the order (parties, instruments,
   amounts, fee within the published rate, the venue as executor). A transaction that does not
-  hold is a `CeremonyError` at the `prepare` stage, and nothing is signed. New dependency:
+  hold is a `CeremonyError` at the `prepare` stage, and nothing is signed. The whole transaction
+  tree is walked: trusted packages only, the step's own shape, and no holding created for or
+  spent from anyone but the signer beyond what the leg locks. New dependency:
   `@canton-network/core-tx-visualizer`.
 - `acct.swap.create` and `acct.swap.createForPair` send `dvp: true` for a Canton↔Canton order.
 - `Settled` gains `flow: 'dvp'`. `delivery` is always `'direct'`: the settle moves the holdings
@@ -32,6 +34,9 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
 ### Added
 
 - `SelfCustodyOptions.venuePartyId`: pin the venue every allocation must hand settlement to.
+- `SelfCustodyOptions.maxFeeRate`: the highest platform fee rate the account accepts.
+- `SelfCustodyOptions.trustedPackages` and `DEFAULT_TRUSTED_PACKAGES`: the Daml packages whose
+  code may run in a transaction the account signs.
 - Refusal codes `DVP_NOT_ALLOWED` and `DVP_FEE_HOLDING_REQUIRED` (`refusalOf`: `dvpNotAllowed`,
   `feeHoldingRequired`).
 

@@ -7,10 +7,14 @@
  *
  *  1. recomputes the hash from the transaction bytes (Canton's hashing scheme
  *     v2) and refuses on any difference from the hash it was asked to sign;
- *  2. decodes the transaction and holds it against the trade the account agreed
- *     to — the order's amounts and instruments, the two parties, the venue as
- *     executor, the platform fee within the published rate — and refuses
- *     anything else, including a transaction it cannot read.
+ *  2. walks the WHOLE transaction tree, not just its root: every node must come
+ *     from a trusted package and be one the step is made of, and in an
+ *     allocation no node may create a holding for anyone but the signer or spend
+ *     more of the signer's holdings than the leg locks;
+ *  3. holds the command against the trade the account agreed to — the order's
+ *     amounts and instruments, the two parties, the venue as executor, the
+ *     platform fee within the published rate — and refuses anything else,
+ *     including a transaction it cannot read.
  *
  * Nothing here trusts the swap row the API serves: the expectation is built
  * from the order, the instrument list and the fee configuration, and from the
@@ -42,7 +46,36 @@ export interface DvpTerms {
   /** Platform fee receiver and rate; no fee leg is accepted when the receiver is null. */
   feeParty: string | null;
   feeRate: string;
+  /** Daml package names a node of the transaction may come from. */
+  packages: TrustedPackages;
 }
+
+/**
+ * Package names (Daml `name`, stable across versions) whose code may run in a DvP transaction.
+ * `swap` runs the proposal steps; `registries` the token registries an allocation runs in — CC
+ * (Splice Amulet and the token-standard APIs) and the Digital Asset utility registry.
+ */
+export interface TrustedPackages {
+  swap: string;
+  registries: string[];
+}
+
+export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = {
+  swap: 'cancore-swap',
+  registries: [
+    'splice-amulet',
+    'splice-api-token-allocation-instruction-v1',
+    'splice-api-token-allocation-v1',
+    'splice-api-token-holding-v1',
+    'splice-api-token-metadata-v1',
+    'splice-api-featured-app-v1',
+    'utility-registry-app-v0',
+    'utility-registry-v0',
+    'utility-registry-holding-v0',
+    'utility-credential-app-v0',
+    'utility-credential-v0',
+  ],
+};
 
 export interface PreparedToSign {
   preparedTransactionHash: string;
@@ -63,6 +96,9 @@ export async function verifyDvpPrepared(operation: DvpOperation, prepared: Prepa
     throw new UnverifiedTransactionError(operation, reason);
   };
   if (prepared.length === 0) refuse('the API prepared nothing to sign');
+  if ([terms.source.amount, terms.target.amount, terms.feeRate].some((d) => units(d) < 0n)) {
+    refuse('the order’s amounts or the fee rate are not decimals of at most ten places');
+  }
   if (operation !== 'dvpAllocateLeg' && prepared.length > 1) refuse(`expected one transaction, got ${prepared.length}`);
   const funded: TransferLeg[] = [];
   for (const [index, tx] of prepared.entries()) {
@@ -102,6 +138,8 @@ function checkTransaction(operation: DvpOperation, decoded: PreparedTransaction,
   const transaction = decoded.transaction;
   if (!transaction || transaction.roots.length !== 1) return 'expected a transaction with exactly one command';
   const nodes: Nodes = new Map(transaction.nodes.map((n) => [n.nodeId, n]));
+  const shape = checkTree(operation, decoded, nodes, terms);
+  if (shape) return shape;
   const root = nodeType(nodes.get(transaction.roots[0]!));
   switch (operation) {
     case 'dvpCreateProposal': {
@@ -138,10 +176,161 @@ function checkTransaction(operation: DvpOperation, decoded: PreparedTransaction,
       if (leg!.sender !== terms.party) return 'the allocation spends another party’s holdings';
       if (arg.expectedAdmin !== leg!.instrumentId.admin) return 'the allocation names another instrument admin';
       if (funded.some((l) => l.receiver === leg!.receiver)) return 'the same leg is funded twice';
+      const holdings = checkHoldings(decoded, nodes, terms.party, leg!);
+      if (holdings) return holdings;
+      // The factory the choice runs on is the registry's own: disclosed with the transaction, and the instrument admin's.
+      const factory = inputContracts(decoded).get(root.exercise.contractId);
+      if (!factory) return 'the allocation factory is not among the contracts the transaction discloses';
+      if (!terms.packages.registries.includes(factory.packageName)) return `the allocation factory comes from an untrusted package (${factory.packageName})`;
+      if (!partiesOf(factory).has(leg!.instrumentId.admin)) return 'the allocation factory does not belong to the instrument admin';
       funded.push(leg!);
       return null;
     }
   }
+}
+
+/**
+ * The tree as a whole: every node reachable from the one root and nothing else, no rollback,
+ * and every node from a package the step may run. The proposal steps are fixed shapes — the
+ * create is one node; the approval exercises the proposal and recreates it, two nodes.
+ */
+function checkTree(operation: DvpOperation, decoded: PreparedTransaction, nodes: Nodes, terms: DvpTerms): string | null {
+  const reachable = new Set<string>();
+  const visit = (id: string): string | null => {
+    if (reachable.has(id)) return `node ${id} is reached twice`;
+    const type = nodeType(nodes.get(id));
+    if (!type) return `node ${id} cannot be read`;
+    reachable.add(id);
+    if (type.oneofKind === 'rollback') return 'it carries a rolled-back subtree';
+    if (type.oneofKind === 'exercise') for (const child of type.exercise.children) {
+      const wrong = visit(child);
+      if (wrong) return wrong;
+    }
+    return null;
+  };
+  const wrong = visit(decoded.transaction!.roots[0]!);
+  if (wrong) return wrong;
+  if (reachable.size !== nodes.size) return 'it carries nodes outside its command';
+  const allowed = operation === 'dvpAllocateLeg' ? terms.packages.registries : [terms.packages.swap];
+  for (const node of nodes.values()) {
+    const type = nodeType(node)!;
+    if (type.oneofKind !== 'create' && type.oneofKind !== 'exercise' && type.oneofKind !== 'fetch') return `node ${node.nodeId} is of an unexpected kind`;
+    const packageName = packageOf(type);
+    if (!allowed.includes(packageName)) return `node ${node.nodeId} runs code from an untrusted package (${packageName || 'unnamed'})`;
+  }
+  if (operation === 'dvpCreateProposal' && nodes.size !== 1) return 'the proposal is not created on its own';
+  if (operation === 'dvpAcceptProposal') {
+    const kinds = [...nodes.values()].map((n) => nodeType(n)!);
+    const [root, child] = [nodeType(nodes.get(decoded.transaction!.roots[0]!)), kinds.find((k) => k.oneofKind === 'create')];
+    if (nodes.size !== 2 || root?.oneofKind !== 'exercise' || !root.exercise.consuming || child?.oneofKind !== 'create' || !root.exercise.children.length) {
+      return 'the approval does more than consume the proposal and recreate it';
+    }
+  }
+  return null;
+}
+
+/**
+ * What an allocation does to holdings. A holding here is any contract with an `owner` party
+ * and an amount (`amount`, or Amulet's `amount.initialAmount`), at the top of its argument or
+ * one record down (a locked Amulet keeps its Amulet inside). In the whole tree:
+ *  - every holding created is the signer's (a lock keeps the owner): nothing leaves the account;
+ *  - every holding consumed is the signer's, and is one the transaction discloses or creates;
+ *  - per instrument, what is consumed and not recreated is at most what the leg locks.
+ */
+function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, party: string, leg: TransferLeg): string | null {
+  const inputs = inputContracts(decoded);
+  const created = new Map<string, Create>();
+  const net = new Map<string, bigint>();
+  const add = (key: string, amount: bigint) => net.set(key, (net.get(key) ?? 0n) + amount);
+  for (const node of nodes.values()) {
+    const type = nodeType(node)!;
+    if (type.oneofKind !== 'create') continue;
+    created.set(type.create.contractId, type.create);
+    const holding = holdingOf(type.create);
+    if (!holding) continue;
+    if (holding.owner !== party) return `it creates a holding owned by ${holding.owner}`;
+    add(holding.instrument, -holding.amount);
+  }
+  for (const node of nodes.values()) {
+    const type = nodeType(node)!;
+    if (type.oneofKind !== 'exercise' || !type.exercise.consuming) continue;
+    const target = inputs.get(type.exercise.contractId) ?? created.get(type.exercise.contractId);
+    if (!target) return `it consumes contract ${type.exercise.contractId.slice(0, 16)}… without disclosing what it is`;
+    const holding = holdingOf(target);
+    if (!holding) continue;
+    if (holding.owner !== party) return `it spends a holding owned by ${holding.owner}`;
+    add(holding.instrument, holding.amount);
+  }
+  const legKey = instrumentKey(leg.instrumentId.id);
+  for (const [instrument, spent] of net) {
+    const allowance = instrument === legKey ? units(leg.amount) : 0n;
+    if (spent > allowance) return `it spends more ${instrument} than the leg locks`;
+  }
+  return null;
+}
+
+type Create = Extract<NonNullable<ReturnType<typeof nodeType>>, { oneofKind: 'create' }>['create'];
+
+function inputContracts(decoded: PreparedTransaction): Map<string, Create> {
+  const out = new Map<string, Create>();
+  for (const input of decoded.metadata?.inputContracts ?? []) {
+    if (input.contract.oneofKind === 'v1') out.set(input.contract.v1.contractId, input.contract.v1);
+  }
+  return out;
+}
+
+/** A record's fields by label, or null when the value is not a record. */
+function fieldsOf(value: Value | undefined): Map<string, Value> | null {
+  if (value?.sum.oneofKind !== 'record') return null;
+  return new Map(value.sum.record.fields.flatMap((f) => (f.value ? [[f.label, f.value] as const] : [])));
+}
+
+const textOf = (value: Value | undefined) => (value?.sum.oneofKind === 'text' ? value.sum.text : undefined);
+const numericOf = (value: Value | undefined) => (value?.sum.oneofKind === 'numeric' ? value.sum.numeric : undefined);
+
+/** The holding a contract is, if it is one: owner, instrument and amount in 1e-10 units. Read from typed values: `owner` must be a Party. */
+function holdingOf(contract: Create): { owner: string; instrument: string; amount: bigint } | null {
+  const top = fieldsOf(contract.argument);
+  if (!top) return null;
+  const candidates = [top, ...[...top.values()].map(fieldsOf).filter((f): f is Map<string, Value> => f !== null)];
+  for (const record of candidates) {
+    const owner = record.get('owner');
+    if (owner?.sum.oneofKind !== 'party') continue;
+    const raw = record.get('amount');
+    const amount = units(numericOf(raw) ?? numericOf(fieldsOf(raw)?.get('initialAmount')));
+    if (amount < 0n) continue;
+    const named = textOf(fieldsOf(record.get('instrument') ?? record.get('instrumentId'))?.get('id'));
+    const instrument = named ?? (/Amulet/.test(contract.templateId?.entityName ?? '') ? 'Amulet' : `${contract.packageName}:${contract.templateId?.entityName}`);
+    return { owner: owner.sum.party, instrument: instrumentKey(instrument), amount };
+  }
+  return null;
+}
+
+/** CC is listed as CC or as its ledger name, Amulet. */
+const instrumentKey = (id: string) => (id === 'CC' ? 'Amulet' : id);
+
+function packageOf(type: NonNullable<ReturnType<typeof nodeType>>): string {
+  if (type.oneofKind === 'create') return type.create.packageName;
+  if (type.oneofKind === 'exercise') return type.exercise.packageName;
+  if (type.oneofKind === 'fetch') return type.fetch.packageName;
+  return '';
+}
+
+/** Every party a contract names: its signatories, stakeholders and any Party value in its argument. */
+function partiesOf(contract: Create): Set<string> {
+  const found = new Set([...contract.signatories, ...contract.stakeholders]);
+  const walk = (value: Value | undefined): void => {
+    const sum = value?.sum;
+    if (!sum) return;
+    if (sum.oneofKind === 'party') found.add(sum.party);
+    else if (sum.oneofKind === 'record') sum.record.fields.forEach((f) => walk(f.value));
+    else if (sum.oneofKind === 'list') sum.list.elements.forEach(walk);
+    else if (sum.oneofKind === 'optional') walk(sum.optional.value);
+    else if (sum.oneofKind === 'textMap') sum.textMap.entries.forEach((e) => walk(e.value));
+    else if (sum.oneofKind === 'variant') walk(sum.variant.value);
+  };
+  walk(contract.argument);
+  return found;
 }
 
 function checkProposal(arg: unknown, terms: DvpTerms, approvers: string[]): string | null {
@@ -185,6 +374,7 @@ function checkLeg(leg: TransferLeg | undefined, terms: DvpTerms): string | null 
 }
 
 const isProposal = (id: { moduleName: string; entityName: string } | undefined) => id?.moduleName === 'Swap.Trade' && id.entityName === 'SwapProposal';
+// The package a proposal node comes from is pinned by checkTree for every node of the swap steps.
 
 function nodeType(node: DamlTransaction_Node | undefined) {
   return node?.versionedNode.oneofKind === 'v1' ? node.versionedNode.v1.nodeType : undefined;
@@ -240,7 +430,8 @@ const ONE = 10n ** 10n;
 /** A decimal string in exact 1e-10 units (Daml Numeric 10). */
 export function units(decimal: unknown): bigint {
   const text = String(decimal).trim();
-  if (!/^\d+(\.\d+)?$/.test(text)) return -1n;
+  // More than ten decimals is not a Numeric 10 the ledger could hold: refused, never truncated.
+  if (!/^\d+(\.\d{1,10})?$/.test(text)) return -1n;
   const [whole = '0', fraction = ''] = text.split('.');
   return BigInt(whole) * ONE + BigInt((fraction + '0000000000').slice(0, 10));
 }

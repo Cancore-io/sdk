@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519';
 import { deriveWalletKey, providerFromMnemonic } from '@cancore/wallet';
-import { allocate, prepared, proposalAccept, proposalCreate, type FixtureLeg } from './dvp-prepared.fixture';
+import { allocationTree, prepared, proposalAccept, proposalCreate, type FixtureLeg } from './dvp-prepared.fixture';
 import type { FetchLike } from './http';
 import {
   CeremonyError,
@@ -258,9 +258,12 @@ function venue({
         const leg = asFixture(l);
         if (tampered === 'amount') leg.amount = '1';
         if (tampered === 'receiver') leg.receiver = 'thief::1220';
-        const tx = await prepared(party, [allocate('0', { executor: VENUE, swapId, legId: l.legId, leg })]);
+        const tree = (fixtureLeg: FixtureLeg) => allocationTree({ executor: VENUE, swapId, legId: l.legId, leg: fixtureLeg, balance: '10000' });
+        const honest = tree(leg);
+        const tx = await prepared(party, honest.nodes, honest.inputs);
         if (tampered !== 'hash') return tx;
-        const other = await prepared(party, [allocate('0', { executor: VENUE, swapId, legId: l.legId, leg: { ...leg, receiver: 'thief::1220' } })]);
+        const swapped = tree({ ...leg, receiver: 'thief::1220' });
+        const other = await prepared(party, swapped.nodes, swapped.inputs);
         return { ...tx, preparedTransactionHash: other.preparedTransactionHash };
       }));
     }
@@ -569,6 +572,14 @@ describe('the paths where a mistake costs money', () => {
     expect(error).toBeInstanceOf(SettleError);
     expect((error as Error).message).toMatch(/platform fee \(24.8756218905\) needs a holding of its own, and party-taker \(the taker\) keeps its CC in a single holding.*splits that balance/);
     expect(dvpSteps(api)).toEqual([]);
+  });
+
+  test('a fee rate above the account’s pinned ceiling is refused before the trade is recorded', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [58, 59], { maxFeeRate: '0.001' });
+    await taker.swap.accept('o1');
+    await expect(maker.make('o1')).rejects.toThrow(/fee rate 0.005 is above this account's maxFeeRate 0.001/);
+    expect(api.proposals).toEqual([]);
   });
 
   test('an order placed without dvp: true is refused before anything is recorded — it would be opened as HTLC', async () => {
@@ -991,6 +1002,8 @@ describe('refusals that come before anything is signed', () => {
     const api = stub({
       'GET /orders/o1': () => takenOrder(),
       'GET /htlc/dvp/instruments': () => [{ id: 'CBTC' }, { id: 'CC' }],
+      'GET /auth/me': () => ({ id: 'me', partyId: 'party-maker' }),
+      'GET /htlc/fee-config': () => ({ feeRate: '0', venue: 'venue::1220' }),
       'GET /htlc/timeout-options': () => ({ timeoutHours: [1, 2] }),
     });
     const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast });
@@ -1069,6 +1082,8 @@ describe('the timeout the maker’s proposal request carries', () => {
       'GET /orders/o1': () => takenOrder(),
       'GET /htlc/timeout-options': () => ({ timeoutHours: offered }),
       'GET /htlc/dvp/instruments': () => [{ id: 'CBTC' }, { id: 'CC' }],
+      'GET /auth/me': () => ({ id: 'me', partyId: 'party-maker' }),
+      'GET /htlc/fee-config': () => ({ feeRate: '0', venue: 'venue::1220' }),
       'POST /htlc/proposals': (body) => {
         asked.push(body.timeoutHours);
         return refuse(400, 'the test stops at the proposal');

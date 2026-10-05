@@ -24,7 +24,9 @@
 import { signLegs, type OperationLeg } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
-import { verifyDvpPrepared, type DvpOperation, type DvpTerms, type Instrument } from './dvp-verify';
+import { DEFAULT_TRUSTED_PACKAGES, units, verifyDvpPrepared, type DvpOperation, type DvpTerms, type Instrument, type TrustedPackages } from './dvp-verify';
+
+export { DEFAULT_TRUSTED_PACKAGES, type TrustedPackages } from './dvp-verify';
 import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
@@ -237,6 +239,19 @@ export interface SelfCustodyOptions extends SessionOptions {
    * by default it is read from `GET /htlc/fee-config`.
    */
   venuePartyId?: string;
+  /**
+   * The highest platform fee rate this account accepts, as a decimal (`'0.01'` is 1%). The
+   * rate and receiver come from `GET /htlc/fee-config`; pin a ceiling here and a trade whose
+   * rate is above it is refused before anything is signed. Default: whatever rate the stand
+   * publishes when the trade starts.
+   */
+  maxFeeRate?: string;
+  /**
+   * Daml package names whose code may run in a DvP transaction this account signs; every node
+   * of every transaction must come from one of them. Defaults in `DEFAULT_TRUSTED_PACKAGES`;
+   * a field given here replaces that default.
+   */
+  trustedPackages?: Partial<TrustedPackages>;
 }
 
 /** A settle that cannot finish: the swap went somewhere it cannot come back from, or time ran out. */
@@ -597,15 +612,19 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * configuration (rate, receiver and venue). Every prepared transaction is held
    * to it before the key signs.
    */
-  async function dvpTerms(order: Order, swapId: string, party: string, role: 'maker' | 'taker'): Promise<DvpTerms> {
+  async function dvpTerms(order: Order, swapId: string | null, party: string, role: 'maker' | 'taker'): Promise<DvpTerms> {
     const { source, target } = await dvpInstruments(order);
     const config = await http.get<{ feeRate?: string; feeRecipient?: string; venue?: string } | null>('/htlc/fee-config');
     const venue = options.venuePartyId ?? config?.venue;
+    const feeRate = config?.feeRate ?? '0';
+    if (options.maxFeeRate !== undefined && !(units(feeRate) >= 0n && units(feeRate) <= units(options.maxFeeRate))) {
+      throw new SettleError(`the stand's platform fee rate ${feeRate} is above this account's maxFeeRate ${options.maxFeeRate}`, swapId, order);
+    }
     if (!venue) throw new SettleError('the venue party is unknown on this stand, so no allocation can be checked: pass venuePartyId', swapId);
     const other = (role === 'maker' ? order.opponent : order.initiator) as { partyId?: string | null } | undefined;
     if (!other?.partyId) throw new SettleError(`order ${order.id} does not name the counterparty's party`, swapId, order);
     return {
-      swapId,
+      swapId: swapId ?? '',
       party,
       maker: role === 'maker' ? party : other.partyId,
       taker: role === 'taker' ? party : other.partyId,
@@ -613,7 +632,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       target: { ...target, amount: order.targetAmount },
       venue,
       feeParty: config?.feeRecipient ?? null,
-      feeRate: config?.feeRate ?? '0',
+      feeRate,
+      packages: { ...DEFAULT_TRUSTED_PACKAGES, ...options.trustedPackages },
     };
   }
 
@@ -628,7 +648,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         order,
       );
     }
-    await dvpInstruments(order);
+    // Everything a later signature will be held to is checked before the trade is recorded:
+    // the pair, the venue, and the fee rate against this account's ceiling.
+    await dvpTerms(order, null, await ownParty(), 'maker');
     const receiver = (order.opponent as { partyId?: string | null } | undefined)?.partyId;
     if (!receiver) throw new SettleError(`order ${order.id} has no counterparty party yet`, null, order);
     let created: HtlcSwap;

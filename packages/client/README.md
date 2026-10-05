@@ -340,7 +340,16 @@ over each one's hash (the same signer as every other ceremony), and
 **Nothing is signed unread.** The signature covers the hash of a prepared transaction, so
 before the key is used the account takes the transaction's bytes (`preparedTransactions[]`),
 recomputes the hash from them with Canton's hashing scheme v2 (`@canton-network/core-tx-visualizer`)
-and refuses on any difference. It then decodes the transaction and holds it to the trade it
+and refuses on any difference. It then walks the whole decoded tree, not just its command:
+every node must be reachable from the one command, none rolled back, and every node must run
+code from a trusted Daml package (`DEFAULT_TRUSTED_PACKAGES`: `cancore-swap` for the proposal
+steps; Splice Amulet, the token-standard APIs and the Digital Asset utility registry for an
+allocation; replace either with `trustedPackages`). The proposal steps must be exactly their own
+shape (one create; one approval that recreates the proposal). In an allocation, no node may
+create a holding owned by anyone but this account, every holding spent must be this account's
+and disclosed with the transaction, no more of an instrument may be spent than the leg locks,
+and the allocation factory must be disclosed, come from a trusted package and belong to the
+instrument admin. It then holds the command to the trade it
 agreed to, read from the order, `GET /htlc/dvp/instruments` (each instrument's admin) and
 `GET /htlc/fee-config` (fee rate, fee receiver and venue), never from the swap row: the
 transaction acts as this account only, is the one command the step is made of, and every leg
@@ -349,7 +358,9 @@ with the counter leg and the fee adding up to the order's `targetAmount`. An all
 hand settlement to the venue and name this trade. Anything else, a transaction it cannot
 decode included, is a `CeremonyError` at the `prepare` stage and nothing is signed. Pass
 `venuePartyId` to `createSelfCustody` to pin the venue from your own configuration instead of
-`GET /htlc/fee-config`. What the account signs:
+`GET /htlc/fee-config`, and `maxFeeRate` (for example `'0.01'`) to pin the highest fee rate you
+accept: above it, `make` refuses before the trade is recorded and `take` before it signs.
+Without it the rate published when the trade starts is the limit. What the account signs:
 
 | Step | Who | What the signature authorises |
 | --- | --- | --- |
@@ -371,7 +382,8 @@ trade's settle deadline; a few minutes after it the venue's recovery aborts the 
 the swap reads `dvp_expired`. The `SettleError` the taker gets says which happened: released,
 or still locked. If recovery could not release them (the abort was refused, or the trade was
 already gone), they are still locked: this client has no way to withdraw a DvP allocation
-itself yet, so contact Cancore support with the swap id. A `take` whose own deadline runs out
+itself yet (tracked in [BUG-1291](https://linear.app/cancore/issue/BUG-1291)), so contact Cancore
+support with the swap id. A `take` whose own deadline runs out
 first says the allocations stay locked until the venue releases them.
 `make` and `take` resume: an order whose trade exists picks up at the first step not yet
 done. `timeoutHours` only fills the proposal request's required field (one the stand offers,
