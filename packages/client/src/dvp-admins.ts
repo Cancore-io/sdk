@@ -67,3 +67,16 @@ export function mergeLists(base: Readonly<Record<string, readonly string[]>>, ex
   for (const [key, values] of Object.entries(extra)) out[key] = [...new Set([...(out[key] ?? []), ...values])];
   return out;
 }
+
+/**
+ * The venue party (settlement executor of every DvP allocation), pinned per network.
+ *
+ * Withdrawing one's own allocation must not wait on a stand endpoint: the venue is read from here, or
+ * from the `venuePartyId` option, and never from `/htlc/fee-config`. Testnet is not pinned: pass
+ * `venuePartyId`.
+ */
+export const DEFAULT_VENUES: Readonly<Record<DvpNetwork, string | null>> = Object.freeze({
+  devnet: 'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b',
+  testnet: null,
+  mainnet: 'Cancore-mainnet-1::1220076a94e0a7f0256a32ffab227db7788d8075677d8afcdaa8386df8f2fa659906',
+});

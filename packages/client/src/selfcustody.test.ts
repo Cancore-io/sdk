@@ -101,6 +101,7 @@ function venue({
     coded ? refuse(status, 'refused', errorCode) : refuse(status, prose);
   let currentFeeConfig = feeConfig;
   let instrumentsOff = false;
+  let feeConfigDown = false;
   const accounts = new Map<string, Account>(); // by bearer token
   const byKey = new Map<string, Account>();
   /** Invite code → the public key that redeemed it (`invite_codes.used_by_public_key`), null while unused. */
@@ -444,7 +445,7 @@ function venue({
         ...(pairOff ? [] : [{ id: 'CBTC', symbol: 'CBTC', admin: ADMINS.CBTC }]),
       ]);
     }
-    if (route === 'GET /htlc/fee-config') return json(currentFeeConfig);
+    if (route === 'GET /htlc/fee-config') return feeConfigDown ? refuse(503, 'fee config unavailable') : json(currentFeeConfig);
     if (route === 'POST /htlc/proposals') return propose(body);
     if (route === 'GET /htlc/swaps/s1/full') return full();
     if (route === 'POST /canton-wallet/htlc/prepare-command') return prepareDvp(caller, body);
@@ -460,7 +461,7 @@ function venue({
     order.swapId = 's1';
   }
 
-  return { fetchImpl, switchInstrumentsOff: () => { instrumentsOff = true; }, setFeeConfig: (next: Record<string, unknown>) => { currentFeeConfig = next; }, log, asked, proposals, routes, order, incoming, byKey, signUps, htlcOpenedEarlier, legs: () => legs };
+  return { fetchImpl, switchInstrumentsOff: () => { instrumentsOff = true; }, takeFeeConfigDown: () => { feeConfigDown = true; }, setFeeConfig: (next: Record<string, unknown>) => { currentFeeConfig = next; }, log, asked, proposals, routes, order, incoming, byKey, signUps, htlcOpenedEarlier, legs: () => legs };
 }
 
 // The dev API host: its network (devnet) chooses the pinned instrument admins.
@@ -920,6 +921,18 @@ describe('withdrawing an allocation the venue could not release (BUG-1291)', () 
     await taker.take('o1').catch((e: unknown) => e);
     await making;
     api.switchInstrumentsOff();
+
+    expect(await taker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: ['counter', 'fee'], gone: [], failed: [] });
+  });
+
+  test('a fee-config outage does not keep the allocation locked: the withdraw never asks for it', async () => {
+    const api = venue({ takerFundedThenExpired: 'stillLocked' });
+    const { maker, taker } = await tradingPair(api, [70, 71]);
+    await taker.swap.accept('o1');
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    await taker.take('o1').catch((e: unknown) => e);
+    await making;
+    api.takeFeeConfigDown();
 
     expect(await taker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: ['counter', 'fee'], gone: [], failed: [] });
   });

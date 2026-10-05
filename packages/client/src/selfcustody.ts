@@ -24,7 +24,7 @@
 import { signLegs, type OperationLeg } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
-import { DEFAULT_INSTRUMENT_ADMINS, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
+import { DEFAULT_INSTRUMENT_ADMINS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
 import { DEFAULT_TRUSTED_PACKAGES, units, verifyDvpPrepared, type DvpOperation, type DvpTerms, type Instrument, type TrustedPackages } from './dvp-verify';
 
 export { DEFAULT_TRUSTED_PACKAGES, type TrustedPackages } from './dvp-verify';
@@ -687,23 +687,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       );
     }
     // The admin is the allocation's trust anchor, so the API's word for it is checked against the SDK's own list.
-    if (!network && !options.instrumentAdmins) {
-      throw new SettleError(
-        `cannot tell which network ${baseUrl} serves, so no instrument admin can be trusted: pass network ('devnet', 'testnet' or 'mainnet')`,
-        null,
-        order,
-      );
-    }
     for (const instrument of [source, target]) {
-      const pinned = admins[instrumentKey(instrument.id)] ?? [];
-      if (pinned.length === 0) {
-        throw new SettleError(
-          `${instrument.id} admin for ${network ?? 'this network'} not configured — pass instrumentAdmins`,
-          null,
-          order,
-        );
-      }
-      if (!pinned.includes(instrument.admin)) {
+      if (!pinnedAdminsOf(instrument.id, order).includes(instrument.admin)) {
         throw new SettleError(
           `the stand names ${instrument.admin} as the admin of ${instrument.id}, which is not an admin this SDK trusts for it; ` +
             'if it is genuinely the registry of this network, add it with instrumentAdmins',
@@ -715,8 +700,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     return { source, target };
   }
 
-  /** The order's two instruments with their pinned admins, for a withdraw; the allocation names its own admin and is checked against these. */
-  function pinnedInstruments(order: Order): { source: Instrument; target: Instrument } {
+  /** The admins this SDK pins for an instrument on this network; none configured is a refusal, before anything is trusted. */
+  function pinnedAdminsOf(id: string, order: Order): string[] {
     if (!network && !options.instrumentAdmins) {
       throw new SettleError(
         `cannot tell which network ${baseUrl} serves, so no instrument admin can be trusted: pass network ('devnet', 'testnet' or 'mainnet')`,
@@ -724,11 +709,14 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         order,
       );
     }
-    const pin = (id: string): Instrument => {
-      const pinned = admins[instrumentKey(id)] ?? [];
-      if (pinned.length === 0) throw new SettleError(`${id} admin for ${network ?? 'this network'} not configured — pass instrumentAdmins`, null, order);
-      return { id, admin: pinned[0]! };
-    };
+    const pinned = admins[instrumentKey(id)] ?? [];
+    if (pinned.length === 0) throw new SettleError(`${id} admin for ${network ?? 'this network'} not configured — pass instrumentAdmins`, null, order);
+    return pinned;
+  }
+
+  /** The order's two instruments with their pinned admins, for a withdraw; the allocation names its own admin and is checked against these. */
+  function pinnedInstruments(order: Order): { source: Instrument; target: Instrument } {
+    const pin = (id: string): Instrument => ({ id, admin: pinnedAdminsOf(id, order)[0]! });
     return { source: pin(order.sourceTokenAddress), target: pin(order.targetTokenAddress) };
   }
 
@@ -743,8 +731,10 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     // the SDK's pinned list: the stand's current instrument list is not part of it, so a pair switched off after
     // the trade cannot keep an allocation locked.
     const { source, target } = forWithdraw ? pinnedInstruments(order) : await dvpInstruments(order);
-    const config = await http.get<{ feeRate?: string; feeRecipient?: string; venue?: string } | null>('/htlc/fee-config');
-    const venue = options.venuePartyId ?? config?.venue;
+    // A withdraw reads nothing from the stand but the swap and the order: the venue is pinned per network (or
+    // given), and the fee policy is not part of it, so a fee-config outage cannot keep an allocation locked.
+    const config = forWithdraw ? null : await http.get<{ feeRate?: string; feeRecipient?: string; venue?: string } | null>('/htlc/fee-config');
+    const venue = options.venuePartyId ?? (forWithdraw ? (network ? DEFAULT_VENUES[network] : null) : config?.venue);
     // A withdraw returns this account's own funds and is held to the trade alone: the stand's CURRENT fee
     // policy is not part of it, so a fee change after the trade can never keep the allocation locked.
     const feeRate = forWithdraw ? '0' : (config?.feeRate ?? '0');
@@ -755,7 +745,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     if (!forWithdraw && options.feeRecipientPartyId !== undefined && config?.feeRecipient && config.feeRecipient !== options.feeRecipientPartyId) {
       throw new SettleError(`the stand pays the platform fee to ${config.feeRecipient}, not to this account's feeRecipientPartyId`, swapId, order);
     }
-    if (!venue) throw new SettleError('the venue party is unknown on this stand, so no allocation can be checked: pass venuePartyId', swapId);
+    if (!venue) throw new SettleError(`the venue party is unknown on ${network ?? 'this stand'}, so no allocation can be checked: pass venuePartyId`, swapId);
     const other = (role === 'maker' ? order.opponent : order.initiator) as { partyId?: string | null } | undefined;
     if (!other?.partyId) throw new SettleError(`order ${order.id} does not name the counterparty's party`, swapId, order);
     return {
