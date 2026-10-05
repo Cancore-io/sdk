@@ -240,19 +240,33 @@ export interface SelfCustodyOptions extends SessionOptions {
    */
   venuePartyId?: string;
   /**
-   * The highest platform fee rate this account accepts, as a decimal (`'0.01'` is 1%). The
-   * rate and receiver come from `GET /htlc/fee-config`; pin a ceiling here and a trade whose
-   * rate is above it is refused before anything is signed. Default: whatever rate the stand
-   * publishes when the trade starts.
+   * The highest platform fee rate this account accepts, as a decimal (`'0.01'` is 1%). The rate
+   * comes from `GET /htlc/fee-config`; a trade whose rate is above this ceiling is refused before
+   * anything is recorded or signed. Default `'0.015'` (1.5%, the platform's maximum).
    */
   maxFeeRate?: string;
   /**
-   * Daml package names whose code may run in a DvP transaction this account signs; every node
-   * of every transaction must come from one of them. Defaults in `DEFAULT_TRUSTED_PACKAGES`;
-   * a field given here replaces that default.
+   * The party the platform fee must be paid to. Set it from your own configuration and a trade
+   * whose fee receiver (from `GET /htlc/fee-config`) is any other party is refused.
+   */
+  feeRecipientPartyId?: string;
+  /**
+   * How far ahead of now a proposal's expiry or an allocation's deadlines may lie — a later one
+   * keeps the account's funds locked longer. Default 3 hours.
+   */
+  maxSettlementWindowMs?: number;
+  /**
+   * The Daml packages (name and allowed ids) whose code may run in a DvP transaction this account
+   * signs; every node of every transaction must come from one of them. Defaults in
+   * `DEFAULT_TRUSTED_PACKAGES`; a field given here replaces that default. A registry upgrade
+   * brings a new package id: add it here until this SDK ships it.
    */
   trustedPackages?: Partial<TrustedPackages>;
 }
+
+/** The platform's maximum fee rate: the default ceiling a trade's fee is held to. */
+export const DEFAULT_MAX_FEE_RATE = '0.015';
+const DEFAULT_SETTLEMENT_WINDOW_MS = 3 * 60 * 60_000;
 
 /** A settle that cannot finish: the swap went somewhere it cannot come back from, or time ran out. */
 export class SettleError extends Error {
@@ -391,13 +405,16 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   // Every Canton↔Canton order this account places asks for allocation-DvP: that is the only way it settles.
   const swap: SwapClient = {
     ...orders,
-    create: (input) => orders.create(input.sourceNetwork === 'canton' && input.targetNetwork === 'canton' ? { ...input, dvp: true } : input),
+    create: (input) => {
+      const canton = input.sourceNetwork === 'canton' && input.targetNetwork === 'canton';
+      return canton ? placing(() => orders.create({ ...input, dvp: true })) : orders.create(input);
+    },
     async createForPair(input) {
       const pair = await http.get<{ baseToken?: { network?: string }; quoteToken?: { network?: string } }>(
         `/trading-pairs/${encodeURIComponent(input.tradingPairId)}`,
       );
       const canton = pair.baseToken?.network === 'canton' && pair.quoteToken?.network === 'canton';
-      return orders.createForPair(canton ? { ...input, dvp: true } : input);
+      return canton ? placing(() => orders.createForPair({ ...input, dvp: true })) : orders.createForPair(input);
     },
   };
 
@@ -553,31 +570,48 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
   }
 
-  /** A DvP refusal that ends the trade before anything is signed, said in words a partner can act on. */
-  function dvpRefusal(err: unknown, order: Order): SettleError | null {
+  /**
+   * A DvP refusal that ends the trade before anything is signed, said in words a partner can act
+   * on. The stand refuses at the earliest point it can — placing the order, taking it — and again
+   * when the trade is recorded, for a gateway that does not check earlier.
+   */
+  function dvpRefusal(err: unknown, what: string, order?: Order, self?: string): SettleError | null {
     const refusal = refusalOf(err);
     if (refusal === 'dvpNotAllowed' || (err instanceof CancoreApiError && err.status === 403)) {
       return new SettleError(
-        `allocation-DvP is not open to this account on this stand (${(err as Error).message}); ` +
-          `order ${order.id} is Canton↔Canton and settles only through DvP, never through HTLC`,
+        `${what}: allocation-DvP is not open to this account on this stand (${(err as Error).message}); ` +
+          'a Canton↔Canton order settles only through DvP, never through HTLC',
         null,
         order,
       );
     }
     if (refusal === 'feeHoldingRequired') {
       // The payer is the side owing the leg that delivers to the maker — the taker — and only its own
-      // key can split its balance: this side can only say who has to act. Nothing was recorded.
+      // key can split its balance. Nothing was recorded.
       const body = (err as CancoreApiError).body as { payerPartyId?: string; feeAmount?: string } | undefined;
-      const payer = body?.payerPartyId ?? 'the taker';
+      const fee = `the platform fee${body?.feeAmount ? ` (${body.feeAmount})` : ''} needs a holding of its own`;
+      const token = order ? order.targetTokenName || order.targetTokenAddress : 'the order\'s target token';
+      const mine = self !== undefined && (body?.payerPartyId === undefined || body.payerPartyId === self);
       return new SettleError(
-        `order ${order.id}: the platform fee${body?.feeAmount ? ` (${body.feeAmount})` : ''} needs a holding of its own, and ${payer} ` +
-          `(the taker) keeps its ${order.targetTokenName || order.targetTokenAddress} in a single holding. The taker splits that balance ` +
-          'into at least two holdings (for example by sending part of it to itself); then run make() again.',
+        mine
+          ? `${what}: ${fee}, and this account keeps its ${token} in a single holding. Split that balance into at least two ` +
+              'holdings (for example by sending part of it to itself), then take() again.'
+          : `${what}: ${fee}, and ${body?.payerPartyId ?? 'the taker'} (the taker) keeps its ${token} in a single holding. ` +
+              'The taker splits that balance into at least two holdings (for example by sending part of it to itself); then run make() again.',
         null,
         order,
       );
     }
     return null;
+  }
+
+  /** Place a Canton↔Canton order, with a DvP refusal said in words. */
+  async function placing(place: () => Promise<Order>): Promise<Order> {
+    try {
+      return await place();
+    } catch (err) {
+      throw dvpRefusal(err, 'placing the order') ?? err;
+    }
   }
 
   /**
@@ -591,7 +625,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     try {
       instruments = await http.get<Instrument[]>('/htlc/dvp/instruments');
     } catch (err) {
-      throw dvpRefusal(err, order) ?? err;
+      throw dvpRefusal(err, `order ${order.id}`, order) ?? err;
     }
     const find = (id: string) => instruments.find((i) => i.id === id);
     const [source, target] = [find(order.sourceTokenAddress), find(order.targetTokenAddress)];
@@ -617,8 +651,12 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     const config = await http.get<{ feeRate?: string; feeRecipient?: string; venue?: string } | null>('/htlc/fee-config');
     const venue = options.venuePartyId ?? config?.venue;
     const feeRate = config?.feeRate ?? '0';
-    if (options.maxFeeRate !== undefined && !(units(feeRate) >= 0n && units(feeRate) <= units(options.maxFeeRate))) {
-      throw new SettleError(`the stand's platform fee rate ${feeRate} is above this account's maxFeeRate ${options.maxFeeRate}`, swapId, order);
+    const ceiling = options.maxFeeRate ?? DEFAULT_MAX_FEE_RATE;
+    if (!(units(feeRate) >= 0n && units(feeRate) <= units(ceiling))) {
+      throw new SettleError(`the stand's platform fee rate ${feeRate} is above this account's ceiling ${ceiling} (maxFeeRate)`, swapId, order);
+    }
+    if (options.feeRecipientPartyId !== undefined && config?.feeRecipient && config.feeRecipient !== options.feeRecipientPartyId) {
+      throw new SettleError(`the stand pays the platform fee to ${config.feeRecipient}, not to this account's feeRecipientPartyId`, swapId, order);
     }
     if (!venue) throw new SettleError('the venue party is unknown on this stand, so no allocation can be checked: pass venuePartyId', swapId);
     const other = (role === 'maker' ? order.opponent : order.initiator) as { partyId?: string | null } | undefined;
@@ -634,6 +672,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       feeParty: config?.feeRecipient ?? null,
       feeRate,
       packages: { ...DEFAULT_TRUSTED_PACKAGES, ...options.trustedPackages },
+      now: now(),
+      maxWindowMs: options.maxSettlementWindowMs ?? DEFAULT_SETTLEMENT_WINDOW_MS,
     };
   }
 
@@ -668,7 +708,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         timeoutHours: await pickTimeout(order.id, opts.timeoutHours),
       });
     } catch (err) {
-      throw dvpRefusal(err, order) ?? err;
+      throw dvpRefusal(err, `order ${order.id}`, order) ?? err;
     }
     if (!isDvp(created)) {
       throw new SettleError(`order ${order.id}: the venue opened swap ${created.id} as ${created.status}, not as allocation-DvP`, created.id, created);
@@ -729,8 +769,14 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     const deadline = now() + (opts.deadlineMs ?? DEFAULT_DEADLINE_MS);
     let order = await swap.get(orderId);
     assertCantonOrder(order);
-    if (order.status === 'open') order = await swap.accept(orderId);
     const self = await me();
+    if (order.status === 'open') {
+      try {
+        order = await swap.accept(orderId);
+      } catch (err) {
+        throw dvpRefusal(err, `taking order ${orderId}`, order, self.partyId ?? undefined) ?? err;
+      }
+    }
     if (order.opponentUserId && order.opponentUserId !== self.id) {
       throw new SettleError(`order ${orderId} was taken by another account`, null, order);
     }
@@ -881,12 +927,10 @@ export function isCc(instrumentId: string): boolean {
  * that locks less than the order promises.
  */
 export function grossAmount(net: string, feeRate: string): number {
-  const units = (decimal: string) => {
-    const [whole = '0', fraction = ''] = decimal.trim().split('.');
-    return BigInt(whole) * 10n ** 10n + BigInt((fraction + '0000000000').slice(0, 10));
-  };
+  const [n, r] = [units(net), units(feeRate)];
+  if (n < 0n || r < 0n) throw new RangeError(`grossAmount takes decimals of at most ten places, got ${net} and ${feeRate}`);
   const ONE = 10n ** 10n;
-  const product = units(net) * (ONE + units(feeRate));
+  const product = n * (ONE + r);
   const gross = product / ONE + (product % ONE === 0n ? 0n : 1n);
   const fraction = (gross % ONE).toString().padStart(10, '0').replace(/0+$/, '');
   return Number(`${gross / ONE}${fraction ? `.${fraction}` : ''}`);

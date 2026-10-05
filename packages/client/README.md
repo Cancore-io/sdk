@@ -305,18 +305,22 @@ invite-on-sign-up change ships there) `register` signs up without it and then re
 
 **How a trade settles.** Every Canton↔Canton order settles through allocation-DvP: both legs
 (and the platform fee) move in one ledger transaction, with no hash lock, no escrow and no
-preimage. There is no HTLC fallback. If the stand has not opened DvP to the account (`403`,
-`DVP_NOT_ALLOWED`) or the pair is not enabled for DvP on this stand, `make` ends with a
-`SettleError` that says so before anything is recorded, and the order is never settled as
-HTLC. If the taker's wallet keeps the order's target token in a single holding, the stand
-refuses the trade (`DVP_FEE_HOLDING_REQUIRED`): the platform fee needs a holding of its own.
-`make` then ends with a `SettleError` naming the taker's party and the fee, and saying the
-taker has to split that balance into at least two holdings, after which `make` is run again.
-This client has no split operation of its own: the taker can send part of the balance to
-itself. A swap an
-earlier client opened as HTLC is refused the same way, and so is an order placed without
-`dvp: true`: the order's own choice decides the mechanic, so place Canton↔Canton orders with
-`acct.swap.create` / `createForPair`, which ask for DvP.
+preimage. There is no HTLC fallback. The stand refuses at the earliest point it can, and each
+refusal is a `SettleError` that says why, before anything is signed:
+
+- DvP not open to the account (`403`, `DVP_NOT_ALLOWED`): when placing the order
+  (`swap.create` / `createForPair`), when taking it (`take`), or when the maker records the trade.
+- The pair not enabled for DvP on this stand: `make` refuses before the trade is recorded.
+- The taker's wallet keeps the order's target token in a single holding
+  (`DVP_FEE_HOLDING_REQUIRED`): the platform fee needs a holding of its own. `take` is refused
+  and says this account must split that balance into at least two holdings, then `take()`
+  again; against an older gateway that refuses only when the maker records the trade, `make`
+  names the taker's party and the fee instead. This client has no split operation of its own:
+  the taker can send part of the balance to itself.
+
+A swap an earlier client opened as HTLC is refused the same way, and so is an order placed
+without `dvp: true`: the order's own choice decides the mechanic, so place Canton↔Canton orders
+with `acct.swap.create` / `createForPair`, which ask for DvP.
 
 ```
 maker (make)                          API / venue                          taker (take)
@@ -341,26 +345,45 @@ over each one's hash (the same signer as every other ceremony), and
 before the key is used the account takes the transaction's bytes (`preparedTransactions[]`),
 recomputes the hash from them with Canton's hashing scheme v2 (`@canton-network/core-tx-visualizer`)
 and refuses on any difference. It then walks the whole decoded tree, not just its command:
-every node must be reachable from the one command, none rolled back, and every node must run
-code from a trusted Daml package (`DEFAULT_TRUSTED_PACKAGES`: `cancore-swap` for the proposal
-steps; Splice Amulet, the token-standard APIs and the Digital Asset utility registry for an
-allocation; replace either with `trustedPackages`). The proposal steps must be exactly their own
-shape (one create; one approval that recreates the proposal). In an allocation, no node may
-create a holding owned by anyone but this account, every holding spent must be this account's
-and disclosed with the transaction, no more of an instrument may be spent than the leg locks,
-and the allocation factory must be disclosed, come from a trusted package and belong to the
-instrument admin. It then holds the command to the trade it
-agreed to, read from the order, `GET /htlc/dvp/instruments` (each instrument's admin) and
-`GET /htlc/fee-config` (fee rate, fee receiver and venue), never from the swap row: the
-transaction acts as this account only, is the one command the step is made of, and every leg
-in it is the order's main leg, the counter leg, or a platform fee within the published rate,
-with the counter leg and the fee adding up to the order's `targetAmount`. An allocation must
-hand settlement to the venue and name this trade. Anything else, a transaction it cannot
-decode included, is a `CeremonyError` at the `prepare` stage and nothing is signed. Pass
-`venuePartyId` to `createSelfCustody` to pin the venue from your own configuration instead of
-`GET /htlc/fee-config`, and `maxFeeRate` (for example `'0.01'`) to pin the highest fee rate you
-accept: above it, `make` refuses before the trade is recorded and `take` before it signs.
-Without it the rate published when the trade starts is the limit. What the account signs:
+
+- every node is reachable from the one command, none is rolled back, and every node runs code
+  from a trusted Daml package, by package name AND package id (`DEFAULT_TRUSTED_PACKAGES`:
+  `cancore-swap` for the proposal steps; Splice Amulet and the Digital Asset utility registry
+  for an allocation). A name alone is not trusted: anyone can upload a package under any name.
+  A registry upgrade brings a new package id; until this SDK ships it, add it with
+  `trustedPackages`;
+- the proposal steps are exactly their own shape (one create; one approval that recreates the
+  proposal);
+- an allocation goes through the token standard's `AllocationFactory` interface, pinned by its
+  package id, on a factory that is disclosed with the transaction, of the very template the
+  command exercises, and signed by the instrument admin — so the code that runs is the code the
+  admin deployed;
+- in an allocation, no node may create a holding owned by anyone but this account; what is
+  locked is at most the leg's amount; every holding spent is this account's and disclosed; no
+  more of an instrument is spent than the leg locks; and no party appears in any created
+  contract or choice argument but this account, the venue, the leg's receiver and the
+  registry's own parties (the factory's signatories and stakeholders) — a transfer, lock or
+  instruction for anyone else is refused;
+- every deadline in it (the proposal's expiry, the allocation's `requestedAt`,
+  `allocateBefore`, `settleBefore`) lies within `maxSettlementWindowMs` of now (default 3
+  hours): the API cannot keep the account's funds locked for longer.
+
+It then holds the command to the trade it agreed to, read from the order,
+`GET /htlc/dvp/instruments` (each instrument's admin) and `GET /htlc/fee-config` (fee rate, fee
+receiver and venue), never from the swap row: the transaction acts as this account only, is
+the one command the step is made of, and every leg in it is the order's main leg, the counter
+leg, or a platform fee within the published rate, with the counter leg and the fee adding up
+to the order's `targetAmount`. An allocation must hand settlement to the venue and name this
+trade. Anything else, a transaction it cannot decode included, is a `CeremonyError` at the
+`prepare` stage and nothing is signed.
+
+The fee is held to a ceiling the API cannot move: `maxFeeRate`, default `'0.015'` (1.5%, the
+platform's maximum). A stand that publishes a higher rate is refused — by `make` before the
+trade is recorded, by `take` before it signs. Pin from your own configuration, too:
+`venuePartyId` (the venue every allocation must hand settlement to) and `feeRecipientPartyId`
+(the only party the fee may be paid to).
+
+What the account signs:
 
 | Step | Who | What the signature authorises |
 | --- | --- | --- |
@@ -382,8 +405,7 @@ trade's settle deadline; a few minutes after it the venue's recovery aborts the 
 the swap reads `dvp_expired`. The `SettleError` the taker gets says which happened: released,
 or still locked. If recovery could not release them (the abort was refused, or the trade was
 already gone), they are still locked: this client has no way to withdraw a DvP allocation
-itself yet (tracked in [BUG-1291](https://linear.app/cancore/issue/BUG-1291)), so contact Cancore
-support with the swap id. A `take` whose own deadline runs out
+itself yet, so contact Cancore support with the swap id. A `take` whose own deadline runs out
 first says the allocations stay locked until the venue releases them.
 `make` and `take` resume: an order whose trade exists picks up at the first step not yet
 done. `timeoutHours` only fills the proposal request's required field (one the stand offers,
@@ -397,8 +419,8 @@ retries are the ones the API says are safe. Every decision is taken on the refus
 | --- | --- |
 | `SUBMISSION_TIMEOUT_RETRYABLE` | resubmits the same signatures (up to twice) — never prepares again; Canton deduplicates on the command id |
 | `PREPARED_SUBMISSION_EXPIRED` | prepares and signs again, once — only where that is safe (the DvP steps of `make` / `take`) |
-| `DVP_NOT_ALLOWED` | ends the trade with a `SettleError`: DvP is not open to this account on this stand |
-| `DVP_FEE_HOLDING_REQUIRED` | ends `make` with a `SettleError` naming what the taker has to do (split its balance), then `make` again |
+| `DVP_NOT_ALLOWED` | a `SettleError` wherever it comes (placing, taking, recording the trade): DvP is not open to this account on this stand |
+| `DVP_FEE_HOLDING_REQUIRED` | a `SettleError` saying who must split its balance: at `take`, this account (then `take()` again); at `make`, the taker (then `make()` again) |
 | `ACCOUNT_NOT_FOUND` (at sign-in) | asks for a new challenge up to twice more, 1 s then 2 s apart. The gateway answers an existing key with this 404 when its challenge is slow (a known gateway issue), most often right after sign-up; three in a row surfaces it |
 | anything else | surfaces it |
 

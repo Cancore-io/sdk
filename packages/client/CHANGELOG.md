@@ -16,8 +16,9 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
   from the transaction's bytes and the transaction is held to the order (parties, instruments,
   amounts, fee within the published rate, the venue as executor). A transaction that does not
   hold is a `CeremonyError` at the `prepare` stage, and nothing is signed. The whole transaction
-  tree is walked: trusted packages only, the step's own shape, and no holding created for or
-  spent from anyone but the signer beyond what the leg locks. New dependency:
+  tree is walked: trusted packages only (by name and id), the step's own shape, a factory signed
+  by the instrument admin, no holding created for or spent from anyone but the signer beyond what
+  the leg locks, no party outside the trade, and deadlines within a bounded window. New dependency:
   `@canton-network/core-tx-visualizer`.
 - `acct.swap.create` and `acct.swap.createForPair` send `dvp: true` for a Canton↔Canton order.
 - `Settled` gains `flow: 'dvp'`. `delivery` is always `'direct'`: the settle moves the holdings
@@ -27,6 +28,11 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
 - `SettleOptions.timeoutHours` only fills the proposal request's required field; the trade's
   windows are set by the venue.
 
+- `grossAmount` refuses an amount with more than ten decimals (`RangeError`) instead of
+  truncating it.
+- DvP refusals at order placement and at `take` (`DVP_NOT_ALLOWED`, `DVP_FEE_HOLDING_REQUIRED`)
+  are `SettleError`s that say who must act.
+
 ### Deprecated
 
 - `SettleOptions.deliveryWaitMs`: there is no delivery left to wait for.
@@ -34,9 +40,13 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
 ### Added
 
 - `SelfCustodyOptions.venuePartyId`: pin the venue every allocation must hand settlement to.
-- `SelfCustodyOptions.maxFeeRate`: the highest platform fee rate the account accepts.
-- `SelfCustodyOptions.trustedPackages` and `DEFAULT_TRUSTED_PACKAGES`: the Daml packages whose
-  code may run in a transaction the account signs.
+- `SelfCustodyOptions.maxFeeRate` (default `'0.015'`, `DEFAULT_MAX_FEE_RATE`): the highest
+  platform fee rate the account accepts.
+- `SelfCustodyOptions.feeRecipientPartyId`: the only party the platform fee may be paid to.
+- `SelfCustodyOptions.maxSettlementWindowMs` (default 3 hours): how far ahead a proposal's or an
+  allocation's deadline may lie.
+- `SelfCustodyOptions.trustedPackages` and `DEFAULT_TRUSTED_PACKAGES`: the Daml packages, by name
+  and package id, whose code may run in a transaction the account signs.
 - Refusal codes `DVP_NOT_ALLOWED` and `DVP_FEE_HOLDING_REQUIRED` (`refusalOf`: `dvpNotAllowed`,
   `feeHoldingRequired`).
 

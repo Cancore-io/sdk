@@ -42,8 +42,12 @@ interface VenueOptions {
   dvpForbidden?: boolean;
   /** The stand settles CC through DvP but not CBTC: the pair is not enabled for DvP there. */
   pairOff?: boolean;
-  /** The maker's proposal is refused: the taker's wallet has no separate holding for the platform fee. */
+  /** The maker's proposal is refused: the taker's wallet has no separate holding for the platform fee (an older gateway's point of refusal). */
   feeHoldingRequired?: boolean;
+  /** The stand refuses at the earliest point, as the current gateway does: placing a DvP order, or taking one. */
+  refuseAt?: { create?: 'notAllowed'; accept?: 'notAllowed' | 'feeHolding' };
+  /** What `GET /htlc/fee-config` answers. */
+  feeConfig?: Record<string, unknown>;
   /** The taker funds, the maker never does, and the trade expires: the venue's recovery then `released` the taker's allocations, or they are `stillLocked`. */
   takerFundedThenExpired?: 'released' | 'stillLocked';
   /** The API prepares something other than what the trade says, in this way, for the maker's allocation. */
@@ -75,6 +79,8 @@ function venue({
   dvpForbidden = false,
   pairOff = false,
   feeHoldingRequired = false,
+  refuseAt = {},
+  feeConfig = { feeRate: '0.005', feeRecipient: FEE_PARTY, venue: VENUE, maxFeeRate: '0.01' },
   takerFundedThenExpired,
   tamperMakerAllocation,
   expireAfterTrade = false,
@@ -379,6 +385,16 @@ function venue({
     if (route === 'GET /auth/me') return json(caller);
     if (route === 'POST /wallet/operations/prepare') return prepare(caller, body.type, body.params ?? {});
     if (route === 'POST /wallet/operations/submit') return submit(caller, body.operationId, body.signatures);
+    if ((route === 'POST /orders' || route === 'POST /orders/pair') && body.dvp === true && refuseAt.create) {
+      return refusal(403, 'Allocation-DvP is not open to this account on this stand.', 'DVP_NOT_ALLOWED');
+    }
+    if (route === 'POST /orders/o1/accept' && refuseAt.accept === 'notAllowed') {
+      return refusal(403, 'Allocation-DvP is not open to this account on this stand.', 'DVP_NOT_ALLOWED');
+    }
+    if (route === 'POST /orders/o1/accept' && refuseAt.accept === 'feeHolding') {
+      const prose = `Party ${caller.partyId} needs a separate holding for the platform fee: it must split its balance into at least two holdings, then the trade can be opened.`;
+      return json({ statusCode: 409, message: coded ? 'refused' : prose, payerPartyId: caller.partyId, feeAmount: '24.8756218905', ...(coded ? { errorCode: 'DVP_FEE_HOLDING_REQUIRED', code: 'DVP_FEE_HOLDING_REQUIRED' } : {}) }, 409);
+    }
     if (route === 'POST /orders') {
       Object.assign(order, body, { dvp: body.dvp === true });
       return json(order, 201);
@@ -400,7 +416,7 @@ function venue({
         ...(pairOff ? [] : [{ id: 'CBTC', symbol: 'CBTC', admin: ADMINS.CBTC }]),
       ]);
     }
-    if (route === 'GET /htlc/fee-config') return json({ feeRate: '0.005', feeRecipient: FEE_PARTY, venue: VENUE, maxFeeRate: '0.01' });
+    if (route === 'GET /htlc/fee-config') return json(feeConfig);
     if (route === 'POST /htlc/proposals') return propose(body);
     if (route === 'GET /htlc/swaps/s1/full') return full();
     if (route === 'POST /canton-wallet/htlc/prepare-command') return prepareDvp(caller, body);
@@ -578,8 +594,52 @@ describe('the paths where a mistake costs money', () => {
     const api = venue();
     const { maker, taker } = await tradingPair(api, [58, 59], { maxFeeRate: '0.001' });
     await taker.swap.accept('o1');
-    await expect(maker.make('o1')).rejects.toThrow(/fee rate 0.005 is above this account's maxFeeRate 0.001/);
+    await expect(maker.make('o1')).rejects.toThrow(/fee rate 0.005 is above this account's ceiling 0.001/);
     expect(api.proposals).toEqual([]);
+  });
+
+  test('with no options at all, a fee rate the stand sets to 100% is refused before anything is recorded', async () => {
+    const api = venue({ feeConfig: { feeRate: '1', feeRecipient: FEE_PARTY, venue: VENUE } });
+    const { maker, taker } = await tradingPair(api, [60, 61]);
+    await taker.swap.accept('o1');
+    await expect(maker.make('o1')).rejects.toThrow(/fee rate 1 is above this account's ceiling 0.015/);
+    expect(api.proposals).toEqual([]);
+  });
+
+  test('a fee paid to another party than the one the account pinned is refused', async () => {
+    const api = venue({ feeConfig: { feeRate: '0.005', feeRecipient: 'someone-else::1220', venue: VENUE } });
+    const { maker, taker } = await tradingPair(api, [62, 63], { feeRecipientPartyId: FEE_PARTY });
+    await taker.swap.accept('o1');
+    await expect(maker.make('o1')).rejects.toThrow(/pays the platform fee to someone-else::1220, not to this account's feeRecipientPartyId/);
+    expect(api.proposals).toEqual([]);
+  });
+
+  test.each([
+    ['by the text of the message', false, [64, 65]],
+    ['by errorCode alone', true, [66, 67]],
+  ] as const)('a taker refused at take for want of a fee holding is told to split its own balance (%s)', async (_, coded, accounts) => {
+    const api = venue({ refuseAt: { accept: 'feeHolding' }, coded });
+    const { taker } = await tradingPair(api, [...accounts]);
+    const error = await taker.take('o1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SettleError);
+    expect((error as Error).message).toMatch(/taking order o1: the platform fee \(24.8756218905\) needs a holding of its own, and this account keeps its CC in a single holding.*then take\(\) again/);
+  });
+
+  test('a taker the stand does not open DvP to is refused at take, before anything is signed', async () => {
+    const api = venue({ refuseAt: { accept: 'notAllowed' }, coded: true });
+    const { taker } = await tradingPair(api, [68, 69]);
+    await expect(taker.take('o1')).rejects.toThrow(/taking order o1: allocation-DvP is not open to this account/);
+    expect(dvpSteps(api)).toEqual([]);
+  });
+
+  test('placing a Canton↔Canton order the stand does not open DvP for is a SettleError, not a raw refusal', async () => {
+    const api = venue({ refuseAt: { create: 'notAllowed' }, coded: true });
+    const { maker } = await tradingPair(api, [70, 71]);
+    const offer = {
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    };
+    await expect(maker.swap.create(offer)).rejects.toThrow(/placing the order: allocation-DvP is not open to this account/);
   });
 
   test('an order placed without dvp: true is refused before anything is recorded — it would be opened as HTLC', async () => {
@@ -898,6 +958,10 @@ test('acceptTerms signs the exact text the API verifies', async () => {
     'CANCORE_LEGAL_CONSENT_V1\nversion:2026-08-01\nparty:p::1220\nissuedAt:2026-09-28T10:00:00.000Z\ndocuments:privacy@2026-08-01,terms-of-use@2026-08-01',
   );
   expect(ed25519.verify(hex(posted!.signature!), new TextEncoder().encode(message), hex(signer.public_key))).toBe(true);
+});
+
+test('grossAmount refuses an amount it cannot hold exactly, instead of truncating it', () => {
+  expect(() => grossAmount('1.00000000001', '0.005')).toThrow(RangeError);
 });
 
 test('grossAmount covers the net after the fee, in exact 1e-10 units rounded up', () => {

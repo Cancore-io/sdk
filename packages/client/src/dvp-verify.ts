@@ -46,35 +46,57 @@ export interface DvpTerms {
   /** Platform fee receiver and rate; no fee leg is accepted when the receiver is null. */
   feeParty: string | null;
   feeRate: string;
-  /** Daml package names a node of the transaction may come from. */
+  /** The Daml packages (name and id) a node of the transaction may come from. */
   packages: TrustedPackages;
+  /** The clock, and how far ahead a proposal or allocation deadline may lie: a later one keeps funds locked longer. */
+  now: number;
+  maxWindowMs: number;
 }
 
 /**
- * Package names (Daml `name`, stable across versions) whose code may run in a DvP transaction.
- * `swap` runs the proposal steps; `registries` the token registries an allocation runs in — CC
- * (Splice Amulet and the token-standard APIs) and the Digital Asset utility registry.
+ * The Daml packages whose code may run in a DvP transaction, by package name and, for each, the
+ * package ids allowed. A package name alone is not an identity — anyone can upload a package with
+ * any name — so a node passes only when both its name and its id are listed. `swap` runs the
+ * proposal steps; `registries` the token registries an allocation runs in: CC (Splice Amulet) and
+ * the Digital Asset utility registry. A registry upgrade brings a new package id: add it through
+ * `trustedPackages` until this SDK ships it.
  */
 export interface TrustedPackages {
-  swap: string;
-  registries: string[];
+  swap: Record<string, string[]>;
+  registries: Record<string, string[]>;
 }
 
 export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = {
-  swap: 'cancore-swap',
-  registries: [
-    'splice-amulet',
-    'splice-api-token-allocation-instruction-v1',
-    'splice-api-token-allocation-v1',
-    'splice-api-token-holding-v1',
-    'splice-api-token-metadata-v1',
-    'splice-api-featured-app-v1',
-    'utility-registry-app-v0',
-    'utility-registry-v0',
-    'utility-registry-holding-v0',
-    'utility-credential-app-v0',
-    'utility-credential-v0',
-  ],
+  swap: {
+    'cancore-swap': [
+      '06a6e3f1f5d9dfcdc885d72248b26decdde09c7f99bc4a8af385624a30be2544', // 1.0.0
+      '2b8060d64191b963d7416e0e2d15d11b239f88ad31aca2f457c4eefa2e15e395', // 1.1.0
+      '0164b8f54b26b673b24ba7ca6d141b65bd4dbc8c135cd61922477c871c927a2a', // 1.2.0
+    ],
+  },
+  registries: {
+    'splice-amulet': [
+      '3ca1343ab26b453d38c8adb70dca5f1ead8440c42b59b68f070786955cbf9ec1', // 0.1.14
+      'fb10433a48c24f30076a7aee03a3e314b7ab02fe9a22e2069e3af92d2b6ac88a', // 0.1.22
+    ],
+    'utility-registry-app-v0': [
+      '2293eb12e82ceaeb3ff7f8fe3346dece8578e1e9fd7d46624aeb7bb07fa31eda', // 0.8.2
+      '1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b274b8c0', // 0.9.2
+    ],
+    'utility-registry-v0': ['1f80e086e9ce218cf93fdeed80943793e902ac35c521733d7373a5ba58813150'], // 0.7.1
+    'utility-registry-holding-v0': ['71fbaea211f07a65666892748498bd4a0d7462a9d75bbb215ba9fbdbba78efa7'], // 0.2.2
+    'utility-credential-v0': ['418370044b5c6cd76ec78b73b8553c592328dec0afb6defbd2fdc5909e024033'], // 0.1.1
+  },
+};
+
+/**
+ * The token-standard allocation factory interface, by package id: the standard's API packages are
+ * published once and are the same on every network, so this is pinned outright.
+ */
+export const ALLOCATION_FACTORY_INTERFACE = {
+  packageId: '275064aacfe99cea72ee0c80563936129563776f67415ef9f13e4297eecbc520',
+  moduleName: 'Splice.Api.Token.AllocationInstructionV1',
+  entityName: 'AllocationFactory',
 };
 
 export interface PreparedToSign {
@@ -144,7 +166,7 @@ function checkTransaction(operation: DvpOperation, decoded: PreparedTransaction,
   switch (operation) {
     case 'dvpCreateProposal': {
       if (root?.oneofKind !== 'create' || !isProposal(root.create.templateId)) return 'it is not the creation of a swap proposal';
-      return checkProposal(plain(root.create.argument), terms, [terms.party]);
+      return checkProposal(root.create.argument, terms, [terms.party]);
     }
     case 'dvpAcceptProposal': {
       if (root?.oneofKind !== 'exercise' || !isProposal(root.exercise.templateId) || root.exercise.choiceId !== 'SwapProposal_Accept') {
@@ -157,10 +179,10 @@ function checkTransaction(operation: DvpOperation, decoded: PreparedTransaction,
       if (recreated.length !== 1 || recreated[0]?.oneofKind !== 'create') return 'it does not carry the proposal it approves';
       const approvers = (plain(recreated[0].create.argument) as { approvers?: unknown })?.approvers;
       if (!Array.isArray(approvers) || !approvers.includes(terms.party)) return 'the recreated proposal does not record this approval';
-      return checkProposal(plain(recreated[0].create.argument), terms, approvers as string[]);
+      return checkProposal(recreated[0].create.argument, terms, approvers as string[]);
     }
     case 'dvpAllocateLeg': {
-      if (root?.oneofKind !== 'exercise' || root.exercise.choiceId !== 'AllocationFactory_Allocate' || root.exercise.interfaceId?.entityName !== 'AllocationFactory') {
+      if (root?.oneofKind !== 'exercise' || root.exercise.choiceId !== 'AllocationFactory_Allocate' || !sameId(root.exercise.interfaceId, ALLOCATION_FACTORY_INTERFACE)) {
         return 'it is not a token-standard allocation';
       }
       const arg = plain(root.exercise.chosenValue) as {
@@ -168,6 +190,8 @@ function checkTransaction(operation: DvpOperation, decoded: PreparedTransaction,
         allocation?: { settlement?: { executor?: unknown; settlementRef?: { id?: unknown } }; transferLeg?: unknown };
       };
       const settlement = arg.allocation?.settlement;
+      const late = lateDeadline(fieldsOf(fieldsOf(fieldsOf(root.exercise.chosenValue)?.get('allocation'))?.get('settlement')), ['requestedAt', 'allocateBefore', 'settleBefore'], terms);
+      if (late) return late;
       if (settlement?.executor !== terms.venue) return `the allocation hands settlement to ${String(settlement?.executor)}, not to the venue`;
       if (settlement?.settlementRef?.id !== terms.swapId) return 'the allocation is for another trade';
       const leg = arg.allocation?.transferLeg as TransferLeg | undefined;
@@ -176,13 +200,18 @@ function checkTransaction(operation: DvpOperation, decoded: PreparedTransaction,
       if (leg!.sender !== terms.party) return 'the allocation spends another party’s holdings';
       if (arg.expectedAdmin !== leg!.instrumentId.admin) return 'the allocation names another instrument admin';
       if (funded.some((l) => l.receiver === leg!.receiver)) return 'the same leg is funded twice';
-      const holdings = checkHoldings(decoded, nodes, terms.party, leg!);
-      if (holdings) return holdings;
-      // The factory the choice runs on is the registry's own: disclosed with the transaction, and the instrument admin's.
+      // The factory the choice runs on is the registry's own: disclosed with the transaction, of the very
+      // template the command exercises, and SIGNED by the instrument admin. Nobody else can create such a
+      // contract, so the code the whole tree runs is the code the admin deployed.
       const factory = inputContracts(decoded).get(root.exercise.contractId);
       if (!factory) return 'the allocation factory is not among the contracts the transaction discloses';
-      if (!terms.packages.registries.includes(factory.packageName)) return `the allocation factory comes from an untrusted package (${factory.packageName})`;
-      if (!partiesOf(factory).has(leg!.instrumentId.admin)) return 'the allocation factory does not belong to the instrument admin';
+      if (!sameId(factory.templateId, root.exercise.templateId)) return 'the command runs on another template than the factory it names';
+      if (!trusted(terms.packages.registries, factory.packageName, factory.templateId?.packageId)) {
+        return `the allocation factory comes from an untrusted package (${factory.packageName} ${factory.templateId?.packageId ?? ''})`;
+      }
+      if (!factory.signatories.includes(leg!.instrumentId.admin)) return 'the allocation factory is not signed by the instrument admin';
+      const holdings = checkHoldings(decoded, nodes, terms, leg!, factory);
+      if (holdings) return holdings;
       funded.push(leg!);
       return null;
     }
@@ -211,12 +240,14 @@ function checkTree(operation: DvpOperation, decoded: PreparedTransaction, nodes:
   const wrong = visit(decoded.transaction!.roots[0]!);
   if (wrong) return wrong;
   if (reachable.size !== nodes.size) return 'it carries nodes outside its command';
-  const allowed = operation === 'dvpAllocateLeg' ? terms.packages.registries : [terms.packages.swap];
+  const allowed = operation === 'dvpAllocateLeg' ? terms.packages.registries : terms.packages.swap;
   for (const node of nodes.values()) {
     const type = nodeType(node)!;
     if (type.oneofKind !== 'create' && type.oneofKind !== 'exercise' && type.oneofKind !== 'fetch') return `node ${node.nodeId} is of an unexpected kind`;
-    const packageName = packageOf(type);
-    if (!allowed.includes(packageName)) return `node ${node.nodeId} runs code from an untrusted package (${packageName || 'unnamed'})`;
+    const { packageName, templateId } = type.oneofKind === 'create' ? type.create : type.oneofKind === 'exercise' ? type.exercise : type.fetch;
+    if (!trusted(allowed, packageName, templateId?.packageId)) {
+      return `node ${node.nodeId} runs code from an untrusted package (${packageName || 'unnamed'} ${templateId?.packageId ?? ''})`;
+    }
   }
   if (operation === 'dvpCreateProposal' && nodes.size !== 1) return 'the proposal is not created on its own';
   if (operation === 'dvpAcceptProposal') {
@@ -230,27 +261,41 @@ function checkTree(operation: DvpOperation, decoded: PreparedTransaction, nodes:
 }
 
 /**
- * What an allocation does to holdings. A holding here is any contract with an `owner` party
- * and an amount (`amount`, or Amulet's `amount.initialAmount`), at the top of its argument or
- * one record down (a locked Amulet keeps its Amulet inside). In the whole tree:
- *  - every holding created is the signer's (a lock keeps the owner): nothing leaves the account;
- *  - every holding consumed is the signer's, and is one the transaction discloses or creates;
- *  - per instrument, what is consumed and not recreated is at most what the leg locks.
+ * What an allocation does to holdings and to whom. A holding here is any contract with an `owner`
+ * Party and an amount (`amount`, or Amulet's `amount.initialAmount`), at the top of its argument
+ * or one record down (a locked Amulet keeps its Amulet inside); it is locked when that record or
+ * the one holding it carries a `lock`. In the whole tree:
+ *  - every holding created is the signer's: nothing leaves the account;
+ *  - what is created locked is at most the leg's amount: no second lock rides along;
+ *  - every holding consumed is the signer's, and one the transaction discloses or creates;
+ *  - per instrument, what is consumed and not recreated is at most what the leg locks;
+ *  - no party appears in any created contract or any choice argument but the signer, the venue,
+ *    the leg's receiver and the registry's own parties (the factory's signatories and
+ *    stakeholders): a transfer, lock or instruction for anyone else is refused.
  */
-function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, party: string, leg: TransferLeg): string | null {
+function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, terms: DvpTerms, leg: TransferLeg, factory: Create): string | null {
+  const party = terms.party;
   const inputs = inputContracts(decoded);
+  const allowedParties = new Set([party, terms.venue, leg.receiver, leg.instrumentId.admin, ...factory.signatories, ...factory.stakeholders]);
   const created = new Map<string, Create>();
   const net = new Map<string, bigint>();
   const add = (key: string, amount: bigint) => net.set(key, (net.get(key) ?? 0n) + amount);
+  let locked = 0n;
   for (const node of nodes.values()) {
     const type = nodeType(node)!;
+    const values = type.oneofKind === 'create' ? [type.create.argument] : type.oneofKind === 'exercise' ? [type.exercise.chosenValue] : [];
+    const parties = [...(type.oneofKind === 'exercise' ? type.exercise.actingParties : []), ...values.flatMap((v) => [...partiesIn(v)])];
+    const stranger = parties.find((p) => !allowedParties.has(p));
+    if (stranger) return `node ${node.nodeId} involves ${stranger}, who is not part of this allocation`;
     if (type.oneofKind !== 'create') continue;
     created.set(type.create.contractId, type.create);
     const holding = holdingOf(type.create);
     if (!holding) continue;
     if (holding.owner !== party) return `it creates a holding owned by ${holding.owner}`;
     add(holding.instrument, -holding.amount);
+    if (holding.locked) locked += holding.amount;
   }
+  if (locked > units(leg.amount)) return `it locks more than the leg's ${leg.amount}`;
   for (const node of nodes.values()) {
     const type = nodeType(node)!;
     if (type.oneofKind !== 'exercise' || !type.exercise.consuming) continue;
@@ -289,9 +334,10 @@ const textOf = (value: Value | undefined) => (value?.sum.oneofKind === 'text' ? 
 const numericOf = (value: Value | undefined) => (value?.sum.oneofKind === 'numeric' ? value.sum.numeric : undefined);
 
 /** The holding a contract is, if it is one: owner, instrument and amount in 1e-10 units. Read from typed values: `owner` must be a Party. */
-function holdingOf(contract: Create): { owner: string; instrument: string; amount: bigint } | null {
+function holdingOf(contract: Create): { owner: string; instrument: string; amount: bigint; locked: boolean } | null {
   const top = fieldsOf(contract.argument);
   if (!top) return null;
+  const isSome = (value: Value | undefined) => value !== undefined && !(value.sum.oneofKind === 'optional' && !value.sum.optional.value);
   const candidates = [top, ...[...top.values()].map(fieldsOf).filter((f): f is Map<string, Value> => f !== null)];
   for (const record of candidates) {
     const owner = record.get('owner');
@@ -301,7 +347,7 @@ function holdingOf(contract: Create): { owner: string; instrument: string; amoun
     if (amount < 0n) continue;
     const named = textOf(fieldsOf(record.get('instrument') ?? record.get('instrumentId'))?.get('id'));
     const instrument = named ?? (/Amulet/.test(contract.templateId?.entityName ?? '') ? 'Amulet' : `${contract.packageName}:${contract.templateId?.entityName}`);
-    return { owner: owner.sum.party, instrument: instrumentKey(instrument), amount };
+    return { owner: owner.sum.party, instrument: instrumentKey(instrument), amount, locked: isSome(record.get('lock')) || isSome(top.get('lock')) };
   }
   return null;
 }
@@ -309,31 +355,42 @@ function holdingOf(contract: Create): { owner: string; instrument: string; amoun
 /** CC is listed as CC or as its ledger name, Amulet. */
 const instrumentKey = (id: string) => (id === 'CC' ? 'Amulet' : id);
 
-function packageOf(type: NonNullable<ReturnType<typeof nodeType>>): string {
-  if (type.oneofKind === 'create') return type.create.packageName;
-  if (type.oneofKind === 'exercise') return type.exercise.packageName;
-  if (type.oneofKind === 'fetch') return type.fetch.packageName;
-  return '';
-}
+const sameId = (a: { packageId: string; moduleName: string; entityName: string } | undefined, b: { packageId: string; moduleName: string; entityName: string } | undefined) =>
+  !!a && !!b && a.packageId === b.packageId && a.moduleName === b.moduleName && a.entityName === b.entityName;
 
-/** Every party a contract names: its signatories, stakeholders and any Party value in its argument. */
-function partiesOf(contract: Create): Set<string> {
-  const found = new Set([...contract.signatories, ...contract.stakeholders]);
-  const walk = (value: Value | undefined): void => {
-    const sum = value?.sum;
-    if (!sum) return;
-    if (sum.oneofKind === 'party') found.add(sum.party);
-    else if (sum.oneofKind === 'record') sum.record.fields.forEach((f) => walk(f.value));
-    else if (sum.oneofKind === 'list') sum.list.elements.forEach(walk);
-    else if (sum.oneofKind === 'optional') walk(sum.optional.value);
-    else if (sum.oneofKind === 'textMap') sum.textMap.entries.forEach((e) => walk(e.value));
-    else if (sum.oneofKind === 'variant') walk(sum.variant.value);
-  };
-  walk(contract.argument);
+/** A node's package is trusted only by name AND id. */
+const trusted = (allowed: Record<string, string[]>, packageName: string, packageId: string | undefined) =>
+  !!packageId && (allowed[packageName] ?? []).includes(packageId);
+
+/** Every Party value inside a Daml value. */
+function partiesIn(value: Value | undefined, found = new Set<string>()): Set<string> {
+  const sum = value?.sum;
+  if (!sum) return found;
+  if (sum.oneofKind === 'party') found.add(sum.party);
+  else if (sum.oneofKind === 'record') sum.record.fields.forEach((f) => partiesIn(f.value, found));
+  else if (sum.oneofKind === 'list') sum.list.elements.forEach((e) => partiesIn(e, found));
+  else if (sum.oneofKind === 'optional') partiesIn(sum.optional.value, found);
+  else if (sum.oneofKind === 'textMap') sum.textMap.entries.forEach((e) => partiesIn(e.value, found));
+  else if (sum.oneofKind === 'genMap') sum.genMap.entries.forEach((e) => (partiesIn(e.key, found), partiesIn(e.value, found)));
+  else if (sum.oneofKind === 'variant') partiesIn(sum.variant.value, found);
   return found;
 }
 
-function checkProposal(arg: unknown, terms: DvpTerms, approvers: string[]): string | null {
+/** A deadline later than the clock allows, or a time that is not a time, among these fields. */
+function lateDeadline(record: Map<string, Value> | null, labels: string[], terms: DvpTerms): string | null {
+  for (const label of labels) {
+    const value = record?.get(label);
+    if (value?.sum.oneofKind !== 'timestamp') return `${label} is missing`;
+    const at = Number(BigInt(value.sum.timestamp) / 1000n);
+    if (at > terms.now + terms.maxWindowMs) return `${label} is ${new Date(at).toISOString()}, further ahead than this account allows`;
+  }
+  return null;
+}
+
+function checkProposal(value: Value | undefined, terms: DvpTerms, approvers: string[]): string | null {
+  const late = lateDeadline(fieldsOf(value), ['expiresAt'], terms);
+  if (late) return late;
+  const arg = plain(value);
   const proposal = arg as { venue?: unknown; swapId?: unknown; approvers?: unknown; transferLegs?: Record<string, TransferLeg> };
   if (proposal?.venue !== terms.venue) return `the proposal names ${String(proposal?.venue)} as venue`;
   if (proposal.swapId !== terms.swapId) return 'the proposal is for another trade';
