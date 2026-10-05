@@ -24,9 +24,14 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
 - The DvP fee terms (rate, receiver, venue) are read for the order's own pool:
   `GET /htlc/fee-config?orderId=` with the account's session, after accept. A partner order is
   held to the partner fee party, a retail order to the retail one, and a fee leg to any other
-  party is refused before signing. A backend that refuses `orderId` with 400 (older than the
-  per-order route) is asked again without it. The pool's `maxFeeRate` never lifts the account's
-  own ceiling (`maxFeeRate`, default 1.5%).
+  party is refused before signing. A backend older than the per-order route ignores `orderId`
+  and answers its only (retail) pool; any refusal of the request propagates, with no retry
+  without `orderId`. The pool's `maxFeeRate` never lifts the account's own ceiling
+  (`maxFeeRate`, default 1.5%).
+- The fee receiver the API names must be one of Cancore's fee parties for the network
+  (`DEFAULT_FEE_RECIPIENTS`: `cancore-fee-{retail,partner,auto}`), or the trade is refused before
+  anything is recorded or signed. `feeRecipientPartyId` (now `string | readonly string[]`) adds parties to
+  that list instead of being the only one accepted.
 - `Settled` gains `flow: 'dvp'`. `delivery` is always `'direct'`: the settle moves the holdings
   themselves, so `'accepted'` and `'pending'` are no longer produced by `make` / `take`
   (`acceptIncoming` still accepts any transfer that arrives otherwise).
@@ -52,7 +57,8 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
 - `SelfCustodyOptions.venuePartyId`: pin the venue every allocation must hand settlement to.
 - `SelfCustodyOptions.maxFeeRate` (default `'0.015'`, `DEFAULT_MAX_FEE_RATE`, this SDK's default
   ceiling): the highest platform fee rate the account accepts.
-- `SelfCustodyOptions.feeRecipientPartyId`: the only party the platform fee may be paid to.
+- `SelfCustodyOptions.feeRecipientPartyId` and `DEFAULT_FEE_RECIPIENTS`: the parties the platform
+  fee may be paid to, pinned per network, added to the defaults.
 - `SelfCustodyOptions.maxSettlementWindowMs` (default 3 hours): how far ahead a proposal's or an
   allocation's deadline may lie.
 - `SelfCustodyOptions.trustedPackages` and `DEFAULT_TRUSTED_PACKAGES`: the package ids of the

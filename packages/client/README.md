@@ -407,10 +407,13 @@ trade. Anything else, a transaction it cannot decode included, is a `CeremonyErr
 
 The fee is held to a ceiling the API cannot move: `maxFeeRate`, default `'0.015'` (1.5%, this
 SDK's default ceiling). A stand that publishes a higher rate is refused — by `make` before the
-trade is recorded, by `take` before it signs. Pin from your own configuration, too:
-`venuePartyId` (the venue every allocation must hand settlement to) and `feeRecipientPartyId`
-(the only party the fee may be paid to). A backend without the per-order fee configuration
-refuses `orderId` with 400; the SDK then reads the public one, which is that backend's only pool.
+trade is recorded, by `take` before it signs. The fee receiver is pinned like the admins: the
+party the API names for the order's pool must be one of Cancore's fee parties for the network
+(`DEFAULT_FEE_RECIPIENTS`: `cancore-fee-retail`, `-partner` and `-auto`), so the API can choose
+among Cancore's pools but never pay a third party. `feeRecipientPartyId` adds parties to that
+list, never replacing it. A backend older than the per-order fee configuration ignores `orderId`
+and answers its only (retail) pool. Pin from your own configuration, too: `venuePartyId` (the
+venue every allocation must hand settlement to).
 
 What the account signs:
 

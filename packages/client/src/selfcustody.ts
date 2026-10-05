@@ -24,11 +24,11 @@
 import { signLegs, type OperationLeg } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
-import { DEFAULT_INSTRUMENT_ADMINS, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
+import { DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
 import { DEFAULT_TRUSTED_PACKAGES, units, verifyDvpPrepared, type DvpOperation, type DvpTerms, type Instrument, type TrustedPackages } from './dvp-verify';
 
 export { DEFAULT_TRUSTED_PACKAGES, type TrustedPackages } from './dvp-verify';
-export { API_NETWORKS, DEFAULT_INSTRUMENT_ADMINS, type DvpNetwork } from './dvp-admins';
+export { API_NETWORKS, DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, type DvpNetwork } from './dvp-admins';
 import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
@@ -248,10 +248,11 @@ export interface SelfCustodyOptions extends SessionOptions {
    */
   maxFeeRate?: string;
   /**
-   * The party the platform fee must be paid to. Set it from your own configuration and a trade
-   * whose fee receiver (from `GET /htlc/fee-config`) is any other party is refused.
+   * More parties the platform fee may be paid to on this account's network. Added to
+   * `DEFAULT_FEE_RECIPIENTS` (Cancore's fee pools), never replacing it: a trade whose fee receiver
+   * (from `GET /htlc/fee-config?orderId=`) is not listed is refused before anything is recorded or signed.
    */
-  feeRecipientPartyId?: string;
+  feeRecipientPartyId?: string | readonly string[];
   /**
    * How far ahead of now a proposal's expiry or an allocation's deadlines may lie — a later one
    * keeps the account's funds locked longer. Default 3 hours.
@@ -278,7 +279,7 @@ export interface SelfCustodyOptions extends SessionOptions {
 /** This SDK's default ceiling on the platform fee rate (1.5%): a policy of the SDK, not of the platform. */
 export const DEFAULT_MAX_FEE_RATE = '0.015';
 const DEFAULT_SETTLEMENT_WINDOW_MS = 3 * 60 * 60_000;
-/** What `GET /htlc/fee-config` answers; its `maxFeeRate` is not read: the ceiling is `maxFeeRate` of this account. */
+/** What `GET /htlc/fee-config` answers; its `maxFeeRate` is not read: the ceiling is this account's `maxFeeRate`. */
 type FeeConfig = { feeRate?: string; feeRecipient?: string; venue?: string };
 
 /** A settle that cannot finish: the swap went somewhere it cannot come back from, or time ran out. */
@@ -420,6 +421,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     network ? DEFAULT_INSTRUMENT_ADMINS[network] : {},
     Object.fromEntries(Object.entries(options.instrumentAdmins ?? {}).map(([id, list]) => [instrumentKey(id), list])),
   );
+  const feeRecipients = [...new Set([...(network ? DEFAULT_FEE_RECIPIENTS[network] : []), ...[options.feeRecipientPartyId ?? []].flat()])];
   // Every Canton↔Canton order this account places asks for allocation-DvP: that is the only way it settles.
   const swap: SwapClient = {
     ...orders,
@@ -687,17 +689,10 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   /**
    * The fee configuration of the order's pool (`?orderId=`): a partner order pays its fee to the
    * partner fee party, a retail one to the retail party. The pool is fixed at accept, and every
-   * caller here runs after it. A backend older than the per-order route refuses the unknown
-   * parameter with 400; it has one pool only, so its public configuration is the order's.
+   * caller here runs after it. A backend older than the per-order route ignores the parameter and
+   * answers its only (retail) pool, which is then the order's too. Any refusal propagates.
    */
-  async function feeConfig(orderId: string): Promise<FeeConfig | null> {
-    try {
-      return await http.get<FeeConfig | null>('/htlc/fee-config', { orderId });
-    } catch (err) {
-      if (!(err instanceof CancoreApiError && err.status === 400)) throw err;
-      return http.get<FeeConfig | null>('/htlc/fee-config');
-    }
-  }
+  const feeConfig = (orderId: string) => http.get<FeeConfig | null>('/htlc/fee-config', { orderId });
 
   /**
    * The trade this account agreed to, from sources other than the swap row: the
@@ -714,8 +709,13 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     if (!(units(feeRate) >= 0n && units(feeRate) <= units(ceiling))) {
       throw new SettleError(`the stand's platform fee rate ${feeRate} is above this account's ceiling ${ceiling} (maxFeeRate)`, swapId, order);
     }
-    if (options.feeRecipientPartyId !== undefined && config?.feeRecipient && config.feeRecipient !== options.feeRecipientPartyId) {
-      throw new SettleError(`the stand pays the platform fee to ${config.feeRecipient}, not to this account's feeRecipientPartyId`, swapId, order);
+    if (config?.feeRecipient && !feeRecipients.includes(config.feeRecipient)) {
+      throw new SettleError(
+        `the stand pays the platform fee to ${config.feeRecipient}, which is not a fee party this SDK trusts on ${network ?? 'this network'}; ` +
+          'if it genuinely is one, add it with feeRecipientPartyId',
+        swapId,
+        order,
+      );
     }
     if (!venue) throw new SettleError('the venue party is unknown on this stand, so no allocation can be checked: pass venuePartyId', swapId);
     const other = (role === 'maker' ? order.opponent : order.initiator) as { partyId?: string | null } | undefined;
