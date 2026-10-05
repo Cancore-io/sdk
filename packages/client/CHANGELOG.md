@@ -1,5 +1,29 @@
 # Changelog — `@cancore/client`
 
+## Unreleased (0.7.x)
+
+### Added
+
+- `withdrawAllocation(swapId)` on the self-custody account releases this account's own DvP
+  allocation(s) of a trade that ended `dvp_expired` when the venue's recovery could not (the abort
+  was refused or the trade was already archived). Until now such a leg stayed locked and the only
+  way out was Cancore support. Same prepare → verify → sign → submit path as the other DvP steps,
+  new operation `dvpWithdrawAllocation`, one signature per locked leg. Requires the matching gateway
+  (BUG-1291).
+- `dvp-verify` holds a withdraw to its own expected tree before the key signs: exactly one consuming
+  `Allocation_Withdraw` on an allocation of this trade, sent by this account, signed by the instrument
+  admin and settled by the venue; only this account's allocation and holdings archived; the holding
+  returned to this account, unlocked and for no more than the leg locked; no party outside the trade.
+- `SettleOptions.autoWithdraw`: `make` / `take` withdraw before throwing when the trade expired with
+  this account's allocation still locked. Off by default.
+- `SettleError.withdrawable` is true when the expiry left this account's allocation locked.
+  `SwapInfo.legs[]` carries `legId` and `userActionRequired`, `HtlcSwap` carries `orderId`.
+
+### Changed
+
+- The `SettleError` for an expired trade with a locked allocation points at `withdrawAllocation`
+  instead of at Cancore support.
+
 ## 0.7.0
 
 Canton↔Canton self-custody trades settle through allocation-DvP. This changes behaviour.

@@ -6355,6 +6355,7 @@
               "dvpCreateProposal",
               "dvpAcceptProposal",
               "dvpAllocateLeg",
+              "dvpWithdrawAllocation",
               "htlcCancelInitRequest",
               "bridgeOnboard",
               "bridgeReonboard",
@@ -6700,6 +6701,7 @@
               "dvpCreateProposal",
               "dvpAcceptProposal",
               "dvpAllocateLeg",
+              "dvpWithdrawAllocation",
               "htlcCancelInitRequest",
               "bridgeOnboard",
               "bridgeReonboard",
@@ -7589,6 +7591,7 @@
               "dvpCreateProposal",
               "dvpAcceptProposal",
               "dvpAllocateLeg",
+              "dvpWithdrawAllocation",
               "htlcCancelInitRequest",
               "bridgeOnboard",
               "bridgeReonboard",
@@ -8273,6 +8276,14 @@
           },
           "tokenId": {
             "description": "Token locked on this leg (null before counter-accept)",
+            "nullable": true,
+            "type": "string"
+          },
+          "userActionRequired": {
+            "description": "DvP only (BUG-1291): 'withdraw_allocation' when the trade ended unsettled and recovery could not release this leg's allocation because its sender signs on its own device — the owner must withdraw it (operationType dvpWithdrawAllocation). Null otherwise.",
+            "enum": [
+              "withdraw_allocation"
+            ],
             "nullable": true,
             "type": "string"
           }

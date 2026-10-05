@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519';
 import { deriveWalletKey, providerFromMnemonic } from '@cancore/wallet';
-import { allocationTree, DEV, prepared, proposalAccept, proposalCreate, type FixtureLeg } from './dvp-prepared.fixture';
+import { allocationTree, DEV, prepared, proposalAccept, proposalCreate, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
 import type { FetchLike } from './http';
 import {
   CeremonyError,
@@ -193,7 +193,7 @@ function venue({
       { legId: 'leg-fee', role: 'fee', sender: taker, receiver: FEE_PARTY, tokenId: 'CC', amount: '24.8756218905', lockRef: null, status: 'active' },
     ];
     drafter = maker.partyId;
-    swap = { id: 's1', status: 'dvp_proposed', sender: maker.partyId, receiver: taker, proposalContractId: null };
+    swap = { id: 's1', status: 'dvp_proposed', sender: maker.partyId, receiver: taker, proposalContractId: null, orderId: 'o1' };
     order.swapId = 's1';
     order.status = 'swap_created';
     return json(swap, 201);
@@ -218,14 +218,15 @@ function venue({
     }
     return json({
       swap,
-      legs: legs.map(({ legId: _legId, ...l }) => l),
+      // Recovery could not sign for a self-custody sender: its still-locked legs are flagged for the owner.
+      legs: legs.map((l) => ({ ...l, userActionRequired: swap!.status === 'dvp_expired' && l.lockRef && l.status !== 'cancelled' ? 'withdraw_allocation' : null })),
       dvp: { tradeCid, awaitingApprovalFrom: awaiting, allocateBefore: null, settleBefore: null },
       swapStatus: 'incomplete',
     });
   }
 
   /** `POST /canton-wallet/htlc/prepare-command`, with the refusals the three DvP step handlers raise. */
-  async function prepareDvp(caller: Account, body: { operationType: string; params: { swapId?: string } }): Promise<Response> {
+  async function prepareDvp(caller: Account, body: { operationType: string; params: { swapId?: string; legId?: string } }): Promise<Response> {
     if (dvpForbidden) return forbidden();
     const party = caller.partyId!;
     const swapId = String(body.params?.swapId);
@@ -245,6 +246,15 @@ function venue({
         owed = legs.filter((l) => l.sender === party && !l.lockRef);
         if (owed.length === 0) return refuse(400, `${party} has no unallocated leg on swap ${swapId}`);
         break;
+      case 'dvpWithdrawAllocation': {
+        // The step's own rules: only an expired trade, and only the caller's own still-locked allocation.
+        if (swap.status !== 'dvp_expired') return refuse(400, `swap ${swapId} is ${String(swap.status)}: an allocation can only be withdrawn once the trade has ended without settling (dvp_expired)`);
+        const named = legs.find((l) => l.legId === body.params.legId);
+        if (!named || named.sender !== party) return refuse(400, `${party} is not the sender of leg ${String(body.params.legId)}`);
+        if (!named.lockRef || named.status === 'cancelled') return refuse(400, `leg ${named.legId} has nothing left to withdraw`);
+        owed = [named];
+        break;
+      }
       default:
         return refuse(400, `unknown operation ${body.operationType}`);
     }
@@ -259,6 +269,11 @@ function venue({
         proposalAccept('0', party, ['1']),
         proposalCreate('1', { venue: VENUE, swapId, legs: terms, approvers: [...approvers, party] }),
       ])];
+    } else if (body.operationType === 'dvpWithdrawAllocation') {
+      transactions = await Promise.all(owed.map(async (l) => {
+        const tree = withdrawTree({ executor: VENUE, swapId, legId: l.legId, leg: asFixture(l) });
+        return prepared(party, tree.nodes, tree.inputs);
+      }));
     } else {
       transactions = await Promise.all(owed.map(async (l) => {
         const tampered = l.role === 'main' ? tamperMakerAllocation : undefined;
@@ -320,6 +335,9 @@ function venue({
     switch (op.operationType) {
       case 'dvpCreateProposal': swap!.proposalContractId = 'proposal-1'; approvers.add(caller.partyId!); break;
       case 'dvpAcceptProposal': swap!.proposalContractId = `proposal-${approvers.size + 1}`; approvers.add(caller.partyId!); break;
+      case 'dvpWithdrawAllocation':
+        for (const id of op.legIds) legs.find((l) => l.legId === id)!.status = 'cancelled';
+        break;
       case 'dvpAllocateLeg':
         for (const id of op.legIds) legs.find((l) => l.legId === id)!.lockRef = `alloc-${id}`;
         swap!.status = legs.every((l) => l.lockRef) ? 'dvp_allocated' : 'dvp_allocated_partial';
@@ -777,7 +795,8 @@ describe('a taker that funded and a maker that did not', () => {
     const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
     const error = await taker.take('o1').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SettleError);
-    expect((error as Error).message).toMatch(/\(counter, fee\) are still locked after the venue's recovery \(abort refused\).*cannot withdraw.*contact Cancore support with the swap id s1/);
+    expect((error as Error).message).toMatch(/\(counter, fee\) are still locked after the venue's recovery \(abort refused\).*withdrawAllocation\('s1'\).*autoWithdraw/);
+    expect(error).toMatchObject({ withdrawable: true });
     await making;
   });
 
@@ -791,6 +810,72 @@ describe('a taker that funded and a maker that did not', () => {
     const error = await taker.take('o1', { deadlineMs: 500 }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SettleError);
     expect((error as Error).message).toMatch(/timed out.*stay locked until then\. The venue releases a DvP allocation.*SwapTrade_Abort/);
+  });
+});
+
+describe('withdrawing an allocation the venue could not release (BUG-1291)', () => {
+  /** The taker funded its leg and the fee, the maker never did, and recovery's abort was refused. */
+  async function strandedTaker(accounts: [number, number]) {
+    const api = venue({ takerFundedThenExpired: 'stillLocked' });
+    const { maker, taker } = await tradingPair(api, accounts);
+    await taker.swap.accept('o1');
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    const error = await taker.take('o1').catch((e: unknown) => e);
+    await making;
+    return { api, taker, maker, error };
+  }
+
+  test('take() leaves the taker able to release its own allocations, one signed withdraw per locked leg', async () => {
+    const { api, taker, error } = await strandedTaker([52, 53]);
+    expect(error).toMatchObject({ swapId: 's1', withdrawable: true });
+
+    expect(await taker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: ['counter', 'fee'] });
+
+    // Each withdraw was its own prepare → verify → sign → submit, for exactly the leg it names.
+    expect(api.log.filter((e) => e.type === 'dvp:dvpWithdrawAllocation').map((e) => [e.params.by, e.params.legIds])).toEqual([
+      ['taker', ['leg-counter']],
+      ['taker', ['leg-fee']],
+    ]);
+    expect(api.legs().filter((l) => l.sender === 'party-taker').map((l) => l.status)).toEqual(['cancelled', 'cancelled']);
+    // Nothing is left locked, so a second call signs nothing.
+    expect(await taker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: [] });
+    expect(api.log.filter((e) => e.type === 'dvp:dvpWithdrawAllocation')).toHaveLength(2);
+  });
+
+  test('autoWithdraw releases them before the SettleError is thrown', async () => {
+    const api = venue({ takerFundedThenExpired: 'stillLocked' });
+    const { maker, taker } = await tradingPair(api, [54, 55]);
+    await taker.swap.accept('o1');
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    const error = await taker.take('o1', { autoWithdraw: true }).catch((e: unknown) => e);
+    await making;
+
+    expect(error).toBeInstanceOf(SettleError);
+    expect(error).toMatchObject({ swapId: 's1', withdrawable: false, message: expect.stringMatching(/\(counter, fee\) were withdrawn with its own signature/) });
+    expect(api.log.filter((e) => e.type === 'dvp:dvpWithdrawAllocation')).toHaveLength(2);
+  });
+
+  test('without autoWithdraw nothing is signed that was not asked for', async () => {
+    const { api } = await strandedTaker([56, 57]);
+    expect(api.log.filter((e) => e.type === 'dvp:dvpWithdrawAllocation')).toEqual([]);
+  });
+
+  test('a live trade is refused before anything is prepared', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [58, 59]);
+    await taker.swap.accept('o1');
+    await maker.make('o1', { deadlineMs: 300 }).catch(() => undefined);
+    // The taker funds and waits for a settle that never comes: the trade is live, the venue owns its fate.
+    await taker.take('o1', { deadlineMs: 300 }).catch(() => undefined);
+    const error = await taker.withdrawAllocation('s1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SettleError);
+    expect((error as Error).message).toMatch(/only be withdrawn once the trade is dvp_expired/);
+    expect(api.asked).not.toContain('dvpWithdrawAllocation');
+  });
+
+  test('the party that did not fund has nothing to withdraw', async () => {
+    const { maker } = await strandedTaker([60, 61]);
+    expect(await maker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: [] });
   });
 });
 

@@ -24,7 +24,7 @@ import { decodePreparedTransaction, hashPreparedTransaction } from '@canton-netw
 import type { DamlTransaction_Node, PreparedTransaction, Value } from '@canton-network/core-ledger-proto';
 import { instrumentKey } from './dvp-admins';
 
-export type DvpOperation = 'dvpCreateProposal' | 'dvpAcceptProposal' | 'dvpAllocateLeg';
+export type DvpOperation = 'dvpCreateProposal' | 'dvpAcceptProposal' | 'dvpAllocateLeg' | 'dvpWithdrawAllocation';
 
 export interface Instrument {
   id: string;
@@ -86,6 +86,13 @@ export const ALLOCATION_FACTORY_INTERFACE = {
   moduleName: 'Splice.Api.Token.AllocationInstructionV1',
   entityName: 'AllocationFactory',
 };
+
+/**
+ * The token-standard Allocation interface, by module and entity. Not pinned by package id: a withdraw
+ * names the interface VERSION the allocation contract implements, which differs per registry; the
+ * trust anchor is the allocation itself, signed by the instrument admin (see `dvpWithdrawAllocation`).
+ */
+export const ALLOCATION_INTERFACE = { moduleName: 'Splice.Api.Token.AllocationV1', entityName: 'Allocation' };
 
 export interface PreparedToSign {
   preparedTransactionHash: string;
@@ -203,8 +210,71 @@ function checkTransaction(operation: DvpOperation, decoded: PreparedTransaction,
       funded.push(leg!);
       return null;
     }
+    case 'dvpWithdrawAllocation':
+      return checkWithdraw(root, decoded, nodes, terms);
   }
 }
+
+/**
+ * The owner releasing its own allocation of a trade that ended unsettled: one consuming
+ * `Allocation_Withdraw` on an allocation of THIS trade that this account sends and the instrument
+ * admin signed, carrying nothing but its registry context. In the whole tree the only contracts
+ * archived are that allocation, this account's own holdings, and admin-signed registry records that
+ * are not another allocation; every holding created is this account's, unlocked, and at most what
+ * the leg locked; at least one is returned. No party appears but the signer, the venue, the
+ * receiver and the registry's own — so the lock goes back to the owner and nothing goes anywhere else.
+ */
+function checkWithdraw(root: ReturnType<typeof nodeType>, decoded: PreparedTransaction, nodes: Nodes, terms: DvpTerms): string | null {
+  if (root?.oneofKind !== 'exercise' || root.exercise.choiceId !== 'Allocation_Withdraw' || !sameInterface(root.exercise.interfaceId, ALLOCATION_INTERFACE)) {
+    return 'it is not the withdrawal of a token-standard allocation';
+  }
+  if (root.exercise.actingParties.join() !== terms.party) return 'the withdrawal is not this account’s';
+  if (!root.exercise.consuming) return 'the withdrawal does not consume the allocation';
+  if (Object.keys(plain(root.exercise.chosenValue) as Record<string, unknown>).join() !== 'extraArgs') return 'the withdrawal carries more than its registry context';
+  const allocation = inputContracts(decoded).get(root.exercise.contractId);
+  if (!allocation) return 'the allocation is not among the contracts the transaction discloses';
+  const spec = (plain(allocation.argument) as { allocation?: { settlement?: { executor?: unknown; settlementRef?: { id?: unknown } }; transferLeg?: TransferLeg } })?.allocation;
+  if (spec?.settlement?.executor !== terms.venue) return `the allocation hands settlement to ${String(spec?.settlement?.executor)}, not to the venue`;
+  if (spec.settlement.settlementRef?.id !== terms.swapId) return 'the allocation is for another trade';
+  const leg = spec.transferLeg;
+  const wrong = checkLeg(leg, terms);
+  if (wrong) return wrong;
+  if (leg!.sender !== terms.party) return 'the allocation is not this account’s';
+  if (!allocation.signatories.includes(leg!.instrumentId.admin) || !allocation.signatories.includes(terms.party)) {
+    return 'the allocation is not signed by this account and the instrument admin';
+  }
+  const holdings = checkHoldings(decoded, nodes, terms, leg!, allocation, root.exercise.contractId);
+  if (holdings) return holdings;
+  const inputs = inputContracts(decoded);
+  const created = new Map<string, Create>();
+  for (const node of nodes.values()) {
+    const type = nodeType(node)!;
+    if (type.oneofKind === 'create') created.set(type.create.contractId, type.create);
+  }
+  let returned = 0n;
+  for (const contract of created.values()) {
+    const holding = holdingOf(contract);
+    if (!holding) continue;
+    if (holding.locked) return 'it creates a locked holding: a withdraw locks nothing';
+    returned += holding.amount;
+  }
+  if (returned === 0n) return 'it returns no holding to this account';
+  if (returned > units(leg!.amount)) return `it returns more than the leg's ${leg!.amount}`;
+  for (const node of nodes.values()) {
+    const type = nodeType(node)!;
+    if (type.oneofKind !== 'exercise' || !type.exercise.consuming || type.exercise.contractId === root.exercise.contractId) continue;
+    const target = inputs.get(type.exercise.contractId) ?? created.get(type.exercise.contractId);
+    if (!target) return `it consumes contract ${type.exercise.contractId.slice(0, 16)}… without disclosing what it is`;
+    if (holdingOf(target)?.owner === terms.party) continue;
+    if (!target.signatories.includes(leg!.instrumentId.admin) || holdingOf(target) || /Allocation/.test(target.templateId?.entityName ?? '')) {
+      return `it archives a ${target.templateId?.entityName ?? 'contract'} that is neither this allocation nor this account's holding`;
+    }
+  }
+  return null;
+}
+
+const sameInterface = (a: { moduleName: string; entityName: string } | undefined, b: { moduleName: string; entityName: string }) =>
+  !!a && a.moduleName === b.moduleName && a.entityName === b.entityName;
 
 /**
  * The tree as a whole: every node reachable from the one root and nothing else, no rollback,
@@ -233,7 +303,8 @@ function checkTree(operation: DvpOperation, decoded: PreparedTransaction, nodes:
     if (type.oneofKind !== 'create' && type.oneofKind !== 'exercise' && type.oneofKind !== 'fetch') return `node ${node.nodeId} is of an unexpected kind`;
     // An allocation's nodes all hang from the one exercise on the admin-signed factory (checked above:
     // every node is reachable from the root), so they run the admin's code; the proposal steps run ours.
-    if (operation === 'dvpAllocateLeg') continue;
+    // A withdraw is the same: every node hangs from the one exercise on the admin-signed allocation.
+    if (operation === 'dvpAllocateLeg' || operation === 'dvpWithdrawAllocation') continue;
     const { packageName, templateId } = type.oneofKind === 'create' ? type.create : type.oneofKind === 'exercise' ? type.exercise : type.fetch;
     if (!trusted(terms.packages.swap, packageName, templateId?.packageId)) {
       return `node ${node.nodeId} runs code from an untrusted package (${packageName || 'unnamed'} ${templateId?.packageId ?? ''})`;

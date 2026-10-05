@@ -1,5 +1,5 @@
 import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
-import { allocationTree, createNode, DEV, exercise, factoryContract, holding, prepared, proposalAccept, proposalCreate, spend, spendTransfer, type FixtureLeg } from './dvp-prepared.fixture';
+import { allocationTree, createNode, DEV, exercise, factoryContract, holding, prepared, proposalAccept, proposalCreate, spend, spendTransfer, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
 import { DEFAULT_INSTRUMENT_ADMINS, mergeLists } from './dvp-admins';
 import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyDvpPrepared, type DvpTerms } from './dvp-verify';
 
@@ -241,6 +241,96 @@ describe('anything else is refused before the key is touched', () => {
   });
   test('a create signed as an allocation', async () => {
     await refused(verifyDvpPrepared('dvpAllocateLeg', [await create()], terms(MAKER)), /not a token-standard allocation/);
+  });
+});
+
+describe('withdrawing an allocation of a trade that ended unsettled (BUG-1291)', () => {
+  const THIEF = 'thief::1220';
+  type Withdraw = Parameters<typeof withdrawTree>[0];
+  const withdraw = async (legId: keyof typeof LEGS, over: Partial<Withdraw> = {}, actAs?: string) => {
+    const leg = LEGS[legId]!;
+    const { nodes, inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId, leg, ...over });
+    return prepared(actAs ?? leg.sender, nodes, inputs);
+  };
+  const ok = (promise: Promise<void>) => expect(promise).resolves.toBeUndefined();
+
+  test('the taker’s leg and fee, each its own signature, and the maker’s leg of a registry token', async () => {
+    await ok(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter')], terms(TAKER)));
+    await ok(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-fee')], terms(TAKER)));
+    await ok(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-main')], terms(MAKER)));
+  });
+  test('an allocation of another trade', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { swapId: 'swap-2' })], terms(TAKER)), /another trade/);
+  });
+  test('an allocation that hands settlement to someone else than the venue', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { executor: THIEF })], terms(TAKER)), /not to the venue/);
+  });
+  test('the other side’s allocation, signed by this account', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-main', {}, TAKER)], terms(TAKER)), /not this account’s/);
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-main', { actor: TAKER }, TAKER)], terms(TAKER)), /not this account’s/);
+  });
+  test('a leg that is not part of the trade', async () => {
+    const leg = { sender: TAKER, receiver: THIEF, amount: '1', instrumentId: CC };
+    const { nodes, inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId: 'leg-x', leg });
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await prepared(TAKER, nodes, inputs)], terms(TAKER)), /not part of this trade/);
+  });
+  test('a holding returned to someone else', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { returnTo: THIEF } })], terms(TAKER)), /involves thief|owned by thief/);
+  });
+  test('a withdraw that locks the holding again', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { relock: true } })], terms(TAKER)), /locked holding|locks more/);
+  });
+  test('a withdraw that returns nothing', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { noReturn: true } })], terms(TAKER)), /returns no holding/);
+  });
+  test('a withdraw that returns more than the leg locked', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { returnAmount: '9000' } })], terms(TAKER)), /more than the leg's/);
+  });
+  test('another choice on the allocation, or one that leaves it standing', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { choice: 'Allocation_Cancel' } })], terms(TAKER)), /not the withdrawal/);
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { consuming: false } })], terms(TAKER)), /does not consume/);
+  });
+  test('an argument beyond the registry context', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { extraArg: true } })], terms(TAKER)), /more than its registry context/);
+  });
+  test('a child that archives another allocation, or a holding of someone else', async () => {
+    const entity = { packageId: 'ab'.repeat(32), moduleName: 'Utility.Registry.V0.Holding.Allocation', entityName: 'DvpLegAllocation' };
+    const otherAllocation = { ...holding('77'.repeat(34), TAKER, CC, '0'), templateId: entity, signatories: [CC.admin, TAKER],
+      argument: { sum: { oneofKind: 'record' as const, record: { fields: [] } } } };
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', {
+      extra: (id) => ({ nodes: [spend(id(0), otherAllocation, TAKER)], inputs: [otherAllocation] }),
+    })], terms(TAKER)), /neither this allocation nor this account's holding/);
+    const theirs = holding('88'.repeat(34), THIEF, CC, '5');
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', {
+      extra: (id) => ({ nodes: [spend(id(0), theirs, THIEF)], inputs: [theirs] }),
+    })], terms(TAKER)), /involves thief|owned by thief/);
+  });
+  test('a child that creates a holding for a third party', async () => {
+    const moved = holding('88'.repeat(34), THIEF, CC, '1');
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { extra: (id) => ({ nodes: [createNode(id(0), moved)] }) })], terms(TAKER)), /involves thief|owned by thief/);
+  });
+  test('an allocation not signed by the instrument admin', async () => {
+    // The withdraw runs the code of whoever signed the allocation: a stranger's is not the admin's.
+    const leg = LEGS['leg-counter']!;
+    const { nodes, inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId: 'leg-counter', leg });
+    const forged = inputs.map((c) => (c.contractId === '66'.repeat(34) ? { ...c, signatories: [TAKER] } : c));
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await prepared(TAKER, nodes, forged)], terms(TAKER)), /not signed by this account and the instrument admin/);
+  });
+  test('an allocation the transaction does not disclose', async () => {
+    const { nodes, inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId: 'leg-counter', leg: LEGS['leg-counter']! });
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await prepared(TAKER, nodes, inputs.filter((c) => c.contractId !== '66'.repeat(34)))], terms(TAKER)), /not among the contracts/);
+  });
+  test('a withdraw is not an allocation, and an allocation is not a withdraw', async () => {
+    await refused(verifyDvpPrepared('dvpAllocateLeg', [await withdraw('leg-counter')], terms(TAKER)), /not a token-standard allocation/);
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await fund('leg-counter')], terms(TAKER)), /not the withdrawal/);
+  });
+  test('a hash that is not the transaction’s', async () => {
+    const tx = await withdraw('leg-counter');
+    const other = await withdraw('leg-fee');
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [{ ...tx, preparedTransactionHash: other.preparedTransactionHash }], terms(TAKER)), /does not hash/);
+  });
+  test('two transactions in one ceremony', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter'), await withdraw('leg-fee')], terms(TAKER)), /expected one transaction/);
   });
 });
 

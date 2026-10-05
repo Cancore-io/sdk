@@ -269,6 +269,7 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `legalStatus()` / `acceptTerms(version, documents)` | `GET` / signed `POST /legal/consent` |
 | `make(orderId, options?)` | maker: wait for the taker, record the DvP trade and sign its proposal, fund its leg after the taker, wait for the atomic settle |
 | `take(orderId, options?)` | taker: accept the order, sign the approval, fund its legs (the platform fee among them), wait for the atomic settle |
+| `withdrawAllocation(swapId)` | release this account's own allocation(s) of a trade that ended `dvp_expired` while the venue's recovery could not: one prepare → verify → sign → submit per locked leg; resolves `{ swapId, withdrawn }` (`[]` when nothing is locked) |
 | `swap.create(input)` / `swap.createForPair(input)` | `POST /orders` / `POST /orders/pair`; a Canton↔Canton order is always sent with `dvp: true` (for a pair, read from `GET /trading-pairs/{id}`) |
 | `incoming()` / `accept(transfer)` / `acceptIncoming(filter?)` | transfers waiting for this account's signature |
 | `send(input)` / `consolidate(tokenId?)` / `balance(instrumentId)` | move, merge and read this account's tokens |
@@ -431,9 +432,17 @@ trade's settle deadline; a few minutes after it the venue's recovery aborts the 
 (`SwapTrade_Abort`), which cancels every allocation still live in the same transaction, and
 the swap reads `dvp_expired`. The `SettleError` the taker gets says which happened: released,
 or still locked. If recovery could not release them (the abort was refused, or the trade was
-already gone), they are still locked: this client has no way to withdraw a DvP allocation
-itself yet, so contact Cancore support with the swap id. A `take` whose own deadline runs out
-first says the allocations stay locked until the venue releases them.
+already gone), they are still locked, and the venue cannot sign for a self-custody account: the
+`SettleError` has `withdrawable: true` and `await acct.withdrawAllocation(swapId)` releases them
+with this account's own signature (`GET /htlc/swaps/{id}/full` flags each such leg
+`userActionRequired: 'withdraw_allocation'`). Each withdraw is read before it is signed: the
+transaction must consume only this account's own allocation of this trade (signed by the
+instrument admin, settled by the venue) and its own holdings, return the locked holding to this
+account unlocked and for no more than the leg locked, and involve no party outside the trade.
+Pass `{ autoWithdraw: true }` to `make` / `take` to have this done before the `SettleError` is
+thrown; by default nothing is signed that was not asked for. A trade that is not yet
+`dvp_expired` is refused: the venue settles or aborts a live one. A `take` whose own deadline
+runs out first says the allocations stay locked until the venue releases them.
 `make` and `take` resume: an order whose trade exists picks up at the first step not yet
 done. `timeoutHours` only fills the proposal request's required field (one the stand offers,
 by default the shortest of at least 15 minutes); the trade's windows are the venue's.
