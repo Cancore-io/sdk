@@ -659,6 +659,18 @@ describe('the paths where a mistake costs money', () => {
     expect(api.legs().find((l) => l.role === 'fee')).toMatchObject({ receiver: own });
   });
 
+  test('on a host of unknown network with no fee party passed, any fee receiver the stand names is refused', async () => {
+    const api = venue();
+    // The admins are passed so the instrument check holds; nothing tells the SDK which fee parties to trust.
+    const { maker, taker } = await tradingPair(api, [162, 163], {
+      baseUrl: 'https://api.example.test',
+      instrumentAdmins: { CC: [ADMINS.CC!], CBTC: [ADMINS.CBTC!] },
+    });
+    await taker.swap.accept('o1');
+    await expect(maker.make('o1')).rejects.toThrow(new RegExp(`pays the platform fee to ${FEE_PARTY}, which is not a fee party this SDK trusts on this network`));
+    expect(api.proposals).toEqual([]);
+  });
+
   test('a fee party of another network is refused: devnet’s retail party on a mainnet account', async () => {
     const api = venue();
     const { maker, taker } = await tradingPair(api, [154, 155], {
