@@ -20,7 +20,11 @@ import { refusalOf } from './refusal';
  * as it is; so does any other holder of the key with the same three methods.
  */
 export interface KeySigner {
-  /** Hex Ed25519 public key — the account's identity at sign-in. */
+  /**
+   * Hex Ed25519 public key — the account's identity at sign-in. Snake case: it is
+   * the Loop provider's field, which `providerFromMnemonic` keeps. Not to be
+   * confused with `publicKeyHex`, which is what `deriveWalletKey` returns.
+   */
   public_key: string;
   /** Raw bytes as a binary string (one char per byte) → lowercase hex signature. */
   signMessage(message: string): Promise<string>;
@@ -37,6 +41,8 @@ export interface SessionOptions {
   /** Injected for tests and non-browser hosts; defaults to globalThis.fetch. */
   fetchImpl?: FetchLike;
   now?: () => number;
+  /** Injected for tests; defaults to a timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** `UserResponseDto`, the fields a program acts on. */
@@ -97,11 +103,21 @@ export interface Session {
 
 /** Renew this long before `exp`, so a request never leaves with a token that dies in flight. */
 const RENEW_AHEAD_MS = 60_000;
+/** Sign-in attempts after a false "no account" answer, and the pause before each (times the attempt). */
+const LOGIN_RETRIES = 2;
+const LOGIN_RETRY_PAUSE_MS = 1_000;
 
-export function createSession({ baseUrl, signer, fetchImpl, now = Date.now }: SessionOptions): Session {
+export function createSession({ baseUrl, signer, fetchImpl, now = Date.now, sleep }: SessionOptions): Session {
   const send: FetchLike = fetchImpl ?? ((url, init) => globalThis.fetch(url, init));
+  const pause = sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const anonymous = createHttp({ baseUrl, request: send });
   const publicKey = signer.public_key;
+  if (typeof publicKey !== 'string' || publicKey.trim() === '') {
+    throw new TypeError(
+      'signer.public_key must be the hex Ed25519 public key. Pass the provider providerFromMnemonic returns ' +
+        '(@cancore/wallet), not the deriveWalletKey result, whose key is publicKeyHex.',
+    );
+  }
 
   let token: string | null = null;
   let refreshToken: string | null = null;
@@ -116,7 +132,25 @@ export function createSession({ baseUrl, signer, fetchImpl, now = Date.now }: Se
     return auth.user;
   }
 
+  /*
+   * ponytail: `/auth/challenge` answers an existing key with the unknown-key 404
+   * ACCOUNT_NOT_FOUND whenever the gateway's challenge outruns its timing ceiling
+   * (BUG-551 padding, CAN-1418; ~8% on dev, seen right after sign-up). A real
+   * "no account" is refused three times in a row, ~3 s later. Drop the retry once
+   * the gateway stops answering a slow challenge with a 404.
+   */
   async function login(): Promise<AccountUser> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await signIn();
+      } catch (err) {
+        if (attempt >= LOGIN_RETRIES || refusalOf(err) !== 'retrySignIn') throw err;
+        await pause(LOGIN_RETRY_PAUSE_MS * (attempt + 1));
+      }
+    }
+  }
+
+  async function signIn(): Promise<AccountUser> {
     const { challenge } = await anonymous.post<{ challenge: string }>('/auth/challenge', { publicKey });
     return adopt(
       await anonymous.post<AuthResponse>('/auth/login-signature', {

@@ -10,6 +10,7 @@ export type Refusal =
   | 'counterAlreadyAccepted'
   | 'alreadySettled'
   | 'redeemInviteSeparately'
+  | 'retrySignIn'
   | 'other';
 
 function assertNever(value: never): never {
@@ -36,6 +37,9 @@ export function refusalForCode(code: SdkErrorCode): Refusal {
       return 'counterAlreadyAccepted';
     case 'SWAP_ALREADY_SETTLED':
       return 'alreadySettled';
+    /** At sign-in, possibly a key the gateway knows but answered too slowly for (see `login` in session.ts). */
+    case 'ACCOUNT_NOT_FOUND':
+      return 'retrySignIn';
     case 'REQUIRES_INTERACTIVE_SUBMISSION':
     case 'SWAP_FEE_PENDING':
     case 'SWAP_FEE_ALREADY_PAID':
@@ -57,7 +61,6 @@ export function refusalForCode(code: SdkErrorCode): Refusal {
     case 'LOOP_ACCEPT_AWAITS_FINALIZE':
     case 'MAINTENANCE_MODE':
     case 'MIGRATED_USE_WALLET':
-    case 'ACCOUNT_NOT_FOUND':
     case 'EMAIL_REGISTERED_AS_PASSWORD':
     case 'WALLET_MISMATCH':
     case 'SIGNING_METHOD_UNSUPPORTED':
