@@ -57,6 +57,14 @@ interface VenueOptions {
    * fee leg taking 5 CC, or bytes for the transfer leg only.
    */
   sendBytes?: 'honest' | 'theft' | 'overcharge' | 'mixed';
+  /**
+   * The taker's CC already sits in two holdings, so a send pays its network fee in a leg of its
+   * own. Default false: one holding, and the API defers the fee to after the transfer commits —
+   * the send is the transfer leg alone, `feeDeferred` in its meta (self-custody-cc-send.flow).
+   */
+  twoHoldings?: boolean;
+  /** Holding fee the split's input amulet has accrued: spent at its initial amount, which is this much above its value. */
+  accruedHoldingFee?: number;
   /** The account's outstanding fee debt (`GET /tokens/fee-debt`). Default '0'. */
   feeDebt?: string;
   /** The taker's CC balance (`GET /tokens/balance`). Default 10000. */
@@ -109,6 +117,8 @@ function venue({
   coded = false,
   failSend = false,
   sendBytes,
+  twoHoldings = false,
+  accruedHoldingFee = 0,
   balance = 10000,
   networkFee = 0.125,
   refusedFee = '24.8756218905',
@@ -168,7 +178,7 @@ function venue({
   async function selfSendLegs(party: string, amount: string, mode: NonNullable<VenueOptions['sendBytes']>): Promise<Leg[]> {
     const change = (balance - Number(amount)).toFixed(10);
     const transfer = await selfSendLeg({
-      party, kind: 'transfer', receiver: party, input: String(balance), ids: 'a',
+      party, kind: 'transfer', receiver: party, input: (balance + accruedHoldingFee).toFixed(10), ids: 'a',
       outputs: [{ owner: mode === 'theft' ? 'thief::1220' : party, amount }, { owner: party, amount: change }],
     });
     const fee = await selfSendLeg({
@@ -176,6 +186,7 @@ function venue({
       outputs: mode === 'overcharge' ? [{ owner: DEV.venue, amount: '5' }, { owner: party, amount: '5' }] : [{ owner: DEV.venue, amount: '0.125' }, { owner: party, amount: '9.875' }],
     });
     const asLeg = (t: typeof transfer): Leg => ({ legId: `leg-${++seq}`, hash: t.preparedTransactionHash, kind: t.kind, preparedTransaction: t.preparedTransaction });
+    if (!twoHoldings) return [asLeg(transfer)];
     return [asLeg(transfer), mode === 'mixed' ? { ...asLeg(fee), preparedTransaction: undefined } : asLeg(fee)];
   }
 
@@ -190,8 +201,10 @@ function venue({
       case 'tokens.accept': legs = [leg('transfer')]; break;
       case 'tokens.send':
         if (failSend) return refuse(400, 'Insufficient holdings for the transfer');
-        legs = sendBytes ? await selfSendLegs(owner.partyId!, String(params.amount), sendBytes) : [leg('transfer'), leg('fee')];
-        meta = { fee: { recipientPartyId: FEE_PARTY, amount: 0.125 } };
+        legs = sendBytes ? await selfSendLegs(owner.partyId!, String(params.amount), sendBytes) : twoHoldings ? [leg('transfer'), leg('fee')] : [leg('transfer')];
+        meta = twoHoldings
+          ? { fee: { recipientPartyId: DEV.venue, amount: 0.125 }, feeDeferred: null }
+          : { fee: null, feeDeferred: { amount: 0.125, recipientPartyId: DEV.venue } };
         break;
       // htlc.* among them: a Canton↔Canton order never reaches the HTLC ceremonies.
       default: return refuse(400, `unknown operation ${type}`);
@@ -703,19 +716,19 @@ describe('the paths where a mistake costs money', () => {
   });
 
   test('a self-send whose bytes pay anyone else is refused before the key signs it', async () => {
-    const api = venue({ sendBytes: 'theft' });
+    const api = venue({ sendBytes: 'theft', twoHoldings: true });
     const { taker } = await tradingPair(api, [90, 91]);
     await expect(taker.splitForFee('CC', '24.8756218905')).rejects.toThrow(/tokens.send prepare failed: refusing to sign tokens.send: leg 0: node 2 involves thief::1220, who is not part of this send/);
     expect(selfSends(api)).toEqual([]);
-    // The bound: the 0.125 quote, no debt, and 1% of the fee for the holding fee.
-    const greedy = venue({ sendBytes: 'overcharge' });
+    // The bound: the 0.125 quote, no debt, and 1% of the fee (above the 0.1 CC floor) for the holding fee.
+    const greedy = venue({ sendBytes: 'overcharge', twoHoldings: true });
     const { taker: other } = await tradingPair(greedy, [98, 99]);
     await expect(other.splitForFee('CC', '24.8756218905')).rejects.toThrow(/the send costs this account more than 0.3737562189 Amulet/);
     expect(selfSends(greedy)).toEqual([]);
   });
 
   test('a send with bytes for some legs only, or for none, is never signed unless the caller allows it blind', async () => {
-    const mixed = venue({ sendBytes: 'mixed' });
+    const mixed = venue({ sendBytes: 'mixed', twoHoldings: true });
     const { taker } = await tradingPair(mixed, [100, 101]);
     await expect(taker.splitForFee('CC', '24.8756218905', { allowUnverified: true })).rejects.toThrow(/bytes for 1 of the send's 2 legs; a partly readable send is never signed/);
     expect(selfSends(mixed)).toEqual([]);
@@ -744,9 +757,18 @@ describe('the paths where a mistake costs money', () => {
     await expect(taker.splitForFee('CC', '24.8756218905', { allowUnverified: true })).resolves.toEqual({ verified: false });
     expect(selfSends(blind)).toHaveLength(2);
 
+    // One holding: the API defers the network fee, and the send is the transfer alone.
     const read = venue({ sendBytes: 'honest' });
     const { taker: other } = await tradingPair(read, [78, 79]);
     await expect(other.splitForFee('CC', '24.8756218905')).resolves.toEqual({ verified: true });
+    // Two holdings already: the network fee rides as a leg of its own, paid to the pinned party.
+    const paid = venue({ sendBytes: 'honest', twoHoldings: true });
+    const { taker: third } = await tradingPair(paid, [108, 109]);
+    await expect(third.splitForFee('CC', '24.8756218905')).resolves.toEqual({ verified: true });
+    // A small fee still gets the 0.1 CC floor for the holding fee its input accrued: 1% of 0.5 alone would refuse it.
+    const aged = venue({ sendBytes: 'honest', twoHoldings: true, accruedHoldingFee: 0.05 });
+    const { taker: fourth } = await tradingPair(aged, [110, 111]);
+    await expect(fourth.splitForFee('CC', '0.5')).resolves.toEqual({ verified: true });
   });
 
   test('splitForFee never sends more than the balance covers with the send’s own network fee, and refuses a registry token', async () => {

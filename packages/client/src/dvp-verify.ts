@@ -680,7 +680,9 @@ export async function verifySelfSendPrepared(legs: Array<PreparedToSign & { kind
     }
   }
   if (!split) refuse(`no holding of exactly ${terms.amount} ${terms.instrument} is created for this account`);
-  if (net > units(terms.maxCost)) refuse(`the send costs this account more than ${terms.maxCost} ${terms.instrument}`);
+  if (net > units(terms.maxCost)) {
+    refuse(`the send costs this account more than ${terms.maxCost} ${terms.instrument} (an old input's accrued holding fee counts: consolidate() it first)`);
+  }
 }
 
 const partyOf = (value: Value | undefined) => (value?.sum.oneofKind === 'party' ? value.sum.party : undefined);

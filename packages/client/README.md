@@ -323,8 +323,11 @@ refusal is a `SettleError` that says why, before anything is signed:
   step: its hash recomputed from its bytes, only the account's own holdings spent, a holding of
   exactly the fee created for it, nothing for anyone but the network fee's recipient (pinned per
   network, `DEFAULT_NETWORK_FEE_RECIPIENTS`; add with `networkFeeRecipients`), and the whole cost
-  — the quoted network fee, any fee debt the API collects on the same leg, and a holding-fee
-  margin of 1% of the fee (at most 1 CC) — within `maxSplitCost` (default 2 CC). An account with
+  — the quoted network fee and any fee debt the API collects on the same leg — within
+  `maxSplitCost` (default 2 CC), plus on top of it a holding-fee margin for the inputs it spends
+  (1% of the fee, at least 0.1 CC, at most 1 CC; an older input is refused — `consolidate()` it
+  first). A wallet whose CC sits in one holding pays the send's network fee after the transfer
+  commits (the API defers it), so its send is the transfer alone. An account with
   more fee debt than that is told to settle it first. **An API that does not return the send's
   bytes** (until backend CAN-2132 is deployed) **gets the split refused**: pass
   `{ allowUnverified: true }` to `splitForFee`, or `allowUnverifiedSplit: true` with

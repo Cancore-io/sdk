@@ -291,9 +291,10 @@ export interface SelfCustodyOptions extends SessionOptions {
    */
   networkFeeRecipients?: string[];
   /**
-   * The most a fee split may cost this account in CC beyond the fee holding itself: the network
-   * fee, any fee debt the API collects on the same leg, and the holding fee on what it spends.
-   * A split whose quote is above it is refused before anything is signed. Default `'2'`.
+   * The most a fee split's quote may cost this account in CC beyond the fee holding itself: the
+   * network fee and any fee debt the API collects on the same leg. A split quoted above it is
+   * refused before anything is signed. The signed send may cost a holding-fee margin on top of
+   * this (1% of the fee, at least 0.1 CC and at most 1 CC). Default `'2'`.
    */
   maxSplitCost?: string;
 }
@@ -431,11 +432,18 @@ type PreparedLeg = OperationLeg & { preparedTransaction?: string };
 const DEFAULT_MAX_SPLIT_COST = '2';
 
 /**
- * What a split may cost beyond the quoted network fee and fee debt: Amulet's holding fee, accrued
- * on the holdings the send spends — 1% of the split, at most 1 CC. ponytail: a flat share; derive
- * it from the spent amulets' age if it ever refuses an honest split.
+ * What a signed split may cost on top of `maxSplitCost`: Amulet's holding fee, accrued on the
+ * amulets the send spends and taken when they are spent. Splice charges it at $1 a year per
+ * amulet (0.0000190259 USD a round), about 6.7 CC a year at $0.15: the 0.1 CC floor covers an
+ * input about five days old whatever the fee, the 1 CC cap about fifty days. An older input is
+ * refused — `consolidate()` merges it into a fresh amulet. ponytail: a clamp, not the exact
+ * accrual (each spent amulet's ratePerRound × rounds held) — compute that if the cap bites.
  */
-const splitSlack = (fee: bigint) => (fee / 100n < units('1') ? fee / 100n : units('1'));
+const splitSlack = (fee: bigint) => {
+  const [floor, cap] = [units('0.1'), units('1')];
+  const share = fee / 100n;
+  return share < floor ? floor : share > cap ? cap : share;
+};
 
 /** `PreparedCommandDto`, the fields a self-custody signer reads. */
 interface PreparedCommand {

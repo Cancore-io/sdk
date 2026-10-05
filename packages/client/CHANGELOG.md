@@ -72,8 +72,10 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
   trade leg. A failed split, or a second refusal, is a `SettleError`; a refusal naming another
   payer splits nothing. `SettleOptions.allowUnverifiedSplit` (default `false`) lets it split blind.
 - `SelfCustodyOptions.maxSplitCost` (default `'2'` CC), `SelfCustodyOptions.networkFeeRecipients`
-  and `DEFAULT_NETWORK_FEE_RECIPIENTS`: the ceiling on a split's cost and the pinned parties its
-  network-fee leg may pay.
+  and `DEFAULT_NETWORK_FEE_RECIPIENTS`: the ceiling on a split's quoted cost and the pinned
+  parties its network-fee leg may pay. The signed send may cost a holding-fee margin on top of
+  `maxSplitCost` (1% of the fee, at least 0.1 CC, at most 1 CC). A send from a single holding is
+  the transfer alone (the API defers its network fee), and verifies as such.
 
 ### Migrating from 0.6.x
 
