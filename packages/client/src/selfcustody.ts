@@ -715,6 +715,23 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     return { source, target };
   }
 
+  /** The order's two instruments with their pinned admins, for a withdraw; the allocation names its own admin and is checked against these. */
+  function pinnedInstruments(order: Order): { source: Instrument; target: Instrument } {
+    if (!network && !options.instrumentAdmins) {
+      throw new SettleError(
+        `cannot tell which network ${baseUrl} serves, so no instrument admin can be trusted: pass network ('devnet', 'testnet' or 'mainnet')`,
+        null,
+        order,
+      );
+    }
+    const pin = (id: string): Instrument => {
+      const pinned = admins[instrumentKey(id)] ?? [];
+      if (pinned.length === 0) throw new SettleError(`${id} admin for ${network ?? 'this network'} not configured — pass instrumentAdmins`, null, order);
+      return { id, admin: pinned[0]! };
+    };
+    return { source: pin(order.sourceTokenAddress), target: pin(order.targetTokenAddress) };
+  }
+
   /**
    * The trade this account agreed to, from sources other than the swap row: the
    * order, the stand's instrument list (each instrument's admin) and its fee
@@ -722,7 +739,10 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * to it before the key signs.
    */
   async function dvpTerms(order: Order, swapId: string | null, party: string, role: 'maker' | 'taker', forWithdraw = false): Promise<DvpTerms> {
-    const { source, target } = await dvpInstruments(order);
+    // A withdraw names the instruments by the order and takes each one's admin from the allocation itself, held to
+    // the SDK's pinned list: the stand's current instrument list is not part of it, so a pair switched off after
+    // the trade cannot keep an allocation locked.
+    const { source, target } = forWithdraw ? pinnedInstruments(order) : await dvpInstruments(order);
     const config = await http.get<{ feeRate?: string; feeRecipient?: string; venue?: string } | null>('/htlc/fee-config');
     const venue = options.venuePartyId ?? config?.venue;
     // A withdraw returns this account's own funds and is held to the trade alone: the stand's CURRENT fee
@@ -743,6 +763,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       party,
       maker: role === 'maker' ? party : other.partyId,
       taker: role === 'taker' ? party : other.partyId,
+      ...(forWithdraw ? { pinnedAdmins: admins } : {}),
       source: { ...source, amount: order.sourceAmount },
       target: { ...target, amount: order.targetAmount },
       venue,
@@ -898,7 +919,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
             : `${left} leg(s) could not be withdrawn (${withdrawal.failed.map((f) => `${f.leg}: ${f.error instanceof Error ? f.error.message : String(f.error)}`).join('; ')}); call withdrawAllocation('${err.swapId}') again`),
         err.swapId,
         err.last,
-        false,
+        // Still withdrawable when a leg could not be released: the caller must not read this as "nothing left to do".
+        withdrawal.failed.length > 0,
         withdrawal,
       );
     }

@@ -100,6 +100,7 @@ function venue({
   const refusal = (status: number, prose: string, errorCode: string) =>
     coded ? refuse(status, 'refused', errorCode) : refuse(status, prose);
   let currentFeeConfig = feeConfig;
+  let instrumentsOff = false;
   const accounts = new Map<string, Account>(); // by bearer token
   const byKey = new Map<string, Account>();
   /** Invite code → the public key that redeemed it (`invite_codes.used_by_public_key`), null while unused. */
@@ -437,7 +438,7 @@ function venue({
       return searchParams.get('orderId') === 'o1' ? json({ timeoutHours: [4, 1, 2] }) : refuse(400, 'no order');
     }
     if (route === 'GET /htlc/dvp/instruments') {
-      if (dvpForbidden) return forbidden();
+      if (dvpForbidden || instrumentsOff) return forbidden();
       return json([
         { id: 'CC', symbol: 'CC', admin: ADMINS.CC },
         ...(pairOff ? [] : [{ id: 'CBTC', symbol: 'CBTC', admin: ADMINS.CBTC }]),
@@ -459,7 +460,7 @@ function venue({
     order.swapId = 's1';
   }
 
-  return { fetchImpl, setFeeConfig: (next: Record<string, unknown>) => { currentFeeConfig = next; }, log, asked, proposals, routes, order, incoming, byKey, signUps, htlcOpenedEarlier, legs: () => legs };
+  return { fetchImpl, switchInstrumentsOff: () => { instrumentsOff = true; }, setFeeConfig: (next: Record<string, unknown>) => { currentFeeConfig = next; }, log, asked, proposals, routes, order, incoming, byKey, signUps, htlcOpenedEarlier, legs: () => legs };
 }
 
 // The dev API host: its network (devnet) chooses the pinned instrument admins.
@@ -904,9 +905,23 @@ describe('withdrawing an allocation the venue could not release (BUG-1291)', () 
     expect(error).toBeInstanceOf(SettleError);
     expect(error).toMatchObject({ swapId: 's1', last: { status: 'dvp_expired' } });
     const { withdrawal } = error as SettleError;
+    // Still withdrawable: a leg is left, and the flag says so.
+    expect(error).toMatchObject({ withdrawable: true });
     expect(withdrawal?.withdrawn).toEqual(['fee']);
     expect(withdrawal?.failed).toEqual([expect.objectContaining({ leg: 'counter', error: expect.any(CeremonyError) })]);
     expect((error as Error).message).toMatch(/1 leg\(s\) could not be withdrawn \(counter:.*withdrawAllocation\('s1'\) again/);
+  });
+
+  test('the stand no longer listing the pair for DvP does not keep the allocation locked', async () => {
+    const api = venue({ takerFundedThenExpired: 'stillLocked' });
+    const { maker, taker } = await tradingPair(api, [68, 69]);
+    await taker.swap.accept('o1');
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    await taker.take('o1').catch((e: unknown) => e);
+    await making;
+    api.switchInstrumentsOff();
+
+    expect(await taker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: ['counter', 'fee'], gone: [], failed: [] });
   });
 
   test('the stand’s fee policy changing after the trade does not keep the allocation locked', async () => {

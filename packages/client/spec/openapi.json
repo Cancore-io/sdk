@@ -4959,7 +4959,7 @@
             "type": "string"
           },
           "orderId": {
-            "description": "The order this swap settles",
+            "description": "The order this swap settles (null for a swap opened without one)",
             "nullable": true,
             "type": "string"
           },
@@ -8216,13 +8216,13 @@
             "nullable": true,
             "type": "string"
           },
-          "lockRef": {
-            "description": "Lock reference: EVM tx hash or Canton update id",
+          "legId": {
+            "description": "DvP only: the id the DvP contract knows this leg by (what dvpWithdrawAllocation names). Null for an HTLC leg.",
             "nullable": true,
             "type": "string"
           },
-          "legId": {
-            "description": "The id the DvP contract knows this leg by (DvP only)",
+          "lockRef": {
+            "description": "Lock reference: EVM tx hash or Canton update id",
             "nullable": true,
             "type": "string"
           },

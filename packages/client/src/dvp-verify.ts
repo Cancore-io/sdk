@@ -47,6 +47,12 @@ export interface DvpTerms {
   /** Platform fee receiver and rate; no fee leg is accepted when the receiver is null. */
   feeParty: string | null;
   feeRate: string;
+  /**
+   * Set for a withdraw: the instrument admins this account trusts, by instrument. The allocation names its own
+   * instrument and admin; the admin must be one of these, and the instrument id the order's. `source.admin` and
+   * `target.admin` are then not consulted.
+   */
+  pinnedAdmins?: Record<string, string[]>;
   /** The Daml packages (name and id) a node of the transaction may come from. */
   packages: TrustedPackages;
   /** The clock, and how far ahead a proposal or allocation deadline may lie: a later one keeps funds locked longer. */
@@ -298,7 +304,9 @@ function looksLikeAllocation(contract: Create): boolean {
  */
 function checkWithdrawnLeg(leg: TransferLeg | undefined, terms: DvpTerms): string | null {
   if (!leg?.instrumentId) return 'a leg cannot be read';
-  const is = (i: Instrument) => leg.instrumentId.id === i.id && leg.instrumentId.admin === i.admin;
+  // The instrument is the allocation's own; its admin must be one this account pins for that instrument.
+  const is = (i: Instrument) =>
+    leg.instrumentId.id === i.id && (terms.pinnedAdmins?.[instrumentKey(i.id)] ?? []).includes(leg.instrumentId.admin);
   const amount = units(leg.amount);
   if (amount < 0n) return `a leg amount (${String(leg.amount)}) cannot be read`;
   if (leg.sender === terms.maker && leg.receiver === terms.taker) {

@@ -439,7 +439,9 @@ with this account's own signature (`GET /htlc/swaps/{id}/full` flags each such l
 transaction must consume only this account's own allocation of this trade (signed by the
 instrument admin, settled by the venue) and the holding that allocation locks, return exactly that
 amount to this account unlocked, and involve no party outside the trade. It is held to the trade
-alone, not to the stand's current fee policy: a fee change after the trade cannot keep it locked.
+alone, not to the stand's current fee policy or its instrument list: a fee change, or a pair switched
+off, after the trade cannot keep it locked (the instrument's admin comes from the allocation and is
+held to this SDK's pinned list).
 Pass `{ autoWithdraw: true }` to `make` / `take` to have this done before the `SettleError` is
 thrown (the same error, with what happened in `error.withdrawal`); by default nothing is signed that was not asked for. A trade that is not yet
 `dvp_expired` is refused: the venue settles or aborts a live one. A `take` whose own deadline
