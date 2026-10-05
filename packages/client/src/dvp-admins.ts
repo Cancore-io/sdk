@@ -13,7 +13,16 @@
  */
 export type DvpNetwork = 'devnet' | 'testnet' | 'mainnet';
 
-export const DEFAULT_INSTRUMENT_ADMINS: Record<DvpNetwork, Record<string, string[]>> = {
+/** Freeze an object and everything in it: a pinned list must not be editable at runtime by a dependency. */
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object') {
+    for (const inner of Object.values(value)) deepFreeze(inner);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+export const DEFAULT_INSTRUMENT_ADMINS: Readonly<Record<DvpNetwork, Readonly<Record<string, readonly string[]>>>> = deepFreeze({
   devnet: {
     Amulet: ['DSO::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a'],
     CBTC: ['cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff'],
@@ -32,14 +41,14 @@ export const DEFAULT_INSTRUMENT_ADMINS: Record<DvpNetwork, Record<string, string
     USDCx: ['decentralized-usdc-interchain-rep::12208115f1e168dd7e792320be9c4ca720c751a02a3053c7606e1c1cd3dad9bf60ef'],
     HECTO: ['Hecto-Finance-1::12208ee00572aea3304ebb12e34320769ea4b421911c9b658a999e0e64ee8a070972'],
   },
-};
+});
 
 /** The Cancore API hosts and the network each serves. Another host needs the `network` option. */
-export const API_NETWORKS: Record<string, DvpNetwork> = {
+export const API_NETWORKS: Readonly<Record<string, DvpNetwork>> = Object.freeze({
   'api-dev.cancore.app': 'devnet',
   'api-testnet.cancore.app': 'testnet',
   'api.cancore.io': 'mainnet',
-};
+});
 
 export function networkOf(baseUrl: string): DvpNetwork | undefined {
   try {
@@ -53,8 +62,8 @@ export function networkOf(baseUrl: string): DvpNetwork | undefined {
 export const instrumentKey = (id: string) => (id === 'CC' ? 'Amulet' : id);
 
 /** Lists merged entry by entry: an override adds to the defaults, it never drops them. */
-export function mergeLists(base: Record<string, string[]>, extra: Record<string, string[]> = {}): Record<string, string[]> {
-  const out: Record<string, string[]> = { ...base };
+export function mergeLists(base: Readonly<Record<string, readonly string[]>>, extra: Readonly<Record<string, readonly string[]>> = {}): Record<string, string[]> {
+  const out: Record<string, string[]> = Object.fromEntries(Object.entries(base).map(([k, v]) => [k, [...v]]));
   for (const [key, values] of Object.entries(extra)) out[key] = [...new Set([...(out[key] ?? []), ...values])];
   return out;
 }

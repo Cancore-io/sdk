@@ -134,7 +134,7 @@ describe('the whole tree of an allocation, not just its root', () => {
   test('a choice the signer acts in on a contract that is neither its holding nor the admin’s', async () => {
     const strangers = factoryContract(VENUE, { instrument: 'CBTC', signatory: VENUE });
     const foreign = { ...strangers, contractId: 'ab'.repeat(34) };
-    const act = { ...exercise({ ...spendTransfer(foreign, VENUE), contractId: foreign.contractId, actingParties: [MAKER] }), nodeId: '' };
+    const act = { ...exercise({ ...spendTransfer(foreign, VENUE, MAKER), contractId: foreign.contractId, actingParties: [MAKER] }), nodeId: '' };
     await refused(verifyDvpPrepared('dvpAllocateLeg', [await withExtra((id) => ({ nodes: [{ ...act, nodeId: id(0) }], inputs: [foreign] }))], terms(MAKER)), /acts on a .* that is neither its holding nor the instrument admin's/);
   });
   test('a lock on another instrument than the leg’s, even a small one', async () => {
@@ -154,6 +154,19 @@ describe('the whole tree of an allocation, not just its root', () => {
   test.each(['allocateBefore', 'settleBefore'] as const)('an allocation whose %s has already passed', async (field) => {
     const past = new Date(Date.now() - 60 * 60_000).toISOString();
     await refused(verifyDvpPrepared('dvpAllocateLeg', [await funded({ windows: { [field]: past } })], terms(MAKER)), new RegExp(`${field} is .* already in the past`));
+  });
+  test('an allocation requested ten minutes from now: beyond the clock skew, though well inside the window', async () => {
+    const requestedAt = new Date(Date.now() + 10 * 60_000).toISOString();
+    await refused(verifyDvpPrepared('dvpAllocateLeg', [await funded({ windows: { requestedAt } })], terms(MAKER)), /requestedAt is .* further ahead/);
+  });
+  test('a party left empty in the tree is a stranger, not a pass', async () => {
+    const blank = { ...exercise({ ...spendTransfer(holding('77'.repeat(34), MAKER, CBTC, '1'), VENUE, '') }), nodeId: '' };
+    const other = holding('77'.repeat(34), MAKER, CBTC, '1');
+    await refused(verifyDvpPrepared('dvpAllocateLeg', [await withExtra((id) => ({ nodes: [{ ...blank, nodeId: id(0) }], inputs: [other] }))], terms(MAKER)), /involves an empty party/);
+  });
+  test('the pinned admin lists cannot be edited at runtime', () => {
+    expect(Object.isFrozen(DEFAULT_INSTRUMENT_ADMINS.mainnet)).toBe(true);
+    expect(() => (DEFAULT_INSTRUMENT_ADMINS.mainnet.Amulet as string[]).push('DSO::evil')).toThrow();
   });
   test('an allocation requested a while ago (the trade was opened before this account funded) signs', async () => {
     const requestedAt = new Date(Date.now() - 40 * 60_000).toISOString();

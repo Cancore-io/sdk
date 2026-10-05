@@ -218,8 +218,10 @@ export const createNode = (nodeId: string, create: Create): DamlTransaction_Node
 export const exercise = (e: Extract<NodeType, { oneofKind: 'exercise' }>['exercise']): DamlTransaction_Node => node('x', { oneofKind: 'exercise', exercise: e });
 
 /** A trusted-package TransferFactory_Transfer of `from` to `receiver`: what a hostile allocation would hide. */
-export const spendTransfer = (from: Create, receiver: string): Extract<NodeType, { oneofKind: 'exercise' }>['exercise'] => {
-  const owner = (from.argument?.sum.oneofKind === 'record' ? from.argument.sum.record.fields.find((f) => f.label === 'owner')?.value : undefined) ?? v.party('');
+export const spendTransfer = (from: Create, receiver: string, sender?: string): Extract<NodeType, { oneofKind: 'exercise' }>['exercise'] => {
+  const named = from.argument?.sum.oneofKind === 'record' ? from.argument.sum.record.fields.find((f) => f.label === 'owner')?.value : undefined;
+  const owner = sender !== undefined ? v.party(sender) : named;
+  if (!owner) throw new Error('spendTransfer: the contract has no owner; name the sender');
   return {
     lfVersion: '2.1', contractId: FACTORY_CID, packageName: 'splice-amulet', templateId: template('Splice.ExternalPartyAmuletRules', 'ExternalPartyAmuletRules', PKG.amulet),
     interfaceId: { packageId: '55ba4deb0ad4662c4168b39859738a0e91388d252286480c7331b3f71a517281', moduleName: 'Splice.Api.Token.TransferInstructionV1', entityName: 'TransferFactory' },
@@ -254,7 +256,8 @@ export function allocationTree(input: {
 }) {
   const { leg } = input;
   const owned = holding('33'.repeat(34), leg.sender, leg.instrumentId, input.balance);
-  const locked = holding('44'.repeat(34), leg.sender, leg.instrumentId, leg.amount, { lockedTo: input.executor });
+  // splice-amulet locks to the DSO; the utility registry to the executor.
+  const locked = holding('44'.repeat(34), leg.sender, leg.instrumentId, leg.amount, { lockedTo: isCc(leg.instrumentId.id) ? leg.instrumentId.admin : input.executor });
   const change = holding('55'.repeat(34), leg.sender, leg.instrumentId, (Number(input.balance) - Number(leg.amount)).toFixed(10));
   const extra = input.extra?.((n) => String(10 + n)) ?? { nodes: [] };
   const children = ['1', '2', '3', '4', ...extra.nodes.map((n) => n.nodeId)];
@@ -271,16 +274,21 @@ export function allocationTree(input: {
     : createOf('66'.repeat(34), 'utility-registry-v0', PKG.registry, 'Utility.Registry.V0.Holding.Allocation', 'DvpLegAllocation',
       v.record({ operator: v.party(DEV.utilityOperator), registrar: v.party(leg.instrumentId.admin), allocation: spec, lockedHolding: { sum: { oneofKind: 'contractId', contractId: locked.contractId } } }),
       [DEV.utilityOperator, leg.instrumentId.admin, leg.sender]);
-  // What splice-amulet adds around the lock: an interface fetch of each input holding, the transfer on
-  // the DSO's AmuletRules acting as the sender, and a reward coupon signed by the DSO.
+  // What splice-amulet 0.1.22 adds around the lock (ExternalPartyAmuletRules allocate → two-step transfer):
+  // an interface fetch of each input holding and a fetch of the DSO's AmuletRules — the transfer itself is a
+  // function inside the factory exercise, not a choice node — and an AppRewardCoupon (provider = sender)
+  // signed by the DSO. The lock is held by the DSO.
   const cc = isCc(leg.instrumentId.id);
   const rules = createOf('77'.repeat(34) + 'aa', 'splice-amulet', PKG.amulet, 'Splice.AmuletRules', 'AmuletRules', v.record({ dso: v.party(leg.instrumentId.admin) }), [leg.instrumentId.admin]);
-  const coupon = createOf('88'.repeat(34) + 'aa', 'splice-amulet', PKG.amulet, 'Splice.Amulet', 'ValidatorRewardCoupon',
-    v.record({ dso: v.party(leg.instrumentId.admin), user: v.party(leg.sender), amount: v.numeric('0.0000000001') }), [leg.instrumentId.admin]);
+  const coupon = createOf('88'.repeat(34) + 'aa', 'splice-amulet', PKG.amulet, 'Splice.Amulet', 'AppRewardCoupon',
+    v.record({ dso: v.party(leg.instrumentId.admin), provider: v.party(leg.sender), featured: { sum: { oneofKind: 'bool', bool: false } }, amount: v.numeric('0.0000000001'), round: v.record({ number: v.numeric('1') }), beneficiary: v.none() }),
+    [leg.instrumentId.admin]);
+  const fetchOf = (nodeId: string, target: Create, interfaceId?: { packageId: string; moduleName: string; entityName: string }) =>
+    node(nodeId, { oneofKind: 'fetch', fetch: { lfVersion: '2.1', contractId: target.contractId, packageName: target.packageName, templateId: target.templateId, signatories: target.signatories, stakeholders: target.stakeholders, actingParties: [leg.sender], interfaceId } });
   const ccNodes = cc
     ? [
-      node('5', { oneofKind: 'fetch', fetch: { lfVersion: '2.1', contractId: owned.contractId, packageName: owned.packageName, templateId: owned.templateId, signatories: owned.signatories, stakeholders: owned.stakeholders, actingParties: [leg.sender], interfaceId: { packageId: '718a0f77e505a8de22f188bd4c87fe74101274e9d4cb1bfac7d09aec7158d35b', moduleName: 'Splice.Api.Token.HoldingV1', entityName: 'Holding' } } }),
-      node('6', { oneofKind: 'exercise', exercise: { lfVersion: '2.1', contractId: rules.contractId, packageName: rules.packageName, templateId: rules.templateId, signatories: rules.signatories, stakeholders: rules.stakeholders, actingParties: [leg.sender], choiceId: 'AmuletRules_Transfer', chosenValue: v.record({ sender: v.party(leg.sender) }), consuming: false, children: [], choiceObservers: [] } }),
+      fetchOf('5', owned, { packageId: '718a0f77e505a8de22f188bd4c87fe74101274e9d4cb1bfac7d09aec7158d35b', moduleName: 'Splice.Api.Token.HoldingV1', entityName: 'Holding' }),
+      fetchOf('6', rules),
       createNode('7', coupon),
     ]
     : [];

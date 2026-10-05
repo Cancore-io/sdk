@@ -364,11 +364,11 @@ and refuses on any difference. It then walks the whole decoded tree, not just it
   an unknown host without it trusts no admin. A token not listed for the network is added with
   `instrumentAdmins` (added to the defaults, never replacing them). CC on testnet has no pinned
   admin yet: pass the testnet DSO party there;
-- the signer's authority goes no further than the allocation: a contract it signs must be its
-  own holding or the allocation record of exactly this leg (executor, trade, sender, receiver,
+- a contract the signer signs must look like its own holding (an `owner` that is the signer and
+  an amount) or be the allocation record of exactly this leg (executor, trade, sender, receiver,
   amount and instrument as checked), and a choice it acts in must be the factory's, one on its
-  own holding, or one on a contract the instrument admin signed. A proxy the signer would sign
-  and someone else control is refused;
+  own holding, or one on a contract the instrument admin signed. This is a check of shape, not of
+  template: a contract shaped like a holding passes it whatever its code;
 - in an allocation, no node may create a holding owned by anyone but this account; what is
   locked is at most the leg's amount, of the leg's instrument and nothing else; every holding spent is this account's and disclosed; no
   more of an instrument is spent than the leg locks; and no party appears in any created
@@ -382,12 +382,18 @@ and refuses on any difference. It then walks the whole decoded tree, not just it
 
 **What this guarantees, and what it still trusts.** Against a dishonest or compromised API, the
 account signs only: the proposal and approval of exactly the order's trade (its amounts,
-instruments, parties, the venue, and a fee no higher than the ceiling), and allocations that
-lock at most each leg's amount, for this trade's executor, under a factory its pinned instrument
-admin signed — with no holding leaving the account, no authority handed to anyone beyond the
-allocation, and no deadline beyond the window. What it trusts is the instrument admin's own
-code: the token's registry decides how a lock and an allocation are carried out, as it does
-for every holder of that token. A registry the caller does not trust should not be traded.
+instruments, parties, the venue, and a fee no higher than the ceiling), and allocations that,
+as far as the transaction shows, lock at most each leg's amount for this trade's executor, under
+a factory its pinned instrument admin signed, with no holding leaving the account in that
+transaction and no deadline beyond the window.
+
+What it trusts is each listed instrument admin, and with more than its token. The allocation
+record the account signs is executed later (`Allocation_ExecuteTransfer`, triggered by the
+executor) by the admin's code with the sender's authority, and the admin's code also runs the
+allocation itself. Checking the transaction cannot bound that code: an honest admin's
+participants re-run it and refuse anything else, but a dishonest admin on the list could act
+with the account's authority. Trade only tokens whose registry you trust that far, and add
+admins with `instrumentAdmins` only on the same terms.
 
 It then holds the command to the trade it agreed to, read from the order,
 `GET /htlc/dvp/instruments` (each instrument's admin) and `GET /htlc/fee-config` (fee rate, fee

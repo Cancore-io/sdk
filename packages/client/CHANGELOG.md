@@ -33,6 +33,10 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
 - DvP refusals at order placement and at `take` (`DVP_NOT_ALLOWED`, `DVP_FEE_HOLDING_REQUIRED`)
   are `SettleError`s that say who must act.
 
+- What the account trusts: each pinned instrument admin, with more than its token. The admin's
+  code runs the allocation and, later, its execution with the sender's authority; checking the
+  transaction cannot bound that code. See the README's "What this guarantees" section.
+
 ### Deprecated
 
 - `SettleOptions.deliveryWaitMs`: there is no delivery left to wait for.

@@ -262,11 +262,12 @@ function checkTree(operation: DvpOperation, decoded: PreparedTransaction, nodes:
  *  - no party appears in any created contract or any choice argument but the signer, the venue,
  *    the leg's receiver and the registry's own parties (the factory's signatories and
  *    stakeholders): a transfer, lock or instruction for anyone else is refused;
- *  - the signer's authority goes no further than this allocation: a contract the signer signs is
- *    either its own holding or the allocation record of exactly this leg, and a choice the signer
- *    acts in is the factory's own, one on its own holding, or one on a contract the instrument
- *    admin signed. Anything else — a proxy the signer signs and someone else controls, a choice on
- *    a stranger's contract — would be authority lasting beyond this transaction, and is refused.
+ *  - a contract the signer signs is shaped like its own holding or is the allocation record of
+ *    exactly this leg, and a choice the signer acts in is the factory's own, one on its own
+ *    holding, or one on a contract the instrument admin signed; anything else (a proxy the signer
+ *    signs and someone else controls, a choice on a stranger's contract) is refused. This is a
+ *    check of shape: it does not bound the instrument admin's own code, which runs the allocation
+ *    and later its execution with the signer's authority. The admin is trusted, see dvp-admins.ts.
  */
 function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, terms: DvpTerms, leg: TransferLeg, factory: Create, factoryCid: string): string | null {
   const party = terms.party;
@@ -284,8 +285,9 @@ function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, terms: DvpTer
     const type = nodeType(node)!;
     const values = type.oneofKind === 'create' ? [type.create.argument] : type.oneofKind === 'exercise' ? [type.exercise.chosenValue] : [];
     const parties = [...(type.oneofKind === 'exercise' ? type.exercise.actingParties : []), ...values.flatMap((v) => [...partiesIn(v)])];
-    const stranger = parties.find((p) => !allowedParties.has(p));
-    if (stranger) return `node ${node.nodeId} involves ${stranger}, who is not part of this allocation`;
+    // An empty party is no party anybody holds: a stranger, never a pass.
+    const stranger = parties.find((p) => !p || !allowedParties.has(p));
+    if (stranger !== undefined) return `node ${node.nodeId} involves ${stranger || 'an empty party'}, who is not part of this allocation`;
     if (type.oneofKind === 'exercise' && type.exercise.actingParties.includes(party)) {
       const wrong = signerActs(type.exercise.contractId, inputs, created, party, leg.instrumentId.admin, factoryCid);
       if (wrong) return `node ${node.nodeId}: ${wrong}`;
