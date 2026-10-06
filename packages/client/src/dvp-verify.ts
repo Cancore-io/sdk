@@ -107,7 +107,7 @@ export interface PreparedToSign {
 
 /** A prepared transaction the account refuses to sign, with the reason. */
 export class UnverifiedTransactionError extends Error {
-  constructor(operation: DvpOperation, reason: string) {
+  constructor(operation: DvpOperation | 'tokens.send', reason: string) {
     super(`refusing to sign ${operation}: ${reason}`);
     this.name = 'UnverifiedTransactionError';
   }
@@ -125,18 +125,7 @@ export async function verifyDvpPrepared(operation: DvpOperation, prepared: Prepa
   if (operation !== 'dvpAllocateLeg' && prepared.length > 1) refuse(`expected one transaction, got ${prepared.length}`);
   const funded: TransferLeg[] = [];
   for (const [index, tx] of prepared.entries()) {
-    if (!tx.preparedTransaction) refuse(`transaction ${index} came without its bytes, so its hash cannot be checked`);
-    let recomputed: string;
-    let decoded: PreparedTransaction;
-    try {
-      decoded = decodePreparedTransaction(tx.preparedTransaction!);
-      recomputed = await hashPreparedTransaction(tx.preparedTransaction!, 'base64');
-    } catch (err) {
-      return refuse(`transaction ${index} cannot be read (${err instanceof Error ? err.message : String(err)})`);
-    }
-    if (recomputed !== tx.preparedTransactionHash) refuse(`transaction ${index} does not hash to the hash it came with`);
-    const actAs = decoded.metadata?.submitterInfo?.actAs ?? [];
-    if (actAs.length !== 1 || actAs[0] !== terms.party) refuse(`transaction ${index} acts as ${actAs.join(', ') || 'nobody'}, not as this account`);
+    const decoded = await readPrepared(tx, `transaction ${index}`, terms.party, refuse);
     const reason = checkTransaction(operation, decoded, terms, funded);
     if (reason) refuse(`transaction ${index}: ${reason}`);
   }
@@ -146,6 +135,107 @@ export async function verifyDvpPrepared(operation: DvpOperation, prepared: Prepa
   if (counter && fee && units(counter.amount) + units(fee.amount) !== units(terms.target.amount)) {
     refuse(`the leg and the fee add up to ${counter.amount} + ${fee.amount}, not the order's ${terms.target.amount}`);
   }
+}
+
+/**
+ * The transaction behind a hash, read: its bytes decoded, the hash recomputed from them and held
+ * to the one it came with, and the transaction acting as the signer alone.
+ */
+async function readPrepared(tx: PreparedToSign, what: string, party: string, refuse: (reason: string) => never): Promise<PreparedTransaction> {
+  if (!tx.preparedTransaction) refuse(`${what} came without its bytes, so its hash cannot be checked`);
+  let recomputed: string;
+  let decoded: PreparedTransaction;
+  try {
+    decoded = decodePreparedTransaction(tx.preparedTransaction!);
+    recomputed = await hashPreparedTransaction(tx.preparedTransaction!, 'base64');
+  } catch (err) {
+    return refuse(`${what} cannot be read (${err instanceof Error ? err.message : String(err)})`);
+  }
+  if (recomputed !== tx.preparedTransactionHash) refuse(`${what} does not hash to the hash it came with`);
+  const actAs = decoded.metadata?.submitterInfo?.actAs ?? [];
+  if (actAs.length !== 1 || actAs[0] !== party) refuse(`${what} acts as ${actAs.join(', ') || 'nobody'}, not as this account`);
+  return decoded;
+}
+
+/**
+ * The tree as a whole: every node reachable from the one root and nothing else, none reached
+ * twice, no rollback, and only creates, exercises and fetches.
+ */
+function walkTree(decoded: PreparedTransaction, nodes: Nodes): string | null {
+  const reachable = new Set<string>();
+  const visit = (id: string): string | null => {
+    if (reachable.has(id)) return `node ${id} is reached twice`;
+    const type = nodeType(nodes.get(id));
+    if (!type) return `node ${id} cannot be read`;
+    reachable.add(id);
+    if (type.oneofKind === 'rollback') return 'it carries a rolled-back subtree';
+    if (type.oneofKind === 'exercise') for (const child of type.exercise.children) {
+      const wrong = visit(child);
+      if (wrong) return wrong;
+    }
+    return null;
+  };
+  const wrong = visit(decoded.transaction!.roots[0]!);
+  if (wrong) return wrong;
+  if (reachable.size !== nodes.size) return 'it carries nodes outside its command';
+  for (const node of nodes.values()) {
+    const kind = nodeType(node)!.oneofKind;
+    if (kind !== 'create' && kind !== 'exercise' && kind !== 'fetch') return `node ${node.nodeId} is of an unexpected kind`;
+  }
+  return null;
+}
+
+/** Every contract the transaction creates, by id. */
+function createdIn(nodes: Nodes): Map<string, Create> {
+  const out = new Map<string, Create>();
+  for (const node of nodes.values()) {
+    const type = nodeType(node);
+    if (type?.oneofKind === 'create') out.set(type.create.contractId, type.create);
+  }
+  return out;
+}
+
+/**
+ * What the signer may do in the tree, the same for every kind of transaction it signs: no party
+ * outside `allowed` in any created contract, choice argument or acting set (an empty party is a
+ * stranger), a choice it acts in only by `signerActs`, and a contract it signs only when it is
+ * its own holding or one `mayCreate` accepts.
+ */
+function signerBounds(
+  nodes: Nodes, inputs: Map<string, Create>, created: Map<string, Create>, party: string, admins: string[], entryCid: string,
+  allowed: Set<string>, what: string, mayCreate: (contract: Create) => boolean,
+): string | null {
+  for (const node of nodes.values()) {
+    const type = nodeType(node)!;
+    const values = type.oneofKind === 'create' ? [type.create.argument] : type.oneofKind === 'exercise' ? [type.exercise.chosenValue] : [];
+    const parties = [...(type.oneofKind === 'exercise' ? type.exercise.actingParties : []), ...values.flatMap((v) => [...partiesIn(v)])];
+    const stranger = parties.find((p) => !p || !allowed.has(p));
+    if (stranger !== undefined) return `node ${node.nodeId} involves ${stranger || 'an empty party'}, who is not part of this ${what}`;
+    if (type.oneofKind === 'exercise' && type.exercise.actingParties.includes(party)) {
+      const wrong = signerActs(type.exercise.contractId, inputs, created, party, admins, entryCid);
+      if (wrong) return `node ${node.nodeId}: ${wrong}`;
+    }
+    if (type.oneofKind === 'create' && type.create.signatories.includes(party) && holdingOf(type.create)?.owner !== party && !mayCreate(type.create)) {
+      return `node ${node.nodeId} creates a ${type.create.templateId?.entityName ?? 'contract'} signed by this account that is neither its holding nor this ${what}`;
+    }
+  }
+  return null;
+}
+
+/** What the tree spends, per instrument: every holding it consumes must be the signer's, and one the transaction discloses or creates. */
+function spentHoldings(nodes: Nodes, inputs: Map<string, Create>, created: Map<string, Create>, party: string): Map<string, bigint> | string {
+  const spent = new Map<string, bigint>();
+  for (const node of nodes.values()) {
+    const type = nodeType(node)!;
+    if (type.oneofKind !== 'exercise' || !type.exercise.consuming) continue;
+    const target = inputs.get(type.exercise.contractId) ?? created.get(type.exercise.contractId);
+    if (!target) return `it consumes contract ${type.exercise.contractId.slice(0, 16)}… without disclosing what it is`;
+    const holding = holdingOf(target);
+    if (!holding) continue;
+    if (holding.owner !== party) return `it spends a holding owned by ${holding.owner}`;
+    spent.set(holding.instrument, (spent.get(holding.instrument) ?? 0n) + holding.amount);
+  }
+  return spent;
 }
 
 interface TransferLeg {
@@ -327,29 +417,14 @@ const sameInterface = (a: { moduleName: string; entityName: string } | undefined
  * create is one node; the approval exercises the proposal and recreates it, two nodes.
  */
 function checkTree(operation: DvpOperation, decoded: PreparedTransaction, nodes: Nodes, terms: DvpTerms): string | null {
-  const reachable = new Set<string>();
-  const visit = (id: string): string | null => {
-    if (reachable.has(id)) return `node ${id} is reached twice`;
-    const type = nodeType(nodes.get(id));
-    if (!type) return `node ${id} cannot be read`;
-    reachable.add(id);
-    if (type.oneofKind === 'rollback') return 'it carries a rolled-back subtree';
-    if (type.oneofKind === 'exercise') for (const child of type.exercise.children) {
-      const wrong = visit(child);
-      if (wrong) return wrong;
-    }
-    return null;
-  };
-  const wrong = visit(decoded.transaction!.roots[0]!);
+  const wrong = walkTree(decoded, nodes);
   if (wrong) return wrong;
-  if (reachable.size !== nodes.size) return 'it carries nodes outside its command';
   for (const node of nodes.values()) {
     const type = nodeType(node)!;
-    if (type.oneofKind !== 'create' && type.oneofKind !== 'exercise' && type.oneofKind !== 'fetch') return `node ${node.nodeId} is of an unexpected kind`;
     // An allocation's nodes all hang from the one exercise on the admin-signed factory (checked above:
     // every node is reachable from the root), so they run the admin's code; the proposal steps run ours.
     // A withdraw is the same: every node hangs from the one exercise on the admin-signed allocation.
-    if (operation === 'dvpAllocateLeg' || operation === 'dvpWithdrawAllocation') continue;
+    if (operation === 'dvpAllocateLeg' || operation === 'dvpWithdrawAllocation' || (type.oneofKind !== 'create' && type.oneofKind !== 'exercise' && type.oneofKind !== 'fetch')) continue;
     const { packageName, templateId } = type.oneofKind === 'create' ? type.create : type.oneofKind === 'exercise' ? type.exercise : type.fetch;
     if (!trusted(terms.packages.swap, packageName, templateId?.packageId)) {
       return `node ${node.nodeId} runs code from an untrusted package (${packageName || 'unnamed'} ${templateId?.packageId ?? ''})`;
@@ -389,30 +464,16 @@ function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, terms: DvpTer
   const party = terms.party;
   const inputs = inputContracts(decoded);
   const allowedParties = new Set([party, terms.venue, leg.receiver, leg.instrumentId.admin, ...factory.signatories, ...factory.stakeholders]);
-  const created = new Map<string, Create>();
+  const created = createdIn(nodes);
   const net = new Map<string, bigint>();
   const add = (key: string, amount: bigint) => net.set(key, (net.get(key) ?? 0n) + amount);
   const locked = new Map<string, bigint>();
+  const bounds = signerBounds(nodes, inputs, created, party, [leg.instrumentId.admin], factoryCid, allowedParties, 'allocation', (c) => isThisAllocation(c, terms, leg));
+  if (bounds) return bounds;
   for (const node of nodes.values()) {
     const type = nodeType(node)!;
-    if (type.oneofKind === 'create') created.set(type.create.contractId, type.create);
-  }
-  for (const node of nodes.values()) {
-    const type = nodeType(node)!;
-    const values = type.oneofKind === 'create' ? [type.create.argument] : type.oneofKind === 'exercise' ? [type.exercise.chosenValue] : [];
-    const parties = [...(type.oneofKind === 'exercise' ? type.exercise.actingParties : []), ...values.flatMap((v) => [...partiesIn(v)])];
-    // An empty party is no party anybody holds: a stranger, never a pass.
-    const stranger = parties.find((p) => !p || !allowedParties.has(p));
-    if (stranger !== undefined) return `node ${node.nodeId} involves ${stranger || 'an empty party'}, who is not part of this allocation`;
-    if (type.oneofKind === 'exercise' && type.exercise.actingParties.includes(party)) {
-      const wrong = signerActs(type.exercise.contractId, inputs, created, party, leg.instrumentId.admin, factoryCid);
-      if (wrong) return `node ${node.nodeId}: ${wrong}`;
-    }
     if (type.oneofKind !== 'create') continue;
     const holding = holdingOf(type.create);
-    if (type.create.signatories.includes(party) && !(holding?.owner === party) && !isThisAllocation(type.create, terms, leg)) {
-      return `node ${node.nodeId} creates a ${type.create.templateId?.entityName ?? 'contract'} signed by this account that is neither its holding nor this allocation`;
-    }
     if (!holding) continue;
     if (holding.owner !== party) return `it creates a holding owned by ${holding.owner}`;
     add(holding.instrument, -holding.amount);
@@ -422,16 +483,9 @@ function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, terms: DvpTer
   for (const [instrument, amount] of locked) {
     if (amount > (instrument === legKey ? units(leg.amount) : 0n)) return `it locks more ${instrument} than the leg's ${leg.amount}`;
   }
-  for (const node of nodes.values()) {
-    const type = nodeType(node)!;
-    if (type.oneofKind !== 'exercise' || !type.exercise.consuming) continue;
-    const target = inputs.get(type.exercise.contractId) ?? created.get(type.exercise.contractId);
-    if (!target) return `it consumes contract ${type.exercise.contractId.slice(0, 16)}… without disclosing what it is`;
-    const holding = holdingOf(target);
-    if (!holding) continue;
-    if (holding.owner !== party) return `it spends a holding owned by ${holding.owner}`;
-    add(holding.instrument, holding.amount);
-  }
+  const spent = spentHoldings(nodes, inputs, created, party);
+  if (typeof spent === 'string') return spent;
+  for (const [instrument, amount] of spent) add(instrument, amount);
   for (const [instrument, spent] of net) {
     const allowance = instrument === legKey ? units(leg.amount) : 0n;
     if (spent > allowance) return `it spends more ${instrument} than the leg locks`;
@@ -442,12 +496,12 @@ function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, terms: DvpTer
 type Create = Extract<NonNullable<ReturnType<typeof nodeType>>, { oneofKind: 'create' }>['create'];
 
 /** Why the signer may not act in a choice on this contract, or null when it may. */
-function signerActs(cid: string, inputs: Map<string, Create>, created: Map<string, Create>, party: string, admin: string, factoryCid: string): string | null {
-  if (cid === factoryCid) return null;
+function signerActs(cid: string, inputs: Map<string, Create>, created: Map<string, Create>, party: string, admins: string[], entryCid: string): string | null {
+  if (cid === entryCid) return null;
   const target = inputs.get(cid) ?? created.get(cid);
   if (!target) return 'this account acts on a contract the transaction does not disclose';
   if (holdingOf(target)?.owner === party) return null;
-  if (target.signatories.includes(admin)) return null;
+  if (target.signatories.some((p) => admins.includes(p))) return null;
   return `this account acts on a ${target.templateId?.entityName ?? 'contract'} that is neither its holding nor the instrument admin's`;
 }
 
@@ -659,3 +713,92 @@ export function units(decimal: unknown): bigint {
 }
 
 const ceilDiv = (a: bigint, b: bigint) => a / b + (a % b === 0n ? 0n : 1n);
+
+/** A self-send the account asked for, to split a holding off its own balance. Amounts are decimal strings. */
+export interface SelfSendTerms {
+  /** The account signing, and the only owner of every holding the send may leave behind but the fee's. */
+  party: string;
+  /** The instrument's pinned admins (the DSO for CC). */
+  admins: string[];
+  instrument: string;
+  /** The holding the send must create for the account, to the unit. */
+  amount: string;
+  /** The most the whole ceremony may leave the account poorer by, its fee leg's payment included. */
+  maxCost: string;
+  /** The pinned parties the ceremony's `fee` leg may pay. */
+  feeRecipients: string[];
+}
+
+/** The CC send choice a self-send exercises, on the receiver's own preapproval. */
+const PREAPPROVAL_SEND = /^TransferPreapproval_Send(V2)?$/;
+
+/**
+ * Verify every transaction of a `tokens.send` to the account itself before its key signs them —
+ * read (`readPrepared`) and walked (`walkTree`) exactly as a DvP step is, under the same bounds
+ * on the signer (`signerBounds`), with only the holdings rule its own:
+ *  - each leg is one `TransferPreapproval_Send` on a disclosed preapproval whose receiver is the
+ *    account (the transfer) or a pinned fee recipient (the `fee` leg); no party but the account,
+ *    the instrument admins and that preapproval's own parties appears anywhere;
+ *  - every holding created is the account's and unlocked, but what the fee leg pays its receiver;
+ *  - every holding spent is the account's, of this instrument;
+ *  - one holding of exactly `amount` is created for the account by the transfer (the split);
+ *  - what the account ends up poorer, the fee leg's payment included, is at most `maxCost`.
+ */
+export async function verifySelfSendPrepared(legs: Array<PreparedToSign & { kind: string }>, terms: SelfSendTerms): Promise<void> {
+  const refuse = (reason: string): never => {
+    throw new UnverifiedTransactionError('tokens.send', reason);
+  };
+  if (legs.length === 0) refuse('the API prepared nothing to sign');
+  if (units(terms.amount) <= 0n || units(terms.maxCost) < 0n) refuse('the amount or the cost bound is not a decimal of at most ten places');
+  const key = instrumentKey(terms.instrument);
+  let net = 0n;
+  let split = false;
+  for (const [index, leg] of legs.entries()) {
+    const what = `leg ${index}`;
+    const fee = leg.kind === 'fee';
+    if (!fee && leg.kind !== 'transfer') refuse(`${what} is a ${leg.kind}, not a transfer or its fee`);
+    const decoded = await readPrepared(leg, what, terms.party, refuse);
+    if (!decoded.transaction || decoded.transaction.roots.length !== 1) refuse(`${what}: expected a transaction with exactly one command`);
+    const nodes: Nodes = new Map(decoded.transaction!.nodes.map((n) => [n.nodeId, n]));
+    const shape = walkTree(decoded, nodes);
+    if (shape) refuse(`${what}: ${shape}`);
+    const root = nodeType(nodes.get(decoded.transaction!.roots[0]!));
+    if (root?.oneofKind !== 'exercise' || !PREAPPROVAL_SEND.test(root.exercise.choiceId)) refuse(`${what} is not a send through a transfer preapproval`);
+    const entryCid = (root as Extract<typeof root, { oneofKind: 'exercise' }>).exercise.contractId;
+    const inputs = inputContracts(decoded);
+    const preapproval = inputs.get(entryCid);
+    if (preapproval?.templateId?.entityName !== 'TransferPreapproval') refuse(`${what} does not disclose the preapproval it sends through`);
+    const receiver = partyOf(fieldsOf(preapproval!.argument)?.get('receiver'));
+    if (!receiver || !(fee ? terms.feeRecipients : [terms.party]).includes(receiver)) {
+      refuse(`${what} sends to ${receiver ?? 'an unreadable receiver'}, not to ${fee ? 'a pinned network fee recipient' : 'this account'}`);
+    }
+    const created = createdIn(nodes);
+    const allowed = new Set([terms.party, ...terms.admins, ...preapproval!.signatories, ...preapproval!.stakeholders]);
+    const bounds = signerBounds(nodes, inputs, created, terms.party, terms.admins, entryCid, allowed, 'send', () => false);
+    if (bounds) refuse(`${what}: ${bounds}`);
+    const spent = spentHoldings(nodes, inputs, created, terms.party);
+    if (typeof spent === 'string') return refuse(`${what}: ${spent}`);
+    for (const [instrument, amount] of spent) {
+      if (instrument !== key) refuse(`${what} spends ${instrument}, not ${key}`);
+      net += amount;
+    }
+    for (const contract of created.values()) {
+      const holding = holdingOf(contract);
+      if (!holding) continue;
+      if (holding.instrument !== key) refuse(`${what} creates ${holding.instrument}, not ${key}`);
+      if (holding.locked) refuse(`${what} creates a locked holding`);
+      if (holding.owner === terms.party) {
+        net -= holding.amount;
+        if (!fee && holding.amount === units(terms.amount)) split = true;
+      } else if (!(fee && holding.owner === receiver)) {
+        refuse(`${what} creates a holding owned by ${holding.owner}`);
+      }
+    }
+  }
+  if (!split) refuse(`no holding of exactly ${terms.amount} ${terms.instrument} is created for this account`);
+  if (net > units(terms.maxCost)) {
+    refuse(`the send costs this account more than ${terms.maxCost} ${terms.instrument} (an old input's accrued holding fee counts: consolidate() it first)`);
+  }
+}
+
+const partyOf = (value: Value | undefined) => (value?.sum.oneofKind === 'party' ? value.sum.party : undefined);

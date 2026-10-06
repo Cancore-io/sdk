@@ -31,6 +31,8 @@ const baseConfig = (): FillerConfig => ({
   quoteSigner: createTestTypedDataSigner(QUOTE_KEY),
   fillSigners: { 'eip155:1': fillSigner(FILL_KEY) },
   rpc: { 'eip155:1': [new FakeEvmRpc('a'), new FakeEvmRpc('b')] },
+  chains: { 'eip155:1': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 30, minGasWei: 10n ** 15n } },
+  tickets: { deltaIssueMs: 3_000 },
   store: new InMemoryFillerStore(),
   webSocket: createFakeWebSocketFactory().factory,
   instanceId: 'replica-1',
@@ -77,6 +79,15 @@ describe('createFiller: injected dependencies are validated up front', () => {
     ['gatewaySigner', { gatewaySigner: '0x1234' }],
     ['ticketSigners', { ticketSigners: [] }],
     ['rpc.eip155:1', { rpc: {} }],
+    ['chains', { chains: {} }],
+    ['tickets', { tickets: undefined }],
+    ['tickets.deltaIssueMs', { tickets: { deltaIssueMs: -1 } }],
+    ['chains.eip155:1.minGasWei', { chains: { 'eip155:1': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 30, minGasWei: 1 } } }],
+    ['chains.eip155:1.sendGuardSec', { chains: { 'eip155:1': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: 2_700, minGasWei: 1n } } }],
+    ['chains.eip155:1.router', { chains: { 'eip155:1': { router: '0x12', openConfirmations: 3, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 30, minGasWei: 10n ** 15n } } }],
+    ['chains.eip155:1.openConfirmations', { chains: { 'eip155:1': { router: '0x3333333333333333333333333333333333333333', maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 30, minGasWei: 10n ** 15n } } }],
+    ['chains.eip155:1.maxHeadLagBlocks', { chains: { 'eip155:1': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: -1 } } }],
+    ['chains.eip155:1', { chains: { 'eip155:56': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 30, minGasWei: 10n ** 15n } }, rpc: { 'eip155:56': [new FakeEvmRpc()] } }],
     ['instanceId', { instanceId: '' }],
   ])('%s is checked', (field, patch) => {
     expect(configErrorField(() => createFiller({ ...baseConfig(), ...patch } as FillerConfig))).toBe(field);
@@ -131,7 +142,6 @@ describe('the skeleton of sdk.md §3.6', () => {
   test.each([
     ['selfSettle', 'CAN-1856', (f: Filler) => f.selfSettle('0x00')],
     ['verifyDraw', 'CAN-1848', (f: Filler) => f.verifyDraw('0x00')],
-    ['verifyEscrow', 'CAN-1854', (f: Filler) => f.verifyEscrow({} as TicketIssued)],
     ['bindStake', 'CAN-1857', (f: Filler) => f.bindStake(createTestTypedDataSigner(FILL_KEY), { chain: 'eip155:1' })],
     ['stats', 'CAN-1940', (f: Filler) => f.stats()],
   ])('%s() names the task that implements it (%s)', async (method, task, call) => {
@@ -141,6 +151,13 @@ describe('the skeleton of sdk.md §3.6', () => {
     );
     expect(error).toBeInstanceOf(NotImplementedError);
     expect(error).toMatchObject({ method, task });
+  });
+
+  test('verifyEscrow() refuses a ticket whose offer the store does not hold, and a malformed one', async () => {
+    const filler = withHooks();
+    const issued = { type: 'ticket.issued', form: 'evm', orderHash: `0x${'ab'.repeat(32)}`, attempt: 0 } as unknown as TicketIssued;
+    await expect(filler.verifyEscrow(issued)).resolves.toEqual({ ok: false, reason: 'OTHER', detail: 'no ticket.offer stored for this attempt', checks: [] });
+    await expect(filler.verifyEscrow({} as TicketIssued)).resolves.toMatchObject({ ok: false, reason: 'OTHER', detail: 'malformed ticket.issued' });
   });
 
   test('start() without any fetch is a config error, not a ReferenceError', async () => {
@@ -171,7 +188,7 @@ describe('the skeleton of sdk.md §3.6', () => {
     assert<Equal<Parameters<Filler['onReconfirm']>[0], (reconfirm: FillerReconfirm) => Promise<boolean>>>();
     assert<Equal<Omit<FillerQuoteRequest, 'payout' | 'fee'>, QuoteRequest>>();
     assert<Equal<Omit<FillerReconfirm, 'payout' | 'fee'>, QuoteReconfirm>>();
-    assert<Equal<Parameters<Filler['onTicketOffer']>[0], (offer: TicketOffer) => Promise<'accept' | 'decline'>>>();
+    assert<Equal<Parameters<Filler['onTicketOffer']>[0], (offer: TicketOffer) => Promise<'accept' | 'decline' | { decline: 'NO_INVENTORY' | 'RISK_LIMIT' | 'PRICE_MOVED' | 'PAUSED' | 'OTHER'; detail?: string }>>>();
     assert<Equal<ReturnType<Filler['start']>, Promise<void>>>();
     assert<Equal<ReturnType<Filler['selfSettle']>, Promise<SelfSettleResult>>>();
     assert<Equal<SelfSettleResult, { txHash: Hex }>>();

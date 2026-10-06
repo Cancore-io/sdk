@@ -73,6 +73,13 @@ export function refusalForCode(code: SdkErrorCode): Refusal {
     case 'WALLET_MISMATCH':
     case 'SIGNING_METHOD_UNSUPPORTED':
     case 'NOT_FOUND':
+    // The agent mandate (backend `/agent/mandate*` and the `mandate.*` wallet ceremonies). No flow of
+    // this client runs those yet, so there is nothing for it to do about them but surface them.
+    case 'NO_ACTIVE_MANDATE':
+    case 'MANDATE_EXISTS':
+    case 'MANDATE_AMBIGUOUS':
+    case 'IDEMPOTENCY_KEY_REUSED':
+    case 'MANDATE_NOT_YET_VISIBLE':
       return 'other';
     default:
       return assertNever(code);
