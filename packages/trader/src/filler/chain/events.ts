@@ -97,9 +97,13 @@ export class RouterEventWatcher {
     const maxRange = this.options.maxRange ?? 2_000n;
     while (this.next <= confirmed) {
       const to = this.next + maxRange - 1n < confirmed ? this.next + maxRange - 1n : confirmed;
-      const logs = await this.fetch(this.next, to);
-      for (const log of logs) await this.add(log);
       const header = await client.block(to);
+      const logs = await this.fetch(this.next, to);
+      // Logs and headers may come from different endpoints: a log is reported only
+      // when its block is the canonical one of this round; otherwise the round stops
+      // and the next poll reads the range again.
+      if (!(await this.canonical(logs))) return;
+      for (const log of logs) await this.add(log);
       this.lastScanned = { number: header.number, hash: header.hash };
       this.next = to + 1n;
     }
@@ -115,7 +119,8 @@ export class RouterEventWatcher {
     if (!this.lastScanned) return;
     if ((await client.block(this.lastScanned.number)).hash === this.lastScanned.hash) return;
 
-    let rewindTo = this.lastScanned.number - (this.options.retentionBlocks ?? 1_024n);
+    // The floor matches prune(): a log below it is no longer remembered, so it is not rescanned either.
+    let rewindTo = this.lastScanned.number + 1n - (this.options.retentionBlocks ?? 1_024n);
     const byBlock = [...this.reported.values()].sort((a, b) => (a.blockNumber < b.blockNumber ? 1 : a.blockNumber > b.blockNumber ? -1 : b.logIndex - a.logIndex));
     const checked = new Map<bigint, Hex>();
     for (const log of byBlock) {
@@ -136,6 +141,23 @@ export class RouterEventWatcher {
     if (rewindTo < this.options.fromBlock) rewindTo = this.options.fromBlock;
     this.next = rewindTo;
     this.lastScanned = undefined;
+  }
+
+  /** Whether every log's block hash is the hash of that block as the chain reads now. */
+  private async canonical(logs: readonly RouterLog[]): Promise<boolean> {
+    const hashes = new Map<bigint, Hex>();
+    for (const log of logs) {
+      let hash = hashes.get(log.blockNumber);
+      if (hash === undefined) {
+        hash = (await this.options.client.block(log.blockNumber)).hash;
+        hashes.set(log.blockNumber, hash);
+      }
+      if (hash !== log.blockHash) {
+        this.options.logger.warn('chain: router log from a block that is not canonical, range read again later', { chain: this.options.client.chain, block: log.blockNumber.toString() });
+        return false;
+      }
+    }
+    return true;
   }
 
   private async add(log: RouterLog): Promise<void> {

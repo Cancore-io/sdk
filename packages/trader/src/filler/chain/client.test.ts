@@ -103,6 +103,22 @@ describe('head lag (ops.maxHeadLagBlocks)', () => {
     expect(callBlocks(fresh.calls)).toEqual([1_000n]);
   });
 
+  test('the best head is this round only: one inflated answer does not condemn the others for good', async () => {
+    const chain = new FakeChain(1n);
+    chain.head = 1_000n;
+    chain.router(ROUTER);
+    let inflated = true;
+    const liar = new FakeEvmRpc('liar').on('eth_chainId', '0x1').on('eth_blockNumber', () => (inflated ? '0x2710' : '0x3e8'));
+    const honest = chain.endpoint({ label: 'honest' });
+    const c = client([honest, liar], 5);
+    await expect(c.head()).resolves.toBe(10_000n);
+    inflated = false;
+    liar.fail('eth_blockNumber', new Error('down'));
+    await expect(c.head()).resolves.toBe(1_000n);
+    await new RouterReader('eip155:1', ROUTER, c).currentSetId();
+    expect(callBlocks(honest.calls)).toEqual([1_000n]);
+  });
+
   test('a lag within the limit keeps the configured order', async () => {
     const chain = new FakeChain(1n);
     chain.head = 1_000n;

@@ -123,6 +123,24 @@ describe('reorgs never produce a false or a duplicate event', () => {
     expect(seen()).toEqual(['added IntentOpened 0xaa @91', 'added Filled 0xaa @98']);
   });
 
+  test('a log whose block hash is not the canonical one (another endpoint, another fork) is not reported until it is', async () => {
+    const { chain, watcher, seen } = setup(0);
+    chain.emit(ROUTER, 'Filled', filled(A), 95n);
+    const original = chain.request.bind(chain);
+    let stale = true;
+    chain.request = (async (request) => {
+      const result = await original(request);
+      if (request.method !== 'eth_getLogs' || !stale) return result;
+      return (result as Array<Record<string, unknown>>).map((l) => ({ ...l, blockHash: `0x${'ee'.repeat(32)}` }));
+    }) as typeof chain.request;
+    await watcher.poll();
+    expect(seen()).toEqual([]);
+    expect(watcher.cursor).toBe(90n);
+    stale = false;
+    await watcher.poll();
+    expect(seen()).toEqual(['added Filled 0xaa @95']);
+  });
+
   test('concurrent polls run one round', async () => {
     const { chain, watcher, seen } = setup(0);
     chain.emit(ROUTER, 'Filled', filled(A), 95n);

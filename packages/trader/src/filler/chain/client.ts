@@ -112,7 +112,6 @@ export class ChainClient {
   readonly chain: EvmChainId;
   private readonly endpoints: Endpoint[];
   private readonly expectedChainId: bigint;
-  private bestHead = -1n;
 
   constructor(private readonly options: ChainClientOptions) {
     if (options.endpoints.length === 0) throw new TypeError(`${options.chain}: at least one RPC endpoint is required`);
@@ -144,7 +143,8 @@ export class ChainClient {
 
   /**
    * The head, from the first endpoint in order whose head is within
-   * `maxHeadLagBlocks` of the best head every endpoint reported this round.
+   * `maxHeadLagBlocks` of the best head the endpoints report this round (only
+   * this round: one inflated answer never condemns the others for good).
    */
   async head(): Promise<bigint> {
     const errors: string[] = [];
@@ -159,15 +159,15 @@ export class ChainClient {
         }
       }),
     );
-    for (const h of heads) if (h !== undefined && h > this.bestHead) this.bestHead = h;
-    const floor = this.bestHead - BigInt(this.options.maxHeadLagBlocks);
+    const best = heads.reduce<bigint>((max, h) => (h !== undefined && h > max ? h : max), -1n);
+    const floor = best - BigInt(this.options.maxHeadLagBlocks);
     let chosen: bigint | undefined;
     this.endpoints.forEach((endpoint, i) => {
       const h = heads[i];
       if (h === undefined) return;
       endpoint.lagging = h < floor;
       if (endpoint.lagging) {
-        this.options.logger.warn('chain: endpoint head lags, passed over', { chain: this.chain, endpoint: endpoint.rpc.label, head: h.toString(), best: this.bestHead.toString() });
+        this.options.logger.warn('chain: endpoint head lags, passed over', { chain: this.chain, endpoint: endpoint.rpc.label, head: h.toString(), best: best.toString() });
       } else chosen ??= h;
     });
     if (chosen === undefined) throw this.exhausted('eth_blockNumber', errors);
