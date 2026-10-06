@@ -2326,7 +2326,8 @@
                 "wallet:accounts",
                 "wallet:sign",
                 "agent:propose",
-                "agent:read"
+                "agent:read",
+                "agent:trade"
               ],
               "type": "string"
             },
@@ -5088,6 +5089,52 @@
         ],
         "type": "object"
       },
+      "InstrumentIdDto": {
+        "properties": {
+          "admin": {
+            "maxLength": 255,
+            "type": "string"
+          },
+          "id": {
+            "maxLength": 255,
+            "type": "string"
+          }
+        },
+        "required": [
+          "admin",
+          "id"
+        ],
+        "type": "object"
+      },
+      "IntentFloorDto": {
+        "properties": {
+          "given": {
+            "$ref": "#/components/schemas/InstrumentIdDto"
+          },
+          "minReceivedPerUnit": {
+            "type": "string"
+          },
+          "wantChain": {
+            "type": "string"
+          },
+          "wantDecimals": {
+            "maximum": 27,
+            "minimum": 0,
+            "type": "number"
+          },
+          "wantToken": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "given",
+          "wantChain",
+          "wantToken",
+          "wantDecimals",
+          "minReceivedPerUnit"
+        ],
+        "type": "object"
+      },
       "IntentViewDto": {
         "properties": {
           "attempt": {
@@ -5394,6 +5441,193 @@
         },
         "required": [
           "tokenId"
+        ],
+        "type": "object"
+      },
+      "MandateActionDto": {
+        "properties": {
+          "args": {
+            "additionalProperties": true,
+            "description": "What the agent asked for, as it sent it",
+            "type": "object"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "trade"
+            ],
+            "type": "string"
+          },
+          "ledgerUpdateId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "mandateCid": {
+            "description": "The mandate contract the call was checked against, then its successors",
+            "nullable": true,
+            "type": "string"
+          },
+          "orderId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "outcome": {
+            "enum": [
+              "pending",
+              "completed",
+              "refused",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why it was refused or failed",
+            "nullable": true,
+            "type": "string"
+          },
+          "sessionId": {
+            "description": "The grant (app session) that made the call",
+            "nullable": true,
+            "type": "string"
+          },
+          "step": {
+            "nullable": true,
+            "type": "string"
+          },
+          "steps": {
+            "description": "Every ledger transaction and milestone of the call, in order",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "swapId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "args",
+          "outcome",
+          "step",
+          "reason",
+          "mandateCid",
+          "sessionId",
+          "orderId",
+          "swapId",
+          "ledgerUpdateId",
+          "steps",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "MandateActionsDto": {
+        "properties": {
+          "actions": {
+            "description": "The last 50, newest first",
+            "items": {
+              "$ref": "#/components/schemas/MandateActionDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "actions"
+        ],
+        "type": "object"
+      },
+      "MandateViewDto": {
+        "properties": {
+          "agentParty": {
+            "description": "The party that acts for the person under this mandate",
+            "type": "string"
+          },
+          "allowedInstruments": {
+            "items": {
+              "$ref": "#/components/schemas/InstrumentIdDto"
+            },
+            "type": "array"
+          },
+          "contractId": {
+            "type": "string"
+          },
+          "dailyCap": {
+            "description": "In instrument units, one number for every instrument (not USD)",
+            "type": "string"
+          },
+          "dayStart": {
+            "description": "When the stored window opened",
+            "format": "date-time",
+            "type": "string"
+          },
+          "expiresAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "intentFloors": {
+            "items": {
+              "$ref": "#/components/schemas/IntentFloorDto"
+            },
+            "type": "array"
+          },
+          "perTxCap": {
+            "description": "In instrument units, one number for every instrument (not USD). Bounds the SUM of what the person sends in one trade, fee included",
+            "type": "string"
+          },
+          "priceFloors": {
+            "items": {
+              "$ref": "#/components/schemas/PriceFloorDto"
+            },
+            "type": "array"
+          },
+          "recipients": {
+            "description": "The person's own addresses, each on its chain",
+            "items": {
+              "$ref": "#/components/schemas/RecipientDto"
+            },
+            "type": "array"
+          },
+          "remainingToday": {
+            "description": "dailyCap - spentToday, always",
+            "type": "string"
+          },
+          "spentToday": {
+            "description": "Spent in the CURRENT window: 0 once the stored window has run out",
+            "type": "string"
+          },
+          "windowEndsAt": {
+            "description": "dayStart + 1 day; past it the next spend opens a new window",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "contractId",
+          "agentParty",
+          "allowedInstruments",
+          "priceFloors",
+          "intentFloors",
+          "recipients",
+          "perTxCap",
+          "dailyCap",
+          "spentToday",
+          "remainingToday",
+          "dayStart",
+          "windowEndsAt",
+          "expiresAt"
         ],
         "type": "object"
       },
@@ -6813,6 +7047,25 @@
         ],
         "type": "object"
       },
+      "PriceFloorDto": {
+        "properties": {
+          "given": {
+            "$ref": "#/components/schemas/InstrumentIdDto"
+          },
+          "minReceivedPerUnit": {
+            "type": "string"
+          },
+          "received": {
+            "$ref": "#/components/schemas/InstrumentIdDto"
+          }
+        },
+        "required": [
+          "given",
+          "received",
+          "minReceivedPerUnit"
+        ],
+        "type": "object"
+      },
       "PricingSettingsDto": {
         "properties": {
           "enabled": {
@@ -6965,6 +7218,21 @@
           "marketRate",
           "quotedRate",
           "expiresInSec"
+        ],
+        "type": "object"
+      },
+      "RecipientDto": {
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "wantChain": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "wantChain",
+          "address"
         ],
         "type": "object"
       },
@@ -7244,6 +7512,11 @@
             "description": "HTTP status of the refusal (fixed per code).",
             "example": 409,
             "type": "number"
+          },
+          "updateId": {
+            "description": "MANDATE_NOT_YET_VISIBLE: the ledger update that already committed the ceremony (null when none was reported).",
+            "nullable": true,
+            "type": "string"
           }
         },
         "required": [
@@ -7291,7 +7564,12 @@
           "EMAIL_REGISTERED_AS_PASSWORD",
           "WALLET_MISMATCH",
           "SIGNING_METHOD_UNSUPPORTED",
-          "NOT_FOUND"
+          "NOT_FOUND",
+          "NO_ACTIVE_MANDATE",
+          "MANDATE_EXISTS",
+          "MANDATE_AMBIGUOUS",
+          "IDEMPOTENCY_KEY_REUSED",
+          "MANDATE_NOT_YET_VISIBLE"
         ],
         "type": "string"
       },
@@ -7673,8 +7951,15 @@
               "ACCOUNT_NOT_FOUND",
               "EMAIL_REGISTERED_AS_PASSWORD",
               "WALLET_MISMATCH",
-              "SIGNING_METHOD_UNSUPPORTED"
+              "SIGNING_METHOD_UNSUPPORTED",
+              "NOT_FOUND",
+              "NO_ACTIVE_MANDATE",
+              "MANDATE_EXISTS",
+              "MANDATE_AMBIGUOUS",
+              "IDEMPOTENCY_KEY_REUSED",
+              "MANDATE_NOT_YET_VISIBLE"
             ],
+            "example": "SUBMISSION_TIMEOUT_RETRYABLE",
             "type": "string"
           },
           "success": {
@@ -8432,6 +8717,117 @@
           "name",
           "symbol",
           "decimals"
+        ],
+        "type": "object"
+      },
+      "TradeAcceptedDto": {
+        "properties": {
+          "actionId": {
+            "description": "Poll GET /agent/mandate/trades/{actionId}",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why it was refused or failed",
+            "type": "string"
+          },
+          "status": {
+            "description": "`pending`: queued, the executor is on it. `refused`: turned away before an order was placed or anything was signed, `reason` says why. A replayed Idempotency-Key answers with the current state of the call it started; a refused call started nothing and does not keep its key, so the same key asks again.",
+            "enum": [
+              "pending",
+              "completed",
+              "refused",
+              "failed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "actionId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "TradeRequestDto": {
+        "properties": {
+          "sourceAmount": {
+            "description": "How much of the source instrument to sell: a positive decimal string",
+            "example": "5",
+            "type": "string"
+          },
+          "sourceTokenName": {
+            "description": "What the person pays with: an instrument symbol the pool lists",
+            "example": "CC",
+            "type": "string"
+          },
+          "targetTokenName": {
+            "description": "What the person receives",
+            "example": "USDCx",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceTokenName",
+          "targetTokenName",
+          "sourceAmount"
+        ],
+        "type": "object"
+      },
+      "TradeStatusDto": {
+        "properties": {
+          "actionId": {
+            "description": "Poll GET /agent/mandate/trades/{actionId}",
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ledgerUpdateId": {
+            "description": "The latest ledger transaction the agent committed for this call",
+            "nullable": true,
+            "type": "string"
+          },
+          "orderId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why it was refused or failed",
+            "type": "string"
+          },
+          "status": {
+            "description": "`pending`: queued, the executor is on it. `refused`: turned away before an order was placed or anything was signed, `reason` says why. A replayed Idempotency-Key answers with the current state of the call it started; a refused call started nothing and does not keep its key, so the same key asks again.",
+            "enum": [
+              "pending",
+              "completed",
+              "refused",
+              "failed"
+            ],
+            "type": "string"
+          },
+          "step": {
+            "description": "While pending: queued, quoting, ordered, order-accepted, proposal-accepted or allocated",
+            "nullable": true,
+            "type": "string"
+          },
+          "swapId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "actionId",
+          "status",
+          "step",
+          "orderId",
+          "swapId",
+          "ledgerUpdateId",
+          "createdAt",
+          "updatedAt"
         ],
         "type": "object"
       },
@@ -16389,6 +16785,160 @@
           }
         ],
         "summary": "Mark an intent executed after the browser committed the send",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/mandate": {
+      "get": {
+        "description": "Caps, what is left of today, the day window and the expiry, computed from the ACS: remainingToday honours the fixed window (once now is past dayStart + 1 day it is the whole dailyCap).",
+        "operationId": "AgentMandateController_mandate",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MandateViewDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "description": "No active mandate (code NO_ACTIVE_MANDATE)"
+          },
+          "409": {
+            "description": "More than one active mandate (code MANDATE_AMBIGUOUS)"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The active mandate, read off the ledger",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/mandate/actions": {
+      "get": {
+        "operationId": "AgentMandateController_actions",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MandateActionsDto"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The last 50 calls of the executor, newest first — the wallet's audit list",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/mandate/trades": {
+      "post": {
+        "description": "A DvP pair only. Checks the mandate before anything else; a refused call is stored and answered with `status: refused` and its reason — no pool order is created and no ledger command is sent. Otherwise the executor quotes, takes the pool's offer and signs the person's side as the agent party; poll the action.",
+        "operationId": "AgentMandateController_trade",
+        "parameters": [
+          {
+            "description": "A retry with the same key (and body) gets the result of the call that started, not a second trade. A refused call does not keep its key",
+            "in": "header",
+            "name": "idempotency-key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TradeRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradeAcceptedDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "description": "Not a grant: trades under a mandate are made with an agent:trade grant"
+          },
+          "409": {
+            "description": "The Idempotency-Key was used for a different trade (code IDEMPOTENCY_KEY_REUSED)"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Trade against the pool under the mandate",
+        "tags": [
+          "agent"
+        ]
+      }
+    },
+    "/agent/mandate/trades/{actionId}": {
+      "get": {
+        "operationId": "AgentMandateController_status",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "actionId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradeStatusDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "description": "Unknown, or somebody else's"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Where one executor call stands",
         "tags": [
           "agent"
         ]
