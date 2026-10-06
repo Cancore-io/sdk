@@ -9,6 +9,7 @@ import type { DecString, Hex, StakeBindingRequest, TicketIssued, TicketOffer } f
 import { isEvmChainId, type EvmChainId } from './chains';
 import { FillerChains, type ChainConfig } from './chain';
 import { TicketVerifier, type EscrowVerification } from './tickets/checks';
+import { DEFAULT_OFFER_REPLY_MARGIN_MS, TicketDesk, type TicketOfferHook } from './tickets/desk';
 import { FillerConfigError, NotImplementedError } from './errors';
 import { FillerProtocolClient, DEFAULT_REST_POLL_INTERVAL_MS } from './protocol/client';
 import { GatewayRest } from './protocol/rest';
@@ -91,6 +92,8 @@ export interface FillerConfig {
 export interface TicketPolicy {
   /** δ_issue, ms: a `ticket.issued` arriving later than `acceptBy` + this is declined `TICKET_ISSUED_LATE` (V-T4, protocol S-2, O-2). */
   deltaIssueMs: number;
+  /** Time kept free before `acceptBy` to send the answer; a hook still silent then declines `OTHER` (T-21). Default 250 ms. */
+  offerReplyMarginMs?: number;
 }
 
 /** Reconnect, heartbeat and fallback timing of the connection to filler-gateway. */
@@ -131,8 +134,7 @@ export type QuoteRequestHook = (request: FillerQuoteRequest) => Promise<QuoteDec
  */
 export type ReconfirmHook = (reconfirm: FillerReconfirm) => Promise<boolean>;
 
-export type TicketOfferDecision = 'accept' | 'decline';
-export type TicketOfferHook = (offer: TicketOffer) => Promise<TicketOfferDecision>;
+export type { OfferDeclineReason, TicketOfferDecision, TicketOfferHook } from './tickets/desk';
 
 // ---------------------------------------------------------------------------
 // Results
@@ -273,6 +275,10 @@ function validate(config: FillerConfig): void {
   if (!isObject(config.tickets)) throw new FillerConfigError('tickets', 'is required');
   if (typeof config.tickets.deltaIssueMs !== 'number' || !Number.isSafeInteger(config.tickets.deltaIssueMs) || config.tickets.deltaIssueMs < 0) {
     throw new FillerConfigError('tickets.deltaIssueMs', 'expected a non-negative integer (ms)');
+  }
+  const margin = config.tickets.offerReplyMarginMs;
+  if (margin !== undefined && (typeof margin !== 'number' || !Number.isSafeInteger(margin) || margin < 0)) {
+    throw new FillerConfigError('tickets.offerReplyMarginMs', 'expected a non-negative integer (ms)');
   }
   if (config.ledger !== undefined) requireMethods('ledger', config.ledger, ['activeContracts', 'exercise']);
   requireMethods('store', config.store, ['now', 'withOrder', 'listOpenOrders', 'appendEvidence', 'getOverrides']);
@@ -451,6 +457,21 @@ export function createFiller(config: FillerConfig): Filler {
     reconfirmMarginS: DEFAULT_RECONFIRM_MARGIN_S,
     reconcileLookbackMs: DEFAULT_RECONCILE_LOOKBACK_MS,
   }).register();
+
+  const tickets = new TicketDesk({
+    store: config.store,
+    protocol,
+    verifier,
+    chains,
+    fillSigners: config.fillSigners,
+    clock,
+    logger,
+    events,
+    nextId,
+    onTicketOffer: () => ticketHook,
+    offerReplyMarginMs: config.tickets.offerReplyMarginMs ?? DEFAULT_OFFER_REPLY_MARGIN_MS,
+  });
+  tickets.register();
 
   const hook = <T>(name: string, value: T): T => {
     if (typeof value !== 'function') throw new FillerConfigError(name, 'expected a function');
