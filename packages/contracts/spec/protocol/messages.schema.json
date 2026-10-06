@@ -413,8 +413,8 @@
     },
     "fillProof": {
       "type": "object",
-      "description": "The twelve FillProof fields of protocol §3.3 (variant A), encoded per §3.1: kind, attempt, setId JSON integers; amountDelivered, filledAt decimal strings; fillerId = keccak256(utf8(fillerId)); repayTo encoded for the source chain (§3.15)",
-      "required": ["kind", "orderHash", "destination", "fillRef", "recipient", "outputAsset", "amountDelivered", "filledAt", "fillerId", "repayTo", "attempt", "setId"],
+      "description": "FillProof as the source router hashes it (FILL_PROOF_TYPES, field for field), encoded per protocol §3.1: kind, attempt, setId JSON integers; amountDelivered, filledAt decimal strings. Variant A (protocol §3.3: fillerId and repayTo in place of filler) replaces these fields together with the router's struct (CAN-2139, CAN-2140)",
+      "required": ["kind", "orderHash", "destination", "fillRef", "recipient", "outputAsset", "amountDelivered", "filledAt", "filler", "attempt", "setId"],
       "properties": {
         "kind": { "$ref": "#/$defs/uint8" },
         "orderHash": { "$ref": "#/$defs/bytes32" },
@@ -424,8 +424,7 @@
         "outputAsset": { "$ref": "#/$defs/bytes32" },
         "amountDelivered": { "$ref": "#/$defs/uintDec256" },
         "filledAt": { "$ref": "#/$defs/timeS" },
-        "fillerId": { "$ref": "#/$defs/bytes32" },
-        "repayTo": { "$ref": "#/$defs/bytes32" },
+        "filler": { "$ref": "#/$defs/address", "description": "the payee of settle on the source chain" },
         "attempt": { "$ref": "#/$defs/uint32" },
         "setId": { "$ref": "#/$defs/uint32" }
       }

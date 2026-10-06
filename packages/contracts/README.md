@@ -169,8 +169,9 @@ Once filler-gateway holds at least `threshold` verified attestor signatures over
 `FillProof`, it pushes `settle.attestations` to that filler and serves the same payload on
 `GET /v1/filler/attestations/{orderHash}` (404 `ATTESTATIONS_NOT_READY` before that, 404
 `UNKNOWN_TICKET` when the filler holds no ticket on the order); the filler node submits `settle`
-itself (protocol §3.5, §3.6, §10 D-N). `proof` is the twelve-field `FillProof` of protocol §3.3
-(`fillerId`, `repayTo`). A signature entry follows `sourceChainId`: `{signer, signature}` with a
+itself (protocol §3.5, §3.6, §10 D-N). `proof` is the `FillProof` the source router hashes,
+field for field (`FILL_PROOF_TYPES`); variant A of protocol §3.3 (`fillerId`, `repayTo`) replaces
+it together with the router's struct. A signature entry follows `sourceChainId`: `{signer, signature}` with a
 65-byte signature on an EVM source, `{signer, pubKey, signature}` with the DER public key and a
 minimal DER signature on a Canton source, as `SwapIntent_SettleWithProof` takes them.
 
@@ -283,7 +284,7 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 ## Changes
 
 - Unreleased — filler-gateway → filler `settle.attestations` and `GET /v1/filler/attestations/{orderHash}`
-  (protocol §3.5, §3.6, §10 D-N): the frame schema with the twelve-field `FillProof` and the EVM and
+  (protocol §3.5, §3.6, §10 D-N): the frame schema with the router's `FillProof` and the EVM and
   Canton signature entries, the REST endpoint, the error code `ATTESTATIONS_NOT_READY` (404), an
   AsyncAPI message, golden vectors (`spec/protocol/vectors/settle-attestations.json`), the
   `SettleAttestations` types and the helpers `settleAttestationsPayload`,

@@ -2,7 +2,8 @@ import Ajv2020 from 'ajv/dist/2020';
 import { keccak256, recoverAddress, Signature, SigningKey } from 'ethers';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { gatewayBodyHash, hashTypedData, jcs, type TypedDataTypes } from './hash';
+import { FILL_PROOF_TYPES, FILL_PROOF_TYPE_STRING, fillProofDomain } from '../eip712';
+import { gatewayBodyHash, hashTypedData, jcs } from './hash';
 import { ERROR_HTTP_STATUS } from './messages';
 import { messageSchemaRef, MESSAGE_DIRECTIONS, PROTOCOL_SCHEMAS, REST_ENDPOINTS, SCHEMA_VOCABULARY } from './schemas';
 import {
@@ -39,15 +40,8 @@ for (const s of Object.values(PROTOCOL_SCHEMAS)) ajv.addSchema(s as object);
 const errorsOf = (frame: unknown) => (ajv.validate(messageSchemaRef('settle.attestations', 'S2F'), frame) ? [] : ajv.errors!);
 const clone = <T>(v: T): T => structuredClone(v);
 
-/** The twelve-field FillProof of protocol §3.3, parsed from the vector's type string (variant A). */
-const FILL_PROOF_V_A: TypedDataTypes = {
-  FillProof: /^FillProof\((.*)\)$/.exec(vectors.fillProofTypeString)![1]!.split(',').map((f) => {
-    const [type, name] = f.split(' ');
-    return { type: type!, name: name! };
-  }),
-};
 const proofDigest = (c: Case, proof = c.ws.proof) =>
-  hashTypedData({ domain: { name: 'CancoreRouter', version: '1', ...c.domain }, types: FILL_PROOF_V_A, primaryType: 'FillProof', message: { ...proof } });
+  hashTypedData({ domain: fillProofDomain(BigInt(c.domain.chainId), c.domain.verifyingContract), types: FILL_PROOF_TYPES, primaryType: 'FillProof', message: { ...proof } });
 
 /** Minimal DER → 64-byte r ‖ s, refusing a non-minimal or malformed encoding (what Daml's verifier aborts on). */
 function rsFromMinimalDer(der: Hex): { r: string; s: string } {
@@ -76,6 +70,13 @@ describe('schema', () => {
   test('one more S→F frame type, addressed, timed and signed', () => {
     expect(MESSAGE_DIRECTIONS['settle.attestations']).toBe('S2F');
   });
+  test('proof is the FillProof the source router hashes, field for field, and the vectors were generated from it', () => {
+    const fillProof = (PROTOCOL_SCHEMAS.messages as { $defs: Record<string, { required: string[]; properties: object }> }).$defs.fillProof!;
+    const names = FILL_PROOF_TYPES.FillProof.map((f) => f.name);
+    expect(fillProof.required).toEqual(names);
+    expect(Object.keys(fillProof.properties)).toEqual(names);
+    expect(vectors.fillProofTypeString).toBe(FILL_PROOF_TYPE_STRING);
+  });
   test.each(CASES)('%s: the pushed frame and the REST body validate', (_, c) => {
     expect(errorsOf(c.ws)).toEqual([]);
     expect(errorsOf(c.rest)).toEqual([]);
@@ -95,7 +96,7 @@ describe('schema', () => {
     const errors = errorsOf({ ...clone(evm.ws), [field]: bad });
     expect(errors.map((e) => e.instancePath)).toContain(`/${field}`);
   });
-  test.each(['fillerId', 'repayTo', 'amountDelivered', 'setId'])('proof without %s is refused', (field) => {
+  test.each(['filler', 'amountDelivered', 'setId'])('proof without %s is refused', (field) => {
     const frame = clone(evm.ws);
     delete (frame.proof as unknown as Record<string, unknown>)[field];
     expect(errorsOf(frame).length).toBeGreaterThan(0);

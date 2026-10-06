@@ -16,7 +16,11 @@ import { jcs } from './hash';
 import type { DecString, S2FBase } from './messages';
 import type { Hex } from './typedData';
 
-/** The twelve `FillProof` fields of protocol §3.3 on the wire (§3.1). */
+/**
+ * `FillProof` on the wire (§3.1), field for field the struct the source router
+ * hashes (`FILL_PROOF_TYPES`). Variant A (protocol §3.3: `fillerId`, `repayTo`
+ * in place of `filler`) replaces it together with the router's struct.
+ */
 export interface FillProofJson {
   kind: number;
   orderHash: Hex;
@@ -26,10 +30,8 @@ export interface FillProofJson {
   outputAsset: Hex;
   amountDelivered: DecString;
   filledAt: DecString;
-  /** `keccak256(utf8(fillerId))`. */
-  fillerId: Hex;
-  /** The payee of `settle`, encoded for the source chain (§3.15). */
-  repayTo: Hex;
+  /** The payee of `settle` on the source chain. */
+  filler: Hex;
   attempt: number;
   setId: number;
 }
