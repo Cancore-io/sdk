@@ -18,15 +18,13 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "jest --selectProjects node web",
-    "typecheck": "tsc --build --force && tsc --noEmit -p packages/mcp/tsconfig.json && tsc --noEmit -p packages/wallet/tsconfig.json && tsc --noEmit -p packages/client/tsconfig.json && tsc --noEmit -p packages/contracts/tsconfig.json && tsc --noEmit -p packages/test-kit/tsconfig.json && tsc --noEmit -p packages/trader/tsconfig.json",
+    "typecheck": "tsc --build --force && tsc --noEmit -p packages/mcp/tsconfig.json && tsc --noEmit -p packages/wallet/tsconfig.json && tsc --noEmit -p packages/client/tsconfig.json && tsc --noEmit -p packages/contracts/tsconfig.json && tsc --noEmit -p packages/trader/tsconfig.json",
     "clean": "rm -rf packages/*/dist",
     "release:connector": "npm publish -w @cancore/dapp-connector --access public",
     "release:mcp": "npm publish -w @cancore/mcp --access public",
     "release:wallet": "npm publish -w @cancore/wallet --access public",
     "release:client": "npm publish -w @cancore/client --access public",
-    "release:contracts": "npm publish -w @cancore/contracts --access public",
-    "test:int": "jest --selectProjects int",
-    "release:test-kit": "npm publish -w @cancore/test-kit --access public --tag next"
+    "release:contracts": "npm publish -w @cancore/contracts --access public"
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",

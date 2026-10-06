@@ -27,22 +27,8 @@ const nodeProject = {
   displayName: 'node',
   testEnvironment: 'node',
   roots: ['<rootDir>/packages'],
-  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/packages/wallet/src/web/', '\\.int\\.test\\.ts$'],
+  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/packages/wallet/src/web/'],
   testMatch: ['**/*.test.ts'],
-  transform,
-  moduleNameMapper,
-};
-
-/**
- * Integration: the mock gateway as a real process (its CLI, from `dist/`) and a
- * real WebSocket client. Needs `npm run build` first, so it is its own project
- * and its own script (`npm run test:int`), never part of `npm test`.
- */
-const intProject = {
-  displayName: 'int',
-  testEnvironment: 'node',
-  roots: ['<rootDir>/packages'],
-  testMatch: ['**/*.int.test.ts'],
   transform,
   moduleNameMapper,
 };
@@ -58,6 +44,6 @@ const webProject = {
 };
 
 export default {
-  projects: [nodeProject, webProject, intProject],
+  projects: [nodeProject, webProject],
   collectCoverageFrom: ['packages/*/src/**/*.ts', '!packages/*/src/**/*.test.ts'],
 };
