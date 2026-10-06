@@ -36,6 +36,7 @@ import type {
   OrderSettled,
   QuoteAck,
   QuoteMessage,
+  QuoteReconfirmReply,
   TicketDecline,
   TicketExpired,
   TicketIntentAck,
@@ -181,10 +182,20 @@ export interface StoredQuote {
   requestId: string;
   /** EIP-712 digest of the `FillerQuote`; `quote.ack.quoteHash` echoes it. */
   quoteHash: Hex;
-  quote: QuoteMessage;
+  /**
+   * The `quote` frame as sent; for a price confirmed through `quote.reconfirm`, its `FillerQuote`
+   * content only (`QuoteContent`): such a price never travels as a `quote` frame and has no envelope
+   * of its own — `via` is the sealed `quote.reconfirm.reply` that carried it, the evidence.
+   */
+  quote: QuoteMessage | QuoteContent;
+  /** The sealed `quote.reconfirm.reply` that carried a reconfirmed price. */
+  via?: QuoteReconfirmReply;
   ack?: QuoteAck;
   sentAtMs: number;
 }
+
+/** A quote's `FillerQuote` content without a frame envelope (`id`, `fillerId`, `sentAt`, `msgSig`). */
+export type QuoteContent = Omit<QuoteMessage, 'id' | 'fillerId' | 'sentAt' | 'msgSig'>;
 
 /** Runtime overrides an operator sets on a running node (N-13): apply to every replica at once. */
 export interface RuntimeOverrides {

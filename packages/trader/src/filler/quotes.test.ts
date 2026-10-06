@@ -383,6 +383,13 @@ describe('quote.reconfirm → onReconfirm → quote.reconfirm.reply (T-20)', () 
     const input = quoteInput('rq-1', { amountOut: '97', validUntil, nonce: '2' });
     expect(recoverTypedDataSigner(input, reply.sig!)).toBe(h.quoteSigner.address);
     await expect(h.desk.firmQuote('rq-1')).resolves.toMatchObject({ quoteHash: hashTypedData(input), quote: { amountOut: '97' } });
+    // The reconfirmed price never went out as a quote frame: it is kept as content, with the sealed
+    // reply that carried it as the evidence — an envelope that verifies over its own body (review F-2).
+    const firm = (await h.desk.firmQuote('rq-1'))!;
+    expect(firm.quote).not.toHaveProperty('msgSig');
+    expect(firm.quote).not.toHaveProperty('id');
+    expect(firm.via).toEqual(reply);
+    expect(recoverAddress(hashFillerMessage(firm.via!), firm.via!.msgSig)).toBe(h.quoteSigner.address);
   });
 
   test('a changed price is not signed: amountOut ≠ order.minReceived is declined without asking the hook', async () => {

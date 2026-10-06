@@ -16,6 +16,7 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { hashOrder, hashTicket, type FillerChains } from '../chain';
 import type { FillerEvent } from '../events';
+import { GatewayError } from '../errors';
 import { createFiller, type Filler, type TicketOfferDecision } from '../filler';
 import { recoverAddress, type FillSigner } from '../signer';
 import { FillerProtocolClient } from '../protocol/client';
@@ -171,6 +172,12 @@ async function harness(options: Options = {}) {
 }
 
 type Harness = Awaited<ReturnType<typeof harness>>;
+
+/** A message without its envelope: what a resend must repeat exactly. */
+const contentOf = (message: Record<string, unknown>) => {
+  const { id: _id, fillerId: _f, sentAt: _s, msgSig: _m, ...content } = message;
+  return content;
+};
 
 /** offer → intent → ack, through the session. */
 async function consent(h: Harness, over: Record<string, unknown> = {}) {
@@ -462,14 +469,17 @@ describe('a restart loses no ticket and sends nothing twice', () => {
     await h.filler.stop();
   });
 
-  test('INTENT_SENT, never handed over: the same signed intent goes out', async () => {
+  test('INTENT_SENT, never handed over: the same signed consent goes out, under a fresh envelope', async () => {
     let intent: Record<string, unknown> | undefined;
     const h = await restartWith(async (h1) => {
       const { offer, intent: sent } = await consent(h1);
       intent = sent;
       return { state: 'intent-sent', offer: offer as unknown as TicketOffer, intent: sent as never };
     });
-    expect(h.sent('ticket.intent')).toEqual([intent]);
+    const [again] = h.sent('ticket.intent');
+    expect(h.sent('ticket.intent')).toHaveLength(1);
+    expect(contentOf(again!)).toEqual(contentOf(intent!));
+    expect(recoverAddress(hashFillerMessage(again!), again!.msgSig as Hex)).toBe(quote.address.toLowerCase());
     await h.filler.stop();
   });
 
@@ -501,7 +511,13 @@ describe('a restart loses no ticket and sends nothing twice', () => {
       const offer = h1.offerFrame();
       return { state: 'receipted', offer: offer as unknown as TicketOffer, issued: (await h1.issuedFrame(offer)) as never, receipt: { ...receipt, orderHash: h1.w.orderHash } as never };
     });
-    expect(h.sent('ticket.receipt')).toEqual([expect.objectContaining({ id: 'stored-receipt' })]);
+    // The stored receipt's content and inner sig, under a fresh envelope (§3.4: no reused id, no stale sentAt).
+    const [again] = h.sent('ticket.receipt');
+    expect(h.sent('ticket.receipt')).toHaveLength(1);
+    expect(contentOf(again!)).toEqual({ type: 'ticket.receipt', orderHash: h.w.orderHash, attempt: 0, ticketHash: receipt.ticketHash, ticketSigHash: receipt.ticketSigHash, sig: receipt.sig });
+    expect(again!.id).not.toBe('stored-receipt');
+    expect(recoverAddress(hashFillerMessage(again!), again!.msgSig as Hex)).toBe(quote.address.toLowerCase());
+    expect(await h.record()).toMatchObject({ receipt: { id: again!.id }, sentAtMs: expect.any(Number) });
     await h.filler.stop();
   });
 
@@ -532,7 +548,8 @@ describe('a restart loses no ticket and sends nothing twice', () => {
       offer: h1.offerFrame() as unknown as TicketOffer,
       decline: { type: 'ticket.decline', id: 'stored-decline', orderHash: h1.w.orderHash, attempt: 0, reason: 'RISK_LIMIT' } as never,
     }));
-    expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ id: 'stored-decline', reason: 'RISK_LIMIT' })]);
+    expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ reason: 'RISK_LIMIT', fillerId: FILLER, msgSig: expect.any(String) })]);
+    expect(h.sent('ticket.decline')[0]!.id).not.toBe('stored-decline');
     expect(await h.store.listOpenOrders()).toEqual([]);
     await h.filler.stop();
   });
@@ -547,6 +564,75 @@ describe('a restart loses no ticket and sends nothing twice', () => {
     expect(await h.record()).toMatchObject({ unsent: true });
     expect(await h.store.listOpenOrders()).toEqual([]);
     await h.filler.stop();
+  });
+});
+
+// Review F-1 (sdk#58): a stored message cannot go out again as the same bytes — the gateway refuses
+// a reused id (REPLAYED_MESSAGE) and a stale sentAt (STALE_MESSAGE), protocol §3.4.
+describe('a receipt whose answer was lost is sent again under a fresh envelope (§3.4, §6)', () => {
+  async function receiptedDesk(submit: (request: { action: string; message: Record<string, unknown> }) => Promise<unknown>) {
+    const clock = new FakeClock();
+    const store = new InMemoryFillerStore(clock);
+    const w = world(clock);
+    const seal = createSealer({ fillerId: FILLER, messageSigner: quote, clock });
+    const calls: Record<string, unknown>[] = [];
+    let n = 0;
+    const protocol = {
+      seal,
+      submitTicket: async (request: { action: string; message: Record<string, unknown> }) => {
+        calls.push(request.message);
+        return submit(request);
+      },
+    } as unknown as FillerProtocolClient;
+    const desk = new TicketDesk({
+      store, protocol, verifier: {} as TicketVerifier,
+      chains: { get: () => ({ config: { sendGuardSec: 30 } }) } as unknown as FillerChains,
+      fillSigners: { 'eip155:1': fill }, fillerId: FILLER, messageSigner: quote, clock, logger: createRecordingLogger(), events: createRecordingEventSink(),
+      nextId: () => `id-${++n}`, onTicketOffer: () => undefined, offerReplyMarginMs: 250,
+    });
+    const validUntil = String(w.nowS + 300n);
+    const offer = { type: 'ticket.offer', id: 'g-offer', fillerId: FILLER, sentAt: clock.now(), sig: '0x', orderHash: w.orderHash, attempt: 0, order: w.order, amountOut: '99', validFrom: String(w.nowS), validUntil, acceptBy: clock.now() + 5_000 };
+    const issued = { type: 'ticket.issued', form: 'evm', orderHash: w.orderHash, attempt: 0, ticket: { validUntil } };
+    const receipt = await seal({ type: 'ticket.receipt', id: 'stored-receipt', orderHash: w.orderHash, attempt: 0, ticketHash: `0x${'01'.repeat(32)}`, ticketSigHash: `0x${'02'.repeat(32)}`, sig: `0x${'03'.repeat(65)}` } as never);
+    await store.withOrder(w.orderHash, (tx) => tx.putTicket({ orderHash: w.orderHash, attempt: 0, state: 'receipted', offer, issued, receipt, updatedAtMs: clock.now() } as never));
+    const record = () => store.withOrder(w.orderHash, (tx) => tx.getTicket(0));
+    return { clock, desk, w, calls, record, receipt: receipt as unknown as Record<string, unknown> };
+  }
+
+  test('the answer is lost: the resend carries a new id and sentAt, the same receipt and inner sig, and is delivered', async () => {
+    let first = true;
+    const h = await receiptedDesk(async () => {
+      if (first) {
+        first = false;
+        throw new Error('socket hang up'); // the gateway may well hold it: the answer never came
+      }
+      return 'rest';
+    });
+    await h.desk.work(h.w.orderHash, 0);
+    expect(h.calls).toHaveLength(1);
+    expect((await h.record())!.sentAtMs).toBeUndefined();
+    h.clock.advance(1_000);
+    await settle();
+    expect(h.calls).toHaveLength(2);
+    const [a, b] = h.calls;
+    expect(contentOf(a!)).toEqual(contentOf(h.receipt));
+    expect(contentOf(b!)).toEqual(contentOf(h.receipt));
+    expect(new Set([h.receipt.id, a!.id, b!.id]).size).toBe(3);
+    expect(b!.sentAt).toBeGreaterThan(a!.sentAt as number);
+    for (const m of [a!, b!]) expect(recoverAddress(hashFillerMessage(m), m.msgSig as Hex)).toBe(quote.address.toLowerCase());
+    expect(await h.record()).toMatchObject({ state: 'receipted', receipt: { id: b!.id }, sentAtMs: expect.any(Number) });
+  });
+
+  test('REPLAYED_MESSAGE on its own id: the gateway holds the receipt — delivered, never declined', async () => {
+    const h = await receiptedDesk(async () => {
+      throw new GatewayError('REPLAYED_MESSAGE', true, 'id already accepted', undefined, 409);
+    });
+    await h.desk.work(h.w.orderHash, 0);
+    h.clock.advance(60_000);
+    await settle();
+    expect(h.calls).toHaveLength(1);
+    expect(await h.record()).toMatchObject({ state: 'receipted', sentAtMs: expect.any(Number) });
+    expect((await h.record())!.unsent).toBeUndefined();
   });
 });
 

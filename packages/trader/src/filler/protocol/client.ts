@@ -141,8 +141,9 @@ export class FillerProtocolClient implements SessionListener {
    * Sends a ticket action: on the session when it is ready, otherwise as
    * `POST /v1/filler/tickets/{orderHash}/{attempt}/{action}`. The REST answer
    * to an intent (`ticket.intent.ack`) goes through the same handling as a
-   * WebSocket frame. Sending the same message again is safe: filler-gateway
-   * answers a repeated identical intent with the same ack (§3.5).
+   * WebSocket frame. A message is sent again under a fresh envelope (new `id`,
+   * `sentAt`): the gateway refuses a reused `id` and a stale `sentAt` (§3.4),
+   * and answers a repeated consent or receipt with the same ack (§6).
    */
   async submitTicket(request: TicketAction): Promise<FrameChannel> {
     if (this.session?.send(request.message)) return 'ws';

@@ -46,6 +46,7 @@ import type { TicketAction } from '../protocol/rest';
 import type { Clock, Logger } from '../runtime';
 import type { FillSigner, QuoteSigner } from '../signer';
 import type { FillerStore, TicketRecord, TicketState } from '../store';
+import { GatewayError } from '../errors';
 import type { TicketVerifier } from './checks';
 import { identityFor, signTicketIntent, signTicketReceipt } from './terms';
 
@@ -87,7 +88,10 @@ const isAttempt = (value: unknown): value is number => typeof value === 'number'
 const TERMINAL: ReadonlySet<TicketState> = new Set(['expired', 'filled']);
 const key = (orderHash: string, attempt: number) => `${orderHash.toLowerCase()}:${attempt}`;
 
-type Outgoing = { action: 'intent' | 'receipt' | 'decline'; message: TicketAction['message']; deadlineMs: number };
+/** `again`: a message sent before (or its fate unknown) goes out under a fresh envelope — see `reseal`. */
+type Outgoing = { action: 'intent' | 'receipt' | 'decline'; message: TicketAction['message']; deadlineMs: number; again?: boolean };
+
+const FIELD = { intent: 'intent', receipt: 'receipt', decline: 'decline' } as const;
 
 /** `validUntil` of an issued ticket, unix ms; 0 when it does not parse (then nothing is sent). */
 function validUntilMs(issued: TicketIssued | undefined): number {
@@ -255,7 +259,7 @@ export class TicketDesk {
         return;
       case 'intent-sent':
         if (record.intent && record.offer && record.sentAtMs === undefined) {
-          await this.send(orderHash, attempt, { action: 'intent', message: record.intent, deadlineMs: record.offer.acceptBy }, 'ticket.intent.sent');
+          await this.send(orderHash, attempt, { action: 'intent', message: record.intent, deadlineMs: record.offer.acceptBy, again: true }, 'ticket.intent.sent');
         }
         return;
       case 'issued':
@@ -263,12 +267,12 @@ export class TicketDesk {
         await this.check(orderHash, record);
         return;
       case 'receipted':
-        if (record.sentAtMs === undefined) await this.deliverReceipt(orderHash, record);
+        if (record.sentAtMs === undefined) await this.deliverReceipt(orderHash, record, true);
         return;
       case 'declined':
         if (record.sentAtMs === undefined && record.decline) {
           const deadlineMs = record.issued ? validUntilMs(record.issued) : (record.offer?.acceptBy ?? 0);
-          await this.send(orderHash, attempt, { action: 'decline', message: record.decline, deadlineMs }, 'ticket.declined');
+          await this.send(orderHash, attempt, { action: 'decline', message: record.decline, deadlineMs, again: true }, 'ticket.declined');
         }
         return;
       default:
@@ -389,11 +393,11 @@ export class TicketDesk {
    * receipt never goes out: the attempt is declined `TICKET_TTL_TOO_SHORT`
    * while the decline can still reach filler-gateway.
    */
-  private async deliverReceipt(orderHash: Hex, record: TicketRecord): Promise<void> {
+  private async deliverReceipt(orderHash: Hex, record: TicketRecord, again = false): Promise<void> {
     if (!record.receipt) return;
     const deadlineMs = this.receiptDeadline(record);
     if (this.options.clock.now() <= deadlineMs) {
-      await this.send(orderHash, record.attempt, { action: 'receipt', message: record.receipt, deadlineMs }, 'ticket.receipted');
+      await this.send(orderHash, record.attempt, { action: 'receipt', message: record.receipt, deadlineMs, again }, 'ticket.receipted');
       return;
     }
     await this.decline(orderHash, record.attempt, ['receipted'], 'TICKET_TTL_TOO_SHORT', 'send-guard: the receipt could not leave in time', (r) => r.sentAtMs === undefined);
@@ -437,21 +441,53 @@ export class TicketDesk {
    * Past its deadline it is marked `unsent` and never sent; refused by
    * filler-gateway or the network, it is tried again after `SEND_RETRY_MS`.
    */
-  private async send(orderHash: Hex, attempt: number, out: Outgoing, stage: FillerStage): Promise<void> {
-    if (this.options.clock.now() > out.deadlineMs) {
-      this.options.logger.warn('tickets: deadline passed, not sent', { orderHash, attempt, action: out.action });
-      await this.markSent(orderHash, attempt, out, true);
+  private async send(orderHash: Hex, attempt: number, first: Outgoing, stage: FillerStage): Promise<void> {
+    if (this.options.clock.now() > first.deadlineMs) {
+      this.options.logger.warn('tickets: deadline passed, not sent', { orderHash, attempt, action: first.action });
+      await this.markSent(orderHash, attempt, first, true);
       return;
     }
+    const out = first.again ? await this.reseal(orderHash, attempt, first) : first;
+    if (!out) return;
     try {
       await this.options.protocol.submitTicket({ action: out.action, message: out.message } as TicketAction);
     } catch (error) {
+      // Our own id already taken: the gateway holds this very message — delivered (protocol §3.4).
+      if (error instanceof GatewayError && error.code === 'REPLAYED_MESSAGE') {
+        this.options.logger.info('tickets: filler-gateway already holds the message', { orderHash, attempt, action: out.action });
+        await this.markSent(orderHash, attempt, out, false);
+        this.stage(stage, orderHash, attempt, out.action === 'decline' ? { reason: String((out.message as TicketDecline).reason) } : {});
+        return;
+      }
       this.options.logger.warn('tickets: not delivered to filler-gateway', { orderHash, attempt, action: out.action, error: String(error) });
       if (this.options.clock.now() + SEND_RETRY_MS <= out.deadlineMs) this.options.clock.schedule(SEND_RETRY_MS, () => void this.work(orderHash, attempt));
       return;
     }
     await this.markSent(orderHash, attempt, out, false);
     this.stage(stage, orderHash, attempt, out.action === 'decline' ? { reason: String((out.message as TicketDecline).reason) } : {});
+  }
+
+  /**
+   * A message sent again goes out under a fresh envelope — a new `id` and
+   * `sentAt`, the same content and the same inner `sig` — and the stored
+   * message becomes the resealed one. The gateway refuses an `id` it already
+   * accepted and a `sentAt` older than `maxMessageAgeMs` (protocol §3.4), so
+   * the stored bytes could not go out again after a lost answer or a long
+   * outage; a repeat of the same consent or receipt is idempotent for it
+   * («Duplicate intent/receipt: idempotent, same ack returned», protocol §6).
+   * Undefined when the stored message changed meanwhile (another worker).
+   */
+  private async reseal(orderHash: Hex, attempt: number, out: Outgoing): Promise<Outgoing | undefined> {
+    const { id: _id, fillerId: _f, sentAt: _s, msgSig: _m, ...content } = out.message as TicketAction['message'] & Record<string, unknown>;
+    const message = (await this.options.protocol.seal({ ...content, id: this.options.nextId() } as never)) as TicketAction['message'];
+    const field = FIELD[out.action];
+    const stored = await this.options.store.withOrder(orderHash, async (tx) => {
+      const record = await tx.getTicket(attempt);
+      if (!record || record.sentAtMs !== undefined || record[field]?.id !== out.message.id) return false;
+      await tx.putTicket({ ...record, [field]: message, updatedAtMs: await this.options.store.now() });
+      return true;
+    });
+    return stored ? { ...out, message } : undefined;
   }
 
   /** Records that the message of the current state went out — or, `unsent`, that it never will. */

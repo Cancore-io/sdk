@@ -347,16 +347,14 @@ export class QuoteDesk {
       nonce: nonce.toString(),
       sig: message.sig,
     } as const;
-    // The reconfirmed price is a quote like any other: firm until validUntil (T-4). The stored
-    // quote carries the envelope of the reply that sent its FillerQuote.
+    // The reconfirmed price is a quote like any other: firm until validUntil (T-4). It never went
+    // out as a quote frame, so it is kept as content, with the sealed reply that carried it.
     const sealed = await this.options.protocol.seal<QuoteReconfirmReply>(reply);
     await this.options.store.quotes.recordQuote({
       requestId,
       quoteHash,
-      quote: {
-        type: 'quote', id: reply.id, fillerId: sealed.fillerId, sentAt: sealed.sentAt, msgSig: sealed.msgSig,
-        requestId, amountOut: minReceived.toString(), validUntil: reply.validUntil, nonce: reply.nonce, sig: message.sig,
-      },
+      quote: { type: 'quote', requestId, amountOut: minReceived.toString(), validUntil: reply.validUntil, nonce: reply.nonce, sig: message.sig },
+      via: sealed,
       sentAtMs: this.options.clock.now(),
     });
     return this.send(sealed, replyBy, 'accepted');
