@@ -1,31 +1,5 @@
 # Changelog — `@cancore/client`
 
-## Unreleased (0.7.x)
-
-### Added
-
-- `withdrawAllocation(swapId)` on the self-custody account releases this account's own DvP
-  allocation(s) of a trade that ended `dvp_expired` when the venue's recovery could not (the abort
-  was refused or the trade was already archived). Until now such a leg stayed locked and the only
-  way out was Cancore support. Same prepare → verify → sign → submit path as the other DvP steps,
-  new operation `dvpWithdrawAllocation`, one signature per locked leg. Requires the matching gateway
-  (BUG-1291).
-- `dvp-verify` holds a withdraw to its own expected tree before the key signs: exactly one consuming
-  `Allocation_Withdraw` on an allocation of this trade, sent by this account, signed by the instrument
-  admin and settled by the venue; only this account's allocation and holdings archived; the holding
-  returned to this account, unlocked and exactly the amount the allocation locked; no party outside the
-  trade. A withdraw is held to the trade alone, never to the stand's current fee configuration.
-- `SettleOptions.autoWithdraw`: `make` / `take` withdraw before throwing when the trade expired with
-  this account's allocation still locked. Off by default. The trade's `SettleError` is kept and carries
-  `withdrawal` (`withdrawn` / `gone` / `failed` per leg); `withdrawAllocation` attempts every leg and reports each.
-- `SettleError.withdrawable` is true when the expiry left this account's allocation locked.
-  `SwapInfo.legs[]` carries `legId` and `userActionRequired`, `HtlcSwap` carries `orderId`.
-
-### Changed
-
-- The `SettleError` for an expired trade with a locked allocation points at `withdrawAllocation`
-  instead of at Cancore support.
-
 ## 0.7.0
 
 Canton↔Canton self-custody trades settle through allocation-DvP. This changes behaviour.
@@ -73,6 +47,8 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
 - What the account trusts: each pinned instrument admin, with more than its token. The admin's
   code runs the allocation and, later, its execution with the sender's authority; checking the
   transaction cannot bound that code. See the README's "What this guarantees" section.
+- The `SettleError` for an expired trade with a locked allocation points at `withdrawAllocation`
+  instead of at Cancore support.
 
 ### Deprecated
 
@@ -119,6 +95,22 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
   snapshot gains the `/agent/mandate*` routes. No client method calls them yet; `refusalForCode` maps
   all five to `other`. **A program that switches on `SdkErrorCode` exhaustively stops compiling until
   the five have a branch** — which is what the exhaustive switch is for.
+- `withdrawAllocation(swapId)` on the self-custody account releases this account's own DvP
+  allocation(s) of a trade that ended `dvp_expired` when the venue's recovery could not (the abort
+  was refused or the trade was already archived). Until now such a leg stayed locked and the only
+  way out was Cancore support. Same prepare → verify → sign → submit path as the other DvP steps,
+  new operation `dvpWithdrawAllocation`, one signature per locked leg. Requires the matching gateway
+  (BUG-1291).
+- `dvp-verify` holds a withdraw to its own expected tree before the key signs: exactly one consuming
+  `Allocation_Withdraw` on an allocation of this trade, sent by this account, signed by the instrument
+  admin and settled by the venue; only this account's allocation and holdings archived; the holding
+  returned to this account, unlocked and exactly the amount the allocation locked; no party outside the
+  trade. A withdraw is held to the trade alone, never to the stand's current fee configuration.
+- `SettleOptions.autoWithdraw`: `make` / `take` withdraw before throwing when the trade expired with
+  this account's allocation still locked. Off by default. The trade's `SettleError` is kept and carries
+  `withdrawal` (`withdrawn` / `gone` / `failed` per leg); `withdrawAllocation` attempts every leg and reports each.
+- `SettleError.withdrawable` is true when the expiry left this account's allocation locked.
+  `SwapInfo.legs[]` carries `legId` and `userActionRequired`, `HtlcSwap` carries `orderId`.
 
 ### Migrating from 0.6.x
 
