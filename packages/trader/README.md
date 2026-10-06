@@ -35,7 +35,11 @@ const filler = createFiller({
   ticketSigners: FILLER_GATEWAYS.testnet.ticketSigners,
   quoteSigner,                                   // TypedDataSigner over the quote key
   fillSigners: { 'eip155:1': fill1, 'eip155:56': fill56 },  // FillSigner per EVM chain
-  rpc: { 'eip155:1': [alchemy1, infura1], 'eip155:56': [bsc1] },
+  rpc: { 'eip155:1': [alchemy1, infura1], 'eip155:56': [bsc1] },  // in order of preference
+  chains: {                                      // pinned routers and read policy, from the node's own config
+    'eip155:1': { router: ETH_ROUTER, openConfirmations: 12, maxHeadLagBlocks: 5 },
+    'eip155:56': { router: BSC_ROUTER, openConfirmations: 15, maxHeadLagBlocks: 5 },
+  },
   store,                                         // FillerStore — the filler node passes its Postgres store
   webSocket,                                     // WebSocketFactory (Node 20 has no global WebSocket)
   logger,
@@ -101,6 +105,43 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
   `httpStatus`). A code this SDK does not know keeps `known: false` and is handled as generic (V-2). Unknown
   frame types and unknown fields are ignored.
 
+## Reading the chains
+
+The SDK reads the routers itself, with the node's own RPC (INV-10): a ticket is Cancore's word, the chain is
+the fact. Router addresses come only from `chains.<caip2>.router` in the config, never from a filler-gateway
+message.
+
+- **Endpoints.** `rpc.<caip2>` is used in order. Before its first use every endpoint answers `eth_chainId`;
+  one that names another chain is never used again, and when none serves the configured chain the read fails
+  with `ChainReadError` reason `wrong-chain` (filler-node C-1). A transport or node error moves the request
+  to the next endpoint; a revert is the chain's answer and is not retried elsewhere. Reads at a depth start
+  from the head of every endpoint, and one whose head trails the best by more than `maxHeadLagBlocks` is
+  passed over while a fresher one answers. All endpoints failing is `unavailable`.
+- **Depth, one block.** A read names its block: `'latest'`, `'safe'`, `'finalized'`, `{ confirmations: n }`
+  (head − n; escrow checks read at `openConfirmations`), `{ blockNumber }` or `{ blockHash }`. The tag is
+  resolved to one block header, and calls carry its hash (EIP-1898 `{ blockHash, requireCanonical: true }`):
+  an endpoint on another fork fails the call rather than answering from its own block at that height, and
+  `pin(at)` hands the same hash to every call of one check. The endpoints must support EIP-1898 for
+  `eth_call` and `eth_getBalance` (geth, erigon, reth, anvil and the large providers do).
+- **`RouterReader`** — `intents`, `filled`, `ticketSigners`, `proofWindow`, `attestationSetFor`,
+  `getAttestorSet`, `revokedAttestors`, `currentSetId`, `isMember`, `sourceOrderHash`, `hashOrder`,
+  `hashTicket`, `hashFillProof`, `minInput`. Calls and results are encoded from `CANCORE_ROUTER_ABI` of
+  `@cancore/contracts` by the package's own small ABI codec (no ABI library dependency); an answer that does
+  not decode — empty data from an address without code included — is `malformed`, never a value. The router
+  has no filler registry, so nothing about a filler is read.
+- **Local digests** — `hashOrder(order, { chainId, router })`, `hashTicket(ticket)`,
+  `hashFillProof(proof, { chainId, router })`: `hashTypedData` of `@cancore/contracts` in the router's
+  domains, equal to the router's views and to the golden vectors.
+- **Events** — `RouterEventWatcher` polls `eth_getLogs` for `IntentOpened`, `Filled`, `Settled`, `Refunded`
+  and reports a log only once it is `confirmations` deep. A deeper reorg is found by re-reading block hashes:
+  the replaced log is reported `removed`, the scan rewinds, and what the new chain holds is reported `added`.
+  An event's identity is `(name, orderHash)`; between two `added` of one identity there is always a
+  `removed`. The cursor is in memory: persist `cursor` to resume after a restart.
+
+`FakeChain` in `./filler/testing` is an in-memory chain behind `EvmRpc` — routers with scripted state, ERC-20
+balances, blocks, logs and `reorg(fromBlock)`; `endpoint({ headLag, chainId })` adds endpoints over the same
+chain for failover tests.
+
 ## Quotes
 
 `quote.request` → `onQuoteRequest(request)` → a `FillerQuote` signed by the quote key (protocol §3.5 «Quotes»).
@@ -115,7 +156,8 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
   the fill key of the source chain.
 - **Not sent** (stage event `quote.skipped` with the reason): at or after `windowCloseAt` — checked before
   the hook, after it and after signing; `validUntil × 1000 < windowCloseAt + quoteTtlMs` (equality is fine);
-  `inputAmount` below the source router's `minInput` (T-16, once RouterReader supplies it); the hook returned
+  `inputAmount` below the source router's `minInput` (T-16, read off the pinned source router; when it cannot
+  be read, `chain-unavailable`); the hook returned
   `null`, threw, or returned a zero or out-of-range amount; the kill-switch is on; the session is down (a quote
   has no REST route); a byte-identical redelivery of a request already handled.
 - **Nonce.** `store.quotes.nextNonce(requestId, quoteKey)`: strictly increasing per request across replicas

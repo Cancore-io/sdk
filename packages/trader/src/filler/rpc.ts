@@ -1,7 +1,7 @@
 /**
  * EVM JSON-RPC, injected. One `EvmRpc` is one endpoint; a chain is given
- * several (`EvmRpcMap`), and the SDK decides how to use them — quorum reads,
- * failover, confirmation depth (CAN-1846). The interface is EIP-1193 `request`,
+ * several (`EvmRpcMap`), and the SDK uses them in order: chain-id check,
+ * failover, head-lag skip, reads at a confirmation depth (`chain/client.ts`). The interface is EIP-1193 `request`,
  * so any client adapts in a line: ethers `provider.send(method, params)`, a viem
  * transport, or a bare `fetch` to the endpoint.
  */

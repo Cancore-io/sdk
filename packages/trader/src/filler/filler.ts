@@ -7,6 +7,7 @@
  */
 import type { DecString, Hex, StakeBindingRequest, TicketIssued, TicketOffer } from '@cancore/contracts';
 import { isEvmChainId, type EvmChainId } from './chains';
+import { FillerChains, type ChainConfig } from './chain';
 import { FillerConfigError, NotImplementedError } from './errors';
 import { FillerProtocolClient, DEFAULT_REST_POLL_INTERVAL_MS } from './protocol/client';
 import { GatewayRest } from './protocol/rest';
@@ -52,8 +53,15 @@ export interface FillerConfig {
   quoteSigner: QuoteSigner;
   /** Fill key per EVM chain the filler delivers on or settles on. */
   fillSigners: { readonly [chain: EvmChainId]: FillSigner };
-  /** RPC endpoints per EVM chain; every chain in `fillSigners` needs at least one. */
+  /** RPC endpoints per EVM chain, in order of preference; every chain in `chains` needs at least one. */
   rpc: EvmRpcMap;
+  /**
+   * Every EVM chain the filler reads — where it delivers, where it settles,
+   * whose escrows it checks: the pinned router and the read policy. Every
+   * chain in `fillSigners` needs an entry. Router addresses come only from
+   * here, never from filler-gateway.
+   */
+  chains: { readonly [chain: EvmChainId]: ChainConfig };
   /** The filler's own Canton participant; required only for Canton routes. */
   ledger?: CantonLedger;
   /** All filler state (sdk.md S16). The filler node passes its Postgres store. */
@@ -240,6 +248,7 @@ function validate(config: FillerConfig): void {
     throw new FillerConfigError('fillSigners', 'expected a fill signer for at least one EVM chain');
   }
   if (!isObject(config.rpc)) throw new FillerConfigError('rpc', 'is required');
+  validateChains(config);
   const quoteKey = config.quoteSigner.address.toLowerCase();
   for (const [chain, signer] of Object.entries(config.fillSigners)) {
     if (!isEvmChainId(chain)) throw new FillerConfigError(`fillSigners.${chain}`, 'key must be an eip155 CAIP-2 chain id');
@@ -248,8 +257,7 @@ function validate(config: FillerConfig): void {
     if (signer.address.toLowerCase() === quoteKey) {
       throw new FillerConfigError(`fillSigners.${chain}`, 'the fill key must differ from the quote key (keys are separate by purpose)');
     }
-    const endpoints = config.rpc[chain];
-    if (!Array.isArray(endpoints) || endpoints.length === 0) throw new FillerConfigError(`rpc.${chain}`, 'expected at least one endpoint');
+    if (!config.chains[chain]) throw new FillerConfigError(`chains.${chain}`, 'every chain with a fill signer needs its router and read policy');
   }
   for (const [chain, endpoints] of Object.entries(config.rpc)) {
     if (!isEvmChainId(chain)) throw new FillerConfigError(`rpc.${chain}`, 'key must be an eip155 CAIP-2 chain id');
@@ -272,6 +280,22 @@ function validate(config: FillerConfig): void {
     throw new FillerConfigError('instanceId', 'expected a non-empty string');
   }
   if (config.transport !== undefined) validateTransport(config.transport);
+}
+
+function validateChains(config: FillerConfig): void {
+  if (!isObject(config.chains) || Object.keys(config.chains).length === 0) throw new FillerConfigError('chains', 'expected at least one EVM chain');
+  const count = (field: string, value: unknown) => {
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new FillerConfigError(field, 'expected a non-negative integer');
+  };
+  for (const [chain, entry] of Object.entries(config.chains)) {
+    if (!isEvmChainId(chain)) throw new FillerConfigError(`chains.${chain}`, 'key must be an eip155 CAIP-2 chain id');
+    if (!isObject(entry)) throw new FillerConfigError(`chains.${chain}`, 'expected an object');
+    requireAddress(`chains.${chain}.router`, entry.router);
+    count(`chains.${chain}.openConfirmations`, entry.openConfirmations);
+    count(`chains.${chain}.maxHeadLagBlocks`, entry.maxHeadLagBlocks);
+    const endpoints = config.rpc[chain];
+    if (!Array.isArray(endpoints) || endpoints.length === 0) throw new FillerConfigError(`rpc.${chain}`, 'expected at least one endpoint');
+  }
 }
 
 function validateTransport(transport: TransportOptions): void {
@@ -314,6 +338,8 @@ export interface FillerContext {
   readonly protocol: FillerProtocolClient;
   /** Frame ids, unique across replicas. */
   readonly nextId: () => string;
+  /** RPC clients and router readers of every configured chain. */
+  readonly chains: FillerChains;
 }
 
 /**
@@ -330,6 +356,7 @@ export function createFiller(config: FillerConfig): Filler {
   const instanceId = config.instanceId ?? defaultInstanceId();
   const transport = config.transport ?? {};
   const nextId = createFrameIds(instanceId, clock.now());
+  const chains = new FillerChains(config.rpc, config.chains, logger);
 
   const protocol = new FillerProtocolClient({
     store: config.store,
@@ -370,7 +397,7 @@ export function createFiller(config: FillerConfig): Filler {
   });
   protocol.attach(session, rest);
 
-  const context: FillerContext = { config, clock, logger, events, fetch, instanceId, protocol, nextId };
+  const context: FillerContext = { config, clock, logger, events, fetch, instanceId, protocol, nextId, chains };
 
   let quoteHook: QuoteRequestHook | undefined;
   let reconfirmHook: ReconfirmHook | undefined;
@@ -388,8 +415,15 @@ export function createFiller(config: FillerConfig): Filler {
     nextId,
     onQuoteRequest: () => quoteHook,
     onReconfirm: () => reconfirmHook,
-    // The source router's minInput comes with RouterReader (CAN-1846); until then no floor is known.
-    minInput: async () => undefined,
+    // T-16: the source router's own floor, read at the head.
+    minInput: async (chain, token) => {
+      if (!isEvmChainId(chain)) return undefined; // a Canton source has no router floor
+      const source = chains.get(chain);
+      // N-12: an EVM source this filler has no router for is one it cannot verify or settle on — no quote.
+      if (!source) throw new Error(`no router configured for the source ${chain}`);
+      if (typeof token !== 'string') return undefined;
+      return source.router.minInput(token as Hex);
+    },
     reconfirmMarginS: DEFAULT_RECONFIRM_MARGIN_S,
     reconcileLookbackMs: DEFAULT_RECONCILE_LOOKBACK_MS,
   }).register();

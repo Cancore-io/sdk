@@ -20,6 +20,7 @@ import {
   createRecordingLogger,
   createTestGatewaySigner,
   createTestTypedDataSigner,
+  FakeChain,
   FakeClock,
   FakeEvmRpc,
   InMemoryFillerStore,
@@ -29,6 +30,7 @@ const QUOTE_KEY: Hex = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d
 const FILL_KEY: Hex = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
 const BSC_FILL_KEY: Hex = '0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a';
 const GATEWAY_KEY: Hex = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
+const BSC_ROUTER: Hex = '0x5656565656565656565656565656565656565656';
 const FILLER = 'acme-1';
 const ORDER_HASH: Hex = `0x${'11'.repeat(32)}`;
 
@@ -260,6 +262,12 @@ describe('quote.request → onQuoteRequest → FillerQuote', () => {
     expect(h.seenRequests).toHaveLength(0);
   });
 
+  test('not quoted: the source router minInput cannot be read (no floor the filler did not see)', async () => {
+    const h = desk({ minInput: async () => Promise.reject(new Error('eip155:56: no endpoint answered')) });
+    await expect(h.desk.onRequest(delivery(request(h.clock)))).resolves.toEqual({ skipped: 'chain-unavailable' });
+    expect(h.seenRequests).toHaveLength(0);
+  });
+
   test('validUntil × 1000 = windowCloseAt + quoteTtlMs is accepted; one second less is not; the boundary is in ms', async () => {
     // windowCloseAt + quoteTtlMs lands on a whole second.
     const boundaryMs = (Math.floor(1_790_000_000_000 / 1000) + 31) * 1000;
@@ -443,6 +451,9 @@ describe('through createFiller and a crafted filler-gateway', () => {
     const gateway = createTestGatewaySigner(GATEWAY_KEY, clock);
     const ws = createFakeWebSocketFactory();
     const store = new InMemoryFillerStore(clock);
+    // The source router's minInput (T-16) is read from the chain: below it, no quote.
+    const bsc = new FakeChain(56n, 'bsc');
+    bsc.router(BSC_ROUTER).minInput.set('0x0000000000000000000000000000000000000056', 105n);
     const settle = async () => {
       for (let i = 0; i < 30; i++) await new Promise((resolve) => setImmediate(resolve));
     };
@@ -453,7 +464,11 @@ describe('through createFiller and a crafted filler-gateway', () => {
       ticketSigners: ['0x2222222222222222222222222222222222222222'],
       quoteSigner: createTestTypedDataSigner(QUOTE_KEY),
       fillSigners: { 'eip155:1': fillSigner(FILL_KEY), 'eip155:56': fillSigner(BSC_FILL_KEY) },
-      rpc: { 'eip155:1': [new FakeEvmRpc()], 'eip155:56': [new FakeEvmRpc()] },
+      rpc: { 'eip155:1': [new FakeEvmRpc()], 'eip155:56': [bsc] },
+      chains: {
+        'eip155:1': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: 5 },
+        'eip155:56': { router: BSC_ROUTER, openConfirmations: 3, maxHeadLagBlocks: 5 },
+      },
       store,
       webSocket: ws.factory,
       fetch: createFakeFetch().fetch,
@@ -486,6 +501,12 @@ describe('through createFiller and a crafted filler-gateway', () => {
     await settle();
     const [acked] = await store.quotes.listQuotes('rq-1');
     expect(acked!.ack).toMatchObject({ status: 'COUNTED' });
+
+    // N-12: an EVM source with no router in the config is one the filler cannot verify or settle on — no quote.
+    socket.receive(gateway.frame({ ...request(clock, { requestId: 'rq-137', route: { src: 'eip155:137', dst: 'eip155:1' } }), fillerId: FILLER }));
+    await settle();
+    expect(payouts).toEqual([100n]);
+    expect(socket.sentFrames().filter((f) => f.type === 'quote')).toHaveLength(1);
     await filler.stop();
   });
 });
