@@ -10,7 +10,7 @@
  * Skipped without CANCORE_INTENT_JSON (no stand in this repository's CI: CAN-1876).
  */
 import { readFileSync } from 'node:fs';
-import { FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, type Hex, type OrderJson, type TicketIssuedEvm, type TicketOffer } from '@cancore/contracts';
+import { FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, fillerIdHash, repayToFromEvm, type Hex, type OrderJson, type TicketIssuedEvm, type TicketOffer } from '@cancore/contracts';
 import { FillerChains, RouterEventWatcher, type RouterEventUpdate } from '../src/filler/chain';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { FillSigner } from '../src/filler/signer';
@@ -65,14 +65,15 @@ live('the checks before a receipt against the stand router', () => {
     const fillDeadline = BigInt(order.fillDeadline);
     const clock = new FakeClock(Number(fillDeadline - 400n) * 1000);
     const offer: TicketOffer = {
-      type: 'ticket.offer', fillerId: 'acme-1', sentAt: clock.now(), sig: '0x', orderHash, attempt: 0, order, amountOut: order.minReceived,
+      type: 'ticket.offer', id: 'g-offer', fillerId: 'acme-1', sentAt: clock.now(), sig: '0x', orderHash, attempt: 0, order, amountOut: order.minReceived,
       validFrom: String(fillDeadline - 400n), validUntil: String(fillDeadline - 100n), acceptBy: clock.now() + 5_000,
     };
-    const ticket = { orderHash, filler: fill.address, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil };
+    // Variant A ticket (CAN-2139): matches only a stand router built from CAN-2140 on.
+    const ticket = { orderHash, fillerId: fillerIdHash('acme-1'), deliveryKey: fill.address.toLowerCase(), repayTo: repayToFromEvm(fill.address), attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil };
     const ticketSig = await ticketSigner.signTypedData({ domain: FILL_TICKET_DOMAIN, types: FILL_TICKET_TYPES, primaryType: 'FillTicket', message: ticket });
     const issued = { type: 'ticket.issued', form: 'evm', fillerId: 'acme-1', sentAt: clock.now(), sig: '0x', orderHash, attempt: 0, ticket, ticketSig } as unknown as TicketIssuedEvm;
     const chains = new FillerChains({ [chain]: [httpRpc(stand.rpcUrlHost)] }, { [chain]: policy() }, logger);
-    const verifier = new TicketVerifier({ chains, fillSigners: { [chain]: fill }, ticketSigners: [ticketSigner.address], deltaIssueMs: 3_000, clock, events: createRecordingEventSink(), logger });
+    const verifier = new TicketVerifier({ chains, fillSigners: { [chain]: fill }, fillerId: 'acme-1', ticketSigners: [ticketSigner.address], deltaIssueMs: 3_000, clock, events: createRecordingEventSink(), logger });
     return verifier.verify({ offer, issued, issuedAtMs: clock.now() });
   }
 

@@ -24,6 +24,7 @@ import type { Clock, Logger } from '../runtime';
 import type { EvidenceEntry, FillerStore } from '../store';
 import { gatewayErrorOf, type VerifiedFrame } from './frames';
 import type { GatewayRest, QuoteListItem, TicketAction } from './rest';
+import type { Sealer } from './envelope';
 import type { GatewaySession, SessionListener } from './session';
 
 /** Which channel delivered a frame. */
@@ -44,6 +45,8 @@ export interface ClientOptions {
   events: EventSink;
   /** How often to poll `GET /v1/filler/tickets` while the session is down. Default 2 s. */
   restPollIntervalMs: number;
+  /** Seals a filler → filler-gateway message (`fillerId`, `sentAt`, `msgSig`) before it goes out on either channel. */
+  seal: Sealer;
 }
 
 export const DEFAULT_REST_POLL_INTERVAL_MS = 2_000;
@@ -118,6 +121,11 @@ export class FillerProtocolClient implements SessionListener {
     await this.syncing;
   }
 
+  /** Adds the envelope (`fillerId`, `sentAt`, `msgSig` by the message key) to a message; `send` and `submitTicket` take only sealed ones. */
+  get seal(): Sealer {
+    return this.options.seal;
+  }
+
   /**
    * Sends a frame with no REST route (`quote`, `quote.reconfirm.reply`,
    * `fill.reported`, `ping`) on the WebSocket session. Returns false when the
@@ -133,8 +141,9 @@ export class FillerProtocolClient implements SessionListener {
    * Sends a ticket action: on the session when it is ready, otherwise as
    * `POST /v1/filler/tickets/{orderHash}/{attempt}/{action}`. The REST answer
    * to an intent (`ticket.intent.ack`) goes through the same handling as a
-   * WebSocket frame. Sending the same message again is safe: filler-gateway
-   * answers a repeated identical intent with the same ack (§3.5).
+   * WebSocket frame. A message is sent again under a fresh envelope (new `id`,
+   * `sentAt`): the gateway refuses a reused `id` and a stale `sentAt` (§3.4),
+   * and answers a repeated consent or receipt with the same ack (§6).
    */
   async submitTicket(request: TicketAction): Promise<FrameChannel> {
     if (this.session?.send(request.message)) return 'ws';

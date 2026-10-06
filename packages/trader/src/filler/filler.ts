@@ -12,6 +12,7 @@ import { TicketVerifier, type EscrowVerification } from './tickets/checks';
 import { DEFAULT_OFFER_REPLY_MARGIN_MS, TicketDesk, type TicketOfferHook } from './tickets/desk';
 import { FillerConfigError, NotImplementedError } from './errors';
 import { FillerProtocolClient, DEFAULT_REST_POLL_INTERVAL_MS } from './protocol/client';
+import { createSealer } from './protocol/envelope';
 import { GatewayRest } from './protocol/rest';
 import {
   DEFAULT_RECONCILE_LOOKBACK_MS,
@@ -51,7 +52,7 @@ export interface FillerConfig {
   gatewaySigner: Hex;
   /** Cancore ticket signers (`FILLER_GATEWAYS[env].ticketSigners`); a ticket by anyone else is declined. */
   ticketSigners: readonly Hex[];
-  /** Quote key: `FillerAuth` and `FillerQuote`. Must be a different key from every fill key (N-6). */
+  /** Quote key, the message key: `FillerAuth`, `FillerQuote`, `TicketIntent`, `TicketReceipt` and `msgSig` of every message. Must be a different key from every fill key (N-6). */
   quoteSigner: QuoteSigner;
   /** Fill key per EVM chain the filler delivers on or settles on. */
   fillSigners: { readonly [chain: EvmChainId]: FillSigner };
@@ -376,6 +377,8 @@ export function createFiller(config: FillerConfig): Filler {
   const instanceId = config.instanceId ?? defaultInstanceId();
   const transport = config.transport ?? {};
   const nextId = createFrameIds(instanceId, clock.now());
+  // Every filler → filler-gateway message is sealed with the message key (protocol §3.4); today that is the quote key.
+  const seal = createSealer({ fillerId: config.fillerId, messageSigner: config.quoteSigner, clock });
   const chains = new FillerChains(config.rpc, config.chains, logger);
 
   const protocol = new FillerProtocolClient({
@@ -384,6 +387,7 @@ export function createFiller(config: FillerConfig): Filler {
     logger,
     events,
     restPollIntervalMs: transport.restPollIntervalMs ?? DEFAULT_REST_POLL_INTERVAL_MS,
+    seal,
   });
   const session = new GatewaySession(
     {
@@ -391,6 +395,7 @@ export function createFiller(config: FillerConfig): Filler {
       fillerId: config.fillerId,
       gatewaySigner: config.gatewaySigner,
       quoteSigner: config.quoteSigner,
+      seal,
       webSocket: config.webSocket,
       clock,
       logger,
@@ -407,6 +412,7 @@ export function createFiller(config: FillerConfig): Filler {
     fillerId: config.fillerId,
     gatewaySigner: config.gatewaySigner,
     quoteSigner: config.quoteSigner,
+    seal,
     fetch: (url, request) => {
       if (!fetch) throw new FillerConfigError('fetch', 'no global fetch; pass an HttpFetch for the REST fallback');
       return fetch(url, request);
@@ -420,6 +426,8 @@ export function createFiller(config: FillerConfig): Filler {
   const verifier = new TicketVerifier({
     chains,
     fillSigners: config.fillSigners,
+    fillerId: config.fillerId,
+    ...(config.ledger ? { cantonParty: config.ledger.party } : {}),
     ticketSigners: config.ticketSigners,
     deltaIssueMs: config.tickets.deltaIssueMs,
     clock,
@@ -435,6 +443,7 @@ export function createFiller(config: FillerConfig): Filler {
   let starting: Promise<void> | undefined;
 
   new QuoteDesk({
+    fillerId: config.fillerId,
     quoteSigner: config.quoteSigner,
     fillSigners: config.fillSigners,
     store: config.store,
@@ -464,6 +473,9 @@ export function createFiller(config: FillerConfig): Filler {
     verifier,
     chains,
     fillSigners: config.fillSigners,
+    fillerId: config.fillerId,
+    ...(config.ledger ? { cantonParty: config.ledger.party } : {}),
+    messageSigner: config.quoteSigner,
     clock,
     logger,
     events,

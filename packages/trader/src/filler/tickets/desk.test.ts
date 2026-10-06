@@ -2,6 +2,9 @@ import {
   FILL_TICKET_DOMAIN,
   FILL_TICKET_TYPES,
   FILLER_PROTOCOL_DOMAIN,
+  fillerIdHash,
+  hashFillerMessage,
+  repayToFromEvm,
   TICKET_INTENT_TYPES,
   TICKET_RECEIPT_TYPES,
   hashTypedData,
@@ -13,9 +16,11 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { hashOrder, hashTicket, type FillerChains } from '../chain';
 import type { FillerEvent } from '../events';
+import { GatewayError } from '../errors';
 import { createFiller, type Filler, type TicketOfferDecision } from '../filler';
 import { recoverAddress, type FillSigner } from '../signer';
 import { FillerProtocolClient } from '../protocol/client';
+import { createSealer } from '../protocol/envelope';
 import type { TicketRecord, TicketState } from '../store';
 import type { TicketVerifier } from './checks';
 import { TicketDesk } from './desk';
@@ -33,6 +38,8 @@ import {
 } from '../testing';
 
 const QUOTE_KEY: Hex = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
+/** The message key (today the quote key): signs the consent, the receipt and every envelope. */
+const quote = createTestTypedDataSigner(QUOTE_KEY);
 const FILL_KEY: Hex = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
 const TICKET_KEY: Hex = '0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6';
 const STRANGER_KEY: Hex = '0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a';
@@ -80,6 +87,7 @@ function world(clock: FakeClock) {
 
 interface Options {
   fillSigner?: FillSigner;
+  messageSigner?: typeof quote;
   clock?: FakeClock;
   store?: InMemoryFillerStore;
   hook?: (offer: TicketOffer) => Promise<TicketOfferDecision>;
@@ -101,7 +109,7 @@ async function harness(options: Options = {}) {
     fillerId: FILLER,
     gatewaySigner: gateway.address,
     ticketSigners: [ticketSigner.address],
-    quoteSigner: createTestTypedDataSigner(QUOTE_KEY),
+    quoteSigner: options.messageSigner ?? quote,
     fillSigners: { 'eip155:1': options.fillSigner ?? fill },
     rpc: { 'eip155:56': [w.src], 'eip155:1': [w.dst] },
     chains: { 'eip155:56': { router: SRC_ROUTER, ...POLICY }, 'eip155:1': { router: DST_ROUTER, ...POLICY } },
@@ -131,6 +139,7 @@ async function harness(options: Options = {}) {
 
   const offerFrame = (over: Record<string, unknown> = {}) => ({
     type: 'ticket.offer',
+    id: 'g-offer',
     fillerId: FILLER,
     orderHash: w.orderHash,
     attempt: 0,
@@ -143,7 +152,9 @@ async function harness(options: Options = {}) {
   });
   const ticketOf = (offer: { validFrom: string; validUntil: string; attempt: number }, over: Record<string, unknown> = {}) => ({
     orderHash: w.orderHash,
-    filler: fill.address,
+    fillerId: fillerIdHash(FILLER),
+    deliveryKey: fill.address.toLowerCase() as Hex,
+    repayTo: repayToFromEvm(fill.address),
     attempt: offer.attempt,
     validFrom: offer.validFrom,
     validUntil: offer.validUntil,
@@ -162,6 +173,12 @@ async function harness(options: Options = {}) {
 
 type Harness = Awaited<ReturnType<typeof harness>>;
 
+/** A message without its envelope: what a resend must repeat exactly. */
+const contentOf = (message: Record<string, unknown>) => {
+  const { id: _id, fillerId: _f, sentAt: _s, msgSig: _m, ...content } = message;
+  return content;
+};
+
 /** offer → intent → ack, through the session. */
 async function consent(h: Harness, over: Record<string, unknown> = {}) {
   const offer = h.offerFrame(over);
@@ -176,13 +193,19 @@ async function consent(h: Harness, over: Record<string, unknown> = {}) {
 }
 
 describe('the full path: offer → intent → ack → issued → checks → receipt', () => {
-  test('the intent repeats the offer and is signed by the fill key; the receipt signs hashTicket and keccak256(ticketSig)', async () => {
+  test('the intent repeats the offer, names the delivery key and repayTo and is signed by the message key; the receipt signs hashTicket and keccak256(ticketSig)', async () => {
     const h = await harness();
     const { offer, intent } = await consent(h);
     expect(h.hookCalls).toHaveLength(1);
-    expect(intent).toMatchObject({ orderHash: h.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil });
-    const intentDigest = hashTypedData({ domain: FILLER_PROTOCOL_DOMAIN, types: TICKET_INTENT_TYPES, primaryType: 'TicketIntent', message: { orderHash: h.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil } });
-    expect(recoverAddress(intentDigest, intent!.sig as Hex)).toBe(fill.address.toLowerCase());
+    const deliveryKey = fill.address.toLowerCase();
+    const repayTo = repayToFromEvm(fill.address);
+    expect(intent).toMatchObject({ orderHash: h.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, fillerId: FILLER, deliveryKey, repayTo });
+    const intentDigest = hashTypedData({
+      domain: FILLER_PROTOCOL_DOMAIN, types: TICKET_INTENT_TYPES, primaryType: 'TicketIntent',
+      message: { orderHash: h.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, fillerId: FILLER, deliveryKey, repayTo },
+    });
+    expect(recoverAddress(intentDigest, intent!.sig as Hex)).toBe(quote.address.toLowerCase());
+    expect(recoverAddress(hashFillerMessage(intent!), intent!.msgSig as Hex)).toBe(quote.address.toLowerCase());
     expect(await h.record()).toMatchObject({ state: 'intent-acked', intentAck: { intentHash: `0x${'11'.repeat(32)}` } });
 
     const issued = await h.issuedFrame(offer);
@@ -193,7 +216,8 @@ describe('the full path: offer → intent → ack → issued → checks → rece
     const ticketSigHash = `0x${bytesToHex(keccak_256(hexToBytes(issued.ticketSig.slice(2))))}`;
     expect(receipt).toMatchObject({ orderHash: h.w.orderHash, attempt: 0, ticketHash, ticketSigHash });
     const receiptDigest = hashTypedData({ domain: FILLER_PROTOCOL_DOMAIN, types: TICKET_RECEIPT_TYPES, primaryType: 'TicketReceipt', message: { ticketHash, ticketSigHash } });
-    expect(recoverAddress(receiptDigest, receipt!.sig as Hex)).toBe(fill.address.toLowerCase());
+    expect(recoverAddress(receiptDigest, receipt!.sig as Hex)).toBe(quote.address.toLowerCase());
+    expect(recoverAddress(hashFillerMessage(receipt!), receipt!.msgSig as Hex)).toBe(quote.address.toLowerCase());
     expect(h.sent('ticket.decline')).toHaveLength(0);
 
     const stored = await h.record();
@@ -306,9 +330,13 @@ describe('the offer stage: the hook decides, before acceptBy', () => {
     await h.filler.stop();
   });
 
-  test('a fill key that cannot sign the consent: decline OTHER, not silence', async () => {
-    const broken: FillSigner = { ...fill, signTypedData: async () => Promise.reject(new Error('KMS unavailable')) };
-    const h = await harness({ fillSigner: broken });
+  test('a message key that cannot sign the consent: decline OTHER, not silence', async () => {
+    // Fails on the consent only, so the login and the envelopes still go out.
+    const broken: typeof quote = {
+      address: quote.address,
+      signTypedData: async (input) => (input.primaryType === 'TicketIntent' ? Promise.reject(new Error('KMS unavailable')) : quote.signTypedData(input)),
+    };
+    const h = await harness({ messageSigner: broken });
     await consent(h);
     expect(h.sent('ticket.intent')).toHaveLength(0);
     expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ reason: 'OTHER', detail: 'the consent could not be signed' })]);
@@ -441,14 +469,17 @@ describe('a restart loses no ticket and sends nothing twice', () => {
     await h.filler.stop();
   });
 
-  test('INTENT_SENT, never handed over: the same signed intent goes out', async () => {
+  test('INTENT_SENT, never handed over: the same signed consent goes out, under a fresh envelope', async () => {
     let intent: Record<string, unknown> | undefined;
     const h = await restartWith(async (h1) => {
       const { offer, intent: sent } = await consent(h1);
       intent = sent;
       return { state: 'intent-sent', offer: offer as unknown as TicketOffer, intent: sent as never };
     });
-    expect(h.sent('ticket.intent')).toEqual([intent]);
+    const [again] = h.sent('ticket.intent');
+    expect(h.sent('ticket.intent')).toHaveLength(1);
+    expect(contentOf(again!)).toEqual(contentOf(intent!));
+    expect(recoverAddress(hashFillerMessage(again!), again!.msgSig as Hex)).toBe(quote.address.toLowerCase());
     await h.filler.stop();
   });
 
@@ -456,7 +487,7 @@ describe('a restart loses no ticket and sends nothing twice', () => {
     const h = await restartWith(async (h1) => {
       const offer = h1.offerFrame();
       const issued = await h1.issuedFrame(offer);
-      return { state: 'checking', offer: offer as unknown as TicketOffer, issued: issued as never, issuedAtMs: h1.clock.now(), intent: { type: 'ticket.intent', id: 'x', orderHash: h1.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, sig: '0x' } };
+      return { state: 'checking', offer: offer as unknown as TicketOffer, issued: issued as never, issuedAtMs: h1.clock.now(), intent: { type: 'ticket.intent', id: 'x', fillerId: FILLER, sentAt: h1.clock.now(), msgSig: '0x', orderHash: h1.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, deliveryKey: fill.address.toLowerCase() as Hex, repayTo: repayToFromEvm(fill.address), sig: '0x' } };
     });
     expect(h.sent('ticket.receipt')).toHaveLength(1);
     expect((await h.record())!.state).toBe('receipted');
@@ -467,7 +498,7 @@ describe('a restart loses no ticket and sends nothing twice', () => {
     const h = await restartWith(async (h1) => {
       const offer = h1.offerFrame();
       const issued = await h1.issuedFrame(offer);
-      return { state: 'checking', offer: offer as unknown as TicketOffer, issued: issued as never, intent: { type: 'ticket.intent', id: 'x', orderHash: h1.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, sig: '0x' } };
+      return { state: 'checking', offer: offer as unknown as TicketOffer, issued: issued as never, intent: { type: 'ticket.intent', id: 'x', fillerId: FILLER, sentAt: h1.clock.now(), msgSig: '0x', orderHash: h1.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, deliveryKey: fill.address.toLowerCase() as Hex, repayTo: repayToFromEvm(fill.address), sig: '0x' } };
     });
     expect(h.sent('ticket.receipt')).toHaveLength(0);
     expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ reason: 'TICKET_ISSUED_LATE', detail: expect.stringMatching(/unverifiable/) })]);
@@ -480,7 +511,13 @@ describe('a restart loses no ticket and sends nothing twice', () => {
       const offer = h1.offerFrame();
       return { state: 'receipted', offer: offer as unknown as TicketOffer, issued: (await h1.issuedFrame(offer)) as never, receipt: { ...receipt, orderHash: h1.w.orderHash } as never };
     });
-    expect(h.sent('ticket.receipt')).toEqual([expect.objectContaining({ id: 'stored-receipt' })]);
+    // The stored receipt's content and inner sig, under a fresh envelope (§3.4: no reused id, no stale sentAt).
+    const [again] = h.sent('ticket.receipt');
+    expect(h.sent('ticket.receipt')).toHaveLength(1);
+    expect(contentOf(again!)).toEqual({ type: 'ticket.receipt', orderHash: h.w.orderHash, attempt: 0, ticketHash: receipt.ticketHash, ticketSigHash: receipt.ticketSigHash, sig: receipt.sig });
+    expect(again!.id).not.toBe('stored-receipt');
+    expect(recoverAddress(hashFillerMessage(again!), again!.msgSig as Hex)).toBe(quote.address.toLowerCase());
+    expect(await h.record()).toMatchObject({ receipt: { id: again!.id }, sentAtMs: expect.any(Number) });
     await h.filler.stop();
   });
 
@@ -511,7 +548,8 @@ describe('a restart loses no ticket and sends nothing twice', () => {
       offer: h1.offerFrame() as unknown as TicketOffer,
       decline: { type: 'ticket.decline', id: 'stored-decline', orderHash: h1.w.orderHash, attempt: 0, reason: 'RISK_LIMIT' } as never,
     }));
-    expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ id: 'stored-decline', reason: 'RISK_LIMIT' })]);
+    expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ reason: 'RISK_LIMIT', fillerId: FILLER, msgSig: expect.any(String) })]);
+    expect(h.sent('ticket.decline')[0]!.id).not.toBe('stored-decline');
     expect(await h.store.listOpenOrders()).toEqual([]);
     await h.filler.stop();
   });
@@ -526,6 +564,75 @@ describe('a restart loses no ticket and sends nothing twice', () => {
     expect(await h.record()).toMatchObject({ unsent: true });
     expect(await h.store.listOpenOrders()).toEqual([]);
     await h.filler.stop();
+  });
+});
+
+// Review F-1 (sdk#58): a stored message cannot go out again as the same bytes — the gateway refuses
+// a reused id (REPLAYED_MESSAGE) and a stale sentAt (STALE_MESSAGE), protocol §3.4.
+describe('a receipt whose answer was lost is sent again under a fresh envelope (§3.4, §6)', () => {
+  async function receiptedDesk(submit: (request: { action: string; message: Record<string, unknown> }) => Promise<unknown>) {
+    const clock = new FakeClock();
+    const store = new InMemoryFillerStore(clock);
+    const w = world(clock);
+    const seal = createSealer({ fillerId: FILLER, messageSigner: quote, clock });
+    const calls: Record<string, unknown>[] = [];
+    let n = 0;
+    const protocol = {
+      seal,
+      submitTicket: async (request: { action: string; message: Record<string, unknown> }) => {
+        calls.push(request.message);
+        return submit(request);
+      },
+    } as unknown as FillerProtocolClient;
+    const desk = new TicketDesk({
+      store, protocol, verifier: {} as TicketVerifier,
+      chains: { get: () => ({ config: { sendGuardSec: 30 } }) } as unknown as FillerChains,
+      fillSigners: { 'eip155:1': fill }, fillerId: FILLER, messageSigner: quote, clock, logger: createRecordingLogger(), events: createRecordingEventSink(),
+      nextId: () => `id-${++n}`, onTicketOffer: () => undefined, offerReplyMarginMs: 250,
+    });
+    const validUntil = String(w.nowS + 300n);
+    const offer = { type: 'ticket.offer', id: 'g-offer', fillerId: FILLER, sentAt: clock.now(), sig: '0x', orderHash: w.orderHash, attempt: 0, order: w.order, amountOut: '99', validFrom: String(w.nowS), validUntil, acceptBy: clock.now() + 5_000 };
+    const issued = { type: 'ticket.issued', form: 'evm', orderHash: w.orderHash, attempt: 0, ticket: { validUntil } };
+    const receipt = await seal({ type: 'ticket.receipt', id: 'stored-receipt', orderHash: w.orderHash, attempt: 0, ticketHash: `0x${'01'.repeat(32)}`, ticketSigHash: `0x${'02'.repeat(32)}`, sig: `0x${'03'.repeat(65)}` } as never);
+    await store.withOrder(w.orderHash, (tx) => tx.putTicket({ orderHash: w.orderHash, attempt: 0, state: 'receipted', offer, issued, receipt, updatedAtMs: clock.now() } as never));
+    const record = () => store.withOrder(w.orderHash, (tx) => tx.getTicket(0));
+    return { clock, desk, w, calls, record, receipt: receipt as unknown as Record<string, unknown> };
+  }
+
+  test('the answer is lost: the resend carries a new id and sentAt, the same receipt and inner sig, and is delivered', async () => {
+    let first = true;
+    const h = await receiptedDesk(async () => {
+      if (first) {
+        first = false;
+        throw new Error('socket hang up'); // the gateway may well hold it: the answer never came
+      }
+      return 'rest';
+    });
+    await h.desk.work(h.w.orderHash, 0);
+    expect(h.calls).toHaveLength(1);
+    expect((await h.record())!.sentAtMs).toBeUndefined();
+    h.clock.advance(1_000);
+    await settle();
+    expect(h.calls).toHaveLength(2);
+    const [a, b] = h.calls;
+    expect(contentOf(a!)).toEqual(contentOf(h.receipt));
+    expect(contentOf(b!)).toEqual(contentOf(h.receipt));
+    expect(new Set([h.receipt.id, a!.id, b!.id]).size).toBe(3);
+    expect(b!.sentAt).toBeGreaterThan(a!.sentAt as number);
+    for (const m of [a!, b!]) expect(recoverAddress(hashFillerMessage(m), m.msgSig as Hex)).toBe(quote.address.toLowerCase());
+    expect(await h.record()).toMatchObject({ state: 'receipted', receipt: { id: b!.id }, sentAtMs: expect.any(Number) });
+  });
+
+  test('REPLAYED_MESSAGE on its own id: the gateway holds the receipt — delivered, never declined', async () => {
+    const h = await receiptedDesk(async () => {
+      throw new GatewayError('REPLAYED_MESSAGE', true, 'id already accepted', undefined, 409);
+    });
+    await h.desk.work(h.w.orderHash, 0);
+    h.clock.advance(60_000);
+    await settle();
+    expect(h.calls).toHaveLength(1);
+    expect(await h.record()).toMatchObject({ state: 'receipted', sentAtMs: expect.any(Number) });
+    expect((await h.record())!.unsent).toBeUndefined();
   });
 });
 
@@ -547,10 +654,12 @@ describe('no fill without a receipt (T-22): receipted() is the only gate', () =>
     const events = createRecordingEventSink();
     const desk = new TicketDesk({
       store,
-      protocol: new FillerProtocolClient({ store, clock, logger, events, restPollIntervalMs: 2_000 }),
+      protocol: new FillerProtocolClient({ store, clock, logger, events, restPollIntervalMs: 2_000, seal: createSealer({ fillerId: FILLER, messageSigner: quote, clock }) }),
       verifier: {} as TicketVerifier,
       chains: {} as FillerChains,
       fillSigners: { 'eip155:1': fill },
+      fillerId: FILLER,
+      messageSigner: quote,
       clock,
       logger,
       events,

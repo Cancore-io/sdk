@@ -115,6 +115,7 @@ export type {
   RuntimeOverrides,
   SettlementRecord,
   SettlementState,
+  QuoteContent,
   StoredQuote,
   TicketRecord,
   TicketState,

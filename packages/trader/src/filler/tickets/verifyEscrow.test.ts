@@ -1,4 +1,4 @@
-import { FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, type Hex, type OrderJson, type TicketIssued, type TicketOffer } from '@cancore/contracts';
+import { FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, fillerIdHash, repayToFromEvm, type Hex, type OrderJson, type TicketIssued, type TicketOffer } from '@cancore/contracts';
 import { hashOrder } from '../chain';
 import { createFiller } from '../filler';
 import type { FillSigner } from '../signer';
@@ -78,12 +78,12 @@ async function setup() {
   await started;
 
   const offer = {
-    type: 'ticket.offer', fillerId: FILLER, sentAt: clock.now(), sig: '0x', orderHash, attempt: 0, order, amountOut: '99',
+    type: 'ticket.offer', id: 'g-offer', fillerId: FILLER, sentAt: clock.now(), sig: '0x', orderHash, attempt: 0, order, amountOut: '99',
     validFrom: String(nowS), validUntil: String(nowS + 300n), acceptBy: clock.now() + 5_000,
   } as TicketOffer;
   // The offer as the ticket flow (CAN-1861) stores it.
   await store.withOrder(orderHash, (tx) => tx.putTicket({ orderHash, attempt: 0, state: 'intent-acked', offer, updatedAtMs: clock.now() }));
-  const ticket = { orderHash, filler: fill.address, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil };
+  const ticket = { orderHash, fillerId: fillerIdHash(FILLER), deliveryKey: fill.address.toLowerCase(), repayTo: repayToFromEvm(fill.address), attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil };
   const ticketSig = await ticketSigner.signTypedData({ domain: FILL_TICKET_DOMAIN, types: FILL_TICKET_TYPES, primaryType: 'FillTicket', message: ticket });
   const issued = gateway.frame({ type: 'ticket.issued', fillerId: FILLER, form: 'evm', orderHash, attempt: 0, ticket, ticketSig });
   return { clock, store, socket, filler, offer, issued, orderHash };

@@ -8,13 +8,13 @@
  * | Check | What | Refusal |
  * |---|---|---|
  * | V-T4 | `ticket.issued` arrived by `acceptBy + δ_issue` | `TICKET_ISSUED_LATE` |
- * | V-T2 | the ticket repeats the offer and names this filler | `TICKET_MISMATCH` |
+ * | V-T2 | the ticket repeats the offer and names this filler: its `fillerId`, and the `deliveryKey` and `repayTo` of its signed `ticket.intent` (T-15) | `TICKET_MISMATCH` |
  * | V-T3 | `validUntil < fillDeadline`; `validUntil − validFrom ≥ MIN_TICKET_TTL[dst]`; `sendGuard` left | `TICKET_BEYOND_DEADLINE`, `TICKET_TTL_TOO_SHORT` |
  * | V-E1 | `orderHash` = the order's digest in the source router's domain | `ESCROW_MISMATCH` |
  * | V-E2 | `intents(orderHash).status == Opened` at `openConfirmations` depth | `ESCROW_NOT_OPEN` |
  * | V-E3 | `refundAfter − fillDeadline ≥` the filler's own proof window for the destination | `PROOF_WINDOW_TOO_SHORT` |
  * | V-T1 | the ticket signer is pinned and `ticketSigners(signer)` on the destination router | `TICKET_SIGNER_UNKNOWN` |
- * | V-E4 | `repayTo` will be paid | not checked: the pinned `FillTicket` has no `repayTo` (CAN-2151) |
+ * | V-E4 | `repayTo` will be paid: the input token's blocklist view on the source is false for it | not read yet (CAN-2151); that `repayTo` is the node's own padded address is held by V-T2 |
  * | V-E5 | `filled == false`; balance, allowance, gas at the delivery address | `OTHER` / `NO_INVENTORY` |
  *
  * V-E5 has no code of its own in protocol §3.5: an order already filled is
@@ -75,6 +75,10 @@ export interface TicketVerifierOptions {
   /** Routers, clients and the per-destination policy (`ChainConfig`). */
   chains: FillerChains;
   fillSigners: { readonly [chain: EvmChainId]: FillSigner };
+  /** This filler's id: the ticket must name its hash. */
+  fillerId: string;
+  /** The filler's Canton party, the payee of a Canton source. */
+  cantonParty?: string;
   /** Pinned ticket signers (`FILLER_GATEWAYS[env].ticketSigners`). */
   ticketSigners: readonly Hex[];
   /** δ_issue, ms (V-T4, protocol S-2). */
@@ -153,8 +157,8 @@ export class TicketVerifier {
     pass('V-T4');
 
     // -- V-T2: this offer, this filler ---------------------------------------------
-    const identity = identityFor(offer.order, this.options.fillSigners);
-    if (!identity) throw new Refusal('V-T2', 'TICKET_MISMATCH', 'no fill key of this filler for the order');
+    const identity = identityFor(offer.order, this.options);
+    if (!identity) throw new Refusal('V-T2', 'TICKET_MISMATCH', 'no fill key or payee of this filler for the order');
     if (String(issued.orderHash).toLowerCase() !== String(offer.orderHash).toLowerCase() || issued.attempt !== offer.attempt) {
       throw new Refusal('V-T2', 'TICKET_MISMATCH', 'the frame names another order or attempt than the offer');
     }
@@ -169,6 +173,10 @@ export class TicketVerifier {
     }
     if (input.intent && (input.intent.validFrom !== ticket.validFrom || input.intent.validUntil !== ticket.validUntil)) {
       throw new Refusal('V-T2', 'TICKET_MISMATCH', 'the ticket window differs from the signed ticket.intent');
+    }
+    // T-15: the ticket carries the delivery key and the payee this filler named in its signed consent.
+    if (input.intent && (input.intent.deliveryKey?.toLowerCase() !== ticket.deliveryKey?.toLowerCase() || input.intent.repayTo?.toLowerCase() !== ticket.repayTo?.toLowerCase())) {
+      throw new Refusal('V-T2', 'TICKET_MISMATCH', 'deliveryKey or repayTo differs from the signed ticket.intent');
     }
     pass('V-T2');
 
@@ -215,8 +223,10 @@ export class TicketVerifier {
     if (!registered) throw new Refusal('V-T1', 'TICKET_SIGNER_UNKNOWN', `${signer} is not a ticket signer of the destination router`);
     pass('V-T1');
 
-    // -- V-E4: repayTo — not in the pinned FillTicket -------------------------------------------
-    pass('V-E4', 'not checked: the pinned FillTicket carries no repayTo (CAN-2151)', 'skipped');
+    // -- V-E4: repayTo will be paid ----------------------------------------------------------------
+    // V-T2 already holds ticket.repayTo to the node's own padded address; the source token's
+    // blocklist view (USDC isBlacklisted, USDT isBlackListed) is not read yet.
+    pass('V-E4', 'not checked: the blocklist view of the input token is not read yet (CAN-2151); repayTo is the node\'s own, held by V-T2', 'skipped');
 
     // -- V-E5: the filler can fill ---------------------------------------------------------------
     const filled = await this.chainRead('V-E5', 'OTHER', () => destination.router.filled(digest));
