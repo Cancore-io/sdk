@@ -2,6 +2,9 @@ import {
   FILL_TICKET_DOMAIN,
   FILL_TICKET_TYPES,
   FILLER_PROTOCOL_DOMAIN,
+  fillerIdHash,
+  hashFillerMessage,
+  repayToFromEvm,
   TICKET_INTENT_TYPES,
   TICKET_RECEIPT_TYPES,
   hashTypedData,
@@ -16,6 +19,7 @@ import type { FillerEvent } from '../events';
 import { createFiller, type Filler, type TicketOfferDecision } from '../filler';
 import { recoverAddress, type FillSigner } from '../signer';
 import { FillerProtocolClient } from '../protocol/client';
+import { createSealer } from '../protocol/envelope';
 import type { TicketRecord, TicketState } from '../store';
 import type { TicketVerifier } from './checks';
 import { TicketDesk } from './desk';
@@ -33,6 +37,8 @@ import {
 } from '../testing';
 
 const QUOTE_KEY: Hex = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
+/** The message key (today the quote key): signs the consent, the receipt and every envelope. */
+const quote = createTestTypedDataSigner(QUOTE_KEY);
 const FILL_KEY: Hex = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
 const TICKET_KEY: Hex = '0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6';
 const STRANGER_KEY: Hex = '0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a';
@@ -80,6 +86,7 @@ function world(clock: FakeClock) {
 
 interface Options {
   fillSigner?: FillSigner;
+  messageSigner?: typeof quote;
   clock?: FakeClock;
   store?: InMemoryFillerStore;
   hook?: (offer: TicketOffer) => Promise<TicketOfferDecision>;
@@ -101,7 +108,7 @@ async function harness(options: Options = {}) {
     fillerId: FILLER,
     gatewaySigner: gateway.address,
     ticketSigners: [ticketSigner.address],
-    quoteSigner: createTestTypedDataSigner(QUOTE_KEY),
+    quoteSigner: options.messageSigner ?? quote,
     fillSigners: { 'eip155:1': options.fillSigner ?? fill },
     rpc: { 'eip155:56': [w.src], 'eip155:1': [w.dst] },
     chains: { 'eip155:56': { router: SRC_ROUTER, ...POLICY }, 'eip155:1': { router: DST_ROUTER, ...POLICY } },
@@ -131,6 +138,7 @@ async function harness(options: Options = {}) {
 
   const offerFrame = (over: Record<string, unknown> = {}) => ({
     type: 'ticket.offer',
+    id: 'g-offer',
     fillerId: FILLER,
     orderHash: w.orderHash,
     attempt: 0,
@@ -143,7 +151,9 @@ async function harness(options: Options = {}) {
   });
   const ticketOf = (offer: { validFrom: string; validUntil: string; attempt: number }, over: Record<string, unknown> = {}) => ({
     orderHash: w.orderHash,
-    filler: fill.address,
+    fillerId: fillerIdHash(FILLER),
+    deliveryKey: fill.address.toLowerCase() as Hex,
+    repayTo: repayToFromEvm(fill.address),
     attempt: offer.attempt,
     validFrom: offer.validFrom,
     validUntil: offer.validUntil,
@@ -176,13 +186,19 @@ async function consent(h: Harness, over: Record<string, unknown> = {}) {
 }
 
 describe('the full path: offer → intent → ack → issued → checks → receipt', () => {
-  test('the intent repeats the offer and is signed by the fill key; the receipt signs hashTicket and keccak256(ticketSig)', async () => {
+  test('the intent repeats the offer, names the delivery key and repayTo and is signed by the message key; the receipt signs hashTicket and keccak256(ticketSig)', async () => {
     const h = await harness();
     const { offer, intent } = await consent(h);
     expect(h.hookCalls).toHaveLength(1);
-    expect(intent).toMatchObject({ orderHash: h.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil });
-    const intentDigest = hashTypedData({ domain: FILLER_PROTOCOL_DOMAIN, types: TICKET_INTENT_TYPES, primaryType: 'TicketIntent', message: { orderHash: h.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil } });
-    expect(recoverAddress(intentDigest, intent!.sig as Hex)).toBe(fill.address.toLowerCase());
+    const deliveryKey = fill.address.toLowerCase();
+    const repayTo = repayToFromEvm(fill.address);
+    expect(intent).toMatchObject({ orderHash: h.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, fillerId: FILLER, deliveryKey, repayTo });
+    const intentDigest = hashTypedData({
+      domain: FILLER_PROTOCOL_DOMAIN, types: TICKET_INTENT_TYPES, primaryType: 'TicketIntent',
+      message: { orderHash: h.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, fillerId: FILLER, deliveryKey, repayTo },
+    });
+    expect(recoverAddress(intentDigest, intent!.sig as Hex)).toBe(quote.address.toLowerCase());
+    expect(recoverAddress(hashFillerMessage(intent!), intent!.msgSig as Hex)).toBe(quote.address.toLowerCase());
     expect(await h.record()).toMatchObject({ state: 'intent-acked', intentAck: { intentHash: `0x${'11'.repeat(32)}` } });
 
     const issued = await h.issuedFrame(offer);
@@ -193,7 +209,8 @@ describe('the full path: offer → intent → ack → issued → checks → rece
     const ticketSigHash = `0x${bytesToHex(keccak_256(hexToBytes(issued.ticketSig.slice(2))))}`;
     expect(receipt).toMatchObject({ orderHash: h.w.orderHash, attempt: 0, ticketHash, ticketSigHash });
     const receiptDigest = hashTypedData({ domain: FILLER_PROTOCOL_DOMAIN, types: TICKET_RECEIPT_TYPES, primaryType: 'TicketReceipt', message: { ticketHash, ticketSigHash } });
-    expect(recoverAddress(receiptDigest, receipt!.sig as Hex)).toBe(fill.address.toLowerCase());
+    expect(recoverAddress(receiptDigest, receipt!.sig as Hex)).toBe(quote.address.toLowerCase());
+    expect(recoverAddress(hashFillerMessage(receipt!), receipt!.msgSig as Hex)).toBe(quote.address.toLowerCase());
     expect(h.sent('ticket.decline')).toHaveLength(0);
 
     const stored = await h.record();
@@ -306,9 +323,13 @@ describe('the offer stage: the hook decides, before acceptBy', () => {
     await h.filler.stop();
   });
 
-  test('a fill key that cannot sign the consent: decline OTHER, not silence', async () => {
-    const broken: FillSigner = { ...fill, signTypedData: async () => Promise.reject(new Error('KMS unavailable')) };
-    const h = await harness({ fillSigner: broken });
+  test('a message key that cannot sign the consent: decline OTHER, not silence', async () => {
+    // Fails on the consent only, so the login and the envelopes still go out.
+    const broken: typeof quote = {
+      address: quote.address,
+      signTypedData: async (input) => (input.primaryType === 'TicketIntent' ? Promise.reject(new Error('KMS unavailable')) : quote.signTypedData(input)),
+    };
+    const h = await harness({ messageSigner: broken });
     await consent(h);
     expect(h.sent('ticket.intent')).toHaveLength(0);
     expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ reason: 'OTHER', detail: 'the consent could not be signed' })]);
@@ -456,7 +477,7 @@ describe('a restart loses no ticket and sends nothing twice', () => {
     const h = await restartWith(async (h1) => {
       const offer = h1.offerFrame();
       const issued = await h1.issuedFrame(offer);
-      return { state: 'checking', offer: offer as unknown as TicketOffer, issued: issued as never, issuedAtMs: h1.clock.now(), intent: { type: 'ticket.intent', id: 'x', orderHash: h1.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, sig: '0x' } };
+      return { state: 'checking', offer: offer as unknown as TicketOffer, issued: issued as never, issuedAtMs: h1.clock.now(), intent: { type: 'ticket.intent', id: 'x', fillerId: FILLER, sentAt: h1.clock.now(), msgSig: '0x', orderHash: h1.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, deliveryKey: fill.address.toLowerCase() as Hex, repayTo: repayToFromEvm(fill.address), sig: '0x' } };
     });
     expect(h.sent('ticket.receipt')).toHaveLength(1);
     expect((await h.record())!.state).toBe('receipted');
@@ -467,7 +488,7 @@ describe('a restart loses no ticket and sends nothing twice', () => {
     const h = await restartWith(async (h1) => {
       const offer = h1.offerFrame();
       const issued = await h1.issuedFrame(offer);
-      return { state: 'checking', offer: offer as unknown as TicketOffer, issued: issued as never, intent: { type: 'ticket.intent', id: 'x', orderHash: h1.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, sig: '0x' } };
+      return { state: 'checking', offer: offer as unknown as TicketOffer, issued: issued as never, intent: { type: 'ticket.intent', id: 'x', fillerId: FILLER, sentAt: h1.clock.now(), msgSig: '0x', orderHash: h1.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, deliveryKey: fill.address.toLowerCase() as Hex, repayTo: repayToFromEvm(fill.address), sig: '0x' } };
     });
     expect(h.sent('ticket.receipt')).toHaveLength(0);
     expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ reason: 'TICKET_ISSUED_LATE', detail: expect.stringMatching(/unverifiable/) })]);
@@ -547,10 +568,12 @@ describe('no fill without a receipt (T-22): receipted() is the only gate', () =>
     const events = createRecordingEventSink();
     const desk = new TicketDesk({
       store,
-      protocol: new FillerProtocolClient({ store, clock, logger, events, restPollIntervalMs: 2_000 }),
+      protocol: new FillerProtocolClient({ store, clock, logger, events, restPollIntervalMs: 2_000, seal: createSealer({ fillerId: FILLER, messageSigner: quote, clock }) }),
       verifier: {} as TicketVerifier,
       chains: {} as FillerChains,
       fillSigners: { 'eip155:1': fill },
+      fillerId: FILLER,
+      messageSigner: quote,
       clock,
       logger,
       events,

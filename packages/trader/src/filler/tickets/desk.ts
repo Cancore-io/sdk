@@ -36,7 +36,7 @@
  *   a signer that fails. The kill-switch declines `PAUSED` without the hook.
  * - **Restart.** After every login the open attempts are resumed from the store.
  */
-import type { DeclineReason, Hex, OrderSettled, PenaltyApplied, TicketDecline, TicketExpired, TicketIssued, TicketOffer } from '@cancore/contracts';
+import type { DeclineReason, Hex, OrderSettled, PenaltyApplied, TicketDecline, TicketExpired, TicketIntentMessage, TicketIssued, TicketOffer, TicketReceiptMessage } from '@cancore/contracts';
 import { EXPIRED_RESULTS } from '@cancore/contracts';
 import type { FillerChains } from '../chain';
 import type { EvmChainId } from '../chains';
@@ -44,7 +44,7 @@ import type { EventSink, FillerEvent, FillerStage } from '../events';
 import type { Delivery, FillerProtocolClient } from '../protocol/client';
 import type { TicketAction } from '../protocol/rest';
 import type { Clock, Logger } from '../runtime';
-import type { FillSigner } from '../signer';
+import type { FillSigner, QuoteSigner } from '../signer';
 import type { FillerStore, TicketRecord, TicketState } from '../store';
 import type { TicketVerifier } from './checks';
 import { identityFor, signTicketIntent, signTicketReceipt } from './terms';
@@ -69,6 +69,11 @@ export interface TicketDeskOptions {
   /** For each destination's `sendGuardSec`. */
   chains: FillerChains;
   fillSigners: { readonly [chain: EvmChainId]: FillSigner };
+  fillerId: string;
+  /** The filler's Canton party, the payee of a Canton source. */
+  cantonParty?: string;
+  /** The message key: signs the consent and the receipt (protocol T-3). */
+  messageSigner: QuoteSigner;
   clock: Clock;
   logger: Logger;
   events: EventSink;
@@ -280,8 +285,8 @@ export class TicketDesk {
     const decline = (reason: OfferDeclineReason, detail: string) => this.decline(orderHash, attempt, ['offered'], reason, detail);
     if (clock.now() > offer.acceptBy) return this.giveUp(orderHash, attempt, 'acceptBy passed before an answer');
     if ((await this.options.store.getOverrides()).paused) return decline('PAUSED', 'the kill-switch is on');
-    const identity = identityFor(offer.order, this.options.fillSigners);
-    if (!identity) return decline('OTHER', 'no fill key of this filler for the order');
+    const identity = identityFor(offer.order, this.options);
+    if (!identity) return decline('OTHER', 'no fill key or payee of this filler for the order');
 
     const decision = await this.askHook(offer);
     if (clock.now() > offer.acceptBy) return this.giveUp(orderHash, attempt, 'the hook answered after acceptBy');
@@ -289,7 +294,7 @@ export class TicketDesk {
 
     let intent;
     try {
-      intent = await signTicketIntent(offer, identity, this.options.nextId());
+      intent = await this.options.protocol.seal<TicketIntentMessage>(await signTicketIntent(offer, identity, this.options.messageSigner, this.options.nextId()));
     } catch (error) {
       logger.error('tickets: the intent could not be signed', { orderHash, attempt, error: String(error) });
       return decline('OTHER', 'the consent could not be signed');
@@ -327,7 +332,7 @@ export class TicketDesk {
 
   /** No answer can reach filler-gateway in time: the attempt ends here, nothing is sent. */
   private async giveUp(orderHash: Hex, attempt: number, why: string): Promise<void> {
-    const decline: TicketDecline = { type: 'ticket.decline', id: this.options.nextId(), orderHash, attempt, reason: 'OTHER', detail: why };
+    const decline = await this.options.protocol.seal<TicketDecline>({ type: 'ticket.decline', id: this.options.nextId(), orderHash, attempt, reason: 'OTHER', detail: why });
     const moved = await this.move(orderHash, attempt, ['offered'], (record) => ({ ...record, state: 'declined', decline, sentAtMs: this.options.clock.now(), unsent: true }));
     if (moved) this.options.logger.warn('tickets: offer left unanswered', { orderHash, attempt, why });
   }
@@ -350,7 +355,7 @@ export class TicketDesk {
       this.options.logger.error('tickets: the checks failed to run', { orderHash, attempt, error: String(error) });
       verdict = { ok: false, reason: 'OTHER', detail: 'the checks failed to run', checks: [] };
     }
-    const identity = identityFor(record.offer.order, this.options.fillSigners);
+    const identity = identityFor(record.offer.order, this.options);
     if (!verdict.ok || record.issued.form !== 'evm' || !identity) {
       return this.decline(orderHash, attempt, ['checking', 'issued'], verdict.reason ?? 'OTHER', verdict.detail ?? 'refused');
     }
@@ -359,7 +364,7 @@ export class TicketDesk {
     }
     let receipt;
     try {
-      receipt = await signTicketReceipt(record.issued.ticket, record.issued.ticketSig, identity, this.options.nextId());
+      receipt = await this.options.protocol.seal<TicketReceiptMessage>(await signTicketReceipt(record.issued.ticket, record.issued.ticketSig, this.options.messageSigner, this.options.nextId()));
     } catch (error) {
       this.options.logger.error('tickets: the receipt could not be signed', { orderHash, attempt, error: String(error) });
       return this.decline(orderHash, attempt, ['checking', 'issued'], 'OTHER', 'the receipt could not be signed');
@@ -373,7 +378,7 @@ export class TicketDesk {
 
   /** `validUntil − sendGuard`: the last moment a receipt may bind the filler (V-T3, T-29). */
   private receiptDeadline(record: TicketRecord): number {
-    const identity = record.offer ? identityFor(record.offer.order, this.options.fillSigners) : undefined;
+    const identity = record.offer ? identityFor(record.offer.order, this.options) : undefined;
     const guardSec = identity ? this.options.chains.get(identity.chain)?.config.sendGuardSec : undefined;
     if (guardSec === undefined) return 0;
     return validUntilMs(record.issued) - guardSec * 1000;
@@ -398,7 +403,7 @@ export class TicketDesk {
 
   /** Moves the attempt to `declined` from one of `from`, then sends the decline. */
   private async decline(orderHash: Hex, attempt: number, from: readonly TicketState[], reason: DeclineReason, detail: string, when?: (record: TicketRecord) => boolean): Promise<void> {
-    const decline: TicketDecline = { type: 'ticket.decline', id: this.options.nextId(), orderHash, attempt, reason, detail: detail.slice(0, 256) };
+    const decline = await this.options.protocol.seal<TicketDecline>({ type: 'ticket.decline', id: this.options.nextId(), orderHash, attempt, reason, detail: detail.slice(0, 256) });
     let deadlineMs = 0;
     const moved = await this.move(
       orderHash,

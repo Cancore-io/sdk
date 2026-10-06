@@ -8,10 +8,11 @@
  * Before `auth.ok` the session sends nothing but `auth.response`, and `send`
  * refuses every frame (the caller falls back to REST or drops it).
  */
-import { FILLER_AUTH_TYPES, FILLER_PROTOCOL_DOMAIN, PROTOCOL_VERSION, type F2SMessage, type Hex } from '@cancore/contracts';
+import { FILLER_AUTH_TYPES, FILLER_PROTOCOL_DOMAIN, PROTOCOL_VERSION, type AuthResponse, type F2SMessage, type Hex } from '@cancore/contracts';
 import { GatewayError, UnsupportedVersionError } from '../errors';
 import type { Cancel, Clock, FillerSocket, Logger, WebSocketFactory } from '../runtime';
 import { signTypedDataChecked, type QuoteSigner } from '../signer';
+import type { Sealer, Unsealed } from './envelope';
 import { gatewayErrorOf, verifyGatewayText, type VerifiedFrame } from './frames';
 
 /** WebSocket close codes the SDK uses. */
@@ -63,6 +64,8 @@ export interface SessionOptions {
   fillerId: string;
   gatewaySigner: Hex;
   quoteSigner: QuoteSigner;
+  /** Seals every frame the session sends itself (`auth.response`, `ping`, `pong`) with the message key. */
+  seal: Sealer;
   webSocket: WebSocketFactory;
   clock: Clock;
   logger: Logger;
@@ -116,8 +119,8 @@ export class GatewaySession {
   }
 
   /**
-   * Sends one filler → filler-gateway frame on the ready session. Returns false
-   * — and sends nothing — before `auth.ok`, while reconnecting and after `stop()`.
+   * Sends one sealed filler → filler-gateway frame on the ready session. Returns
+   * false — and sends nothing — before `auth.ok`, while reconnecting and after `stop()`.
    */
   send(frame: F2SMessage): boolean {
     if (this.current !== 'ready' || !this.socket) return false;
@@ -187,7 +190,7 @@ export class GatewaySession {
 
     switch (frame.type) {
       case 'ping':
-        if (typeof frame.id === 'string') this.send({ type: 'pong', re: frame.id });
+        if (typeof frame.id === 'string') void this.sealAndSend({ type: 'pong', id: this.options.nextId(), re: frame.id });
         return;
       case 'pong':
       case 'auth.challenge':
@@ -242,17 +245,34 @@ export class GatewaySession {
       if (generation === this.generation) this.closeSocket(CLOSE_NORMAL, 'signer failed');
       return;
     }
-    if (generation !== this.generation || this.current !== 'authenticating') return;
-    this.socket?.send(
-      JSON.stringify({
+    let response: AuthResponse;
+    try {
+      response = await this.options.seal<AuthResponse>({
         type: 'auth.response',
         id: this.options.nextId(),
-        fillerId: this.options.fillerId,
         keyAddress: this.options.quoteSigner.address.toLowerCase() as Hex,
         protocolVersion: PROTOCOL_VERSION,
         sig,
-      } satisfies F2SMessage),
-    );
+      });
+    } catch (error) {
+      this.options.logger.error('filler-gateway: message key failed on the auth.response envelope', { error: String(error) });
+      if (generation === this.generation) this.closeSocket(CLOSE_NORMAL, 'signer failed');
+      return;
+    }
+    if (generation !== this.generation || this.current !== 'authenticating') return;
+    this.socket?.send(JSON.stringify(response));
+  }
+
+  /** Seals a frame of the session's own (`ping`, `pong`) and sends it if the session is still ready. */
+  private async sealAndSend(message: Unsealed): Promise<void> {
+    let sealed: F2SMessage;
+    try {
+      sealed = await this.options.seal(message);
+    } catch (error) {
+      this.options.logger.warn('filler-gateway: message key failed on an envelope', { type: message.type, error: String(error) });
+      return;
+    }
+    this.send(sealed);
   }
 
   private onAuthOk(frame: VerifiedFrame['frame']): void {
@@ -273,7 +293,7 @@ export class GatewaySession {
   /**
    * Every interval: if nothing arrived from filler-gateway for
    * `heartbeatMisses` intervals, close and reconnect; otherwise send a `ping`
-   * (an unsigned filler → filler-gateway frame). filler-gateway pings too, and
+   * (sealed like every filler → filler-gateway frame). filler-gateway pings too, and
    * any frame it sends counts as alive.
    */
   private scheduleHeartbeat(generation: number): void {
@@ -286,7 +306,7 @@ export class GatewaySession {
           this.closeSocket(CLOSE_HEARTBEAT, 'heartbeat missed');
           return;
         }
-        this.send({ type: 'ping', id: this.options.nextId() });
+        void this.sealAndSend({ type: 'ping', id: this.options.nextId() });
         this.scheduleHeartbeat(generation);
       }),
     );

@@ -21,7 +21,7 @@
  * stand (CAN-1876 puts filler-gateway into CI).
  */
 import { connect } from 'node:net';
-import { FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, type Hex, type OrderJson } from '@cancore/contracts';
+import { FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, fillerIdHash, repayToFromEvm, type Hex, type OrderJson } from '@cancore/contracts';
 import { hashOrder } from '../src/filler/chain';
 import { createFiller, type Filler, type TicketOfferDecision } from '../src/filler/filler';
 import type { WebSocketFactory } from '../src/filler/runtime';
@@ -187,7 +187,8 @@ live('the ticket flow against the real filler-gateway', () => {
 
     const validFrom = nowS;
     const validUntil = nowS + 300n;
-    const ticket = { orderHash, filler: fill.address, attempt: 0, validFrom: String(validFrom), validUntil: String(validUntil) };
+    // Variant A ticket (CAN-2139): matches only a stand router built from CAN-2140 on.
+    const ticket = { orderHash, fillerId: fillerIdHash(FILLER_ID!), deliveryKey: fill.address.toLowerCase(), repayTo: repayToFromEvm(fill.address), attempt: 0, validFrom: String(validFrom), validUntil: String(validUntil) };
     const ticketSig = await ticketSigner.signTypedData({ domain: FILL_TICKET_DOMAIN, types: FILL_TICKET_TYPES, primaryType: 'FillTicket', message: ticket });
     const fromId = String(Date.now() - 1);
     const command = {

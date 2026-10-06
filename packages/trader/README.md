@@ -78,7 +78,11 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 `start()` opens one WebSocket session per replica to `gatewayUrl` (`/v1`, protocol §3.1) and keeps it up.
 
 - **Login.** On `auth.challenge` the quote key signs `FillerAuth{fillerId, nonce, expiresAt}` and the SDK
-  sends `auth.response` with `protocolVersion: "1"`. Until `auth.ok` it sends nothing else. `start()`
+  sends `auth.response` with `protocolVersion: "1"`. Until `auth.ok` it sends nothing else.
+- **Every filler message is signed.** Each frame and REST body the SDK sends — `auth.response`, `quote`,
+  `quote.reconfirm.reply` (a decline too), `ping`, `pong` and the ticket actions — carries `fillerId`, `sentAt`
+  and `msgSig`: the quote key's signature over `FillerMessage{keccak256(JCS(message without msgSig))}`
+  (protocol §3.4). The quote key is the filler's message key until the signer interface is reworked (CAN-2151). `start()`
   resolves at the first `auth.ok`, rejects with `UnsupportedVersionError` when filler-gateway does not serve
   v1 (not retried), and with `FillerStoppedError` when `stop()` comes first. Any other refusal is retried.
 - **Every filler-gateway frame is verified** before anything reads it: `sig` must recover, over
@@ -156,8 +160,11 @@ offered ──► intent-sent ──► intent-acked ──► checking ──�
    └─────────────┴───────────────┴──► declined          (any) ──► expired
 ```
 
-- **Offer.** `ticket.offer` → `onTicketOffer(offer)`. `'accept'` signs `TicketIntent` with the offer's values
-  (the fill key of the delivery chain) and sends `ticket.intent`; `{ decline: reason }` sends `ticket.decline`
+- **Offer.** `ticket.offer` → `onTicketOffer(offer)`. `'accept'` signs `TicketIntent` with the offer's values,
+  the `fillerId`, the `deliveryKey` (the fill key of the EVM destination; the zero address for a Canton
+  destination) and the `repayTo` (the fill key's address on an EVM source, padded — the source chain's key, else
+  the destination's; the hash of `ledger.party` on a Canton source), with the message key, and sends
+  `ticket.intent`; `{ decline: reason }` sends `ticket.decline`
   with `NO_INVENTORY`, `RISK_LIMIT`, `PRICE_MOVED`, `PAUSED` or `OTHER` (plain `'decline'` is `OTHER`). A hook
   that throws, or is still silent `tickets.offerReplyMarginMs` (250 ms) before `acceptBy`, declines `OTHER`
   (T-21: silence costs more than a decline). The kill-switch declines `PAUSED` without asking. Nothing is sent
@@ -184,13 +191,13 @@ They stop at the first failure, and the failure is the `ticket.decline` reason:
 | Check | What | Decline |
 |---|---|---|
 | V-T4 | `ticket.issued` arrived by `acceptBy + tickets.deltaIssueMs` | `TICKET_ISSUED_LATE` |
-| V-T2 | the ticket repeats the offer (`orderHash`, `attempt`, `validFrom`, `validUntil`) and names this filler | `TICKET_MISMATCH` |
+| V-T2 | the ticket repeats the offer (`orderHash`, `attempt`, `validFrom`, `validUntil`), names this filler's `fillerId`, and carries the `deliveryKey` and `repayTo` of its signed `ticket.intent` (T-15) | `TICKET_MISMATCH` |
 | V-T3 | `validUntil < fillDeadline`; `validUntil − validFrom ≥ minTicketTtlSec`; at least `sendGuardSec` left | `TICKET_BEYOND_DEADLINE`, `TICKET_TTL_TOO_SHORT` |
 | V-E1 | `orderHash` is the order's digest in the source router's domain | `ESCROW_MISMATCH` |
 | V-E2 | `intents(orderHash).status == Opened`, read `openConfirmations` deep on the source | `ESCROW_NOT_OPEN` |
 | V-E3 | `refundAfter − fillDeadline ≥ requiredProofWindowSec` of the destination | `PROOF_WINDOW_TOO_SHORT` |
 | V-T1 | the ticket signer is in `ticketSigners` of the config and `ticketSigners(signer)` on the destination router | `TICKET_SIGNER_UNKNOWN` |
-| V-E4 | `repayTo` will be paid | not checked yet: the pinned `FillTicket` carries no `repayTo` |
+| V-E4 | `repayTo` will be paid: the input token's blocklist view on the source is false for it | not read yet (CAN-2151): reported `skipped`; that `repayTo` is the node's own is held by V-T2 |
 | V-E5 | not `filled` on the destination; balance and allowance ≥ `amountOut`, gas ≥ `minGasWei` | `OTHER` (`already-filled`), `NO_INVENTORY` |
 
 A fact that cannot be read declines with the code of the check that needed it (`unverifiable: …` in the
@@ -210,8 +217,8 @@ checks land; V1 does not check the draw.
   `roundHalfEven(T × 10 000 / (10 000 + feeBps))` in 10⁻¹⁰ units (`1000.0` at `feeRate 0.003` →
   `997.0089730808`, one unit above the EVM formula), exported as `cantonFillerPayout`. `quote.reconfirm`
   uses the same split by the order's origin.
-- **Filler address.** `FillerQuote.filler` is the fill key of the destination chain; for a Canton destination,
-  the fill key of the source chain.
+- **Filler id.** `FillerQuote` names the filler's `fillerId` (protocol §3.3); it carries no address. A request is
+  quoted only when the filler has a fill key on the destination chain (for a Canton destination, on the source).
 - **Not sent** (stage event `quote.skipped` with the reason): at or after `windowCloseAt` — checked before
   the hook, after it and after signing; `validUntil × 1000 < windowCloseAt + quoteTtlMs` (equality is fine);
   `inputAmount` below the source router's `minInput` (T-16, read off the pinned source router; when it cannot
@@ -245,8 +252,9 @@ interface TransactionSigner {
 interface FillSigner extends TypedDataSigner, TransactionSigner {}
 ```
 
-Keys are separate by purpose: the **quote** key signs `FillerAuth` and `FillerQuote` only; the **fill** key of
-each EVM chain signs `TicketIntent` / `TicketReceipt` and the `fill` / `settle` transactions; the **staking**
+Keys are separate by purpose: the **quote** key is the message key — it signs `FillerAuth`, `FillerQuote`,
+`TicketIntent`, `TicketReceipt` and the envelope `msgSig` of every message; the **fill** key of each EVM chain
+sends the `fill` / `settle` transactions and is the `deliveryKey` of its tickets; the **staking**
 key signs one `StakeBinding` and is passed to `bindStake` only. `createFiller` refuses a fill key equal to the
 quote key.
 

@@ -37,6 +37,7 @@ import {
 import { isEvmChainId, type EvmChainId } from './chains';
 import type { EventSink, FillerStage } from './events';
 import type { Delivery, FillerProtocolClient } from './protocol/client';
+import type { Unsealed } from './protocol/envelope';
 import type { Clock, Logger } from './runtime';
 import { signTypedDataChecked, type FillSigner, type QuoteSigner } from './signer';
 import type { FillerStore, StoredQuote } from './store';
@@ -148,6 +149,8 @@ export interface QuoteDecisionInput {
 export type MinInputSource = (chain: string, token: unknown) => Promise<bigint | undefined>;
 
 export interface QuoteDeskOptions {
+  /** The filler's id: the `fillerId` every `FillerQuote` names. */
+  fillerId: string;
   quoteSigner: QuoteSigner;
   fillSigners: { readonly [chain: EvmChainId]: FillSigner };
   store: FillerStore;
@@ -221,7 +224,7 @@ export class QuoteDesk {
 
     const parsed = this.parseRequest(request);
     if (typeof parsed === 'string') return skip(parsed === 'malformed' ? 'malformed' : parsed);
-    const { total, windowCloseAt, quoteTtlMs, filler, payoutOf } = parsed;
+    const { total, windowCloseAt, quoteTtlMs, payoutOf } = parsed;
 
     if (this.options.clock.now() >= windowCloseAt) return skip('late');
     if ((await this.options.store.getOverrides()).paused) return skip('paused');
@@ -253,19 +256,18 @@ export class QuoteDesk {
     if (!this.options.protocol.connected) return skip('disconnected');
 
     const nonce = await this.options.store.quotes.nextNonce(requestId, this.options.quoteSigner.address.toLowerCase() as Hex);
-    const { message, quoteHash } = await this.sign(requestId, filler, amountOut, validUntil, nonce);
-    if (this.options.clock.now() >= windowCloseAt) return skip('late', { after: 'signing' });
-
-    const quote: QuoteMessage = {
+    const { message, quoteHash } = await this.sign(requestId, amountOut, validUntil, nonce);
+    const quote = await this.options.protocol.seal<QuoteMessage>({
       type: 'quote',
       id: this.options.nextId(),
       requestId,
-      filler,
       amountOut: amountOut.toString(),
       validUntil: validUntil.toString(),
       nonce: nonce.toString(),
       sig: message.sig,
-    };
+    });
+    if (this.options.clock.now() >= windowCloseAt) return skip('late', { after: 'signing' });
+
     const stored: StoredQuote = { requestId, quoteHash, quote, sentAtMs: this.options.clock.now() };
     await this.options.store.quotes.recordQuote(stored);
     if (!this.options.protocol.send(quote)) return skip('disconnected', { stored: true });
@@ -317,8 +319,7 @@ export class QuoteDesk {
     if (amountOut !== minReceived) return decline('price-changed');
     // T-12: a Canton source pays by the ledger formula, never the EVM one.
     const payoutOf = origin >= CANTON_ORIGIN_FLOOR ? cantonFillerPayout : evmFillerPayout;
-    const filler = this.fillerForOrder(origin, order.destination);
-    if (!filler) return decline('no-fill-key');
+    if (!this.fillerForOrder(origin, order.destination)) return decline('no-fill-key');
     if ((await this.options.store.getOverrides()).paused) return decline('paused');
 
     const hook = this.options.onReconfirm();
@@ -336,8 +337,8 @@ export class QuoteDesk {
 
     const validUntil = BigInt(Math.ceil(replyBy / 1000) + ticketTtl + this.options.reconfirmMarginS);
     const nonce = await this.options.store.quotes.nextNonce(requestId, this.options.quoteSigner.address.toLowerCase() as Hex);
-    const { message, quoteHash } = await this.sign(requestId, filler, minReceived, validUntil, nonce);
-    const reply: QuoteReconfirmReply = {
+    const { message, quoteHash } = await this.sign(requestId, minReceived, validUntil, nonce);
+    const reply = {
       type: 'quote.reconfirm.reply',
       id: this.options.nextId(),
       orderHash,
@@ -345,15 +346,20 @@ export class QuoteDesk {
       validUntil: validUntil.toString(),
       nonce: nonce.toString(),
       sig: message.sig,
-    };
-    // The reconfirmed price is a quote like any other: firm until validUntil (T-4).
+    } as const;
+    // The reconfirmed price is a quote like any other: firm until validUntil (T-4). The stored
+    // quote carries the envelope of the reply that sent its FillerQuote.
+    const sealed = await this.options.protocol.seal<QuoteReconfirmReply>(reply);
     await this.options.store.quotes.recordQuote({
       requestId,
       quoteHash,
-      quote: { type: 'quote', id: reply.id, requestId, filler, amountOut: minReceived.toString(), validUntil: reply.validUntil!, nonce: reply.nonce!, sig: message.sig },
+      quote: {
+        type: 'quote', id: reply.id, fillerId: sealed.fillerId, sentAt: sealed.sentAt, msgSig: sealed.msgSig,
+        requestId, amountOut: minReceived.toString(), validUntil: reply.validUntil, nonce: reply.nonce, sig: message.sig,
+      },
       sentAtMs: this.options.clock.now(),
     });
-    return this.reply(reply, replyBy, 'accepted');
+    return this.send(sealed, replyBy, 'accepted');
   }
 
   // -- reconciliation ---------------------------------------------------------
@@ -387,7 +393,7 @@ export class QuoteDesk {
 
   private parseRequest(
     request: QuoteRequest,
-  ): { total: bigint; windowCloseAt: number; quoteTtlMs: number; filler: Hex; payoutOf: (total: bigint, feeBps: number) => bigint } | QuoteSkipReason {
+  ): { total: bigint; windowCloseAt: number; quoteTtlMs: number; payoutOf: (total: bigint, feeBps: number) => bigint } | QuoteSkipReason {
     try {
       requestIdHash(request.requestId);
     } catch {
@@ -401,35 +407,39 @@ export class QuoteDesk {
     if (!Number.isSafeInteger(request.feeBps) || request.feeBps < 0 || request.feeBps > 0xffff) return 'malformed';
     const cantonSource = route.src.startsWith('canton:');
     if (!cantonSource && !isEvmChainId(route.src)) return 'malformed';
-    // The filler address the ticket would name (§3.2): the fill key of an EVM
-    // destination; for a Canton destination, the address registered on the (EVM) source router.
+    // No quote without a key to act on the order: the fill key of an EVM
+    // destination; for a Canton destination, the one of the (EVM) source, which settles.
     const chain = isEvmChainId(route.dst) ? route.dst : isEvmChainId(route.src) ? route.src : undefined;
-    const signer = chain ? this.options.fillSigners[chain] : undefined;
-    if (!signer) return 'no-fill-key';
+    if (!chain || !this.options.fillSigners[chain]) return 'no-fill-key';
     // T-12: a Canton source pays by the ledger formula, never the EVM one.
     const payoutOf = cantonSource ? cantonFillerPayout : evmFillerPayout;
-    return { total, windowCloseAt, quoteTtlMs, filler: signer.address.toLowerCase() as Hex, payoutOf };
+    return { total, windowCloseAt, quoteTtlMs, payoutOf };
   }
 
-  /** The filler address for an opened EVM-source order: by `destination` (`bytes32(chainId)` for EVM, §3.7). */
+  /** The fill key's address for an opened EVM-source order: by `destination` (`bytes32(chainId)` for EVM, §3.7). */
   private fillerForOrder(origin: bigint, destination: unknown): Hex | undefined {
     const dst = typeof destination === 'string' && /^0x[0-9a-fA-F]{64}$/.test(destination) ? BigInt(destination) : undefined;
     const chain: EvmChainId = dst !== undefined && dst > 0n && dst < CANTON_ORIGIN_FLOOR ? `eip155:${dst}` : `eip155:${origin}`;
     return this.options.fillSigners[chain]?.address.toLowerCase() as Hex | undefined;
   }
 
-  private async sign(requestId: string, filler: Hex, amountOut: bigint, validUntil: bigint, nonce: bigint): Promise<{ message: { sig: Hex }; quoteHash: Hex }> {
+  private async sign(requestId: string, amountOut: bigint, validUntil: bigint, nonce: bigint): Promise<{ message: { sig: Hex }; quoteHash: Hex }> {
     const input: TypedDataInput = {
       domain: FILLER_PROTOCOL_DOMAIN,
       types: FILLER_QUOTE_TYPES,
       primaryType: 'FillerQuote',
-      message: { requestId: requestIdHash(requestId), filler, amountOut, validUntil, nonce },
+      message: { requestId: requestIdHash(requestId), fillerId: this.options.fillerId, amountOut, validUntil, nonce },
     };
     const sig = await signTypedDataChecked(this.options.quoteSigner, input);
     return { message: { sig }, quoteHash: hashTypedData(input) };
   }
 
-  private reply(reply: QuoteReconfirmReply, replyBy: number, outcome: string): { reply: QuoteReconfirmReply } | { skipped: 'late' | 'disconnected' } {
+  /** Seals a reply (a decline is signed by its envelope alone) and sends it before `replyBy`. */
+  private async reply(reply: Unsealed<QuoteReconfirmReply>, replyBy: number, outcome: string): Promise<{ reply: QuoteReconfirmReply } | { skipped: 'late' | 'disconnected' }> {
+    return this.send(await this.options.protocol.seal<QuoteReconfirmReply>(reply), replyBy, outcome);
+  }
+
+  private send(reply: QuoteReconfirmReply, replyBy: number, outcome: string): { reply: QuoteReconfirmReply } | { skipped: 'late' | 'disconnected' } {
     if (this.options.clock.now() >= replyBy) return { skipped: 'late' };
     if (!this.options.protocol.send(reply)) return { skipped: 'disconnected' };
     this.stage('reconfirm.answered', undefined, { orderHash: reply.orderHash, accept: reply.accept, outcome });

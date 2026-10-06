@@ -120,11 +120,11 @@ describe('InMemoryFillerStore: idempotent writes', () => {
   test('a quote and its ack are each recorded once', async () => {
     const store = new InMemoryFillerStore();
     const quoteHash: Hex = `0x${'11'.repeat(32)}`;
-    const quote = { type: 'quote', id: 'q1', requestId: 'r1', filler: FILLER, amountOut: '1', validUntil: '2', nonce: '1', sig: '0x' } as QuoteMessage;
+    const quote: QuoteMessage = { type: 'quote', id: 'q1', fillerId: 'acme-1', sentAt: 1, msgSig: '0x', requestId: 'r1', amountOut: '1', validUntil: '2', nonce: '1', sig: '0x' };
     const stored = { requestId: 'r1', quoteHash, quote, sentAtMs: 0 };
     expect(await store.quotes.recordQuote(stored)).toBe(true);
     expect(await store.quotes.recordQuote(stored)).toBe(false);
-    const ack = { type: 'quote.ack', requestId: 'r1', quoteHash, receivedAt: 1, status: 'COUNTED', sentAt: 1, sig: '0x' } as QuoteAck;
+    const ack: QuoteAck = { type: 'quote.ack', id: 'g1', requestId: 'r1', quoteHash, receivedAt: 1, status: 'COUNTED', sentAt: 1, sig: '0x' };
     expect(await store.quotes.recordAck(ack)).toBe(true);
     expect(await store.quotes.recordAck(ack)).toBe(false);
     expect(await store.quotes.recordAck({ ...ack, quoteHash: `0x${'22'.repeat(32)}` })).toBe(false);
