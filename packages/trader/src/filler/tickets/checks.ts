@@ -153,6 +153,12 @@ export class TicketVerifier {
     const terms = { orderHash: offer.orderHash, attempt: offer.attempt, validFrom: offer.validFrom, validUntil: offer.validUntil };
     const field = ticketMismatch(ticket, terms, identity);
     if (field) throw new Refusal('V-T2', 'TICKET_MISMATCH', `ticket.${field} differs from the offer and this filler`);
+    // The filler delivers its own quote, never less than the order lets the router accept (T-19, T-25).
+    const amountOut = seconds(offer.amountOut);
+    const minReceived = seconds(offer.order.minReceived);
+    if (amountOut === undefined || minReceived === undefined || amountOut < minReceived) {
+      throw new Refusal('V-T2', 'TICKET_MISMATCH', `offer.amountOut ${String(offer.amountOut)} is below order.minReceived ${String(offer.order.minReceived)}`);
+    }
     if (input.intent && (input.intent.validFrom !== ticket.validFrom || input.intent.validUntil !== ticket.validUntil)) {
       throw new Refusal('V-T2', 'TICKET_MISMATCH', 'the ticket window differs from the signed ticket.intent');
     }
@@ -210,8 +216,7 @@ export class TicketVerifier {
     const outputAsset = String(offer.order.outputAsset);
     if (!/^0x0{24}[0-9a-fA-F]{40}$/.test(outputAsset)) throw new Refusal('V-E5', 'OTHER', 'the output asset is not an EVM token');
     const token = `0x${outputAsset.slice(26)}` as Hex;
-    const amount = seconds(offer.amountOut);
-    if (amount === undefined) throw new Refusal('V-E5', 'OTHER', 'offer.amountOut does not parse');
+    const amount = amountOut;
     const delivery = identity.signer.address.toLowerCase() as Hex;
     const [balance, allowance, gas] = await this.chainRead('V-E5', 'OTHER', () =>
       Promise.all([

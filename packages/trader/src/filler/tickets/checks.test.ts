@@ -121,6 +121,7 @@ describe('each check refuses with its own code, and nothing after it runs', () =
     ['V-T2: another validUntil than the offer', { ticket: { validUntil: '1790000301' } }, undefined, 'V-T2', 'TICKET_MISMATCH'],
     ['V-T2: another validFrom than the signed intent', {}, (h) => void (h.input.intent = { type: 'ticket.intent', id: 'i', orderHash: h.orderHash, attempt: 0, validFrom: '1', validUntil: h.offer.validUntil, sig: '0x' }), 'V-T2', 'TICKET_MISMATCH'],
     ['V-T2: the frame names another order than the offer', {}, (h) => void ((h.issued as { orderHash: Hex }).orderHash = `0x${'cd'.repeat(32)}`), 'V-T2', 'TICKET_MISMATCH'],
+    ['V-T2: offer.amountOut below order.minReceived (fill would revert BelowMinReceived)', { amountOut: '98' }, undefined, 'V-T2', 'TICKET_MISMATCH'],
     ['V-T3: validUntil equals fillDeadline', {}, undefined, 'V-T3', 'TICKET_BEYOND_DEADLINE'],
     ['V-T3: validUntil − validFrom below MIN_TICKET_TTL', {}, undefined, 'V-T3', 'TICKET_TTL_TOO_SHORT'],
     ['V-T3: less than sendGuard left', {}, (h) => h.clock.advance(271_000), 'V-T3', 'TICKET_TTL_TOO_SHORT'],
