@@ -11,9 +11,25 @@
  * address, `FillTicket.filler`: the fill key of the chain the filler delivers
  * on (protocol §3.2).
  */
-import type { FillTicket, Hex, Order, OrderJson, TicketJson } from '@cancore/contracts';
+import {
+  FILLER_PROTOCOL_DOMAIN,
+  TICKET_INTENT_TYPES,
+  TICKET_RECEIPT_TYPES,
+  type FillTicket,
+  type Hex,
+  type Order,
+  type OrderJson,
+  type TicketIntentMessage,
+  type TicketJson,
+  type TicketOffer,
+  type TicketReceiptMessage,
+  type TypedDataInput,
+} from '@cancore/contracts';
+import { keccak_256 } from '@noble/hashes/sha3';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { hashTicket } from '../chain/hashes';
 import type { EvmChainId } from '../chains';
-import type { FillSigner } from '../signer';
+import { signTypedDataChecked, type FillSigner } from '../signer';
 
 /** Canton origin ids are `2⁶³ + n` (protocol §3.8); every EVM chain id is below. */
 export const CANTON_ORIGIN_FLOOR = 1n << 63n;
@@ -95,3 +111,40 @@ export const fillTicketOf = (ticket: TicketJson): FillTicket => ({
   validFrom: ticket.validFrom,
   validUntil: ticket.validUntil,
 });
+
+// ---------------------------------------------------------------------------
+// The consent and the receipt
+// ---------------------------------------------------------------------------
+
+/**
+ * The filler's consent to an offered ticket: `TicketIntent` with the offer's
+ * values (protocol §3.5 — `orderHash`, `attempt`, `validFrom`, `validUntil`
+ * MUST equal the offer). Pinned types: no identity fields; CAN-2151 adds
+ * `fillerId`, `deliveryKey` and `repayTo` here.
+ */
+export const ticketIntentInput = (offer: TicketOffer): TypedDataInput => ({
+  domain: FILLER_PROTOCOL_DOMAIN,
+  types: TICKET_INTENT_TYPES,
+  primaryType: 'TicketIntent',
+  message: { orderHash: offer.orderHash, attempt: offer.attempt, validFrom: offer.validFrom, validUntil: offer.validUntil },
+});
+
+/** Signs the consent with the identity's key (pinned types: the fill key) and builds `ticket.intent`. */
+export async function signTicketIntent(offer: TicketOffer, identity: TicketIdentity, id: string): Promise<TicketIntentMessage> {
+  const sig = await signTypedDataChecked(identity.signer, ticketIntentInput(offer));
+  return { type: 'ticket.intent', id, orderHash: offer.orderHash.toLowerCase() as Hex, attempt: offer.attempt, validFrom: offer.validFrom, validUntil: offer.validUntil, sig };
+}
+
+/** `TicketReceipt{hashTicket(ticket), keccak256(ticketSig)}` — what binds the filler to deliver (T-22). */
+export function ticketReceiptInput(ticket: TicketJson, ticketSig: Hex): TypedDataInput {
+  const ticketSigHash = `0x${bytesToHex(keccak_256(hexToBytes(ticketSig.slice(2))))}` as Hex;
+  return { domain: FILLER_PROTOCOL_DOMAIN, types: TICKET_RECEIPT_TYPES, primaryType: 'TicketReceipt', message: { ticketHash: hashTicket(fillTicketOf(ticket)), ticketSigHash } };
+}
+
+/** Signs the receipt with the identity's key and builds `ticket.receipt` (EVM form). */
+export async function signTicketReceipt(ticket: TicketJson, ticketSig: Hex, identity: TicketIdentity, id: string): Promise<TicketReceiptMessage> {
+  const input = ticketReceiptInput(ticket, ticketSig);
+  const sig = await signTypedDataChecked(identity.signer, input);
+  const { ticketHash, ticketSigHash } = input.message as { ticketHash: Hex; ticketSigHash: Hex };
+  return { type: 'ticket.receipt', id, orderHash: ticket.orderHash.toLowerCase() as Hex, attempt: ticket.attempt, ticketHash, ticketSigHash, sig };
+}

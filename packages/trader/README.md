@@ -51,7 +51,7 @@ const filler = createFiller({
 
 filler.onQuoteRequest(async (req) => price(req));          // → { amountOut, validUntil } | null to skip
 filler.onReconfirm(async (r) => inventory.has(r));         // → boolean
-filler.onTicketOffer(async (o) => (risk.allows(o) ? 'accept' : 'decline'));
+filler.onTicketOffer(async (o) => (risk.allows(o) ? 'accept' : { decline: 'RISK_LIMIT' }));
 await filler.start();
 ```
 
@@ -64,7 +64,7 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 |---|---|---|---|
 | `onQuoteRequest(hook)` | `void` | price for a `quote.request` (with `payout` and `fee` added): `{ amountOut, validUntil }` or `null` | CAN-1852 |
 | `onReconfirm(hook)` | `void` | stand behind `order.minReceived` for an opened order (with `payout` and `fee` added): `boolean` | CAN-1852 |
-| `onTicketOffer(hook)` | `void` | take the ticket: `'accept'` or `'decline'` | CAN-1861 |
+| `onTicketOffer(hook)` | `void` | take the ticket: `'accept'`, `'decline'` (`OTHER`) or `{ decline: reason, detail? }` | CAN-1861 |
 | `start()` | `Promise<void>` | login by challenge, heartbeat, reconnect, REST fallback; reconcile from the store; then quote, take tickets, fill, settle. Needs all three hooks. Resolves at the first `auth.ok` | CAN-1847 |
 | `stop()` | `Promise<void>` | closes the session; in-flight work stays in the store for any replica | CAN-1847 |
 | `selfSettle(orderHash)` | `{ txHash }` | settle one order now from its verified attestation set | CAN-1856 |
@@ -144,6 +144,36 @@ message.
 `FakeChain` in `./filler/testing` is an in-memory chain behind `EvmRpc` — routers with scripted state, ERC-20
 balances, blocks, logs and `reorg(fromBlock)`; `endpoint({ headLag, chainId })` adds endpoints over the same
 chain for failover tests.
+
+## Tickets
+
+Per attempt `(orderHash, attempt)` the SDK keeps a state in the store and moves it only under the order's lock,
+from the state it decided in — two replicas never send two answers for one attempt:
+
+```
+offered ──► intent-sent ──► intent-acked ──► checking ──► receipted ──► filled
+   │             │               │               └──────► declined
+   └─────────────┴───────────────┴──► declined          (any) ──► expired
+```
+
+- **Offer.** `ticket.offer` → `onTicketOffer(offer)`. `'accept'` signs `TicketIntent` with the offer's values
+  (the fill key of the delivery chain) and sends `ticket.intent`; `{ decline: reason }` sends `ticket.decline`
+  with `NO_INVENTORY`, `RISK_LIMIT`, `PRICE_MOVED`, `PAUSED` or `OTHER` (plain `'decline'` is `OTHER`). A hook
+  that throws, or is still silent `tickets.offerReplyMarginMs` (250 ms) before `acceptBy`, declines `OTHER`
+  (T-21: silence costs more than a decline). The kill-switch declines `PAUSED` without asking. Nothing is sent
+  after `acceptBy`. `ticket.intent.ack` is kept on the attempt.
+- **Issued.** `ticket.issued` → the checks below → `ticket.receipt` (`TicketReceipt{hashTicket(ticket),
+  keccak256(ticketSig)}`) or `ticket.decline` with the failed check's code (T-22, T-23). An issued ticket with no
+  consent behind it, or a Canton-form one, is declined. Nothing is sent after `validUntil`.
+- **Write ahead, sign once.** Every move is written before its message goes out; `sentAtMs` marks that it went.
+  After a restart (every login) open attempts resume from the store: an unanswered offer is decided, a stored
+  message that never went out is sent again — the same bytes, never re-signed — while its deadline lasts, an
+  interrupted check runs again. Redelivered frames change nothing.
+- **Fill only after the receipt.** The delivery asks for a receipted attempt whose receipt went out; in every
+  other state there is nothing to fill.
+- **Outcome.** `ticket.expired` is stored on the attempt and reported as stage `ticket.expired` with its result
+  (an unknown result as `OTHER`); `penalty.applied` and `order.settled` become the `penalty` and `settled`
+  events; every decline the `declined` event.
 
 ## Checks before the receipt
 

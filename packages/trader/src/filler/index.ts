@@ -18,6 +18,7 @@ export type {
   ReconfirmHook,
   SelfSettleResult,
   TicketPolicy,
+  OfferDeclineReason,
   TicketOfferDecision,
   TicketOfferHook,
   TransportOptions,
@@ -56,6 +57,7 @@ export type { EvmTransactionRequest, FillSigner, QuoteSigner, StakingSigner, Tra
 export type { EvmRpc, EvmRpcMap, EvmRpcRequest } from './rpc';
 
 export { TicketVerifier } from './tickets/checks';
+export { DEFAULT_OFFER_REPLY_MARGIN_MS, OFFER_DECLINE_REASONS } from './tickets/desk';
 export type { EscrowVerification, TicketCheckId, TicketCheckInput, TicketCheckResult, TicketVerifierOptions } from './tickets/checks';
 export { chainsOf, fillTicketOf, identityFor, ticketMismatch } from './tickets/terms';
 export type { OfferTerms, OrderChains, TicketIdentity } from './tickets/terms';

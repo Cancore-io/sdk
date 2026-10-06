@@ -143,7 +143,9 @@ export class InMemoryFillerStore implements FillerStore {
     this.check();
     const open: Hex[] = [];
     for (const [id, order] of this.orders) {
-      const liveTicket = [...order.tickets.values()].some((t) => !TERMINAL_TICKET_STATES.has(t.state) && t.state !== 'filled');
+      const liveTicket = [...order.tickets.values()].some(
+        (t) => (!TERMINAL_TICKET_STATES.has(t.state) && t.state !== 'filled') || (t.state === 'declined' && t.sentAtMs === undefined),
+      );
       const unsettledFill = order.fills.size > 0 && order.settlement?.state !== 'settled';
       if (liveTicket || unsettledFill) open.push(id as Hex);
     }
