@@ -23,6 +23,7 @@ import type { Clock, Logger } from '../runtime';
 import type { EvidenceEntry, FillerStore } from '../store';
 import { gatewayErrorOf, type VerifiedFrame } from './frames';
 import type { GatewayRest, QuoteListItem, TicketAction } from './rest';
+import type { Sealer } from './envelope';
 import type { GatewaySession, SessionListener } from './session';
 
 /** Which channel delivered a frame. */
@@ -43,6 +44,8 @@ export interface ClientOptions {
   events: EventSink;
   /** How often to poll `GET /v1/filler/tickets` while the session is down. Default 2 s. */
   restPollIntervalMs: number;
+  /** Seals a filler → filler-gateway message (`fillerId`, `sentAt`, `msgSig`) before it goes out on either channel. */
+  seal: Sealer;
 }
 
 export const DEFAULT_REST_POLL_INTERVAL_MS = 2_000;
@@ -115,6 +118,11 @@ export class FillerProtocolClient implements SessionListener {
     this.session?.stop();
     this.settleStart(new FillerStoppedError());
     await this.syncing;
+  }
+
+  /** Adds the envelope (`fillerId`, `sentAt`, `msgSig` by the message key) to a message; `send` and `submitTicket` take only sealed ones. */
+  get seal(): Sealer {
+    return this.options.seal;
   }
 
   /**

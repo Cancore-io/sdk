@@ -71,7 +71,11 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 `start()` opens one WebSocket session per replica to `gatewayUrl` (`/v1`, protocol §3.1) and keeps it up.
 
 - **Login.** On `auth.challenge` the quote key signs `FillerAuth{fillerId, nonce, expiresAt}` and the SDK
-  sends `auth.response` with `protocolVersion: "1"`. Until `auth.ok` it sends nothing else. `start()`
+  sends `auth.response` with `protocolVersion: "1"`. Until `auth.ok` it sends nothing else.
+- **Every filler message is signed.** Each frame and REST body the SDK sends — `auth.response`, `quote`,
+  `quote.reconfirm.reply` (a decline too), `ping`, `pong` and the ticket actions — carries `fillerId`, `sentAt`
+  and `msgSig`: the quote key's signature over `FillerMessage{keccak256(JCS(message without msgSig))}`
+  (protocol §3.4). The quote key is the filler's message key until the signer interface is reworked (CAN-2151). `start()`
   resolves at the first `auth.ok`, rejects with `UnsupportedVersionError` when filler-gateway does not serve
   v1 (not retried), and with `FillerStoppedError` when `stop()` comes first. Any other refusal is retried.
 - **Every filler-gateway frame is verified** before anything reads it: `sig` must recover, over
@@ -111,8 +115,8 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
   `roundHalfEven(T × 10 000 / (10 000 + feeBps))` in 10⁻¹⁰ units (`1000.0` at `feeRate 0.003` →
   `997.0089730808`, one unit above the EVM formula), exported as `cantonFillerPayout`. `quote.reconfirm`
   uses the same split by the order's origin.
-- **Filler address.** `FillerQuote.filler` is the fill key of the destination chain; for a Canton destination,
-  the fill key of the source chain.
+- **Filler id.** `FillerQuote` names the filler's `fillerId` (protocol §3.3); it carries no address. A request is
+  quoted only when the filler has a fill key on the destination chain (for a Canton destination, on the source).
 - **Not sent** (stage event `quote.skipped` with the reason): at or after `windowCloseAt` — checked before
   the hook, after it and after signing; `validUntil × 1000 < windowCloseAt + quoteTtlMs` (equality is fine);
   `inputAmount` below the source router's `minInput` (T-16, once RouterReader supplies it); the hook returned
@@ -145,7 +149,8 @@ interface TransactionSigner {
 interface FillSigner extends TypedDataSigner, TransactionSigner {}
 ```
 
-Keys are separate by purpose: the **quote** key signs `FillerAuth` and `FillerQuote` only; the **fill** key of
+Keys are separate by purpose: the **quote** key signs `FillerAuth`, `FillerQuote` and the envelope `msgSig` of
+every message; the **fill** key of
 each EVM chain signs `TicketIntent` / `TicketReceipt` and the `fill` / `settle` transactions; the **staking**
 key signs one `StakeBinding` and is passed to `bindStake` only. `createFiller` refuses a fill key equal to the
 quote key.
