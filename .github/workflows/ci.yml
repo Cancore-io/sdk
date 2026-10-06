@@ -49,7 +49,7 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
-      # The mock gateway as a real process and a real WebSocket client (needs dist/).
+      # Suites against a local stand; they skip themselves without its artifacts (CI has no stand yet).
       - run: npm run test:int
 
       # The check unit tests cannot do: pack the tarball and import it from a
@@ -64,7 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           # Pack everything first: a package that depends on a sibling
-          # (@cancore/test-kit on @cancore/contracts) installs the sibling from
+          # (@cancore/trader on @cancore/contracts) installs the sibling from
           # this tree, not from a registry that may not have the version yet.
           declare -A TARBALL
           for pkg in packages/*/; do
@@ -143,29 +143,3 @@ jobs:
           export const build = (config: Omit<FillerConfig, 'store' | 'webSocket'>): Filler => createFiller({ ...config, store, webSocket });
           TS
           "$GITHUB_WORKSPACE/node_modules/.bin/tsc" -p .
-
-      # B16: what another repository's CI does — the mock from the tarball, one
-      # command, ready and healthy within five seconds.
-      - name: Start the mock gateway as a stranger would
-        run: |
-          set -euo pipefail
-          rm -rf "$RUNNER_TEMP/mock" && mkdir -p "$RUNNER_TEMP/mock" && cd "$RUNNER_TEMP/mock"
-          npm init -y >/dev/null
-          npm install "$RUNNER_TEMP"/cancore-contracts-*.tgz "$RUNNER_TEMP"/cancore-test-kit-*.tgz --no-audit --no-fund
-          npx cancore-test-kit mock-gateway --port 0 --control 0 > ready.log 2> mock.err &
-          pid=$!
-          for _ in $(seq 50); do [ -s ready.log ] && break; sleep 0.1; done
-          test -s ready.log || { echo "not ready in 5 s"; cat mock.err; exit 1; }
-          control=$(node -p "JSON.parse(require('fs').readFileSync('ready.log', 'utf8').split('\\n')[0]).control")
-          curl -fsS "$control/__mock/health"
-          kill "$pid"
-
-      - name: Build and run the mock gateway image
-        run: |
-          set -euo pipefail
-          cp "$RUNNER_TEMP"/cancore-contracts-*.tgz "$RUNNER_TEMP"/cancore-test-kit-*.tgz packages/test-kit/
-          docker build -t cancore-mock-gateway:ci packages/test-kit
-          docker run -d --name mock -p 8787:8787 -p 8788:8788 cancore-mock-gateway:ci
-          for _ in $(seq 50); do curl -fsS http://127.0.0.1:8788/__mock/health && break; sleep 0.1; done
-          curl -fsS http://127.0.0.1:8788/__mock/health >/dev/null || { docker logs mock; exit 1; }
-          docker rm -f mock
