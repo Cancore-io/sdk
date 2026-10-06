@@ -61,6 +61,8 @@ const ENTRIES = new Map<Hex, AbiEntry>(ROUTER_EVENTS.map((name) => {
 }));
 
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
+/** Rounds in a row a poll may stop on non-canonical logs before it fails. */
+const MAX_STALLED_ROUNDS = 5;
 
 const identity = (log: RouterLog): string => `${log.name}:${log.orderHash}`;
 
@@ -70,6 +72,8 @@ export class RouterEventWatcher {
   /** Reported and not removed, by identity. */
   private readonly reported = new Map<string, RouterLog>();
   private polling: Promise<void> | undefined;
+  /** Rounds in a row that stopped on a log from a non-canonical block. */
+  private stalled = 0;
 
   constructor(private readonly options: RouterEventWatcherOptions) {
     if (!Number.isSafeInteger(options.confirmations) || options.confirmations < 0) throw new TypeError('confirmations must be a non-negative integer');
@@ -102,7 +106,15 @@ export class RouterEventWatcher {
       // Logs and headers may come from different endpoints: a log is reported only
       // when its block is the canonical one of this round; otherwise the round stops
       // and the next poll reads the range again.
-      if (!(await this.canonical(logs))) return;
+      if (!(await this.canonical(logs))) {
+        // One stalled round is a race between endpoints; several in a row are an endpoint serving another fork.
+        if (++this.stalled >= MAX_STALLED_ROUNDS) {
+          this.stalled = 0;
+          throw new ChainReadError(client.chain, 'malformed', `router logs from non-canonical blocks ${MAX_STALLED_ROUNDS} rounds in a row at block ${this.next}`);
+        }
+        return;
+      }
+      this.stalled = 0;
       for (const log of logs) await this.add(log);
       this.lastScanned = { number: header.number, hash: header.hash };
       this.next = to + 1n;

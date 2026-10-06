@@ -20,8 +20,12 @@ const rejection = async (promise: Promise<unknown>): Promise<ChainReadError> => 
 };
 
 /** The block tags `eth_call` was sent with. */
-const callBlocks = (calls: ReadonlyArray<{ method: string; params?: readonly unknown[] }>) =>
-  calls.filter((c) => c.method === 'eth_call').map((c) => BigInt(c.params![1] as string));
+/** The heights of the blocks `eth_call` was pinned to (by hash, EIP-1898). */
+/** A header any block-number lookup gets from a scripted endpoint. */
+const HEADER = { number: '0x64', hash: `0x${'aa'.repeat(32)}`, parentHash: `0x${'bb'.repeat(32)}` };
+
+const callBlocks = (chain: FakeChain, calls: ReadonlyArray<{ method: string; params?: readonly unknown[] }>) =>
+  calls.filter((c) => c.method === 'eth_call').map((c) => chain.numberOfHash((c.params![1] as { blockHash: string }).blockHash));
 
 describe('eth_chainId is checked against the configured CAIP-2 id before any read (C-1)', () => {
   test('one endpoint on another chain: a typed refusal, and no read is made', async () => {
@@ -71,15 +75,16 @@ describe('failover in the configured order', () => {
     const reverting = new FakeEvmRpc('reverting')
       .on('eth_chainId', '0x1')
       .on('eth_blockNumber', '0x64')
+      .on('eth_getBlockByNumber', HEADER)
       .fail('eth_call', { code: 3, message: 'execution reverted', data: '0x' });
-    const next = new FakeEvmRpc('next').on('eth_chainId', '0x1').on('eth_blockNumber', '0x64');
+    const next = new FakeEvmRpc('next').on('eth_chainId', '0x1').on('eth_blockNumber', '0x64').on('eth_getBlockByNumber', HEADER);
     const error = await rejection(new RouterReader('eip155:1', ROUTER, client([reverting, next])).minInput('0x0000000000000000000000000000000000000056'));
     expect(error.reason).toBe('reverted');
     expect(next.calls.some((c) => c.method === 'eth_call')).toBe(false);
   });
 
   test('an answer that does not decode is malformed, not a value', async () => {
-    const liar = new FakeEvmRpc('liar').on('eth_chainId', '0x1').on('eth_blockNumber', '0x64').on('eth_call', `0x${'00'.repeat(31)}02`);
+    const liar = new FakeEvmRpc('liar').on('eth_chainId', '0x1').on('eth_blockNumber', '0x64').on('eth_getBlockByNumber', HEADER).on('eth_call', `0x${'00'.repeat(31)}02`);
     expect((await rejection(new RouterReader('eip155:1', ROUTER, client([liar])).filled(ORDER_HASH))).reason).toBe('malformed');
   });
 
@@ -100,7 +105,7 @@ describe('head lag (ops.maxHeadLagBlocks)', () => {
     await expect(c.head()).resolves.toBe(1_000n);
     await new RouterReader('eip155:1', ROUTER, c).currentSetId();
     expect(stale.calls.some((x) => x.method === 'eth_call')).toBe(false);
-    expect(callBlocks(fresh.calls)).toEqual([1_000n]);
+    expect(callBlocks(chain, fresh.calls)).toEqual([1_000n]);
   });
 
   test('the best head is this round only: one inflated answer does not condemn the others for good', async () => {
@@ -116,7 +121,7 @@ describe('head lag (ops.maxHeadLagBlocks)', () => {
     liar.fail('eth_blockNumber', new Error('down'));
     await expect(c.head()).resolves.toBe(1_000n);
     await new RouterReader('eip155:1', ROUTER, c).currentSetId();
-    expect(callBlocks(honest.calls)).toEqual([1_000n]);
+    expect(callBlocks(chain, honest.calls)).toEqual([1_000n]);
   });
 
   test('a lag within the limit keeps the configured order', async () => {
@@ -128,7 +133,7 @@ describe('head lag (ops.maxHeadLagBlocks)', () => {
     const c = client([first, second], 5);
     await expect(c.head()).resolves.toBe(995n);
     await new RouterReader('eip155:1', ROUTER, c).currentSetId();
-    expect(callBlocks(first.calls)).toEqual([995n]);
+    expect(callBlocks(chain, first.calls)).toEqual([995n]);
   });
 
   test('health() reports chain id, head and lag per endpoint for the node check', async () => {
@@ -143,6 +148,49 @@ describe('head lag (ops.maxHeadLagBlocks)', () => {
       { label: 'other', chainIdOk: false },
       { label: 'down', error: 'down: connection refused' },
     ]);
+  });
+});
+
+describe('one check reads one block, whichever endpoint serves it (EIP-1898)', () => {
+  test('the call carries the resolved block hash and requireCanonical', async () => {
+    const chain = new FakeChain(1n);
+    chain.head = 200n;
+    chain.router(ROUTER);
+    await new RouterReader('eip155:1', ROUTER, client([chain])).intents(ORDER_HASH, { confirmations: 3 });
+    const call = chain.calls.find((c) => c.method === 'eth_call')!;
+    expect(call.params![1]).toEqual({ blockHash: chain.blockHash(197n), requireCanonical: true });
+  });
+
+  test('an endpoint on another fork cannot answer for the pinned block: the read fails, never reads its own block at that height', async () => {
+    const chain = new FakeChain(1n);
+    chain.head = 200n;
+    chain.router(ROUTER).openIntent(ORDER_HASH, { refundAfter: 2_000n, openedAt: 1_000n, atBlock: 190n });
+    const resolver = chain.endpoint({ label: 'resolver', failing: ['eth_call'] });
+    const forked = chain.endpoint({ label: 'forked', fork: 'other' });
+    const error = await rejection(new RouterReader('eip155:1', ROUTER, client([resolver, forked])).intents(ORDER_HASH, { confirmations: 3 }));
+    expect(error.reason).toBe('unavailable');
+    expect(forked.calls.find((c) => c.method === 'eth_call')!.params![1]).toEqual({ blockHash: chain.blockHash(197n), requireCanonical: true });
+  });
+
+  test('failover to an endpoint on the same chain still works', async () => {
+    const chain = new FakeChain(1n);
+    chain.head = 200n;
+    chain.router(ROUTER).openIntent(ORDER_HASH, { refundAfter: 2_000n, openedAt: 1_000n, atBlock: 190n });
+    const resolver = chain.endpoint({ label: 'resolver', failing: ['eth_call'] });
+    const same = chain.endpoint({ label: 'same' });
+    await expect(new RouterReader('eip155:1', ROUTER, client([resolver, same])).intents(ORDER_HASH, { confirmations: 3 })).resolves.toMatchObject({ status: INTENT_STATUS.Opened });
+  });
+
+  test('a read at a block hash reads exactly that block', async () => {
+    const chain = new FakeChain(1n);
+    chain.head = 200n;
+    chain.router(ROUTER);
+    const c = client([chain]);
+    const pinned = await c.pin({ confirmations: 10 });
+    chain.mine(3n);
+    await new RouterReader('eip155:1', ROUTER, c).filled(ORDER_HASH, pinned);
+    expect(callBlocks(chain, chain.calls)).toEqual([190n]);
+    await expect(c.resolve(pinned)).resolves.toBe(190n);
   });
 });
 
@@ -166,7 +214,7 @@ describe('reads at a depth', () => {
   ] as const)('%s', async (_name, at, block) => {
     const { chain, reader } = setup();
     await reader.intents(ORDER_HASH, at);
-    expect(callBlocks(chain.calls)).toEqual([block]);
+    expect(callBlocks(chain, chain.calls)).toEqual([block]);
   });
 
   test('an escrow opened less than openConfirmations deep is not open yet; at the boundary it is', async () => {
@@ -182,12 +230,12 @@ describe('reads at a depth', () => {
     chain.mine(5n);
     await reader.intents(ORDER_HASH, { blockNumber: block });
     await reader.filled(ORDER_HASH, { blockNumber: block });
-    expect(callBlocks(chain.calls)).toEqual([197n, 197n]);
+    expect(callBlocks(chain, chain.calls)).toEqual([197n, 197n]);
   });
 
   test('more confirmations than blocks reads the genesis block', async () => {
     const { chain, reader } = setup();
     await reader.intents(ORDER_HASH, { confirmations: 1_000 });
-    expect(callBlocks(chain.calls)).toEqual([0n]);
+    expect(callBlocks(chain, chain.calls)).toEqual([0n]);
   });
 });

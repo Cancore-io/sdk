@@ -26,7 +26,7 @@ const ORDER = {
 
 const filled = (orderHash: Hex) => ({ orderHash, filler: FILLER, amount: 99n, recipient: RECIPIENT, filledAt: 1_790_000_100n, attempt: 0n });
 
-function setup(confirmations = 2) {
+function setup(confirmations = 2, retentionBlocks?: bigint) {
   const chain = new FakeChain(1n);
   chain.head = 100n;
   const updates: RouterEventUpdate[] = [];
@@ -37,6 +37,7 @@ function setup(confirmations = 2) {
     fromBlock: 90n,
     onUpdate: (u) => void updates.push(u),
     logger: createRecordingLogger(),
+    ...(retentionBlocks !== undefined ? { retentionBlocks } : {}),
   });
   const seen = () => updates.map((u) => `${u.kind} ${u.log.name} ${u.log.orderHash.slice(0, 4)} @${u.log.blockNumber}`);
   return { chain, watcher, updates, seen };
@@ -139,6 +140,30 @@ describe('reorgs never produce a false or a duplicate event', () => {
     stale = false;
     await watcher.poll();
     expect(seen()).toEqual(['added Filled 0xaa @95']);
+  });
+
+  test('a reorg rewinds no further than the logs it still remembers: a forgotten log is not reported twice', async () => {
+    // retention 5: after the first round (cursor 101) logs below block 96 are forgotten.
+    const { chain, watcher, seen } = setup(0, 5n);
+    chain.emit(ROUTER, 'Filled', filled(A), 95n);
+    await watcher.poll();
+    expect(seen()).toEqual(['added Filled 0xaa @95']);
+    chain.reorg(100n);
+    await watcher.poll();
+    expect(seen()).toEqual(['added Filled 0xaa @95']);
+  });
+
+  test('logs that stay off the canonical chain round after round fail the poll instead of stalling it silently', async () => {
+    const { chain, watcher } = setup(0);
+    chain.emit(ROUTER, 'Filled', filled(A), 95n);
+    const original = chain.request.bind(chain);
+    chain.request = (async (request) => {
+      const result = await original(request);
+      if (request.method !== 'eth_getLogs') return result;
+      return (result as Array<Record<string, unknown>>).map((l) => ({ ...l, blockHash: `0x${'ee'.repeat(32)}` }));
+    }) as typeof chain.request;
+    for (let i = 1; i < 5; i++) await expect(watcher.poll()).resolves.toBeUndefined();
+    await expect(watcher.poll()).rejects.toMatchObject({ name: 'ChainReadError', reason: 'malformed' });
   });
 
   test('concurrent polls run one round', async () => {

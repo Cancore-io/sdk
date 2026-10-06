@@ -501,6 +501,12 @@ describe('through createFiller and a crafted filler-gateway', () => {
     await settle();
     const [acked] = await store.quotes.listQuotes('rq-1');
     expect(acked!.ack).toMatchObject({ status: 'COUNTED' });
+
+    // N-12: an EVM source with no router in the config is one the filler cannot verify or settle on — no quote.
+    socket.receive(gateway.frame({ ...request(clock, { requestId: 'rq-137', route: { src: 'eip155:137', dst: 'eip155:1' } }), fillerId: FILLER }));
+    await settle();
+    expect(payouts).toEqual([100n]);
+    expect(socket.sentFrames().filter((f) => f.type === 'quote')).toHaveLength(1);
     await filler.stop();
   });
 });

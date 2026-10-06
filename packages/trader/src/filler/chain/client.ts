@@ -12,10 +12,14 @@
  * - **Head lag.** Reads at a depth start from the head; an endpoint whose head
  *   trails the best head seen by more than `maxHeadLagBlocks` is passed over
  *   while a fresher one answers (`ops.maxHeadLagBlocks`).
- * - **Depth.** A read names where it reads (`ReadAt`): `latest`, `safe`,
- *   `finalized`, `confirmations` blocks below the head, or a block number.
- *   The tag is resolved to one block number first, so every call of one check
- *   sees the same block, whichever endpoint serves it.
+ * - **Depth and one block.** A read names where it reads (`ReadAt`): `latest`,
+ *   `safe`, `finalized`, `confirmations` blocks below the head, a block number
+ *   or a block hash. The tag is resolved to one block header first, and the
+ *   call is sent with that header's hash (EIP-1898 `{blockHash,
+ *   requireCanonical}`), not its number: whichever endpoint serves it reads
+ *   that exact block, and an endpoint on another fork fails the call instead
+ *   of answering from its own block at the same height. `pin()` gives the
+ *   hash once for several calls of one check.
  *
  * Every failure is a `ChainReadError` naming the chain and the reason. The
  * SDK never reads a chain it could not verify: a caller that gets one refuses
@@ -32,7 +36,9 @@ export type ReadAt =
   | 'finalized'
   /** `head − confirmations`: the block an escrow must already be open at (V-E2, `openConfirmations`). */
   | { confirmations: number }
-  | { blockNumber: bigint };
+  | { blockNumber: bigint }
+  /** One exact block, as `pin()` returns it. */
+  | { blockHash: Hex };
 
 export type ChainReadFailure =
   /** `eth_chainId` of every endpoint that answered names another chain. */
@@ -176,6 +182,7 @@ export class ChainClient {
 
   /** The block number a read at `at` reads. */
   async resolve(at: ReadAt): Promise<bigint> {
+    if (typeof at === 'object' && 'blockHash' in at) return (await this.blockByHash(at.blockHash)).number;
     if (typeof at === 'object' && 'blockNumber' in at) return at.blockNumber;
     if (typeof at === 'object') {
       if (!Number.isSafeInteger(at.confirmations) || at.confirmations < 0) throw new TypeError('confirmations must be a non-negative integer');
@@ -186,10 +193,17 @@ export class ChainClient {
     return (await this.block(at)).number;
   }
 
-  /** `eth_call` of `data` on `to` at `at`. */
+  /** The one block a read at `at` reads, as `{ blockHash }` for further calls of the same check. */
+  async pin(at: ReadAt): Promise<{ blockHash: Hex }> {
+    if (typeof at === 'object' && 'blockHash' in at) return { blockHash: at.blockHash };
+    if (at === 'safe' || at === 'finalized') return { blockHash: (await this.block(at)).hash };
+    return { blockHash: (await this.block(await this.resolve(at))).hash };
+  }
+
+  /** `eth_call` of `data` on `to`, in the one block `at` resolves to. */
   async call(to: Hex, data: Hex, at: ReadAt = 'latest'): Promise<Hex> {
-    const block = await this.resolve(at);
-    const result = await this.request<unknown>('eth_call', [{ to, data }, toQuantity(block)]);
+    const { blockHash } = await this.pin(at);
+    const result = await this.request<unknown>('eth_call', [{ to, data }, { blockHash, requireCanonical: true }]);
     if (typeof result !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(result)) throw new ChainReadError(this.chain, 'malformed', `eth_call returned ${String(result)}`);
     return result as Hex;
   }
@@ -197,7 +211,10 @@ export class ChainClient {
   /** A block header by number or tag; `malformed` when the node has no such block. */
   async block(at: bigint | 'latest' | 'safe' | 'finalized'): Promise<BlockHeader> {
     const tag = typeof at === 'bigint' ? toQuantity(at) : at;
-    const raw = await this.request<unknown>('eth_getBlockByNumber', [tag, false]);
+    return this.header(await this.request<unknown>('eth_getBlockByNumber', [tag, false]), tag);
+  }
+
+  private header(raw: unknown, tag: string): BlockHeader {
     if (typeof raw !== 'object' || raw === null) throw new ChainReadError(this.chain, 'malformed', `no block ${tag}`);
     const { number, hash, parentHash } = raw as Record<string, unknown>;
     try {
@@ -208,10 +225,15 @@ export class ChainClient {
     }
   }
 
-  /** Native balance of `address` at `at`. */
+  /** A block header by hash; `malformed` when the node has no such block. */
+  async blockByHash(hash: Hex): Promise<BlockHeader> {
+    return this.header(await this.request<unknown>('eth_getBlockByHash', [hash, false]), hash);
+  }
+
+  /** Native balance of `address`, in the one block `at` resolves to. */
   async balance(address: Hex, at: ReadAt = 'latest'): Promise<bigint> {
-    const block = await this.resolve(at);
-    const raw = await this.request<unknown>('eth_getBalance', [address, toQuantity(block)]);
+    const { blockHash } = await this.pin(at);
+    const raw = await this.request<unknown>('eth_getBalance', [address, { blockHash, requireCanonical: true }]);
     try {
       return quantity(raw, 'eth_getBalance');
     } catch (error) {

@@ -136,6 +136,10 @@ export interface FakeEndpointOptions {
   headLag?: bigint;
   /** What `eth_chainId` answers instead of the chain's id. */
   chainId?: bigint;
+  /** This endpoint follows another fork: its block hashes differ from the chain's at every height. */
+  fork?: string;
+  /** Methods this endpoint rejects. */
+  failing?: readonly string[];
 }
 
 /** One `EvmRpc` over a `FakeChain`. `down` makes every request reject. */
@@ -154,8 +158,9 @@ export class FakeEndpoint implements EvmRpc {
   async request<T = unknown>(request: EvmRpcRequest): Promise<T> {
     this.calls.push({ method: request.method, params: [...(request.params ?? [])] });
     if (this.down) throw new Error(`${this.label}: connection refused`);
+    if (this.options.failing?.includes(request.method)) throw new Error(`${this.label}: ${request.method} failed`);
     const head = this.chain.head - (this.options.headLag ?? 0n);
-    return this.chain.handle(request, head, this.options.chainId ?? this.chain.chainId) as T;
+    return this.chain.handle(request, head, this.options.chainId ?? this.chain.chainId, this.options.fork) as T;
   }
 }
 
@@ -226,9 +231,15 @@ export class FakeChain implements EvmRpc {
     return this;
   }
 
-  /** The hash of block `n` on the current fork. */
-  blockHash(n: bigint): Hex {
-    return `0x${bytesToHex(keccak_256(utf8ToBytes(`${this.label}:${n}:${this.forks.get(n) ?? 0}`)))}`;
+  /** The hash of block `n` on the current fork (or on the named fork of an endpoint). */
+  blockHash(n: bigint, fork?: string): Hex {
+    return `0x${bytesToHex(keccak_256(utf8ToBytes(`${this.label}:${fork ?? ''}:${n}:${this.forks.get(n) ?? 0}`)))}`;
+  }
+
+  /** The height of the block with `hash` on the current fork (or the named one), at or below `head`. */
+  numberOfHash(hash: string, head = this.head, fork?: string): bigint | undefined {
+    for (let n = head; n >= 0n; n--) if (this.blockHash(n, fork) === hash.toLowerCase()) return n;
+    return undefined;
   }
 
   /** A router event in block `blockNumber` (default: the head). */
@@ -251,7 +262,7 @@ export class FakeChain implements EvmRpc {
   }
 
   /** @internal Answers one request as an endpoint whose head is `head`. */
-  handle(request: EvmRpcRequest, head: bigint, chainId: bigint): unknown {
+  handle(request: EvmRpcRequest, head: bigint, chainId: bigint, fork?: string): unknown {
     const params = request.params ?? [];
     switch (request.method) {
       case 'eth_chainId':
@@ -261,14 +272,19 @@ export class FakeChain implements EvmRpc {
       case 'eth_getBlockByNumber': {
         const n = this.blockOf(params[0], head);
         if (n === undefined || n > head) return null;
-        return { number: hex(n), hash: this.blockHash(n), parentHash: n === 0n ? `0x${'00'.repeat(32)}` : this.blockHash(n - 1n) };
+        return { number: hex(n), hash: this.blockHash(n, fork), parentHash: n === 0n ? `0x${'00'.repeat(32)}` : this.blockHash(n - 1n, fork) };
+      }
+      case 'eth_getBlockByHash': {
+        const n = this.numberOfHash(String(params[0]), head, fork);
+        if (n === undefined) return null;
+        return { number: hex(n), hash: this.blockHash(n, fork), parentHash: n === 0n ? `0x${'00'.repeat(32)}` : this.blockHash(n - 1n, fork) };
       }
       case 'eth_getBalance': {
-        this.requireBlock(params[1], head);
+        this.requireBlock(params[1], head, fork);
         return hex(this.nativeBalances.get(lower(String(params[0]))) ?? 0n);
       }
       case 'eth_call': {
-        const block = this.requireBlock(params[1], head);
+        const block = this.requireBlock(params[1], head, fork);
         const { to, data } = params[0] as { to: string; data: Hex };
         return this.call(lower(to), data, block);
       }
@@ -284,7 +300,7 @@ export class FakeChain implements EvmRpc {
             topics: l.topics,
             data: l.data,
             blockNumber: hex(l.blockNumber),
-            blockHash: this.blockHash(l.blockNumber),
+            blockHash: this.blockHash(l.blockNumber, fork),
             transactionHash: l.transactionHash,
             logIndex: hex(BigInt(l.logIndex)),
             removed: false,
@@ -324,7 +340,13 @@ export class FakeChain implements EvmRpc {
     return undefined;
   }
 
-  private requireBlock(tag: unknown, head: bigint): bigint {
+  private requireBlock(tag: unknown, head: bigint, fork?: string): bigint {
+    if (typeof tag === 'object' && tag !== null && 'blockHash' in tag) {
+      // EIP-1898: a block this endpoint does not hold on its own chain is not served.
+      const n = this.numberOfHash(String((tag as { blockHash: unknown }).blockHash), head, fork);
+      if (n === undefined) throw Object.assign(new Error('header not found'), { code: -32000 });
+      return n;
+    }
     const n = this.blockOf(tag, head);
     if (n === undefined) throw new Error(`invalid block tag ${String(tag)}`);
     if (n > head) throw Object.assign(new Error('header not found'), { code: -32000 });

@@ -415,10 +415,13 @@ export function createFiller(config: FillerConfig): Filler {
     nextId,
     onQuoteRequest: () => quoteHook,
     onReconfirm: () => reconfirmHook,
-    // T-16: the source router's own floor, read at the head. A source this filler has no router for has none to read.
+    // T-16: the source router's own floor, read at the head.
     minInput: async (chain, token) => {
+      if (!isEvmChainId(chain)) return undefined; // a Canton source has no router floor
       const source = chains.get(chain);
-      if (!source || typeof token !== 'string') return undefined;
+      // N-12: an EVM source this filler has no router for is one it cannot verify or settle on — no quote.
+      if (!source) throw new Error(`no router configured for the source ${chain}`);
+      if (typeof token !== 'string') return undefined;
       return source.router.minInput(token as Hex);
     },
     reconfirmMarginS: DEFAULT_RECONFIRM_MARGIN_S,

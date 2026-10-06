@@ -117,9 +117,12 @@ message.
   to the next endpoint; a revert is the chain's answer and is not retried elsewhere. Reads at a depth start
   from the head of every endpoint, and one whose head trails the best by more than `maxHeadLagBlocks` is
   passed over while a fresher one answers. All endpoints failing is `unavailable`.
-- **Depth.** A read names its block: `'latest'`, `'safe'`, `'finalized'`, `{ confirmations: n }` (head − n;
-  escrow checks read at `openConfirmations`) or `{ blockNumber }`. The tag is resolved to one block number
-  first, so the calls of one check all see the same block.
+- **Depth, one block.** A read names its block: `'latest'`, `'safe'`, `'finalized'`, `{ confirmations: n }`
+  (head − n; escrow checks read at `openConfirmations`), `{ blockNumber }` or `{ blockHash }`. The tag is
+  resolved to one block header, and calls carry its hash (EIP-1898 `{ blockHash, requireCanonical: true }`):
+  an endpoint on another fork fails the call rather than answering from its own block at that height, and
+  `pin(at)` hands the same hash to every call of one check. The endpoints must support EIP-1898 for
+  `eth_call` and `eth_getBalance` (geth, erigon, reth, anvil and the large providers do).
 - **`RouterReader`** — `intents`, `filled`, `ticketSigners`, `proofWindow`, `attestationSetFor`,
   `getAttestorSet`, `revokedAttestors`, `currentSetId`, `isMember`, `sourceOrderHash`, `hashOrder`,
   `hashTicket`, `hashFillProof`, `minInput`. Calls and results are encoded from `CANCORE_ROUTER_ABI` of
