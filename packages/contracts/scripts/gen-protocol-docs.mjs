@@ -87,7 +87,6 @@ write('protocol/asyncapi.json', {
   },
   defaultContentType: 'application/json',
   servers: {
-    mock: { host: 'localhost:{port}', protocol: 'ws', description: '@cancore/test-kit mock-gateway', variables: { port: { default: '8787' } } },
     devnet: { host: '{gatewayHost}', protocol: 'wss', description: 'Published per environment (O-6)', variables: { gatewayHost: { default: 'filler.dev.cancore.io' } } },
   },
   channels: {
