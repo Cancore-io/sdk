@@ -463,6 +463,17 @@ describe('a restart loses no ticket and sends nothing twice', () => {
     await h.filler.stop();
   });
 
+  test('CHECKING without a recorded arrival of ticket.issued: refused as unverifiable, never receipted', async () => {
+    const h = await restartWith(async (h1) => {
+      const offer = h1.offerFrame();
+      const issued = await h1.issuedFrame(offer);
+      return { state: 'checking', offer: offer as unknown as TicketOffer, issued: issued as never, intent: { type: 'ticket.intent', id: 'x', orderHash: h1.w.orderHash, attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil, sig: '0x' } };
+    });
+    expect(h.sent('ticket.receipt')).toHaveLength(0);
+    expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ reason: 'TICKET_ISSUED_LATE', detail: expect.stringMatching(/unverifiable/) })]);
+    await h.filler.stop();
+  });
+
   test('RECEIPTED but not handed over: the stored receipt is sent, not a new one', async () => {
     const receipt = { type: 'ticket.receipt', id: 'stored-receipt', orderHash: '', attempt: 0, ticketHash: `0x${'01'.repeat(32)}`, ticketSigHash: `0x${'02'.repeat(32)}`, sig: `0x${'03'.repeat(65)}` };
     const h = await restartWith(async (h1) => {

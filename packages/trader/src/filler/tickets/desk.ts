@@ -158,7 +158,8 @@ export class TicketDesk {
         return true;
       }
       if (record.issued || (record.state !== 'intent-sent' && record.state !== 'intent-acked' && record.state !== 'offered')) return false;
-      await tx.putTicket({ ...record, state: 'checking', issued, issuedAtMs, updatedAtMs: now });
+      // The protocol client wrote the arrival time when the frame came in (V-T4); keep it.
+      await tx.putTicket({ ...record, state: 'checking', issued, issuedAtMs: record.issuedAtMs ?? issuedAtMs, updatedAtMs: now });
       return true;
     });
     if (!taken) return;
@@ -341,7 +342,10 @@ export class TicketDesk {
     if (!record.intent) return this.decline(orderHash, attempt, ['checking', 'issued'], 'OTHER', 'no ticket.intent was sent for this attempt');
     let verdict: Awaited<ReturnType<TicketVerifier['verify']>>;
     try {
-      verdict = await this.options.verifier.verify({ offer: record.offer, issued: record.issued, issuedAtMs: record.issuedAtMs ?? this.options.clock.now(), intent: record.intent });
+      verdict =
+        record.issuedAtMs === undefined
+          ? { ok: false, reason: 'TICKET_ISSUED_LATE', detail: 'V-T4: unverifiable: the arrival of ticket.issued is not recorded', checks: [] }
+          : await this.options.verifier.verify({ offer: record.offer, issued: record.issued, issuedAtMs: record.issuedAtMs, intent: record.intent });
     } catch (error) {
       this.options.logger.error('tickets: the checks failed to run', { orderHash, attempt, error: String(error) });
       verdict = { ok: false, reason: 'OTHER', detail: 'the checks failed to run', checks: [] };
