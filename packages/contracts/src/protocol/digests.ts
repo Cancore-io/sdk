@@ -25,7 +25,7 @@ export const hashTicketIntent = (intent: TicketIntent): Hex =>
   hashTypedData({ domain: FILLER_PROTOCOL_DOMAIN, types: TICKET_INTENT_TYPES, primaryType: 'TicketIntent', message: { ...intent } });
 
 /** What `msgSig` of a filler → filler-gateway message is over: `FillerMessage{bodyHash}` of the message without `msgSig`. */
-export const hashFillerMessage = (message: Readonly<Record<string, unknown>>): Hex =>
+export const hashFillerMessage = (message: object): Hex =>
   hashTypedData({ domain: FILLER_PROTOCOL_DOMAIN, types: FILLER_MESSAGE_TYPES, primaryType: 'FillerMessage', message: { bodyHash: fillerMessageBodyHash(message) } });
 
 /** The `FillerKeyRegistration` digest; the registered key signs it, and it must recover to `messageKey`. */

@@ -26,10 +26,10 @@ export interface FillerEnvelopeContext {
  * not unix milliseconds, or no valid `id`; `STALE_MESSAGE` — `sentAt` further
  * than `maxMessageAgeMs` from `receivedAt`.
  */
-export function fillerEnvelopeError(message: Readonly<Record<string, unknown>>, ctx: FillerEnvelopeContext): ErrorCode | null {
-  if (!isEoaSignature(message.msgSig)) return 'BAD_SIGNATURE';
-  if (message.fillerId !== ctx.fillerId) return 'UNAUTHENTICATED';
-  const { sentAt, id } = message;
+export function fillerEnvelopeError(message: object, ctx: FillerEnvelopeContext): ErrorCode | null {
+  const { msgSig, fillerId, sentAt, id } = message as Readonly<Record<string, unknown>>;
+  if (!isEoaSignature(msgSig)) return 'BAD_SIGNATURE';
+  if (fillerId !== ctx.fillerId) return 'UNAUTHENTICATED';
   if (typeof sentAt !== 'number' || !Number.isSafeInteger(sentAt) || sentAt < 1e12) return 'BAD_REQUEST';
   if (Math.abs(ctx.receivedAt - sentAt) > ctx.maxMessageAgeMs) return 'STALE_MESSAGE';
   if (typeof id !== 'string' || id.length < 1 || id.length > 64) return 'BAD_REQUEST';

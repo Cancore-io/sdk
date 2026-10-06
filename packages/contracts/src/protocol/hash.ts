@@ -138,8 +138,8 @@ export function gatewayBodyHash(message: Readonly<Record<string, unknown>>): Hex
 }
 
 /** `FillerMessage.bodyHash`: keccak256 of the JCS text of a filler message without its `msgSig`; `id`, `fillerId`, `sentAt` and any inner `sig` stay in. */
-export function fillerMessageBodyHash(message: Readonly<Record<string, unknown>>): Hex {
-  const { msgSig: _msgSig, ...body } = message;
+export function fillerMessageBodyHash(message: object): Hex {
+  const { msgSig: _msgSig, ...body } = message as Readonly<Record<string, unknown>>;
   return toHex(keccak(utf8ToBytes(jcs(body))));
 }
 
