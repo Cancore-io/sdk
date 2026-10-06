@@ -4,7 +4,8 @@
  * The package holds no keys. A filler node builds its signers from keys in its
  * `.env`, one key per purpose (filler-node N-5, N-6):
  *
- * - quote key — `QuoteSigner`: signs `FillerAuth` at login and `FillerQuote`, nothing else;
+ * - quote key — `QuoteSigner`: the message key — signs `FillerAuth` at login, `FillerQuote` and the
+ *   envelope `msgSig` of every filler → filler-gateway message (protocol §3.4);
  * - fill key per EVM chain — `FillSigner`: signs `TicketIntent` / `TicketReceipt`
  *   (and `CantonTicketReceipt`) and the `fill` / `settle` transactions;
  * - staking key — `StakingSigner`: signs one `StakeBinding`, passed to `bindStake` only.
