@@ -8,6 +8,7 @@
 import type { DecString, Hex, StakeBindingRequest, TicketIssued, TicketOffer } from '@cancore/contracts';
 import { isEvmChainId, type EvmChainId } from './chains';
 import { FillerChains, type ChainConfig } from './chain';
+import { TicketVerifier, type EscrowVerification } from './tickets/checks';
 import { FillerConfigError, NotImplementedError } from './errors';
 import { FillerProtocolClient, DEFAULT_REST_POLL_INTERVAL_MS } from './protocol/client';
 import { GatewayRest } from './protocol/rest';
@@ -62,6 +63,8 @@ export interface FillerConfig {
    * here, never from filler-gateway.
    */
   chains: { readonly [chain: EvmChainId]: ChainConfig };
+  /** Ticket timing the SDK holds filler-gateway to. No defaults (CAN-1720). */
+  tickets: TicketPolicy;
   /** The filler's own Canton participant; required only for Canton routes. */
   ledger?: CantonLedger;
   /** All filler state (sdk.md S16). The filler node passes its Postgres store. */
@@ -83,6 +86,11 @@ export interface FillerConfig {
   instanceId?: string;
   /** Transport tuning. The defaults suit production; tests shorten them. */
   transport?: TransportOptions;
+}
+
+export interface TicketPolicy {
+  /** δ_issue, ms: a `ticket.issued` arriving later than `acceptBy` + this is declined `TICKET_ISSUED_LATE` (V-T4, protocol S-2, O-2). */
+  deltaIssueMs: number;
 }
 
 /** Reconnect, heartbeat and fallback timing of the connection to filler-gateway. */
@@ -142,12 +150,6 @@ export interface DrawVerification {
   drandRound: DecString;
 }
 
-export interface EscrowVerification {
-  ok: boolean;
-  /** Why not, when `ok` is false. */
-  reason?: string;
-}
-
 export interface BindStakeOptions {
   /** EVM chain of the `CNRXStaking` deployment. */
   chain: EvmChainId;
@@ -192,7 +194,11 @@ export interface Filler {
   selfSettle(orderHash: Hex): Promise<SelfSettleResult>;
   /** V2. */
   verifyDraw(orderHash: Hex): Promise<DrawVerification>;
-  /** Own RPC / own participant; runs automatically before every `TicketReceipt`. */
+  /**
+   * The checks before a receipt (fillers.md §4.5) for an issued ticket whose
+   * offer is in the store: own RPC, pinned routers. Runs automatically before
+   * every `TicketReceipt`; never sends anything.
+   */
   verifyEscrow(ticket: TicketIssued): Promise<EscrowVerification>;
   /** Signs a `StakeBinding` with the staking key. */
   bindStake(stakingSigner: StakingSigner, options: BindStakeOptions): Promise<StakeBindingRequest>;
@@ -264,6 +270,10 @@ function validate(config: FillerConfig): void {
     (endpoints as readonly unknown[]).forEach((endpoint, i) => requireMethods(`rpc.${chain}[${i}]`, endpoint, ['request']));
   }
 
+  if (!isObject(config.tickets)) throw new FillerConfigError('tickets', 'is required');
+  if (typeof config.tickets.deltaIssueMs !== 'number' || !Number.isSafeInteger(config.tickets.deltaIssueMs) || config.tickets.deltaIssueMs < 0) {
+    throw new FillerConfigError('tickets.deltaIssueMs', 'expected a non-negative integer (ms)');
+  }
   if (config.ledger !== undefined) requireMethods('ledger', config.ledger, ['activeContracts', 'exercise']);
   requireMethods('store', config.store, ['now', 'withOrder', 'listOpenOrders', 'appendEvidence', 'getOverrides']);
   requireMethods('store.quotes', config.store.quotes, ['nextNonce', 'recordQuote', 'recordAck', 'listQuotes']);
@@ -293,6 +303,10 @@ function validateChains(config: FillerConfig): void {
     requireAddress(`chains.${chain}.router`, entry.router);
     count(`chains.${chain}.openConfirmations`, entry.openConfirmations);
     count(`chains.${chain}.maxHeadLagBlocks`, entry.maxHeadLagBlocks);
+    count(`chains.${chain}.minTicketTtlSec`, entry.minTicketTtlSec);
+    count(`chains.${chain}.requiredProofWindowSec`, entry.requiredProofWindowSec);
+    count(`chains.${chain}.sendGuardSec`, entry.sendGuardSec);
+    if (typeof entry.minGasWei !== 'bigint' || entry.minGasWei < 0n) throw new FillerConfigError(`chains.${chain}.minGasWei`, 'expected a non-negative bigint (wei)');
     const endpoints = config.rpc[chain];
     if (!Array.isArray(endpoints) || endpoints.length === 0) throw new FillerConfigError(`rpc.${chain}`, 'expected at least one endpoint');
   }
@@ -397,6 +411,16 @@ export function createFiller(config: FillerConfig): Filler {
   });
   protocol.attach(session, rest);
 
+  const verifier = new TicketVerifier({
+    chains,
+    fillSigners: config.fillSigners,
+    ticketSigners: config.ticketSigners,
+    deltaIssueMs: config.tickets.deltaIssueMs,
+    clock,
+    events,
+    logger,
+  });
+
   const context: FillerContext = { config, clock, logger, events, fetch, instanceId, protocol, nextId, chains };
 
   let quoteHook: QuoteRequestHook | undefined;
@@ -456,8 +480,14 @@ export function createFiller(config: FillerConfig): Filler {
     verifyDraw: async () => {
       throw new NotImplementedError('verifyDraw', 'CAN-1848');
     },
-    verifyEscrow: async () => {
-      throw new NotImplementedError('verifyEscrow', 'CAN-1854');
+    verifyEscrow: async (ticket) => {
+      const orderHash = typeof ticket?.orderHash === 'string' ? (ticket.orderHash.toLowerCase() as Hex) : undefined;
+      if (!orderHash || !/^0x[0-9a-f]{64}$/.test(orderHash) || !Number.isSafeInteger(ticket.attempt)) {
+        return { ok: false, reason: 'OTHER', detail: 'malformed ticket.issued', checks: [] };
+      }
+      const record = await config.store.withOrder(orderHash, (tx) => tx.getTicket(ticket.attempt));
+      if (!record?.offer) return { ok: false, reason: 'OTHER', detail: 'no ticket.offer stored for this attempt', checks: [] };
+      return verifier.verify({ offer: record.offer, issued: ticket, issuedAtMs: record.issuedAtMs ?? clock.now(), ...(record.intent ? { intent: record.intent } : {}) });
     },
     bindStake: async () => {
       throw new NotImplementedError('bindStake', 'CAN-1857');

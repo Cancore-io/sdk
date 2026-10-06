@@ -17,6 +17,14 @@ export interface ChainConfig {
   openConfirmations: number;
   /** An endpoint whose head trails the best one by more than this is passed over (`ops.maxHeadLagBlocks`). */
   maxHeadLagBlocks: number;
+  /** `MIN_TICKET_TTL[destination]`, seconds (V-T3). */
+  minTicketTtlSec: number;
+  /** The filler's own proof window for orders to this destination, seconds: finality + p99 attestation + p99 `settle` + margin (V-E3; filler-node `minProofWindowSec`). */
+  requiredProofWindowSec: number;
+  /** p99 inclusion time of `fill`, seconds: a ticket with less left is refused (V-T3, T-29; filler-node `sendGuardSec`). */
+  sendGuardSec: number;
+  /** Native balance the delivery address must hold for gas, wei (V-E5; filler-node `ops.minGas`). */
+  minGasWei: bigint;
 }
 
 export interface ChainReaders {

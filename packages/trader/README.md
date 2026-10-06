@@ -37,9 +37,12 @@ const filler = createFiller({
   fillSigners: { 'eip155:1': fill1, 'eip155:56': fill56 },  // FillSigner per EVM chain
   rpc: { 'eip155:1': [alchemy1, infura1], 'eip155:56': [bsc1] },  // in order of preference
   chains: {                                      // pinned routers and read policy, from the node's own config
-    'eip155:1': { router: ETH_ROUTER, openConfirmations: 12, maxHeadLagBlocks: 5 },
-    'eip155:56': { router: BSC_ROUTER, openConfirmations: 15, maxHeadLagBlocks: 5 },
+    'eip155:1': { router: ETH_ROUTER, openConfirmations: 12, maxHeadLagBlocks: 5,
+                  minTicketTtlSec: 120, requiredProofWindowSec: 2_700, sendGuardSec: 60, minGasWei: 5n * 10n ** 16n },
+    'eip155:56': { router: BSC_ROUTER, openConfirmations: 15, maxHeadLagBlocks: 5,
+                   minTicketTtlSec: 60, requiredProofWindowSec: 1_800, sendGuardSec: 30, minGasWei: 10n ** 17n },
   },
+  tickets: { deltaIssueMs: 3_000 },             // δ_issue (protocol S-2)
   store,                                         // FillerStore — the filler node passes its Postgres store
   webSocket,                                     // WebSocketFactory (Node 20 has no global WebSocket)
   logger,
@@ -66,7 +69,7 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 | `stop()` | `Promise<void>` | closes the session; in-flight work stays in the store for any replica | CAN-1847 |
 | `selfSettle(orderHash)` | `{ txHash }` | settle one order now from its verified attestation set | CAN-1856 |
 | `verifyDraw(orderHash)` | `{ winner, recomputedWinner, match, drandRound }` | V2 only: recompute the draw | CAN-1848 |
-| `verifyEscrow(ticket)` | `{ ok, reason? }` | own RPC / participant check; also runs before every receipt | CAN-1854 |
+| `verifyEscrow(ticket)` | `{ ok, reason?, detail?, checks }` | the checks before a receipt for an issued ticket whose offer is stored; also runs before every receipt | CAN-1854 |
 | `bindStake(stakingSigner, { chain })` | `StakeBindingRequest` | sign a `StakeBinding` with the staking key | CAN-1857 |
 | `stats()` | `{ won, delivered, noShow, reliability, capacityUsd, inFlightUsd }` | filler statistics | CAN-1940 |
 
@@ -141,6 +144,29 @@ message.
 `FakeChain` in `./filler/testing` is an in-memory chain behind `EvmRpc` — routers with scripted state, ERC-20
 balances, blocks, logs and `reorg(fromBlock)`; `endpoint({ headLag, chainId })` adds endpoints over the same
 chain for failover tests.
+
+## Checks before the receipt
+
+Before the SDK signs a `ticket.receipt` — and when the node calls `verifyEscrow(ticket)` — it runs the checks
+of fillers.md §4.5 for an EVM source and an EVM-form ticket, with its own RPC and the pinned routers (INV-10).
+They stop at the first failure, and the failure is the `ticket.decline` reason:
+
+| Check | What | Decline |
+|---|---|---|
+| V-T4 | `ticket.issued` arrived by `acceptBy + tickets.deltaIssueMs` | `TICKET_ISSUED_LATE` |
+| V-T2 | the ticket repeats the offer (`orderHash`, `attempt`, `validFrom`, `validUntil`) and names this filler | `TICKET_MISMATCH` |
+| V-T3 | `validUntil < fillDeadline`; `validUntil − validFrom ≥ minTicketTtlSec`; at least `sendGuardSec` left | `TICKET_BEYOND_DEADLINE`, `TICKET_TTL_TOO_SHORT` |
+| V-E1 | `orderHash` is the order's digest in the source router's domain | `ESCROW_MISMATCH` |
+| V-E2 | `intents(orderHash).status == Opened`, read `openConfirmations` deep on the source | `ESCROW_NOT_OPEN` |
+| V-E3 | `refundAfter − fillDeadline ≥ requiredProofWindowSec` of the destination | `PROOF_WINDOW_TOO_SHORT` |
+| V-T1 | the ticket signer is in `ticketSigners` of the config and `ticketSigners(signer)` on the destination router | `TICKET_SIGNER_UNKNOWN` |
+| V-E4 | `repayTo` will be paid | not checked yet: the pinned `FillTicket` carries no `repayTo` |
+| V-E5 | not `filled` on the destination; balance and allowance ≥ `amountOut`, gas ≥ `minGasWei` | `OTHER` (`already-filled`), `NO_INVENTORY` |
+
+A fact that cannot be read declines with the code of the check that needed it (`unverifiable: …` in the
+detail): an unverifiable ticket is never receipted. No setting turns a check off. Each check's result is
+emitted as stage `ticket.checked`. A Canton source and a Canton-form ticket are declined `OTHER` until their
+checks land; V1 does not check the draw.
 
 ## Quotes
 

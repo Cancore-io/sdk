@@ -108,8 +108,8 @@ describe('router addresses come only from the node config', () => {
     const chains = new FillerChains(
       { 'eip155:1': [eth], 'eip155:56': [bsc] },
       {
-        'eip155:1': { router: '0x1111111111111111111111111111111111111111', openConfirmations: 3, maxHeadLagBlocks: 5 },
-        'eip155:56': { router: '0x5656565656565656565656565656565656565656', openConfirmations: 10, maxHeadLagBlocks: 5 },
+        'eip155:1': { router: '0x1111111111111111111111111111111111111111', openConfirmations: 3, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 30, minGasWei: 10n ** 15n },
+        'eip155:56': { router: '0x5656565656565656565656565656565656565656', openConfirmations: 10, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 30, minGasWei: 10n ** 15n },
       },
       createRecordingLogger(),
     );

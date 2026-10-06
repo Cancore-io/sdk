@@ -84,6 +84,8 @@ export interface TicketRecord {
   receipt?: TicketReceiptMessage;
   decline?: TicketDecline;
   expired?: TicketExpired;
+  /** When `ticket.issued` first arrived, unix ms by the process clock (V-T4 compares it with `acceptBy + δ_issue`). */
+  issuedAtMs?: number;
   /** Unix ms, store time of the last write. */
   updatedAtMs: number;
 }

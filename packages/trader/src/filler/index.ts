@@ -10,7 +10,6 @@ export { createFiller } from './filler';
 export type {
   BindStakeOptions,
   DrawVerification,
-  EscrowVerification,
   Filler,
   FillerConfig,
   FillerStatsSnapshot,
@@ -18,6 +17,7 @@ export type {
   QuoteRequestHook,
   ReconfirmHook,
   SelfSettleResult,
+  TicketPolicy,
   TicketOfferDecision,
   TicketOfferHook,
   TransportOptions,
@@ -54,6 +54,11 @@ export {
 export type { EvmTransactionRequest, FillSigner, QuoteSigner, StakingSigner, TransactionSigner, TypedDataSigner } from './signer';
 
 export type { EvmRpc, EvmRpcMap, EvmRpcRequest } from './rpc';
+
+export { TicketVerifier } from './tickets/checks';
+export type { EscrowVerification, TicketCheckId, TicketCheckInput, TicketCheckResult, TicketVerifierOptions } from './tickets/checks';
+export { chainsOf, fillTicketOf, identityFor, ticketMismatch } from './tickets/terms';
+export type { OfferTerms, OrderChains, TicketIdentity } from './tickets/terms';
 
 export {
   AbiDecodeError,
