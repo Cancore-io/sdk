@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cancore.io/schemas/filler-protocol/v1/rest.schema.json",
   "title": "Cancore filler protocol v1 — REST fallback",
-  "$comment": "protocol §3.6. Bodies are the WebSocket frames (S→F responses carry the gateway sig). /v1/filler/* needs `Authorization: Bearer <token>` from POST /v1/filler/auth; the token is bound to the fillerId it was issued for, and a ticket of another filler is 404 UNKNOWN_TICKET. /v1/draws/* and /v1/gateway are public. Every non-2xx body is the `error` frame, with the HTTP status of x-error-status. x-endpoints: request/response name a $def here or in messages.schema.json.",
+  "$comment": "protocol §3.6. Bodies are the WebSocket frames (S→F responses carry the gateway sig). /v1/filler/* needs `Authorization: Bearer <token>` from POST /v1/filler/auth; the token is bound to the fillerId it was issued for, and a ticket of another filler is 404 UNKNOWN_TICKET. GET /v1/filler/attestations/{orderHash} answers 404 ATTESTATIONS_NOT_READY until the gateway holds ≥ threshold verified signatures for this filler's fill, and 404 UNKNOWN_TICKET when this filler holds no ticket on the order. /v1/draws/* and /v1/gateway are public. Every non-2xx body is the `error` frame, with the HTTP status of x-error-status. x-endpoints: request/response name a $def here or in messages.schema.json.",
   "x-endpoints": [
     { "method": "GET", "path": "/v1/filler/auth/challenge", "auth": "none", "response": "messages.schema.json#/$defs/auth.challenge" },
     { "method": "POST", "path": "/v1/filler/auth", "auth": "none", "request": "messages.schema.json#/$defs/auth.response", "response": "#/$defs/authToken" },
@@ -14,13 +14,15 @@
     { "method": "GET", "path": "/v1/filler/quotes", "auth": "bearer", "query": "#/$defs/quoteListQuery", "response": "#/$defs/quoteList" },
     { "method": "GET", "path": "/v1/filler/stats", "auth": "bearer", "response": "#/$defs/fillerStats" },
     { "method": "GET", "path": "/v1/filler/penalties", "auth": "bearer", "query": "#/$defs/pageQuery", "response": "#/$defs/penaltyList" },
+    { "method": "GET", "path": "/v1/filler/attestations/{orderHash}", "auth": "bearer", "response": "messages.schema.json#/$defs/settle.attestations" },
     { "method": "GET", "path": "/v1/draws/{orderHash}", "auth": "none", "response": "records.schema.json#/$defs/drawRecord" },
     { "method": "GET", "path": "/v1/draws/epochs/{id}", "auth": "none", "response": "records.schema.json#/$defs/epochRecord" },
     { "method": "GET", "path": "/v1/gateway", "auth": "none", "response": "records.schema.json#/$defs/gatewayInfo" }
   ],
   "x-error-status": {
     "BAD_REQUEST": 400, "UNAUTHENTICATED": 401, "UNSUPPORTED_VERSION": 400, "UNSUPPORTED_TYPE": 400, "BAD_SIGNATURE": 422,
-    "UNKNOWN_REQUEST": 404, "UNKNOWN_TICKET": 404, "TICKET_CLOSED": 409, "NOT_ELIGIBLE": 403, "RATE_LIMITED": 429, "INTERNAL": 500
+    "UNKNOWN_REQUEST": 404, "UNKNOWN_TICKET": 404, "TICKET_CLOSED": 409, "NOT_ELIGIBLE": 403, "RATE_LIMITED": 429, "INTERNAL": 500,
+    "ATTESTATIONS_NOT_READY": 404
   },
   "$defs": {
     "errorBody": { "$ref": "messages.schema.json#/$defs/error" },
