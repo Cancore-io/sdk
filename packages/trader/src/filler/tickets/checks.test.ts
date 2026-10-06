@@ -90,11 +90,13 @@ describe('all checks pass: { ok: true }, every check reported to the EventSink',
     const result = await h.verifier.verify(h.input);
     expect(result).toMatchObject({ ok: true });
     expect(result.checks.map((c) => c.check)).toEqual(ORDER_OF_CHECKS);
-    expect(result.checks.every((c) => c.ok)).toBe(true);
-    expect(result.checks.find((c) => c.check === 'V-E4')!.detail).toMatch(/CAN-2151/);
+    expect(result.checks.filter((c) => c.check !== 'V-E4').every((c) => c.status === 'passed')).toBe(true);
+    // V-E4 is not checked yet: reported as skipped, never as passed.
+    expect(result.checks.find((c) => c.check === 'V-E4')).toMatchObject({ status: 'skipped', detail: expect.stringMatching(/CAN-2151/) });
     const stages = h.events.events.filter((e) => e.type === 'stage' && e.stage === 'ticket.checked');
     expect(stages).toHaveLength(ORDER_OF_CHECKS.length);
-    expect(stages[0]).toMatchObject({ orderHash: h.orderHash, attempt: 0, detail: { check: 'form', ok: true } });
+    expect(stages[0]).toMatchObject({ orderHash: h.orderHash, attempt: 0, detail: { check: 'form', status: 'passed' } });
+    expect(stages.find((e) => e.type === 'stage' && e.detail?.check === 'V-E4')).toMatchObject({ detail: { status: 'skipped' } });
   });
 
   test('only the pinned routers and the output token are read, with the node RPC', async () => {
@@ -108,7 +110,7 @@ describe('all checks pass: { ok: true }, every check reported to the EventSink',
   test('the escrow is read openConfirmations deep', async () => {
     const h = await setup();
     await h.verifier.verify(h.input);
-    expect(h.src.calls.filter((c) => c.method === 'eth_call').map((c) => BigInt(c.params![1] as string))).toEqual([97n]);
+    expect(h.src.calls.filter((c) => c.method === 'eth_call').map((c) => h.src.numberOfHash((c.params![1] as { blockHash: string }).blockHash))).toEqual([97n]);
   });
 });
 
@@ -163,7 +165,7 @@ describe('each check refuses with its own code, and nothing after it runs', () =
     const result = await h.verifier.verify(h.input);
     expect(result).toMatchObject({ ok: false, reason });
     const last = result.checks.at(-1)!;
-    expect(last).toMatchObject({ check, ok: false, reason });
+    expect(last).toMatchObject({ check, status: 'failed', reason });
     expect(result.checks.map((c) => c.check)).toEqual(ORDER_OF_CHECKS.slice(0, ORDER_OF_CHECKS.indexOf(check) + 1));
     expect(h.events.events.filter((e) => e.type === 'stage' && e.stage === 'ticket.checked')).toHaveLength(result.checks.length);
   }
@@ -201,5 +203,12 @@ describe('boundaries pass', () => {
     const h = await setup({ amountOut: '1000' });
     h.dst.nativeBalances.set(fill.address.toLowerCase(), 10n ** 15n);
     await expect(h.verifier.verify(h.input)).resolves.toMatchObject({ ok: true });
+  });
+});
+
+describe('V-E4 is a stub until the ticket carries repayTo', () => {
+  test('tripwire: the pinned FillTicket has no repayTo — when it gains one (CAN-2139 / CAN-2151), V-E4 must be implemented', () => {
+    // Fails the day the contracts types carry repayTo while checks.ts still skips V-E4.
+    expect(FILL_TICKET_TYPES.FillTicket.map((f) => f.name)).not.toContain('repayTo');
   });
 });

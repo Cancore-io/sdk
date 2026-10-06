@@ -487,7 +487,11 @@ export function createFiller(config: FillerConfig): Filler {
       }
       const record = await config.store.withOrder(orderHash, (tx) => tx.getTicket(ticket.attempt));
       if (!record?.offer) return { ok: false, reason: 'OTHER', detail: 'no ticket.offer stored for this attempt', checks: [] };
-      return verifier.verify({ offer: record.offer, issued: ticket, issuedAtMs: record.issuedAtMs ?? clock.now(), ...(record.intent ? { intent: record.intent } : {}) });
+      // V-T4 needs the arrival time of ticket.issued; without it the ticket is unverifiable, not «on time».
+      if (record.issuedAtMs === undefined) {
+        return { ok: false, reason: 'TICKET_ISSUED_LATE', detail: 'V-T4: unverifiable: the arrival of ticket.issued is not recorded', checks: [] };
+      }
+      return verifier.verify({ offer: record.offer, issued: ticket, issuedAtMs: record.issuedAtMs, ...(record.intent ? { intent: record.intent } : {}) });
     },
     bindStake: async () => {
       throw new NotImplementedError('bindStake', 'CAN-1857');

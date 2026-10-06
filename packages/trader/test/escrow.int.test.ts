@@ -79,7 +79,7 @@ live('the checks before a receipt against the stand router', () => {
   test('V-E1 holds against the real router domain; the settled escrow is ESCROW_NOT_OPEN', async () => {
     const { order, orderHash } = await smokeOrder();
     const result = await verify(order, orderHash);
-    expect(result.checks.find((c) => c.check === 'V-E1')).toMatchObject({ ok: true });
+    expect(result.checks.find((c) => c.check === 'V-E1')).toMatchObject({ status: 'passed' });
     expect(result).toMatchObject({ ok: false, reason: 'ESCROW_NOT_OPEN' });
   });
 

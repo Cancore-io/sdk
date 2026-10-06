@@ -164,8 +164,10 @@ They stop at the first failure, and the failure is the `ticket.decline` reason:
 | V-E5 | not `filled` on the destination; balance and allowance ≥ `amountOut`, gas ≥ `minGasWei` | `OTHER` (`already-filled`), `NO_INVENTORY` |
 
 A fact that cannot be read declines with the code of the check that needed it (`unverifiable: …` in the
-detail): an unverifiable ticket is never receipted. No setting turns a check off. Each check's result is
-emitted as stage `ticket.checked`. A Canton source and a Canton-form ticket are declined `OTHER` until their
+detail): an unverifiable ticket is never receipted. No setting turns a check off. Each check's result —
+`passed`, `failed` or `skipped` (V-E4 for now) — is emitted as stage `ticket.checked`. V-T4 compares the
+time `ticket.issued` arrived, which the protocol client writes on the attempt when the frame is received; a
+ticket whose arrival is not recorded is refused as unverifiable. A Canton source and a Canton-form ticket are declined `OTHER` until their
 checks land; V1 does not check the draw.
 
 ## Quotes

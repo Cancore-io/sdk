@@ -66,7 +66,7 @@ export type FillerStage =
   | 'ticket.offered'
   | 'ticket.intent.sent'
   | 'ticket.issued'
-  /** One check before the receipt ran: `detail.check`, `detail.ok`, `detail.reason`. */
+  /** One check before the receipt: `detail.check`, `detail.status` (`passed` | `failed` | `skipped`), `detail.reason`. */
   | 'ticket.checked'
   | 'ticket.receipted'
   | 'ticket.expired'

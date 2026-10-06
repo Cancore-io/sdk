@@ -25,8 +25,8 @@
  * The checks stop at the first failure. A fact that cannot be read is a
  * failure of the check that needed it (N-12): the decline names that check's
  * code with detail `unverifiable: …`. No setting turns a check off (N-11).
- * Every check's result is reported to the `EventSink` as stage
- * `ticket.checked`.
+ * Every check's result — `passed`, `failed` or `skipped` — is reported to
+ * the `EventSink` as stage `ticket.checked`.
  *
  * Not here: a Canton source (V-C1…V-C6, CAN-1863) and a Canton-form ticket
  * (CAN-1867) are declined `OTHER`; the draw (V-T5) is V2 (CAN-1848).
@@ -45,12 +45,19 @@ import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from './
 
 export type TicketCheckId = 'form' | 'V-T4' | 'V-T2' | 'V-T3' | 'V-E1' | 'V-E2' | 'V-E3' | 'V-T1' | 'V-E4' | 'V-E5';
 
+/**
+ * `passed` — the condition holds; `failed` — it does not, or could not be
+ * verified; `skipped` — not checked at all (see `detail`): never read as
+ * «the condition holds».
+ */
+export type TicketCheckStatus = 'passed' | 'failed' | 'skipped';
+
 export interface TicketCheckResult {
   check: TicketCheckId;
-  ok: boolean;
-  /** The decline code, when not ok. */
+  status: TicketCheckStatus;
+  /** The decline code, when failed. */
   reason?: DeclineReason;
-  /** What failed, or why a check was not applicable; never a signature or key. */
+  /** What failed, or why a check was skipped; never a signature or key. */
   detail?: string;
 }
 
@@ -107,19 +114,20 @@ export class TicketVerifier {
     const checks: TicketCheckResult[] = [];
     const orderHash = String(input.issued?.orderHash ?? '');
     const attempt = Number(input.issued?.attempt);
-    const pass = (check: TicketCheckId, detail?: string) => this.record(checks, { check, ok: true, ...(detail ? { detail } : {}) }, orderHash, attempt);
+    const pass = (check: TicketCheckId, detail?: string, status: TicketCheckStatus = 'passed') =>
+      this.record(checks, { check, status, ...(detail ? { detail } : {}) }, orderHash, attempt);
     try {
       await this.run(input, pass);
     } catch (error) {
       if (!(error instanceof Refusal)) throw error;
-      this.record(checks, { check: error.check, ok: false, reason: error.reason, detail: error.detail }, orderHash, attempt);
+      this.record(checks, { check: error.check, status: 'failed', reason: error.reason, detail: error.detail }, orderHash, attempt);
       this.options.logger.info('tickets: issued ticket refused', { orderHash, attempt, check: error.check, reason: error.reason, detail: error.detail });
       return { ok: false, reason: error.reason, detail: `${error.check}: ${error.detail}`, checks };
     }
     return { ok: true, checks };
   }
 
-  private async run(input: TicketCheckInput, pass: (check: TicketCheckId, detail?: string) => void): Promise<void> {
+  private async run(input: TicketCheckInput, pass: (check: TicketCheckId, detail?: string, status?: TicketCheckStatus) => void): Promise<void> {
     const { offer, issuedAtMs } = input;
     const now = this.options.clock.now();
 
@@ -208,7 +216,7 @@ export class TicketVerifier {
     pass('V-T1');
 
     // -- V-E4: repayTo — not in the pinned FillTicket -------------------------------------------
-    pass('V-E4', 'not applicable: the pinned FillTicket carries no repayTo (CAN-2151)');
+    pass('V-E4', 'not checked: the pinned FillTicket carries no repayTo (CAN-2151)', 'skipped');
 
     // -- V-E5: the filler can fill ---------------------------------------------------------------
     const filled = await this.chainRead('V-E5', 'OTHER', () => destination.router.filled(digest));
@@ -250,7 +258,7 @@ export class TicketVerifier {
         atMs: this.options.clock.now(),
         orderHash: orderHash as Hex,
         attempt,
-        detail: { check: result.check, ok: result.ok, ...(result.reason ? { reason: result.reason } : {}), ...(result.detail ? { detail: result.detail } : {}) },
+        detail: { check: result.check, status: result.status, ...(result.reason ? { reason: result.reason } : {}), ...(result.detail ? { detail: result.detail } : {}) },
       });
       if (emitted instanceof Promise) emitted.catch(() => undefined);
     } catch {
