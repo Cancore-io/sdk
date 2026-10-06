@@ -59,6 +59,11 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
   CC on testnet has no pinned admin yet: pass the testnet DSO party with `instrumentAdmins`.
 - Refusal codes `DVP_NOT_ALLOWED` and `DVP_FEE_HOLDING_REQUIRED` (`refusalOf`: `dvpNotAllowed`,
   `feeHoldingRequired`).
+- `SdkErrorCode` (and `SDK_ERROR_CODES`) gains the five codes of the agent mandate: `NO_ACTIVE_MANDATE`,
+  `MANDATE_EXISTS`, `MANDATE_AMBIGUOUS`, `IDEMPOTENCY_KEY_REUSED`, `MANDATE_NOT_YET_VISIBLE`. The spec
+  snapshot gains the `/agent/mandate*` routes. No client method calls them yet; `refusalForCode` maps
+  all five to `other`. **A program that switches on `SdkErrorCode` exhaustively stops compiling until
+  the five have a branch** — which is what the exhaustive switch is for.
 
 ### Migrating from 0.6.x
 
