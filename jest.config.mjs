@@ -34,9 +34,10 @@ const nodeProject = {
 };
 
 /**
- * Integration: the mock gateway as a real process (its CLI, from `dist/`) and a
- * real WebSocket client. Needs `npm run build` first, so it is its own project
- * and its own script (`npm run test:int`), never part of `npm test`.
+ * Integration: suites against a real local stand (e.g. `@cancore/trader`'s
+ * RouterReader against the stand's CancoreRouter). They skip themselves
+ * without the stand's artifacts, so this is its own project and its own
+ * script (`npm run test:int`), never part of `npm test`.
  */
 const intProject = {
   displayName: 'int',
