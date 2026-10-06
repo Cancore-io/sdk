@@ -6,7 +6,8 @@
  * - **Evidence.** Every verified frame is journalled in the store as the
  *   verbatim bytes it arrived as (protocol §3.4, N-14), under the order lock
  *   when it names an order. `quote.ack` is attached to its quote and
- *   `ticket.intent.ack` to its ticket attempt (T-6).
+ *   `ticket.intent.ack` to its ticket attempt (T-6); the arrival time of a
+ *   `ticket.issued` is written on its attempt (V-T4).
  * - **Dispatch.** Then the frame goes to the handler registered for its type.
  *   A type with no handler is ignored (V-2). A frame can arrive twice — on two
  *   sessions, or over WebSocket and REST (S-16); handlers are idempotent
@@ -247,6 +248,13 @@ export class FillerProtocolClient implements SessionListener {
             state: ticket.state === 'intent-sent' ? 'intent-acked' : ticket.state,
             updatedAtMs: await this.options.store.now(),
           });
+        }
+      }
+      if (frame.type === 'ticket.issued' && attempt !== undefined) {
+        // V-T4 measures when the ticket ARRIVED, not when it is checked: recorded at the first receipt, in this transaction.
+        const ticket = await tx.getTicket(attempt);
+        if (ticket && ticket.issuedAtMs === undefined) {
+          await tx.putTicket({ ...ticket, issuedAtMs: this.options.clock.now(), updatedAtMs: await this.options.store.now() });
         }
       }
       return fresh;

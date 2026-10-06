@@ -466,9 +466,10 @@ describe('through createFiller and a crafted filler-gateway', () => {
       fillSigners: { 'eip155:1': fillSigner(FILL_KEY), 'eip155:56': fillSigner(BSC_FILL_KEY) },
       rpc: { 'eip155:1': [new FakeEvmRpc()], 'eip155:56': [bsc] },
       chains: {
-        'eip155:1': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: 5 },
-        'eip155:56': { router: BSC_ROUTER, openConfirmations: 3, maxHeadLagBlocks: 5 },
+        'eip155:1': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 30, minGasWei: 10n ** 15n },
+        'eip155:56': { router: BSC_ROUTER, openConfirmations: 3, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 30, minGasWei: 10n ** 15n },
       },
+      tickets: { deltaIssueMs: 3_000 },
       store,
       webSocket: ws.factory,
       fetch: createFakeFetch().fetch,
