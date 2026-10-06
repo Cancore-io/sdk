@@ -43,6 +43,19 @@ export const DEFAULT_INSTRUMENT_ADMINS: Readonly<Record<DvpNetwork, Readonly<Rec
   },
 });
 
+/**
+ * The party a self-custody CC send pays its network fee to (the backend's `PARTICIPANT_PARTY`),
+ * pinned per network so a send's fee leg can be held to it rather than to what the API says.
+ * Testnet is not pinned yet: pass it with `networkFeeRecipients`.
+ */
+export const DEFAULT_NETWORK_FEE_RECIPIENTS: Readonly<Record<DvpNetwork, readonly string[]>> = deepFreeze({
+  // The dev venue doubles as the participant party there.
+  devnet: ['cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b'],
+  testnet: [],
+  // The participant operator party: same namespace as the venue, its own hint.
+  mainnet: ['Cancore-mainnet-1::1220076a94e0a7f0256a32ffab227db7788d8075677d8afcdaa8386df8f2fa659906'],
+});
+
 /** The Cancore API hosts and the network each serves. Another host needs the `network` option. */
 export const API_NETWORKS: Readonly<Record<string, DvpNetwork>> = Object.freeze({
   'api-dev.cancore.app': 'devnet',

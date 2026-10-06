@@ -59,6 +59,23 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
   CC on testnet has no pinned admin yet: pass the testnet DSO party with `instrumentAdmins`.
 - Refusal codes `DVP_NOT_ALLOWED` and `DVP_FEE_HOLDING_REQUIRED` (`refusalOf`: `dvpNotAllowed`,
   `feeHoldingRequired`).
+- `splitForFee(tokenId, feeAmount)` (`./selfcustody`): gives the platform fee a holding of its
+  own by sending `feeAmount` to the account itself, after checking the balance covers it plus the
+  send's cost (network fee and any fee debt the API collects, within `maxSplitCost`). The send's
+  transactions are verified from their bytes before signing (`verified: true`); without bytes the
+  split is refused unless `{ allowUnverified: true }`, and a partly readable send never signs. CC
+  only: the API refuses a registry-token (CBTC, USDCx) send to oneself, so those are a
+  `SettleError`.
+- `SettleOptions.autoSplitForFee` (default `false`): `take` heals `DVP_FEE_HOLDING_REQUIRED`
+  naming this account as the payer — it splits the fee off once and takes once more, after
+  holding the named fee to the order × `maxFeeRate` and checking the change still covers the
+  trade leg. A failed split, or a second refusal, is a `SettleError`; a refusal naming another
+  payer splits nothing. `SettleOptions.allowUnverifiedSplit` (default `false`) lets it split blind.
+- `SelfCustodyOptions.maxSplitCost` (default `'2'` CC), `SelfCustodyOptions.networkFeeRecipients`
+  and `DEFAULT_NETWORK_FEE_RECIPIENTS`: the ceiling on a split's quoted cost and the pinned
+  parties its network-fee leg may pay. The signed send may cost a holding-fee margin on top of
+  `maxSplitCost` (1% of the fee, at least 0.1 CC, at most 1 CC). A send from a single holding is
+  the transfer alone (the API defers its network fee), and verifies as such.
 - `SdkErrorCode` (and `SDK_ERROR_CODES`) gains the five codes of the agent mandate: `NO_ACTIVE_MANDATE`,
   `MANDATE_EXISTS`, `MANDATE_AMBIGUOUS`, `IDEMPOTENCY_KEY_REUSED`, `MANDATE_NOT_YET_VISIBLE`. The spec
   snapshot gains the `/agent/mandate*` routes. No client method calls them yet; `refusalForCode` maps
