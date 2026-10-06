@@ -6,13 +6,15 @@
 import {
   FILLER_AUTH_TYPES,
   FILLER_PROTOCOL_DOMAIN,
+  hashFillerMessage,
   type Hex,
   type QuoteMessage,
+  type TicketDecline,
   type TicketIntentMessage,
 } from '@cancore/contracts';
 import { FillerStoppedError, GatewayError, UnsupportedVersionError } from '../errors';
 import { createFiller, createFrameIds, type FillerConfig } from '../filler';
-import { recoverTypedDataSigner, type FillSigner } from '../signer';
+import { recoverAddress, recoverTypedDataSigner, type FillSigner } from '../signer';
 import {
   createFakeFetch,
   createFakeWebSocketFactory,
@@ -26,6 +28,7 @@ import {
   type FakeSocket,
 } from '../testing';
 import { FillerProtocolClient, type Delivery } from './client';
+import { createSealer } from './envelope';
 import { keccakHex } from './frames';
 import { GatewayRest } from './rest';
 import { backoffDelay, CLOSE_HEARTBEAT, GatewaySession } from './session';
@@ -67,13 +70,15 @@ function harness(options: { random?: () => number } = {}) {
     },
   });
   const nextId = createFrameIds('replica-1', clock.now());
-  const client = new FillerProtocolClient({ store, clock, logger, events, restPollIntervalMs: 2_000 });
+  const seal = createSealer({ fillerId: FILLER, messageSigner: quoteSigner, clock });
+  const client = new FillerProtocolClient({ store, clock, logger, events, restPollIntervalMs: 2_000, seal });
   const session = new GatewaySession(
     {
       url: URL_,
       fillerId: FILLER,
       gatewaySigner: gateway.address,
       quoteSigner,
+      seal,
       webSocket: ws.factory,
       clock,
       logger,
@@ -85,7 +90,7 @@ function harness(options: { random?: () => number } = {}) {
     },
     client,
   );
-  const rest = new GatewayRest({ gatewayUrl: URL_, fillerId: FILLER, gatewaySigner: gateway.address, quoteSigner, fetch: http.fetch, clock, logger, nextId });
+  const rest = new GatewayRest({ gatewayUrl: URL_, fillerId: FILLER, gatewaySigner: gateway.address, quoteSigner, seal, fetch: http.fetch, clock, logger, nextId });
   client.attach(session, rest);
 
   const challenge = () =>
@@ -146,6 +151,9 @@ describe('login (protocol §3.5 «Session»)', () => {
       response!.sig as Hex,
     );
     expect(signer).toBe(h.quoteSigner.address);
+    // the envelope: the same key signs FillerMessage over the whole body, the inner FillerAuth sig included
+    expect(response).toMatchObject({ sentAt: h.clock.now() });
+    expect(recoverAddress(hashFillerMessage(response!), response!.msgSig as Hex)).toBe(h.quoteSigner.address);
 
     socket.receive(h.authOk(response!.id as string));
     await expect(started).resolves.toBeUndefined();
@@ -159,7 +167,7 @@ describe('login (protocol §3.5 «Session»)', () => {
     void h.client.start();
     const socket = h.ws.sockets[0]!;
     socket.open();
-    expect(h.client.send({ type: 'ping', id: 'p' })).toBe(false);
+    expect(h.client.send(await h.client.seal({ type: 'ping', id: 'p' }))).toBe(false);
     socket.receive(h.offer());
     socket.receive(h.challenge());
     await settle();
@@ -233,9 +241,15 @@ describe('heartbeat and reconnect', () => {
     void h.client.start();
     const socket = await h.login();
     socket.receive(h.gateway.frame({ type: 'ping', fillerId: FILLER, id: 'ping-7' }));
-    expect(socket.sentFrames().at(-1)).toEqual({ type: 'pong', re: 'ping-7' });
+    await settle();
+    const pong = socket.sentFrames().at(-1)!;
+    expect(pong).toEqual({ type: 'pong', id: expect.any(String), re: 'ping-7', fillerId: FILLER, sentAt: h.clock.now(), msgSig: expect.any(String) });
+    expect(recoverAddress(hashFillerMessage(pong), pong.msgSig as Hex)).toBe(h.quoteSigner.address);
     h.clock.advance(HEARTBEAT_MS);
-    expect(socket.sentFrames().at(-1)).toMatchObject({ type: 'ping' });
+    await settle();
+    const ping = socket.sentFrames().at(-1)!;
+    expect(ping).toMatchObject({ type: 'ping', fillerId: FILLER });
+    expect(recoverAddress(hashFillerMessage(ping), ping.msgSig as Hex)).toBe(h.quoteSigner.address);
   });
 
   test('three silent intervals: the socket is closed (4000) and reopened after backoff', async () => {
@@ -291,7 +305,7 @@ describe('heartbeat and reconnect', () => {
     let calls = 0;
     const session = new GatewaySession(
       {
-        url: URL_, fillerId: FILLER, gatewaySigner: h.gateway.address, quoteSigner: h.quoteSigner, clock: h.clock, logger: h.logger,
+        url: URL_, fillerId: FILLER, gatewaySigner: h.gateway.address, quoteSigner: h.quoteSigner, seal: h.client.seal, clock: h.clock, logger: h.logger,
         webSocket: () => { calls++; throw new Error('ECONNREFUSED'); },
         random: () => 0, nextId: () => 'x', reconnect: { initialDelayMs: 500, maxDelayMs: 30_000 }, heartbeatMisses: 3, loginTimeoutMs: 15_000,
       },
@@ -384,7 +398,7 @@ describe('frames after login', () => {
     void h.client.start();
     const socket = await h.login();
     const quoteHash: Hex = `0x${'cd'.repeat(32)}`;
-    const quote = { type: 'quote', id: 'q1', requestId: 'rq-1', filler: '0x0000000000000000000000000000000000000001', amountOut: '100', validUntil: '1790000100', nonce: '1', sig: '0x' } as QuoteMessage;
+    const quote: QuoteMessage = { type: 'quote', id: 'q1', fillerId: FILLER, sentAt: h.clock.now(), msgSig: '0x', requestId: 'rq-1', amountOut: '100', validUntil: '1790000100', nonce: '1', sig: '0x' };
     await h.store.quotes.recordQuote({ requestId: 'rq-1', quoteHash, quote, sentAtMs: h.clock.now() });
     const ack = h.gateway.frame({ type: 'quote.ack', fillerId: FILLER, re: 'q1', requestId: 'rq-1', quoteHash, receivedAt: h.clock.now(), status: 'COUNTED' });
     const text = JSON.stringify(ack);
@@ -438,7 +452,12 @@ describe('frames after login', () => {
 });
 
 describe('REST fallback (protocol §3.6)', () => {
-  const intent = (): TicketIntentMessage => ({ type: 'ticket.intent', id: 'i-1', orderHash: ORDER_HASH, attempt: 1, validFrom: '1790000000', validUntil: '1790000180', sig: `0x${'00'.repeat(65)}` });
+  // Already sealed (the caller seals; a resend is the same bytes); the signatures are placeholders the fake gateway does not check.
+  const intent = (): TicketIntentMessage => ({
+    type: 'ticket.intent', id: 'i-1', fillerId: FILLER, sentAt: 1790000000000, msgSig: `0x${'00'.repeat(65)}`,
+    orderHash: ORDER_HASH, attempt: 1, validFrom: '1790000000', validUntil: '1790000180',
+    deliveryKey: `0x${'42'.repeat(20)}`, repayTo: `0x${'00'.repeat(12)}${'42'.repeat(20)}`, sig: `0x${'00'.repeat(65)}`,
+  });
 
   test('after a drop the client pulls GET /v1/filler/tickets with a bearer token and handles the items', async () => {
     const h = harness();
@@ -507,7 +526,7 @@ describe('REST fallback (protocol §3.6)', () => {
       status: 409,
       body: h.impostor.frame({ type: 'error', fillerId: FILLER, code: 'TICKET_CLOSED', message: 'forged' }),
     });
-    const decline = { type: 'ticket.decline' as const, id: 'd-1', orderHash: ORDER_HASH, attempt: 1, reason: 'NO_INVENTORY' as const };
+    const decline = await h.client.seal<TicketDecline>({ type: 'ticket.decline', id: 'd-1', orderHash: ORDER_HASH, attempt: 1, reason: 'NO_INVENTORY' });
     await expect(h.rest.postTicket({ action: 'decline', message: decline })).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE', httpStatus: 409 });
   });
 
@@ -536,12 +555,12 @@ describe('REST fallback (protocol §3.6)', () => {
     void h.client.start();
     const socket = await h.login();
     socket.drop();
-    expect(h.client.send({ type: 'fill.reported', id: 'f', orderHash: ORDER_HASH, attempt: 1, txRef: '0x01' })).toBe(false);
+    expect(h.client.send(await h.client.seal({ type: 'fill.reported', id: 'f', orderHash: ORDER_HASH, attempt: 1, txRef: '0x01' }))).toBe(false);
   });
 
   test('restOrigin maps ws to http for the local stand', async () => {
     const h = harness();
-    const rest = new GatewayRest({ gatewayUrl: 'ws://localhost:3010/v1', fillerId: FILLER, gatewaySigner: h.gateway.address, quoteSigner: h.quoteSigner, fetch: h.http.fetch, clock: h.clock, logger: h.logger, nextId: () => 'x' });
+    const rest = new GatewayRest({ gatewayUrl: 'ws://localhost:3010/v1', fillerId: FILLER, gatewaySigner: h.gateway.address, quoteSigner: h.quoteSigner, seal: h.client.seal, fetch: h.http.fetch, clock: h.clock, logger: h.logger, nextId: () => 'x' });
     await expect(rest.listTickets('OFFERED')).resolves.toEqual([]);
     expect(h.http.requests[0]!.url).toBe('http://localhost:3010/v1/filler/auth/challenge');
   });
