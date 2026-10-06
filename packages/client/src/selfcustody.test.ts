@@ -7,6 +7,7 @@ import type { FetchLike } from './http';
 import {
   CeremonyError,
   createSelfCustody,
+  DEFAULT_FEE_RECIPIENTS,
   grossAmount,
   legalConsentMessage,
   SettleError,
@@ -73,8 +74,18 @@ interface VenueOptions {
   networkFee?: number;
   /** The fee amount the fee-holding refusal names. Default 24.8756218905. */
   refusedFee?: string;
-  /** What `GET /htlc/fee-config` answers. */
+  /** What `GET /htlc/fee-config` answers without `orderId`: the public (retail) pool's configuration. */
   feeConfig?: Record<string, unknown>;
+  /** The pool the order lands in at accept; a partner order pays its fee to the partner fee party. Default retail. */
+  pool?: 'retail' | 'partner';
+  /** What `GET /htlc/fee-config?orderId=` answers for a partner order. */
+  partnerFeeConfig?: Record<string, unknown>;
+  /** A backend older than the per-order fee config: its handler takes no query, so it ignores `orderId` and answers its one (retail) pool. */
+  legacyFeeConfig?: boolean;
+  /** `GET /htlc/fee-config?orderId=` refuses with this status (401 no session, 404 not a party of the order, 503 config unavailable). */
+  feeConfigRefusal?: number;
+  /** The venue drafts the fee leg to this party instead of the order's pool fee party. */
+  feeLegTo?: string;
   /** The taker funds, the maker never does, and the trade expires: the venue's recovery then `released` the taker's allocations, or they are `stillLocked`. */
   takerFundedThenExpired?: 'released' | 'stillLocked';
   /** The API prepares something other than what the trade says, in this way, for the maker's allocation. */
@@ -102,7 +113,8 @@ interface DvpLeg { legId: string; role: 'main' | 'counter' | 'fee'; sender: stri
 /** One prepared DvP command: what the submit must come back signed for. */
 interface PreparedDvp { owner: Account; operationType: string; swapId: string; hashes: string[]; legIds: string[] }
 
-const FEE_PARTY = 'cancore-fee::1220';
+// The dev stand's fee parties: pinned in the SDK, so the venue must name one of these.
+const [FEE_PARTY, PARTNER_FEE_PARTY] = DEFAULT_FEE_RECIPIENTS.devnet as [string, string];
 const VENUE = DEV.venue;
 // The dev stand's instrument admins: pinned in the SDK, so the venue must name exactly these.
 const ADMINS: Record<string, string> = { CC: DEV.dso, CBTC: DEV.cbtcRegistrar };
@@ -113,6 +125,11 @@ function venue({
   feeHoldingRequired = false,
   refuseAt = {},
   feeConfig = { feeRate: '0.005', feeRecipient: FEE_PARTY, venue: VENUE, maxFeeRate: '0.01' },
+  pool = 'retail',
+  partnerFeeConfig = { feeRate: '0.005', feeRecipient: PARTNER_FEE_PARTY, venue: VENUE, maxFeeRate: '0.01' },
+  legacyFeeConfig = false,
+  feeConfigRefusal,
+  feeLegTo,
   takerFundedThenExpired,
   archivedUnmarked = [],
   withdrawRefuses = [],
@@ -152,6 +169,10 @@ function venue({
   /** Every request body `POST /htlc/proposals` received. */
   const proposals: Array<Record<string, unknown>> = [];
   const routes = new Set<string>();
+  /** The `orderId` of every `GET /htlc/fee-config`, null when it asked without one. */
+  const feeAsked: Array<string | null> = [];
+  /** The configuration of the pool the order is in. */
+  const poolConfig = () => (pool === 'partner' && !legacyFeeConfig ? partnerFeeConfig : currentFeeConfig);
   const challenges = new Set<string>();
   const order = {
     id: 'o1', status: 'open', sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceAmount: '0.01',
@@ -258,7 +279,7 @@ function venue({
     legs = [
       { legId: 'leg-main', role: 'main', sender: maker.partyId!, receiver: taker, tokenId: 'CBTC', amount: '0.01', lockRef: null, status: 'active' },
       { legId: 'leg-counter', role: 'counter', sender: taker, receiver: maker.partyId!, tokenId: 'CC', amount: '4975.1243781095', lockRef: null, status: 'active' },
-      { legId: 'leg-fee', role: 'fee', sender: taker, receiver: FEE_PARTY, tokenId: 'CC', amount: '24.8756218905', lockRef: null, status: 'active' },
+      { legId: 'leg-fee', role: 'fee', sender: taker, receiver: feeLegTo ?? String(poolConfig().feeRecipient), tokenId: 'CC', amount: '24.8756218905', lockRef: null, status: 'active' },
     ];
     drafter = maker.partyId;
     swap = { id: 's1', status: 'dvp_proposed', sender: maker.partyId, receiver: taker, proposalContractId: null, orderId: 'o1' };
@@ -271,7 +292,7 @@ function venue({
   function full(): Response {
     if (!swap) return refuse(404, 'Swap not found');
     // The fee party is ours: the venue approves for it, and it is never awaited.
-    const awaiting = tradeCid ? [] : parties().filter((p) => p !== FEE_PARTY && !approvers.has(p));
+    const awaiting = tradeCid ? [] : parties().filter((p) => !legs.some((l) => l.role === 'fee' && l.receiver === p) && !approvers.has(p));
     if (!tradeCid && awaiting.length === 0) {
       tradeCid = 'trade-1';
       // The window closed before anybody got to fund: recovery marks the swap expired.
@@ -513,7 +534,16 @@ function venue({
         ...(pairOff ? [] : [{ id: 'CBTC', symbol: 'CBTC', admin: ADMINS.CBTC }]),
       ]);
     }
-    if (route === 'GET /htlc/fee-config') return feeConfigDown ? refuse(503, 'fee config unavailable') : json(currentFeeConfig);
+    if (route === 'GET /htlc/fee-config') {
+      const orderId = searchParams.get('orderId');
+      feeAsked.push(orderId);
+      if (feeConfigDown) return refuse(503, 'fee config unavailable');
+      if (orderId === null || legacyFeeConfig) return json(currentFeeConfig);
+      if (feeConfigRefusal) return refuse(feeConfigRefusal, 'refused');
+      // Only a party of the order reads its pool's configuration.
+      if (orderId !== order.id || ![order.initiatorUserId, order.opponentUserId].includes(caller.id)) return refuse(404, 'Order not found');
+      return json(poolConfig());
+    }
     if (route === 'POST /htlc/proposals') return propose(body);
     if (route === 'GET /htlc/swaps/s1/full') return full();
     if (route === 'POST /canton-wallet/htlc/prepare-command') return prepareDvp(caller, body);
@@ -529,7 +559,7 @@ function venue({
     order.swapId = 's1';
   }
 
-  return { fetchImpl, switchInstrumentsOff: () => { instrumentsOff = true; }, takeFeeConfigDown: () => { feeConfigDown = true; }, setFeeConfig: (next: Record<string, unknown>) => { currentFeeConfig = next; }, log, asked, proposals, routes, order, incoming, byKey, signUps, htlcOpenedEarlier, legs: () => legs, takes: () => takes };
+  return { fetchImpl, switchInstrumentsOff: () => { instrumentsOff = true; }, takeFeeConfigDown: () => { feeConfigDown = true; }, setFeeConfig: (next: Record<string, unknown>) => { currentFeeConfig = next; }, log, asked, proposals, routes, feeAsked, order, incoming, byKey, signUps, htlcOpenedEarlier, legs: () => legs, takes: () => takes };
 }
 
 // The dev API host: its network (devnet) chooses the pinned instrument admins.
@@ -704,11 +734,102 @@ describe('the paths where a mistake costs money', () => {
     expect(api.proposals).toEqual([]);
   });
 
-  test('a fee paid to another party than the one the account pinned is refused', async () => {
-    const api = venue({ feeConfig: { feeRate: '0.005', feeRecipient: 'someone-else::1220', venue: VENUE } });
-    const { maker, taker } = await tradingPair(api, [62, 63], { feeRecipientPartyId: FEE_PARTY });
+  test.each([
+    ['with no options at all', {}, [62, 63]],
+    ['with another party added by the account', { feeRecipientPartyId: ['partner-own-fee::1220'] }, [150, 151]],
+  ] as const)('a fee the stand pays to a party that is not a Cancore fee party is refused before anything is recorded (%s)', async (_, pins, accounts) => {
+    const api = venue({ pool: 'partner', partnerFeeConfig: { feeRate: '0.005', feeRecipient: 'attacker::1220', venue: VENUE } });
+    const { maker, taker } = await tradingPair(api, [...accounts], pins);
     await taker.swap.accept('o1');
-    await expect(maker.make('o1')).rejects.toThrow(/pays the platform fee to someone-else::1220, not to this account's feeRecipientPartyId/);
+    await expect(maker.make('o1')).rejects.toThrow(/pays the platform fee to attacker::1220, which is not a fee party this SDK trusts on devnet/);
+    expect(api.proposals).toEqual([]);
+  });
+
+  test('a fee party the account adds with feeRecipientPartyId is trusted besides the pinned ones', async () => {
+    const own = 'partner-own-fee::1220';
+    const api = venue({ pool: 'partner', partnerFeeConfig: { feeRate: '0.005', feeRecipient: own, venue: VENUE } });
+    const { maker, taker } = await tradingPair(api, [152, 153], { feeRecipientPartyId: own });
+    await taker.swap.accept('o1');
+    // The maker records and signs the trade; the taker (not pinned to `own`) never funds, so the wait runs out.
+    await maker.make('o1', { deadlineMs: 1_000 }).catch(() => undefined);
+    expect(dvpSteps(api)).toEqual(['dvp:dvpCreateProposal:maker']);
+    expect(api.legs().find((l) => l.role === 'fee')).toMatchObject({ receiver: own });
+  });
+
+  test('on a host of unknown network with no fee party passed, any fee receiver the stand names is refused', async () => {
+    const api = venue();
+    // The admins are passed so the instrument check holds; nothing tells the SDK which fee parties to trust.
+    const { maker, taker } = await tradingPair(api, [162, 163], {
+      baseUrl: 'https://api.example.test',
+      instrumentAdmins: { CC: [ADMINS.CC!], CBTC: [ADMINS.CBTC!] },
+    });
+    await taker.swap.accept('o1');
+    await expect(maker.make('o1')).rejects.toThrow(new RegExp(`pays the platform fee to ${FEE_PARTY}, which is not a fee party this SDK trusts on this network`));
+    expect(api.proposals).toEqual([]);
+  });
+
+  test('a fee party of another network is refused: devnet’s retail party on a mainnet account', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [154, 155], {
+      network: 'mainnet',
+      instrumentAdmins: { CC: [ADMINS.CC!], CBTC: [ADMINS.CBTC!] },
+    });
+    await taker.swap.accept('o1');
+    await expect(maker.make('o1')).rejects.toThrow(new RegExp(`pays the platform fee to ${FEE_PARTY}, which is not a fee party this SDK trusts on mainnet`));
+    expect(api.proposals).toEqual([]);
+  });
+
+  test.each([
+    ['a partner order pays the partner fee party', 'partner', PARTNER_FEE_PARTY, [140, 141]],
+    ['a retail order pays the retail fee party', 'retail', FEE_PARTY, [142, 143]],
+  ] as const)('the fee is held to the order’s own pool: %s', async (_, pool, feeParty, accounts) => {
+    const api = venue({ pool });
+    const { maker, taker } = await tradingPair(api, [...accounts]);
+    await Promise.all([maker.make('o1'), taker.take('o1')]);
+    expect(api.legs().find((l) => l.role === 'fee')).toMatchObject({ receiver: feeParty, lockRef: expect.any(String) });
+    // Every read of the fee terms asked for this order's pool.
+    expect(api.feeAsked.length).toBeGreaterThan(0);
+    expect(new Set(api.feeAsked)).toEqual(new Set(['o1']));
+  });
+
+  test('a backend older than the per-order fee config ignores orderId, and the trade settles on its one (retail) pool', async () => {
+    const api = venue({ legacyFeeConfig: true, pool: 'partner' });
+    const { maker, taker } = await tradingPair(api, [144, 145]);
+    await Promise.all([maker.make('o1'), taker.take('o1')]);
+    expect(api.legs().find((l) => l.role === 'fee')).toMatchObject({ receiver: FEE_PARTY, lockRef: expect.any(String) });
+    expect(new Set(api.feeAsked)).toEqual(new Set(['o1']));
+  });
+
+  test.each([
+    [401, [156, 157]],
+    [404, [158, 159]],
+    [503, [160, 161]],
+  ] as const)('a %s from the order’s fee config propagates: no retry without orderId, nothing recorded', async (status, accounts) => {
+    const api = venue({ feeConfigRefusal: status });
+    const { maker, taker } = await tradingPair(api, [...accounts]);
+    await taker.swap.accept('o1');
+    const error = await maker.make('o1').catch((e: unknown) => e);
+    expect(error).toMatchObject({ name: 'CancoreApiError', status });
+    // The session signs in again once on a 401 and repeats the same request; never one without orderId.
+    expect(new Set(api.feeAsked)).toEqual(new Set(['o1']));
+    expect(api.proposals).toEqual([]);
+  });
+
+  test('a fee leg drafted to another party than the order’s pool fee party is refused before anything is signed', async () => {
+    const api = venue({ pool: 'partner', feeLegTo: FEE_PARTY });
+    const { maker, taker } = await tradingPair(api, [146, 147]);
+    await taker.swap.accept('o1');
+    const error = await maker.make('o1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect((error as Error).message).toMatch(new RegExp(`a leg from party-taker to ${FEE_PARTY} is not part of this trade`));
+    expect(dvpSteps(api)).toEqual([]);
+  });
+
+  test('a pool whose own maxFeeRate is higher does not lift the account’s ceiling', async () => {
+    const api = venue({ pool: 'partner', partnerFeeConfig: { feeRate: '0.02', feeRecipient: PARTNER_FEE_PARTY, venue: VENUE, maxFeeRate: '0.05' } });
+    const { maker, taker } = await tradingPair(api, [148, 149]);
+    await taker.swap.accept('o1');
+    await expect(maker.make('o1')).rejects.toThrow(/fee rate 0.02 is above this account's ceiling 0.015/);
     expect(api.proposals).toEqual([]);
   });
 
