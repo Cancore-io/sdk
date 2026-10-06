@@ -1,6 +1,6 @@
 import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
-import { allocationTree, createNode, DEV, exercise, factoryContract, holding, preapprovalContract, prepared, proposalAccept, proposalCreate, selfSendLeg, spend, spendTransfer, type FixtureLeg } from './dvp-prepared.fixture';
-import { DEFAULT_INSTRUMENT_ADMINS, mergeLists } from './dvp-admins';
+import { allocationTree, createNode, DEV, exercise, factoryContract, holding, preapprovalContract, prepared, proposalAccept, proposalCreate, selfSendLeg, spend, spendTransfer, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
+import { DEFAULT_INSTRUMENT_ADMINS, DEFAULT_VENUES, instrumentKey, mergeLists } from './dvp-admins';
 import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyDvpPrepared, verifySelfSendPrepared, type DvpTerms, type SelfSendTerms } from './dvp-verify';
 
 const MAKER = 'maker::1220aa';
@@ -244,11 +244,140 @@ describe('anything else is refused before the key is touched', () => {
   });
 });
 
+describe('withdrawing an allocation of a trade that ended unsettled (BUG-1291)', () => {
+  const THIEF = 'thief::1220';
+  type Withdraw = Parameters<typeof withdrawTree>[0];
+  const withdraw = async (legId: keyof typeof LEGS, over: Partial<Withdraw> = {}, actAs?: string) => {
+    const leg = LEGS[legId]!;
+    const { nodes, inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId, leg, ...over });
+    return prepared(actAs ?? leg.sender, nodes, inputs);
+  };
+  // A withdraw takes its instrument admin from the allocation, held to the pinned list.
+  const wterms = (party: string, over: Partial<DvpTerms> = {}) => terms(party, { pinnedAdmins: { [instrumentKey(CC.id)]: [CC.admin], [instrumentKey(CBTC.id)]: [CBTC.admin] }, ...over });
+  const ok = (promise: Promise<void>) => expect(promise).resolves.toBeUndefined();
+
+  test('the taker’s leg and fee, each its own signature, and the maker’s leg of a registry token', async () => {
+    await ok(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter')], wterms(TAKER)));
+    await ok(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-fee')], wterms(TAKER)));
+    await ok(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-main')], wterms(MAKER)));
+  });
+  test('an allocation of another trade', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { swapId: 'swap-2' })], wterms(TAKER)), /another trade/);
+  });
+  test('an allocation that hands settlement to someone else than the venue', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { executor: THIEF })], wterms(TAKER)), /not to the venue/);
+  });
+  test('the other side’s allocation, signed by this account', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-main', {}, TAKER)], wterms(TAKER)), /not this account’s/);
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-main', { actor: TAKER }, TAKER)], wterms(TAKER)), /not this account’s/);
+  });
+  test('a leg that is not part of the trade', async () => {
+    const leg = { sender: TAKER, receiver: TAKER, amount: '1', instrumentId: CC };
+    const { nodes, inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId: 'leg-x', leg });
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await prepared(TAKER, nodes, inputs)], wterms(TAKER)), /not part of this trade/);
+  });
+  test('a holding returned to someone else', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { returnTo: THIEF } })], wterms(TAKER)), /involves thief|owned by thief/);
+  });
+  test('a withdraw that locks the holding again', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { relock: true } })], wterms(TAKER)), /locked holding|locks more/);
+  });
+  test('a withdraw that returns nothing', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { noReturn: true } })], wterms(TAKER)), /returns no holding/);
+  });
+  test('a withdraw that returns more than the leg locked', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { returnAmount: '9000' } })], wterms(TAKER)), /more than the leg's/);
+  });
+  test('another choice on the allocation, or one that leaves it standing', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { choice: 'Allocation_Cancel' } })], wterms(TAKER)), /not the withdrawal/);
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { consuming: false } })], wterms(TAKER)), /does not consume/);
+  });
+  test('an argument beyond the registry context', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { extraArg: true } })], wterms(TAKER)), /more than its registry context/);
+  });
+  test('a child that archives another allocation (by its structure, whatever it is called), or a holding of someone else', async () => {
+    const { inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId: 'leg-counter', leg: LEGS['leg-counter']! });
+    const otherAllocation = { ...inputs[0]!, contractId: '77'.repeat(34), templateId: { ...inputs[0]!.templateId!, entityName: 'Renamed' } };
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', {
+      extra: (id) => ({ nodes: [spend(id(0), otherAllocation, TAKER)], inputs: [otherAllocation] }),
+    })], wterms(TAKER)), /neither this allocation nor this account's holding/);
+    const theirs = holding('88'.repeat(34), THIEF, CC, '5');
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', {
+      extra: (id) => ({ nodes: [spend(id(0), theirs, THIEF)], inputs: [theirs] }),
+    })], wterms(TAKER)), /involves thief|owned by thief/);
+  });
+  test('an unrelated holding of this account spent alongside the withdraw', async () => {
+    const own = holding('88'.repeat(34), TAKER, CC, '5');
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', {
+      extra: (id) => ({ nodes: [spend(id(0), own, TAKER)], inputs: [own] }),
+    })], wterms(TAKER)), /does not lock/);
+  });
+  test('a sliver returned of a larger lock: what comes back is exactly what was locked', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { returnAmount: '0.0000000001' } })], wterms(TAKER)), /not what the allocation locked/);
+  });
+  test('a withdraw run on another template than the allocation it names', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { tamper: { otherTemplate: true } })], wterms(TAKER)), /another template/);
+  });
+  test('a withdraw does not depend on the stand’s current fee policy: any rate, any fee receiver, none', async () => {
+    for (const over of [{ feeRate: '0.5' }, { feeParty: 'new-fee::1220' }, { feeParty: null, feeRate: '0' }]) {
+      await ok(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-fee')], wterms(TAKER, over)));
+      await ok(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter')], wterms(TAKER, over)));
+    }
+  });
+  test('the allocation names its own admin, held to the pinned list: no stand instrument list is consulted', async () => {
+    await ok(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter')], wterms(TAKER)));
+    // The same transaction with the instrument admin the SDK does not pin for it.
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter')], wterms(TAKER, { pinnedAdmins: { [instrumentKey(CC.id)]: ['other-registry::1220'], [instrumentKey(CBTC.id)]: [CBTC.admin] } })), /not within the order's/);
+  });
+  test('a taker leg above the order’s amount is still refused', async () => {
+    const leg = { sender: TAKER, receiver: FEE, amount: '9000', instrumentId: CC };
+    const { nodes, inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId: 'leg-x', leg });
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await prepared(TAKER, nodes, inputs)], wterms(TAKER)), /not within the order's/);
+  });
+  test('a child that creates a holding for a third party', async () => {
+    const moved = holding('88'.repeat(34), THIEF, CC, '1');
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter', { extra: (id) => ({ nodes: [createNode(id(0), moved)] }) })], wterms(TAKER)), /involves thief|owned by thief/);
+  });
+  test('an allocation not signed by the instrument admin', async () => {
+    // The withdraw runs the code of whoever signed the allocation: a stranger's is not the admin's.
+    const leg = LEGS['leg-counter']!;
+    const { nodes, inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId: 'leg-counter', leg });
+    const forged = inputs.map((c) => (c.contractId === '66'.repeat(34) ? { ...c, signatories: [TAKER] } : c));
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await prepared(TAKER, nodes, forged)], wterms(TAKER)), /not signed by this account and the instrument admin/);
+  });
+  test('an allocation the transaction does not disclose', async () => {
+    const { nodes, inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId: 'leg-counter', leg: LEGS['leg-counter']! });
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await prepared(TAKER, nodes, inputs.filter((c) => c.contractId !== '66'.repeat(34)))], wterms(TAKER)), /not among the contracts/);
+  });
+  test('a withdraw is not an allocation, and an allocation is not a withdraw', async () => {
+    await refused(verifyDvpPrepared('dvpAllocateLeg', [await withdraw('leg-counter')], wterms(TAKER)), /not a token-standard allocation/);
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await fund('leg-counter')], wterms(TAKER)), /not the withdrawal/);
+  });
+  test('a hash that is not the transaction’s', async () => {
+    const tx = await withdraw('leg-counter');
+    const other = await withdraw('leg-fee');
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [{ ...tx, preparedTransactionHash: other.preparedTransactionHash }], wterms(TAKER)), /does not hash/);
+  });
+  test('two transactions in one ceremony', async () => {
+    await refused(verifyDvpPrepared('dvpWithdrawAllocation', [await withdraw('leg-counter'), await withdraw('leg-fee')], wterms(TAKER)), /expected one transaction/);
+  });
+});
+
 test('overrides add to the pinned lists: one entry added keeps every default', () => {
   const merged = mergeLists(DEFAULT_INSTRUMENT_ADMINS.devnet, { CBTC: ['extra::1220ab'] });
   expect(merged.CBTC).toEqual([...DEFAULT_INSTRUMENT_ADMINS.devnet.CBTC!, 'extra::1220ab']);
   expect(merged.Amulet).toEqual(DEFAULT_INSTRUMENT_ADMINS.devnet.Amulet);
   expect(mergeLists(DEFAULT_TRUSTED_PACKAGES.swap, { 'cancore-swap': ['ff'.repeat(32)] })['cancore-swap']).toHaveLength(DEFAULT_TRUSTED_PACKAGES.swap['cancore-swap']!.length + 1);
+});
+
+test('the pinned venue of each network is exactly the stand’s own (BUG-1291)', () => {
+  expect(DEFAULT_VENUES).toEqual({
+    devnet: 'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b',
+    testnet: 'cancore::12207fca8abfbcb8b8d936539ef9272f0f86c7e4e39dd4a3ece8c0f9aa59ebcf5fc2',
+    mainnet: 'cancore::1220076a94e0a7f0256a32ffab227db7788d8075677d8afcdaa8386df8f2fa659906',
+  });
+  // Not the mainnet participant party, which shares the key and has another hint.
+  expect(Object.values(DEFAULT_VENUES).some((v) => v.startsWith('Cancore-mainnet-1'))).toBe(false);
 });
 
 describe('a fee split (a CC send to oneself) is signed only as the account asked for it', () => {

@@ -43,6 +43,27 @@ export const DEFAULT_INSTRUMENT_ADMINS: Readonly<Record<DvpNetwork, Readonly<Rec
   },
 });
 
+/** The participant namespace of each network's Cancore validator (venue, executor and fee parties). */
+const CANCORE_NS: Readonly<Record<DvpNetwork, string>> = {
+  devnet: '12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b',
+  testnet: '12207fca8abfbcb8b8d936539ef9272f0f86c7e4e39dd4a3ece8c0f9aa59ebcf5fc2',
+  mainnet: '1220076a94e0a7f0256a32ffab227db7788d8075677d8afcdaa8386df8f2fa659906',
+};
+
+/**
+ * The parties the platform fee may be paid to, pinned per network: one per fee pool. The API names
+ * the order's pool's party (`GET /htlc/fee-config?orderId=`), and a trade is refused unless it is
+ * listed here, so a hostile API can pick among Cancore's pools but never pay a third party.
+ * `cancore-fee-retail` is verified live on every network (public `GET /htlc/fee-config`);
+ * `-partner` and `-auto` follow the split-party naming contract and are still to verify via
+ * `GET /admin/fee-config/v8`.
+ */
+export const DEFAULT_FEE_RECIPIENTS: Readonly<Record<DvpNetwork, readonly string[]>> = deepFreeze(
+  Object.fromEntries(
+    Object.entries(CANCORE_NS).map(([network, ns]) => [network, ['retail', 'partner', 'auto'].map((pool) => `cancore-fee-${pool}::${ns}`)]),
+  ) as Record<DvpNetwork, string[]>,
+);
+
 /**
  * The party a self-custody CC send pays its network fee to (the backend's `PARTICIPANT_PARTY`),
  * pinned per network so a send's fee leg can be held to it rather than to what the API says.
@@ -80,3 +101,17 @@ export function mergeLists(base: Readonly<Record<string, readonly string[]>>, ex
   for (const [key, values] of Object.entries(extra)) out[key] = [...new Set([...(out[key] ?? []), ...values])];
   return out;
 }
+
+/**
+ * The venue party (settlement executor of every DvP allocation), pinned per network.
+ *
+ * Withdrawing one's own allocation must not wait on a stand endpoint: the venue is read from here, or
+ * from the `venuePartyId` option, and never from `/htlc/fee-config`. Verified against each stand's
+ * published fee-config and the gitops VENUE_PARTY_ID. (On mainnet `Cancore-mainnet-1::…` is the
+ * participant party, same key and another hint; it is not the venue.)
+ */
+export const DEFAULT_VENUES: Readonly<Record<DvpNetwork, string>> = Object.freeze({
+  devnet: 'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b',
+  testnet: 'cancore::12207fca8abfbcb8b8d936539ef9272f0f86c7e4e39dd4a3ece8c0f9aa59ebcf5fc2',
+  mainnet: 'cancore::1220076a94e0a7f0256a32ffab227db7788d8075677d8afcdaa8386df8f2fa659906',
+});

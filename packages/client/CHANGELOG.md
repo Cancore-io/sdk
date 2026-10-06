@@ -1,5 +1,31 @@
 # Changelog — `@cancore/client`
 
+## Unreleased (0.7.x)
+
+### Added
+
+- `withdrawAllocation(swapId)` on the self-custody account releases this account's own DvP
+  allocation(s) of a trade that ended `dvp_expired` when the venue's recovery could not (the abort
+  was refused or the trade was already archived). Until now such a leg stayed locked and the only
+  way out was Cancore support. Same prepare → verify → sign → submit path as the other DvP steps,
+  new operation `dvpWithdrawAllocation`, one signature per locked leg. Requires the matching gateway
+  (BUG-1291).
+- `dvp-verify` holds a withdraw to its own expected tree before the key signs: exactly one consuming
+  `Allocation_Withdraw` on an allocation of this trade, sent by this account, signed by the instrument
+  admin and settled by the venue; only this account's allocation and holdings archived; the holding
+  returned to this account, unlocked and exactly the amount the allocation locked; no party outside the
+  trade. A withdraw is held to the trade alone, never to the stand's current fee configuration.
+- `SettleOptions.autoWithdraw`: `make` / `take` withdraw before throwing when the trade expired with
+  this account's allocation still locked. Off by default. The trade's `SettleError` is kept and carries
+  `withdrawal` (`withdrawn` / `gone` / `failed` per leg); `withdrawAllocation` attempts every leg and reports each.
+- `SettleError.withdrawable` is true when the expiry left this account's allocation locked.
+  `SwapInfo.legs[]` carries `legId` and `userActionRequired`, `HtlcSwap` carries `orderId`.
+
+### Changed
+
+- The `SettleError` for an expired trade with a locked allocation points at `withdrawAllocation`
+  instead of at Cancore support.
+
 ## 0.7.0
 
 Canton↔Canton self-custody trades settle through allocation-DvP. This changes behaviour.
@@ -21,6 +47,17 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
   the leg locks, no party outside the trade, and deadlines within a bounded window. New dependency:
   `@canton-network/core-tx-visualizer`.
 - `acct.swap.create` and `acct.swap.createForPair` send `dvp: true` for a Canton↔Canton order.
+- The DvP fee terms (rate, receiver, venue) are read for the order's own pool:
+  `GET /htlc/fee-config?orderId=` with the account's session, after accept. A partner order is
+  held to the partner fee party, a retail order to the retail one, and a fee leg to any other
+  party is refused before signing. A backend older than the per-order route ignores `orderId`
+  and answers its only (retail) pool; any refusal of the request propagates, with no retry
+  without `orderId`. The pool's `maxFeeRate` never lifts the account's own ceiling
+  (`maxFeeRate`, default 1.5%).
+- The fee receiver the API names must be one of Cancore's fee parties for the network
+  (`DEFAULT_FEE_RECIPIENTS`: `cancore-fee-{retail,partner,auto}`), or the trade is refused before
+  anything is recorded or signed. `feeRecipientPartyId` (now `string | readonly string[]`) adds parties to
+  that list instead of being the only one accepted.
 - `Settled` gains `flow: 'dvp'`. `delivery` is always `'direct'`: the settle moves the holdings
   themselves, so `'accepted'` and `'pending'` are no longer produced by `make` / `take`
   (`acceptIncoming` still accepts any transfer that arrives otherwise).
@@ -46,7 +83,8 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
 - `SelfCustodyOptions.venuePartyId`: pin the venue every allocation must hand settlement to.
 - `SelfCustodyOptions.maxFeeRate` (default `'0.015'`, `DEFAULT_MAX_FEE_RATE`, this SDK's default
   ceiling): the highest platform fee rate the account accepts.
-- `SelfCustodyOptions.feeRecipientPartyId`: the only party the platform fee may be paid to.
+- `SelfCustodyOptions.feeRecipientPartyId` and `DEFAULT_FEE_RECIPIENTS`: the parties the platform
+  fee may be paid to, pinned per network, added to the defaults.
 - `SelfCustodyOptions.maxSettlementWindowMs` (default 3 hours): how far ahead a proposal's or an
   allocation's deadline may lie.
 - `SelfCustodyOptions.trustedPackages` and `DEFAULT_TRUSTED_PACKAGES`: the package ids of the

@@ -269,6 +269,7 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `legalStatus()` / `acceptTerms(version, documents)` | `GET` / signed `POST /legal/consent` |
 | `make(orderId, options?)` | maker: wait for the taker, record the DvP trade and sign its proposal, fund its leg after the taker, wait for the atomic settle |
 | `take(orderId, options?)` | taker: accept the order, sign the approval, fund its legs (the platform fee among them), wait for the atomic settle |
+| `withdrawAllocation(swapId)` | release this account's own allocation(s) of a trade that ended `dvp_expired` while the venue's recovery could not: one prepare → verify → sign → submit per locked leg; resolves `{ swapId, withdrawn, gone, failed }`, per leg (all `[]` when nothing is locked): a leg already off the ledger is `gone`, one that cannot be withdrawn is in `failed` and the rest are still attempted |
 | `swap.create(input)` / `swap.createForPair(input)` | `POST /orders` / `POST /orders/pair`; a Canton↔Canton order is always sent with `dvp: true` (for a pair, read from `GET /trading-pairs/{id}`) |
 | `incoming()` / `accept(transfer)` / `acceptIncoming(filter?)` | transfers waiting for this account's signature |
 | `send(input)` / `consolidate(tokenId?)` / `balance(instrumentId)` | move, merge and read this account's tokens |
@@ -417,8 +418,9 @@ with the account's authority. Trade only tokens whose registry you trust that fa
 admins with `instrumentAdmins` only on the same terms.
 
 It then holds the command to the trade it agreed to, read from the order,
-`GET /htlc/dvp/instruments` (each instrument's admin) and `GET /htlc/fee-config` (fee rate, fee
-receiver and venue), never from the swap row: the transaction acts as this account only, is
+`GET /htlc/dvp/instruments` (each instrument's admin) and `GET /htlc/fee-config?orderId=` (fee
+rate, fee receiver and venue of the order's own pool, fixed at accept: a partner order pays the
+partner fee party, a retail order the retail one), never from the swap row: the transaction acts as this account only, is
 the one command the step is made of, and every leg in it is the order's main leg, the counter
 leg, or a platform fee within the published rate, with the counter leg and the fee adding up
 to the order's `targetAmount`. An allocation must hand settlement to the venue and name this
@@ -427,9 +429,13 @@ trade. Anything else, a transaction it cannot decode included, is a `CeremonyErr
 
 The fee is held to a ceiling the API cannot move: `maxFeeRate`, default `'0.015'` (1.5%, this
 SDK's default ceiling). A stand that publishes a higher rate is refused — by `make` before the
-trade is recorded, by `take` before it signs. Pin from your own configuration, too:
-`venuePartyId` (the venue every allocation must hand settlement to) and `feeRecipientPartyId`
-(the only party the fee may be paid to).
+trade is recorded, by `take` before it signs. The fee receiver is pinned like the admins: the
+party the API names for the order's pool must be one of Cancore's fee parties for the network
+(`DEFAULT_FEE_RECIPIENTS`: `cancore-fee-retail`, `-partner` and `-auto`), so the API can choose
+among Cancore's pools but never pay a third party. `feeRecipientPartyId` adds parties to that
+list, never replacing it. A backend older than the per-order fee configuration ignores `orderId`
+and answers its only (retail) pool. Pin from your own configuration, too: `venuePartyId` (the
+venue every allocation must hand settlement to).
 
 What the account signs:
 
@@ -452,9 +458,20 @@ trade's settle deadline; a few minutes after it the venue's recovery aborts the 
 (`SwapTrade_Abort`), which cancels every allocation still live in the same transaction, and
 the swap reads `dvp_expired`. The `SettleError` the taker gets says which happened: released,
 or still locked. If recovery could not release them (the abort was refused, or the trade was
-already gone), they are still locked: this client has no way to withdraw a DvP allocation
-itself yet, so contact Cancore support with the swap id. A `take` whose own deadline runs out
-first says the allocations stay locked until the venue releases them.
+already gone), they are still locked, and the venue cannot sign for a self-custody account: the
+`SettleError` has `withdrawable: true` and `await acct.withdrawAllocation(swapId)` releases them
+with this account's own signature (`GET /htlc/swaps/{id}/full` flags each such leg
+`userActionRequired: 'withdraw_allocation'`). Each withdraw is read before it is signed: the
+transaction must consume only this account's own allocation of this trade (signed by the
+instrument admin, settled by the venue) and the holding that allocation locks, return exactly that
+amount to this account unlocked, and involve no party outside the trade. It is held to the trade
+alone, not to the stand's current fee policy or its instrument list: a fee change, or a pair switched
+off, after the trade cannot keep it locked (the instrument's admin comes from the allocation and is
+held to this SDK's pinned list).
+Pass `{ autoWithdraw: true }` to `make` / `take` to have this done before the `SettleError` is
+thrown (the same error, with what happened in `error.withdrawal`); by default nothing is signed that was not asked for. A trade that is not yet
+`dvp_expired` is refused: the venue settles or aborts a live one. A `take` whose own deadline
+runs out first says the allocations stay locked until the venue releases them.
 `make` and `take` resume: an order whose trade exists picks up at the first step not yet
 done. `timeoutHours` only fills the proposal request's required field (one the stand offers,
 by default the shortest of at least 15 minutes); the trade's windows are the venue's.

@@ -4959,6 +4959,11 @@
             "nullable": true,
             "type": "string"
           },
+          "orderId": {
+            "description": "The order this swap settles (null for a swap opened without one)",
+            "nullable": true,
+            "type": "string"
+          },
           "preimage": {
             "description": "Preimage (only visible after claim)",
             "example": "secret",
@@ -6589,6 +6594,7 @@
               "dvpCreateProposal",
               "dvpAcceptProposal",
               "dvpAllocateLeg",
+              "dvpWithdrawAllocation",
               "htlcCancelInitRequest",
               "bridgeOnboard",
               "bridgeReonboard",
@@ -6934,6 +6940,7 @@
               "dvpCreateProposal",
               "dvpAcceptProposal",
               "dvpAllocateLeg",
+              "dvpWithdrawAllocation",
               "htlcCancelInitRequest",
               "bridgeOnboard",
               "bridgeReonboard",
@@ -7867,6 +7874,7 @@
               "dvpCreateProposal",
               "dvpAcceptProposal",
               "dvpAllocateLeg",
+              "dvpWithdrawAllocation",
               "htlcCancelInitRequest",
               "bridgeOnboard",
               "bridgeReonboard",
@@ -8493,6 +8501,11 @@
             "nullable": true,
             "type": "string"
           },
+          "legId": {
+            "description": "DvP only: the id the DvP contract knows this leg by (what dvpWithdrawAllocation names). Null for an HTLC leg.",
+            "nullable": true,
+            "type": "string"
+          },
           "lockRef": {
             "description": "Lock reference: EVM tx hash or Canton update id",
             "nullable": true,
@@ -8558,6 +8571,14 @@
           },
           "tokenId": {
             "description": "Token locked on this leg (null before counter-accept)",
+            "nullable": true,
+            "type": "string"
+          },
+          "userActionRequired": {
+            "description": "DvP only (BUG-1291): 'withdraw_allocation' when the trade ended unsettled and recovery could not release this leg's allocation because its sender signs on its own device — the owner must withdraw it (operationType dvpWithdrawAllocation). Null otherwise.",
+            "enum": [
+              "withdraw_allocation"
+            ],
             "nullable": true,
             "type": "string"
           }

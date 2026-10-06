@@ -24,7 +24,7 @@ import { decodePreparedTransaction, hashPreparedTransaction } from '@canton-netw
 import type { DamlTransaction_Node, PreparedTransaction, Value } from '@canton-network/core-ledger-proto';
 import { instrumentKey } from './dvp-admins';
 
-export type DvpOperation = 'dvpCreateProposal' | 'dvpAcceptProposal' | 'dvpAllocateLeg';
+export type DvpOperation = 'dvpCreateProposal' | 'dvpAcceptProposal' | 'dvpAllocateLeg' | 'dvpWithdrawAllocation';
 
 export interface Instrument {
   id: string;
@@ -47,6 +47,12 @@ export interface DvpTerms {
   /** Platform fee receiver and rate; no fee leg is accepted when the receiver is null. */
   feeParty: string | null;
   feeRate: string;
+  /**
+   * Set for a withdraw: the instrument admins this account trusts, by instrument. The allocation names its own
+   * instrument and admin; the admin must be one of these, and the instrument id the order's. `source.admin` and
+   * `target.admin` are then not consulted.
+   */
+  pinnedAdmins?: Record<string, string[]>;
   /** The Daml packages (name and id) a node of the transaction may come from. */
   packages: TrustedPackages;
   /** The clock, and how far ahead a proposal or allocation deadline may lie: a later one keeps funds locked longer. */
@@ -86,6 +92,13 @@ export const ALLOCATION_FACTORY_INTERFACE = {
   moduleName: 'Splice.Api.Token.AllocationInstructionV1',
   entityName: 'AllocationFactory',
 };
+
+/**
+ * The token-standard Allocation interface, by module and entity. Not pinned by package id: a withdraw
+ * names the interface VERSION the allocation contract implements, which differs per registry; the
+ * trust anchor is the allocation itself, signed by the instrument admin (see `dvpWithdrawAllocation`).
+ */
+export const ALLOCATION_INTERFACE = { moduleName: 'Splice.Api.Token.AllocationV1', entityName: 'Allocation' };
 
 export interface PreparedToSign {
   preparedTransactionHash: string;
@@ -293,8 +306,110 @@ function checkTransaction(operation: DvpOperation, decoded: PreparedTransaction,
       funded.push(leg!);
       return null;
     }
+    case 'dvpWithdrawAllocation':
+      return checkWithdraw(root, decoded, nodes, terms);
   }
 }
+
+/**
+ * The owner releasing its own allocation of a trade that ended unsettled: one consuming
+ * `Allocation_Withdraw` on an allocation of THIS trade that this account sends and the instrument
+ * admin signed, carrying nothing but its registry context. In the whole tree the only contracts
+ * archived are that allocation, this account's own holdings, and admin-signed registry records that
+ * are not another allocation; every holding created is this account's, unlocked, and at most what
+ * the leg locked; at least one is returned. No party appears but the signer, the venue, the
+ * receiver and the registry's own — so the lock goes back to the owner and nothing goes anywhere else.
+ */
+function checkWithdraw(root: ReturnType<typeof nodeType>, decoded: PreparedTransaction, nodes: Nodes, terms: DvpTerms): string | null {
+  if (root?.oneofKind !== 'exercise' || root.exercise.choiceId !== 'Allocation_Withdraw' || !sameInterface(root.exercise.interfaceId, ALLOCATION_INTERFACE)) {
+    return 'it is not the withdrawal of a token-standard allocation';
+  }
+  if (root.exercise.actingParties.join() !== terms.party) return 'the withdrawal is not this account’s';
+  if (!root.exercise.consuming) return 'the withdrawal does not consume the allocation';
+  if (Object.keys(plain(root.exercise.chosenValue) as Record<string, unknown>).join() !== 'extraArgs') return 'the withdrawal carries more than its registry context';
+  const allocation = inputContracts(decoded).get(root.exercise.contractId);
+  if (!allocation) return 'the allocation is not among the contracts the transaction discloses';
+  const spec = (plain(allocation.argument) as { allocation?: { settlement?: { executor?: unknown; settlementRef?: { id?: unknown } }; transferLeg?: TransferLeg } })?.allocation;
+  if (spec?.settlement?.executor !== terms.venue) return `the allocation hands settlement to ${String(spec?.settlement?.executor)}, not to the venue`;
+  if (spec.settlement.settlementRef?.id !== terms.swapId) return 'the allocation is for another trade';
+  // Under Daml upgrades the command may run a newer version of the allocation's package: name, module and entity must match.
+  if (!sameTemplate(allocation, root.exercise)) return 'the withdrawal runs on another template than the allocation it names';
+  const leg = spec.transferLeg;
+  const wrong = checkWithdrawnLeg(leg, terms);
+  if (wrong) return wrong;
+  if (leg!.sender !== terms.party) return 'the allocation is not this account’s';
+  if (!allocation.signatories.includes(leg!.instrumentId.admin) || !allocation.signatories.includes(terms.party)) {
+    return 'the allocation is not signed by this account and the instrument admin';
+  }
+  const holdings = checkHoldings(decoded, nodes, terms, leg!, allocation, root.exercise.contractId);
+  if (holdings) return holdings;
+  const inputs = inputContracts(decoded);
+  const created = new Map<string, Create>();
+  for (const node of nodes.values()) {
+    const type = nodeType(node)!;
+    if (type.oneofKind === 'create') created.set(type.create.contractId, type.create);
+  }
+  let returned = 0n;
+  for (const contract of created.values()) {
+    const holding = holdingOf(contract);
+    if (!holding) continue;
+    if (holding.locked) return 'it creates a locked holding: a withdraw locks nothing';
+    returned += holding.amount;
+  }
+  if (returned === 0n) return 'it returns no holding to this account';
+  if (returned > units(leg!.amount)) return `it returns more than the leg's ${leg!.amount}`;
+  // What goes back is exactly what the allocation held: every holding of this account the tree consumes is a
+  // locked one, and together they are the amount returned, to the unit. An unrelated holding of the signer's
+  // spent, or a sliver returned of a larger lock, does not add up.
+  let released = 0n;
+  for (const node of nodes.values()) {
+    const type = nodeType(node)!;
+    if (type.oneofKind !== 'exercise' || !type.exercise.consuming || type.exercise.contractId === root.exercise.contractId) continue;
+    const target = inputs.get(type.exercise.contractId) ?? created.get(type.exercise.contractId);
+    if (!target) return `it consumes contract ${type.exercise.contractId.slice(0, 16)}… without disclosing what it is`;
+    const holding = holdingOf(target);
+    if (holding?.owner === terms.party) {
+      if (!holding.locked) return 'it spends a holding of this account that the allocation does not lock';
+      released += holding.amount;
+      continue;
+    }
+    if (!target.signatories.includes(leg!.instrumentId.admin) || holding || looksLikeAllocation(target)) {
+      return `it archives a ${target.templateId?.entityName ?? 'contract'} that is neither this allocation nor this account's holding`;
+    }
+  }
+  if (released !== returned) return 'what it returns is not what the allocation locked';
+  return null;
+}
+
+/** An allocation by structure, not by name: a record carrying a settlement and a transfer leg. */
+function looksLikeAllocation(contract: Create): boolean {
+  const spec = fieldsOf(fieldsOf(contract.argument)?.get('allocation') ?? undefined);
+  return !!spec?.has('settlement') && !!spec.has('transferLeg');
+}
+
+/**
+ * A leg of the trade, as a withdraw sees it: by who it is from and to and in what, never by the stand's
+ * current fee policy. The maker's leg is exactly the order's source; the taker's legs (the trade leg and the
+ * fee) are the order's target, at most its amount. A fee that changed since the trade must not keep funds locked.
+ */
+function checkWithdrawnLeg(leg: TransferLeg | undefined, terms: DvpTerms): string | null {
+  if (!leg?.instrumentId) return 'a leg cannot be read';
+  // The instrument is the allocation's own; its admin must be one this account pins for that instrument.
+  const is = (i: Instrument) =>
+    leg.instrumentId.id === i.id && (terms.pinnedAdmins?.[instrumentKey(i.id)] ?? []).includes(leg.instrumentId.admin);
+  const amount = units(leg.amount);
+  if (amount < 0n) return `a leg amount (${String(leg.amount)}) cannot be read`;
+  if (leg.sender === terms.maker && leg.receiver === terms.taker) {
+    return is(terms.source) && amount === units(terms.source.amount) ? null : `the maker's leg is not the order's ${terms.source.amount} ${terms.source.id}`;
+  }
+  if (leg.sender === terms.taker && leg.receiver !== terms.taker) {
+    return is(terms.target) && amount <= units(terms.target.amount) ? null : `the taker's leg is not within the order's ${terms.target.amount} ${terms.target.id}`;
+  }
+  return `a leg from ${leg.sender} to ${leg.receiver} is not part of this trade`;
+}
+
+const sameInterface = (a: { moduleName: string; entityName: string } | undefined, b: { moduleName: string; entityName: string }) =>
+  !!a && a.moduleName === b.moduleName && a.entityName === b.entityName;
 
 /**
  * The tree as a whole: every node reachable from the one root and nothing else, no rollback,
@@ -308,7 +423,8 @@ function checkTree(operation: DvpOperation, decoded: PreparedTransaction, nodes:
     const type = nodeType(node)!;
     // An allocation's nodes all hang from the one exercise on the admin-signed factory (checked above:
     // every node is reachable from the root), so they run the admin's code; the proposal steps run ours.
-    if (operation === 'dvpAllocateLeg' || (type.oneofKind !== 'create' && type.oneofKind !== 'exercise' && type.oneofKind !== 'fetch')) continue;
+    // A withdraw is the same: every node hangs from the one exercise on the admin-signed allocation.
+    if (operation === 'dvpAllocateLeg' || operation === 'dvpWithdrawAllocation' || (type.oneofKind !== 'create' && type.oneofKind !== 'exercise' && type.oneofKind !== 'fetch')) continue;
     const { packageName, templateId } = type.oneofKind === 'create' ? type.create : type.oneofKind === 'exercise' ? type.exercise : type.fetch;
     if (!trusted(terms.packages.swap, packageName, templateId?.packageId)) {
       return `node ${node.nodeId} runs code from an untrusted package (${packageName || 'unnamed'} ${templateId?.packageId ?? ''})`;

@@ -249,10 +249,10 @@ const RESPONSE_FIELDS: Record<string, string[]> = {
   UserResponseDto: ['id', 'partyId', 'partyName', 'roles', 'status', 'signingMethod', 'email', 'walletPublicKey'],
   HtlcSwapResponseDto: [
     'id', 'status', 'sender', 'receiver', 'tokenId', 'amount', 'counterTokenId', 'counterAmount',
-    'hashLock', 'timeout', 'counterTimeout', 'rejectReason', 'proposalContractId',
+    'hashLock', 'timeout', 'counterTimeout', 'rejectReason', 'proposalContractId', 'orderId',
   ],
   FullSwapInfoDto: ['swap', 'legs', 'dvp'],
-  SwapLegDto: ['role', 'sender', 'receiver', 'tokenId', 'amount', 'lockRef', 'status'],
+  SwapLegDto: ['role', 'sender', 'receiver', 'tokenId', 'amount', 'lockRef', 'status', 'legId', 'userActionRequired'],
   TradingPairResponseDto: ['baseToken', 'quoteToken'],
   TradingPairTokenDto: ['network'],
   DvpSwapFactsDto: ['tradeCid', 'awaitingApprovalFrom', 'allocateBefore', 'settleBefore'],

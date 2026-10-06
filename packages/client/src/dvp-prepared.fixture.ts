@@ -306,6 +306,61 @@ export function allocationTree(input: {
   };
 }
 
+const createOfNode = (n: DamlTransaction_Node): Create => {
+  const type = n.versionedNode.oneofKind === 'v1' ? n.versionedNode.v1.nodeType : undefined;
+  if (type?.oneofKind !== 'create') throw new Error(`node ${n.nodeId} is not a create`);
+  return type.create;
+};
+
+/**
+ * An allocation withdrawn by its sender, as a registry runs it: the consuming `Allocation_Withdraw`
+ * on the allocation (the interface named by module and entity only; the id is the registry's own
+ * version), the locked holding archived and the holding returned to the sender, unlocked.
+ * `extra` nodes are appended as further children of the withdraw — what a hostile tree would add.
+ */
+export function withdrawTree(input: {
+  executor: string; swapId: string; legId: string; leg: FixtureLeg;
+  extra?: (id: (n: number) => string) => { nodes: DamlTransaction_Node[]; inputs?: Create[] };
+  /** The sender the exercise acts as, when not the leg's own. */
+  actor?: string;
+  /** What a hostile preparation changes: the choice, whether it consumes, who gets the holding back and how much, and whether it is locked again. */
+  tamper?: { choice?: string; consuming?: boolean; returnTo?: string; returnAmount?: string; relock?: boolean; noReturn?: boolean; extraArg?: boolean; otherTemplate?: boolean };
+}) {
+  const { leg } = input;
+  const built = allocationTree({ ...input, balance: leg.amount });
+  const locked = createOfNode(built.nodes[2]!);
+  const allocation = createOfNode(built.nodes[4]!);
+  const t = input.tamper ?? {};
+  const returned = holding('99'.repeat(34), t.returnTo ?? leg.sender, leg.instrumentId, t.returnAmount ?? leg.amount, { lockedTo: t.relock ? input.executor : undefined });
+  const extra = input.extra?.((n) => String(10 + n)) ?? { nodes: [] };
+  const children = ['1', ...(t.noReturn ? [] : ['2']), ...extra.nodes.map((n) => n.nodeId)];
+  const root = node('0', {
+    oneofKind: 'exercise',
+    exercise: {
+      lfVersion: '2.1',
+      contractId: allocation.contractId,
+      packageName: allocation.packageName,
+      templateId: t.otherTemplate ? { ...allocation.templateId!, entityName: 'Other' } : allocation.templateId,
+      interfaceId: { packageId: '3e'.repeat(32), moduleName: 'Splice.Api.Token.AllocationV1', entityName: 'Allocation' },
+      signatories: allocation.signatories,
+      stakeholders: allocation.stakeholders,
+      actingParties: [input.actor ?? leg.sender],
+      choiceId: t.choice ?? 'Allocation_Withdraw',
+      chosenValue: v.record({
+        extraArgs: v.record({ context: v.record({ values: v.textMap({}) }), meta: meta() }),
+        ...(t.extraArg ? { beneficiary: v.text('x') } : {}),
+      }),
+      consuming: t.consuming ?? true,
+      children,
+      choiceObservers: [],
+    },
+  });
+  return {
+    nodes: [root, spend('1', locked, leg.sender), ...(t.noReturn ? [] : [createNode('2', returned)]), ...extra.nodes],
+    inputs: [allocation, locked, ...(extra.inputs ?? [])],
+  };
+}
+
 /** The transaction and its hash, as `prepare-command` returns them. */
 export async function prepared(actAs: string, nodes: DamlTransaction_Node[], inputs: Create[] = [], roots = [nodes[0]!.nodeId]) {
   const message = PreparedTransaction.create({

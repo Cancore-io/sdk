@@ -24,11 +24,11 @@
 import { signLegs, type OperationLeg } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
-import { DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
+import { DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
 import { DEFAULT_TRUSTED_PACKAGES, units, verifyDvpPrepared, verifySelfSendPrepared, type DvpOperation, type DvpTerms, type Instrument, type TrustedPackages } from './dvp-verify';
 
 export { DEFAULT_TRUSTED_PACKAGES, type TrustedPackages } from './dvp-verify';
-export { API_NETWORKS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, type DvpNetwork } from './dvp-admins';
+export { API_NETWORKS, DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, type DvpNetwork } from './dvp-admins';
 import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
@@ -71,6 +71,8 @@ export interface HtlcSwap {
   rejectReason?: string | null;
   /** The proposal this swap waits on; for DvP, set once the maker has signed it. */
   proposalContractId?: string | null;
+  /** The order this swap settles; `withdrawAllocation` rebuilds the trade the account agreed to from it. */
+  orderId?: string | null;
 }
 
 /** `FullSwapInfoDto` (`GET /htlc/swaps/{id}/full`), the fields DvP settlement reads. */
@@ -87,6 +89,10 @@ export interface SwapInfo {
     lockRef?: string | null;
     /** `cancelled` once the venue has released the allocation of an expired trade. */
     status?: string;
+    /** The id the DvP contract knows this leg by. */
+    legId?: string | null;
+    /** `withdraw_allocation`: the trade ended unsettled and only this leg's owner can release its allocation. */
+    userActionRequired?: 'withdraw_allocation' | null;
   }>;
   /** `DvpSwapFactsDto`; null for an HTLC swap. */
   dvp: { tradeCid?: string | null; awaitingApprovalFrom: string[]; allocateBefore?: string | null; settleBefore?: string | null } | null;
@@ -115,8 +121,8 @@ function expiredMessage(info: SwapInfo, party: string): string {
   const released = info.legs.filter((l) => l.sender === party && l.lockRef && l.status === 'cancelled');
   if (locked.length > 0) {
     return `${head}, and this account's allocation(s) (${locked.map((l) => l.role).join(', ')}) are still locked after the venue's recovery ` +
-      `(${info.swap.rejectReason ?? 'no reason recorded'}). This client cannot withdraw a DvP allocation itself: contact Cancore support ` +
-      `with the swap id ${info.swap.id} to have the holdings released.`;
+      `(${info.swap.rejectReason ?? 'no reason recorded'}). Only this account's own signature can release them: ` +
+      `call withdrawAllocation('${info.swap.id}'), or pass { autoWithdraw: true } to make / take.`;
   }
   if (released.length > 0) return `${head}; this account's allocation(s) (${released.map((l) => l.role).join(', ')}) were released by the venue's recovery`;
   return `${head}; nothing of this account's was locked`;
@@ -231,6 +237,11 @@ export interface SettleOptions {
   /** @deprecated DvP settlement delivers the holdings themselves; there is nothing to wait for. */
   deliveryWaitMs?: number;
   /**
+   * When the trade expires with this account's allocation still locked, withdraw it (one signature per
+   * locked leg) before the `SettleError` is thrown; that error is kept and carries `withdrawal`. Default false: nothing is signed that was not asked for.
+   */
+  autoWithdraw?: boolean;
+  /**
    * `take` only: when the venue refuses the take because this account has no holding for the
    * platform fee separate from the one funding the trade (`DVP_FEE_HOLDING_REQUIRED`), split one
    * off (`splitForFee`, CC only) and take once more. The fee amount the venue names must be within
@@ -249,8 +260,9 @@ export interface SelfCustodyOptions extends SessionOptions {
   pollMs?: number;
   /**
    * The venue party every DvP allocation must hand settlement to. Pin it from
-   * your own configuration to make it a trust boundary the API cannot move;
-   * by default it is read from `GET /htlc/fee-config`.
+   * your own configuration to make it a trust boundary the API cannot move.
+   * Default: `make` / `take` read it from `GET /htlc/fee-config`; `withdrawAllocation` uses the venue
+   * this SDK pins for the network (`DEFAULT_VENUES`) and never calls fee-config.
    */
   venuePartyId?: string;
   /**
@@ -260,10 +272,11 @@ export interface SelfCustodyOptions extends SessionOptions {
    */
   maxFeeRate?: string;
   /**
-   * The party the platform fee must be paid to. Set it from your own configuration and a trade
-   * whose fee receiver (from `GET /htlc/fee-config`) is any other party is refused.
+   * More parties the platform fee may be paid to on this account's network. Added to
+   * `DEFAULT_FEE_RECIPIENTS` (Cancore's fee pools), never replacing it: a trade whose fee receiver
+   * (from `GET /htlc/fee-config?orderId=`) is not listed is refused before anything is recorded or signed.
    */
-  feeRecipientPartyId?: string;
+  feeRecipientPartyId?: string | readonly string[];
   /**
    * How far ahead of now a proposal's expiry or an allocation's deadlines may lie — a later one
    * keeps the account's funds locked longer. Default 3 hours.
@@ -302,6 +315,19 @@ export interface SelfCustodyOptions extends SessionOptions {
 /** This SDK's default ceiling on the platform fee rate (1.5%): a policy of the SDK, not of the platform. */
 export const DEFAULT_MAX_FEE_RATE = '0.015';
 const DEFAULT_SETTLEMENT_WINDOW_MS = 3 * 60 * 60_000;
+/** What `GET /htlc/fee-config` answers; its `maxFeeRate` is not read: the ceiling is this account's `maxFeeRate`. */
+type FeeConfig = { feeRate?: string; feeRecipient?: string; venue?: string };
+
+/** What `withdrawAllocation` did, leg by leg: no leg's outcome hides another's. */
+export interface Withdrawal {
+  swapId: string;
+  /** Legs (by role) whose allocation this account's signature released. */
+  withdrawn: string[];
+  /** Legs already gone from the ledger when asked: nothing left to release. */
+  gone: string[];
+  /** Legs that could not be withdrawn, with why; the rest were still attempted. */
+  failed: Array<{ leg: string; error: unknown }>;
+}
 
 /** A settle that cannot finish: the swap went somewhere it cannot come back from, or time ran out. */
 export class SettleError extends Error {
@@ -309,6 +335,10 @@ export class SettleError extends Error {
     message: string,
     readonly swapId: string | null,
     readonly last?: HtlcSwap | Order,
+    /** The trade expired with this account's allocation still locked: `withdrawAllocation(swapId)` releases it. */
+    readonly withdrawable = false,
+    /** What `autoWithdraw` did before this was thrown; absent when it was not asked for or not applicable. */
+    readonly withdrawal?: Withdrawal,
   ) {
     super(message);
     this.name = 'SettleError';
@@ -369,6 +399,13 @@ export interface SelfCustodyAccount {
    * platform fee among them) once the trade exists, then wait for the settle.
    */
   take(orderId: string, options?: SettleOptions): Promise<Settled>;
+  /**
+   * Release this account's own allocation(s) of a trade that ended `dvp_expired` while recovery could not
+   * (the abort was refused or the trade was already gone). One prepare → verify → sign → submit per locked
+   * leg, each checked to archive only this account's allocation and return its holding to it. Nothing
+   * locked is `withdrawn: []`; a trade that is not expired is a `SettleError`.
+   */
+  withdrawAllocation(swapId: string): Promise<Withdrawal>;
   /** Transfers waiting for this account's acceptance. */
   incoming(): Promise<IncomingTransfer[]>;
   /** Accept one incoming transfer with this account's signature. */
@@ -472,6 +509,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     network ? DEFAULT_INSTRUMENT_ADMINS[network] : {},
     Object.fromEntries(Object.entries(options.instrumentAdmins ?? {}).map(([id, list]) => [instrumentKey(id), list])),
   );
+  const feeRecipients = [...new Set([...(network ? DEFAULT_FEE_RECIPIENTS[network] : []), ...[options.feeRecipientPartyId ?? []].flat()])];
   // Every Canton↔Canton order this account places asks for allocation-DvP: that is the only way it settles.
   const swap: SwapClient = {
     ...orders,
@@ -552,12 +590,12 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * trade leg and the platform fee carved out of it) and signs both here, in one
    * pass on the same key the envelope ceremonies use.
    */
-  async function signDvp(operationType: DvpOperation, swapId: string, terms: DvpTerms): Promise<void> {
+  async function signDvp(operationType: DvpOperation, swapId: string, terms: DvpTerms, legId?: string): Promise<void> {
     const meta = { swapId };
     for (let attempt = 0; ; attempt++) {
       let prepared: PreparedCommand;
       try {
-        prepared = await http.post('/canton-wallet/htlc/prepare-command', { operationType, params: { swapId } });
+        prepared = await http.post('/canton-wallet/htlc/prepare-command', { operationType, params: legId ? { swapId, legId } : { swapId } });
       } catch (err) {
         throw new CeremonyError(operationType, 'prepare', err, meta);
       }
@@ -785,23 +823,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       );
     }
     // The admin is the allocation's trust anchor, so the API's word for it is checked against the SDK's own list.
-    if (!network && !options.instrumentAdmins) {
-      throw new SettleError(
-        `cannot tell which network ${baseUrl} serves, so no instrument admin can be trusted: pass network ('devnet', 'testnet' or 'mainnet')`,
-        null,
-        order,
-      );
-    }
     for (const instrument of [source, target]) {
-      const pinned = admins[instrumentKey(instrument.id)] ?? [];
-      if (pinned.length === 0) {
-        throw new SettleError(
-          `${instrument.id} admin for ${network ?? 'this network'} not configured — pass instrumentAdmins`,
-          null,
-          order,
-        );
-      }
-      if (!pinned.includes(instrument.admin)) {
+      if (!pinnedAdminsOf(instrument.id, order).includes(instrument.admin)) {
         throw new SettleError(
           `the stand names ${instrument.admin} as the admin of ${instrument.id}, which is not an admin this SDK trusts for it; ` +
             'if it is genuinely the registry of this network, add it with instrumentAdmins',
@@ -813,25 +836,65 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     return { source, target };
   }
 
+  /** The admins this SDK pins for an instrument on this network; none configured is a refusal, before anything is trusted. */
+  function pinnedAdminsOf(id: string, order: Order): string[] {
+    if (!network && !options.instrumentAdmins) {
+      throw new SettleError(
+        `cannot tell which network ${baseUrl} serves, so no instrument admin can be trusted: pass network ('devnet', 'testnet' or 'mainnet')`,
+        null,
+        order,
+      );
+    }
+    const pinned = admins[instrumentKey(id)] ?? [];
+    if (pinned.length === 0) throw new SettleError(`${id} admin for ${network ?? 'this network'} not configured — pass instrumentAdmins`, null, order);
+    return pinned;
+  }
+
+  /** The order's two instruments with their pinned admins, for a withdraw; the allocation names its own admin and is checked against these. */
+  function pinnedInstruments(order: Order): { source: Instrument; target: Instrument } {
+    const pin = (id: string): Instrument => ({ id, admin: pinnedAdminsOf(id, order)[0]! });
+    return { source: pin(order.sourceTokenAddress), target: pin(order.targetTokenAddress) };
+  }
+
+  /**
+   * The fee configuration of the order's pool (`?orderId=`): a partner order pays its fee to the
+   * partner fee party, a retail one to the retail party. The pool is fixed at accept, and every
+   * caller here runs after it. A backend older than the per-order route ignores the parameter and
+   * answers its only (retail) pool, which is then the order's too. Any refusal propagates.
+   */
+  const feeConfig = (orderId: string) => http.get<FeeConfig | null>('/htlc/fee-config', { orderId });
+
   /**
    * The trade this account agreed to, from sources other than the swap row: the
    * order, the stand's instrument list (each instrument's admin) and its fee
    * configuration (rate, receiver and venue). Every prepared transaction is held
    * to it before the key signs.
    */
-  async function dvpTerms(order: Order, swapId: string | null, party: string, role: 'maker' | 'taker'): Promise<DvpTerms> {
-    const { source, target } = await dvpInstruments(order);
-    const config = await http.get<{ feeRate?: string; feeRecipient?: string; venue?: string } | null>('/htlc/fee-config');
-    const venue = options.venuePartyId ?? config?.venue;
-    const feeRate = config?.feeRate ?? '0';
+  async function dvpTerms(order: Order, swapId: string | null, party: string, role: 'maker' | 'taker', forWithdraw = false): Promise<DvpTerms> {
+    // A withdraw names the instruments by the order and takes each one's admin from the allocation itself, held to
+    // the SDK's pinned list: the stand's current instrument list is not part of it, so a pair switched off after
+    // the trade cannot keep an allocation locked.
+    const { source, target } = forWithdraw ? pinnedInstruments(order) : await dvpInstruments(order);
+    // A withdraw reads nothing from the stand but the swap and the order: the venue is pinned per network (or
+    // given), and the fee policy is not part of it, so a fee-config outage cannot keep an allocation locked.
+    const config = forWithdraw ? null : await feeConfig(order.id);
+    const venue = options.venuePartyId ?? (forWithdraw ? (network ? DEFAULT_VENUES[network] : null) : config?.venue);
+    // A withdraw returns this account's own funds and is held to the trade alone: the stand's CURRENT fee
+    // policy is not part of it, so a fee change after the trade can never keep the allocation locked.
+    const feeRate = forWithdraw ? '0' : (config?.feeRate ?? '0');
     const ceiling = options.maxFeeRate ?? DEFAULT_MAX_FEE_RATE;
-    if (!(units(feeRate) >= 0n && units(feeRate) <= units(ceiling))) {
+    if (!forWithdraw && !(units(feeRate) >= 0n && units(feeRate) <= units(ceiling))) {
       throw new SettleError(`the stand's platform fee rate ${feeRate} is above this account's ceiling ${ceiling} (maxFeeRate)`, swapId, order);
     }
-    if (options.feeRecipientPartyId !== undefined && config?.feeRecipient && config.feeRecipient !== options.feeRecipientPartyId) {
-      throw new SettleError(`the stand pays the platform fee to ${config.feeRecipient}, not to this account's feeRecipientPartyId`, swapId, order);
+    if (config?.feeRecipient && !feeRecipients.includes(config.feeRecipient)) {
+      throw new SettleError(
+        `the stand pays the platform fee to ${config.feeRecipient}, which is not a fee party this SDK trusts on ${network ?? 'this network'}; ` +
+          'if it genuinely is one, add it with feeRecipientPartyId',
+        swapId,
+        order,
+      );
     }
-    if (!venue) throw new SettleError('the venue party is unknown on this stand, so no allocation can be checked: pass venuePartyId', swapId);
+    if (!venue) throw new SettleError(`the venue party is unknown on ${network ?? 'this stand'}, so no allocation can be checked: pass venuePartyId`, swapId);
     const other = (role === 'maker' ? order.opponent : order.initiator) as { partyId?: string | null } | undefined;
     if (!other?.partyId) throw new SettleError(`order ${order.id} does not name the counterparty's party`, swapId, order);
     return {
@@ -839,10 +902,11 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       party,
       maker: role === 'maker' ? party : other.partyId,
       taker: role === 'taker' ? party : other.partyId,
+      ...(forWithdraw ? { pinnedAdmins: admins } : {}),
       source: { ...source, amount: order.sourceAmount },
       target: { ...target, amount: order.targetAmount },
       venue,
-      feeParty: config?.feeRecipient ?? null,
+      feeParty: forWithdraw ? null : (config?.feeRecipient ?? null),
       feeRate,
       packages: { swap: mergeLists(DEFAULT_TRUSTED_PACKAGES.swap, options.trustedPackages?.swap) },
       now: now(),
@@ -896,7 +960,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       if (!isDvp(info.swap)) {
         throw new SettleError(`swap ${swapId} is an HTLC swap (${info.swap.status}); this client settles Canton↔Canton only through allocation-DvP`, swapId, info.swap);
       }
-      if (info.swap.status === 'dvp_expired') throw new SettleError(expiredMessage(info, party), swapId, info.swap);
+      if (info.swap.status === 'dvp_expired') throw new SettleError(expiredMessage(info, party), swapId, info.swap, lockedLegs(info, party).length > 0);
       if (done(info)) return info;
       if (now() >= deadline) throw new SettleError(`timed out waiting for ${what}${lockedNote(info, party)}`, swapId, info.swap);
       await sleep(pollMs);
@@ -913,7 +977,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     return { swap: settled.swap, delivery: 'direct', flow: 'dvp' };
   }
 
-  async function make(orderId: string, opts: SettleOptions = {}): Promise<Settled> {
+  async function makeOnce(orderId: string, opts: SettleOptions): Promise<Settled> {
     const deadline = now() + (opts.deadlineMs ?? DEFAULT_DEADLINE_MS);
     const order = await waitFor(() => swap.get(orderId), (o) => o.status !== 'open', deadline, `order ${orderId} to be taken`, null);
     assertCantonOrder(order);
@@ -971,7 +1035,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
   }
 
-  async function take(orderId: string, opts: SettleOptions = {}): Promise<Settled> {
+  async function takeOnce(orderId: string, opts: SettleOptions): Promise<Settled> {
     const deadline = now() + (opts.deadlineMs ?? DEFAULT_DEADLINE_MS);
     let order = await swap.get(orderId);
     assertCantonOrder(order);
@@ -998,6 +1062,74 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     // The venue turns a fully approved proposal into the trade on its next tick.
     info = await waitDvp(swapId, party, (i) => Boolean(i.dvp?.tradeCid), deadline, 'the venue to open the trade');
     return fundAndSettle(swapId, terms, info, deadline);
+  }
+
+  /** Run a settle; on an expiry that left this account's allocation locked, withdraw it first when asked to. */
+  async function autoWithdrawing(opts: SettleOptions, run: () => Promise<Settled>): Promise<Settled> {
+    try {
+      return await run();
+    } catch (err) {
+      if (!(err instanceof SettleError) || !err.withdrawable || !opts.autoWithdraw || !err.swapId) throw err;
+      let withdrawal: Withdrawal;
+      try {
+        withdrawal = await withdrawAllocation(err.swapId);
+      } catch (cause) {
+        // Not even the legs could be read: the trade's own error stays the one reported.
+        withdrawal = { swapId: err.swapId, withdrawn: [], gone: [], failed: [{ leg: 'all', error: cause }] };
+      }
+      const left = withdrawal.failed.length;
+      throw new SettleError(
+        `${err.message.split(', and this account')[0]}; autoWithdraw: ` +
+          (left === 0
+            ? `this account's allocation(s) (${[...withdrawal.withdrawn, ...withdrawal.gone].join(', ') || 'none locked'}) were released with its own signature`
+            : `${left} leg(s) could not be withdrawn (${withdrawal.failed.map((f) => `${f.leg}: ${f.error instanceof Error ? f.error.message : String(f.error)}`).join('; ')}); call withdrawAllocation('${err.swapId}') again`),
+        err.swapId,
+        err.last,
+        // Still withdrawable when a leg could not be released: the caller must not read this as "nothing left to do".
+        withdrawal.failed.length > 0,
+        withdrawal,
+      );
+    }
+  }
+
+  const make = (orderId: string, opts: SettleOptions = {}) => autoWithdrawing(opts, () => makeOnce(orderId, opts));
+  const take = (orderId: string, opts: SettleOptions = {}) => autoWithdrawing(opts, () => takeOnce(orderId, opts));
+
+  /** The backend says so when a leg's allocation is already off the ledger (its own row not yet marked released). */
+  const alreadyGone = (err: unknown) =>
+    err instanceof CeremonyError && err.stage === 'prepare' && /nothing left to withdraw|no locked allocation/i.test(err.message);
+
+  async function withdrawAllocation(swapId: string): Promise<Withdrawal> {
+    const info = await swapInfo(swapId);
+    if (!isDvp(info.swap)) throw new SettleError(`swap ${swapId} is an HTLC swap (${info.swap.status}); only a DvP allocation is withdrawn here`, swapId, info.swap);
+    // The venue settles or aborts a live trade; only a trade that ended unsettled leaves the owner to act.
+    if (info.swap.status !== 'dvp_expired') {
+      throw new SettleError(`swap ${swapId} is ${info.swap.status}: an allocation can only be withdrawn once the trade is dvp_expired`, swapId, info.swap);
+    }
+    const self = await me();
+    const party = self.partyId ?? (await ownParty());
+    const result: Withdrawal = { swapId, withdrawn: [], gone: [], failed: [] };
+    const locked = lockedLegs(info, party);
+    if (locked.length === 0) return result;
+    if (!info.swap.orderId) throw new SettleError(`swap ${swapId} does not name its order, so the trade this account agreed to cannot be rebuilt`, swapId, info.swap);
+    const order = await swap.get(info.swap.orderId);
+    assertCantonOrder(order);
+    const terms = await dvpTerms(order, swapId, party, order.opponentUserId === self.id ? 'taker' : 'maker', true);
+    // One leg's refusal must not keep the next leg's funds locked: every leg is attempted and reported.
+    for (const leg of locked) {
+      if (!leg.legId) {
+        result.failed.push({ leg: leg.role, error: new Error('the leg does not name its id, so it cannot be withdrawn') });
+        continue;
+      }
+      try {
+        await signDvp('dvpWithdrawAllocation', swapId, terms, leg.legId);
+        result.withdrawn.push(leg.role);
+      } catch (error) {
+        if (alreadyGone(error)) result.gone.push(leg.role);
+        else result.failed.push({ leg: leg.role, error });
+      }
+    }
+    return result;
   }
 
   async function acceptIncoming(filter: (transfer: IncomingTransfer) => boolean = () => true) {
@@ -1098,6 +1230,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     swapState,
     make,
     take,
+    withdrawAllocation,
     incoming,
     accept,
     acceptIncoming,
