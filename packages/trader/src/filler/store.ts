@@ -64,6 +64,8 @@ export type TicketState =
   | 'intent-acked'
   /** `ticket.issued` received; escrow and ticket checks run next. */
   | 'issued'
+  /** The checks before the receipt are running; whoever finishes them moves it on, once. */
+  | 'checking'
   /** `ticket.receipt` sent: the filler is now bound to deliver. */
   | 'receipted'
   /** `ticket.decline` sent (by the hook or by the SDK's checks). */
@@ -84,6 +86,17 @@ export interface TicketRecord {
   receipt?: TicketReceiptMessage;
   decline?: TicketDecline;
   expired?: TicketExpired;
+  /** When `ticket.issued` first arrived, unix ms by the process clock (V-T4 compares it with `acceptBy + δ_issue`). */
+  issuedAtMs?: number;
+  /**
+   * When the message of the current state — the intent, the receipt or the
+   * decline — was handed to filler-gateway, unix ms. Unset while it is only
+   * written down: after a restart it is sent again (the same bytes, never
+   * signed twice), while its deadline lasts.
+   */
+  sentAtMs?: number;
+  /** Set together with `sentAtMs` when the deadline passed before the message could go out: it never will. */
+  unsent?: true;
   /** Unix ms, store time of the last write. */
   updatedAtMs: number;
 }
@@ -312,7 +325,8 @@ export interface FillerStore {
   withOrder<T>(orderHash: Hex, work: (tx: OrderTransaction) => Promise<T>): Promise<T>;
   /**
    * Orders that still need work after a restart (N-15): a ticket in a
-   * non-terminal state, or a fill without a `settled` settlement.
+   * non-terminal state, a `declined` ticket whose decline has not gone out
+   * yet (`sentAtMs` unset), or a fill without a `settled` settlement.
    */
   listOpenOrders(): Promise<readonly Hex[]>;
   readonly quotes: QuoteLedger;

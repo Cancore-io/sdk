@@ -1,7 +1,7 @@
 import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
-import { allocationTree, createNode, DEV, exercise, factoryContract, holding, prepared, proposalAccept, proposalCreate, spend, spendTransfer, type FixtureLeg } from './dvp-prepared.fixture';
+import { allocationTree, createNode, DEV, exercise, factoryContract, holding, preapprovalContract, prepared, proposalAccept, proposalCreate, selfSendLeg, spend, spendTransfer, type FixtureLeg } from './dvp-prepared.fixture';
 import { DEFAULT_INSTRUMENT_ADMINS, mergeLists } from './dvp-admins';
-import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyDvpPrepared, type DvpTerms } from './dvp-verify';
+import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyDvpPrepared, verifySelfSendPrepared, type DvpTerms, type SelfSendTerms } from './dvp-verify';
 
 const MAKER = 'maker::1220aa';
 const TAKER = 'taker::1220bb';
@@ -249,4 +249,79 @@ test('overrides add to the pinned lists: one entry added keeps every default', (
   expect(merged.CBTC).toEqual([...DEFAULT_INSTRUMENT_ADMINS.devnet.CBTC!, 'extra::1220ab']);
   expect(merged.Amulet).toEqual(DEFAULT_INSTRUMENT_ADMINS.devnet.Amulet);
   expect(mergeLists(DEFAULT_TRUSTED_PACKAGES.swap, { 'cancore-swap': ['ff'.repeat(32)] })['cancore-swap']).toHaveLength(DEFAULT_TRUSTED_PACKAGES.swap['cancore-swap']!.length + 1);
+});
+
+describe('a fee split (a CC send to oneself) is signed only as the account asked for it', () => {
+  const ME = 'party-taker::1220aa';
+  const FEE = '24.8756218905';
+  const terms: SelfSendTerms = { party: ME, admins: [DEV.dso], instrument: 'Amulet', amount: FEE, maxCost: '0.5', feeRecipients: [DEV.venue] };
+  type Over = Partial<Parameters<typeof selfSendLeg>[0]>;
+  const transfer = (over: Over = {}) => selfSendLeg({
+    party: ME, kind: 'transfer', receiver: ME, input: '10000', ids: 'a',
+    outputs: [{ owner: ME, amount: FEE }, { owner: ME, amount: '9975.1243781095' }], ...over,
+  });
+  const feeLeg = (over: Over = {}) => selfSendLeg({
+    party: ME, kind: 'fee', receiver: DEV.venue, input: '10', ids: 'b',
+    outputs: [{ owner: DEV.venue, amount: '0.125' }, { owner: ME, amount: '9.875' }], ...over,
+  });
+  const refused = async (legs: Array<Awaited<ReturnType<typeof transfer>>>, reason: RegExp, t: SelfSendTerms = terms) => {
+    const err = await verifySelfSendPrepared(legs, t).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnverifiedTransactionError);
+    expect((err as Error).message).toMatch(reason);
+  };
+
+  test('the honest split and its network-fee leg pass', async () => {
+    await expect(verifySelfSendPrepared([await transfer(), await feeLeg()], terms)).resolves.toBeUndefined();
+  });
+
+  test('a hash that is not the hash of the bytes', async () => {
+    const [a, b] = [await transfer(), await feeLeg()];
+    await refused([{ ...a, preparedTransactionHash: b.preparedTransactionHash }, b], /leg 0 does not hash to the hash it came with/);
+  });
+
+  test('a transaction acting as another party', async () => {
+    await refused([await transfer({ actAs: 'mallory::1220ff' }), await feeLeg()], /leg 0 acts as mallory::1220ff, not as this account/);
+  });
+
+  test('a leg without its bytes', async () => {
+    const a = await transfer();
+    await refused([{ ...a, preparedTransaction: undefined as unknown as string }, await feeLeg()], /leg 0 came without its bytes/);
+  });
+
+  test('spending a holding of someone else', async () => {
+    await refused([await transfer({ inputOwner: 'mallory::1220ff' }), await feeLeg()], /mallory::1220ff/);
+  });
+
+  test('acting on a contract neither the account nor the admin signs', async () => {
+    const stranger = preapprovalContract('c0'.repeat(34), 'other::1220ee', 'other::1220ee');
+    await refused([await transfer({ extra: (c) => spend('x', c, ME), extraInput: stranger }), await feeLeg()],
+      /acts on a TransferPreapproval that is neither its holding nor the instrument admin's/);
+  });
+
+  test('no holding of exactly the fee', async () => {
+    await refused([await transfer({ outputs: [{ owner: ME, amount: '24.8756218904' }, { owner: ME, amount: '9975.1243781096' }] }), await feeLeg()],
+      /no holding of exactly 24.8756218905 Amulet is created for this account/);
+  });
+
+  test('a locked holding for the account', async () => {
+    await refused([await transfer({ outputs: [{ owner: ME, amount: FEE, lockedTo: DEV.venue }, { owner: ME, amount: '9975.1243781095' }] }), await feeLeg()], /leg 0 creates a locked holding/);
+  });
+
+  test('the transfer paying the fee recipient', async () => {
+    await refused([await transfer({ outputs: [{ owner: ME, amount: FEE }, { owner: DEV.venue, amount: '9975.1243781095' }] }), await feeLeg()],
+      /leg 0 creates a holding owned by cancore::/);
+  });
+
+  test('a transfer sent through someone else\'s preapproval', async () => {
+    await refused([await transfer({ receiver: DEV.venue }), await feeLeg()], /leg 0 sends to cancore::.*not to this account/);
+  });
+
+  test('a fee leg paying a party that is not pinned', async () => {
+    await refused([await transfer(), await feeLeg({ receiver: 'thief::1220dd', outputs: [{ owner: 'thief::1220dd', amount: '0.125' }, { owner: ME, amount: '9.875' }] })],
+      /leg 1 sends to thief::1220dd, not to a pinned network fee recipient/);
+  });
+
+  test('a fee leg costing more than the bound', async () => {
+    await refused([await transfer(), await feeLeg({ outputs: [{ owner: DEV.venue, amount: '5' }, { owner: ME, amount: '5' }] })], /costs this account more than 0.5 Amulet/);
+  });
 });

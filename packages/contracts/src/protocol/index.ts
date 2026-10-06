@@ -5,3 +5,4 @@ export * from './draw';
 export * from './gateway';
 export * from './messages';
 export * from './schemas';
+export * from './settleAttestations';
