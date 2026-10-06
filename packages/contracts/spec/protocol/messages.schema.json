@@ -65,7 +65,7 @@
     },
     "errorCode": {
       "anyOf": [
-        { "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL"] },
+        { "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL", "ATTESTATIONS_NOT_READY"] },
         { "$ref": "#/$defs/futureEnumValue" }
       ]
     },
@@ -409,6 +409,65 @@
         "code": { "type": "string", "minLength": 1 },
         "step": { "$ref": "#/$defs/penaltyStep" },
         "details": { "type": "object" }
+      }
+    },
+    "fillProof": {
+      "type": "object",
+      "description": "FillProof as the source router hashes it (FILL_PROOF_TYPES, field for field), encoded per protocol §3.1: kind, attempt, setId JSON integers; amountDelivered, filledAt decimal strings. Variant A (protocol §3.3: fillerId and repayTo in place of filler) replaces these fields together with the router's struct (CAN-2139, CAN-2140)",
+      "required": ["kind", "orderHash", "destination", "fillRef", "recipient", "outputAsset", "amountDelivered", "filledAt", "filler", "attempt", "setId"],
+      "properties": {
+        "kind": { "$ref": "#/$defs/uint8" },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "destination": { "$ref": "#/$defs/bytes32" },
+        "fillRef": { "$ref": "#/$defs/bytes32" },
+        "recipient": { "$ref": "#/$defs/bytes32" },
+        "outputAsset": { "$ref": "#/$defs/bytes32" },
+        "amountDelivered": { "$ref": "#/$defs/uintDec256" },
+        "filledAt": { "$ref": "#/$defs/timeS" },
+        "filler": { "$ref": "#/$defs/address", "description": "the payee of settle on the source chain" },
+        "attempt": { "$ref": "#/$defs/uint32" },
+        "setId": { "$ref": "#/$defs/uint32" }
+      }
+    },
+    "attestationEvm": {
+      "type": "object",
+      "description": "One attestor signature for an EVM source: EIP-712 over FillProof in the source-router domain; in the payload's order the signature values are the sigs argument of settle",
+      "required": ["signer", "signature"],
+      "properties": { "signer": { "$ref": "#/$defs/address" }, "signature": { "$ref": "#/$defs/sig65" } }
+    },
+    "attestationCanton": {
+      "type": "object",
+      "description": "One attestor signature for a Canton source: the same digest, carried as SwapIntent_SettleWithProof takes it (SigEntry {pubKey, sig}; strip 0x for Daml). signer is the address Daml derives from pubKey",
+      "required": ["signer", "pubKey", "signature"],
+      "properties": {
+        "signer": { "$ref": "#/$defs/address" },
+        "pubKey": { "type": "string", "pattern": "^0x3056301006072a8648ce3d020106052b8104000a03420004[0-9a-f]{128}$", "description": "DER SubjectPublicKeyInfo of the uncompressed secp256k1 key (88 bytes), as KMS GetPublicKey returns it" },
+        "signature": { "type": "string", "pattern": "^0x30([0-9a-f]{2}){7,71}$", "description": "minimal DER ECDSA signature, low-s, no recovery byte" }
+      }
+    },
+    "settle.attestations": {
+      "x-direction": "S2F",
+      "type": "object",
+      "description": "≥ threshold attestor signatures over the filler's FillProof (§10 D-N, S-13). Sent once per (orderHash, attempt); GET /v1/filler/attestations/{orderHash} serves the same payload. signatures: at least threshold entries, strictly ascending by signer (not expressible here; settleAttestationsErrors checks it). sourceChainId picks the entry form: eip155 → attestationEvm, canton → attestationCanton",
+      "allOf": [
+        { "$ref": "#/$defs/s2fBase" },
+        {
+          "if": { "type": "object", "properties": { "sourceChainId": { "type": "string", "pattern": "^canton:" } }, "required": ["sourceChainId"] },
+          "then": { "type": "object", "properties": { "signatures": { "type": "array", "items": { "$ref": "#/$defs/attestationCanton" } } } },
+          "else": { "type": "object", "properties": { "signatures": { "type": "array", "items": { "$ref": "#/$defs/attestationEvm" } } } }
+        }
+      ],
+      "required": ["type", "orderHash", "attempt", "sourceChainId", "proof", "signatures", "setId", "threshold", "refundAfter"],
+      "properties": {
+        "type": { "const": "settle.attestations" },
+        "orderHash": { "$ref": "#/$defs/bytes32" },
+        "attempt": { "$ref": "#/$defs/uint32", "description": "equals proof.attempt" },
+        "sourceChainId": { "$ref": "#/$defs/caip2", "description": "where settle is submitted" },
+        "proof": { "$ref": "#/$defs/fillProof" },
+        "signatures": { "type": "array", "minItems": 1 },
+        "setId": { "$ref": "#/$defs/uint32", "description": "equals proof.setId; EVM: attestationSetFor(orderHash)" },
+        "threshold": { "type": "integer", "minimum": 1, "maximum": 4294967295, "description": "k of that set" },
+        "refundAfter": { "$ref": "#/$defs/timeS", "description": "from this time settle reverts; the node gets its settle included before it" }
       }
     }
   }

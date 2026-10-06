@@ -131,11 +131,12 @@ drand quicknet rounds.
 
 | File (`@cancore/contracts/spec/protocol/…`) | Holds |
 | --- | --- |
-| `messages.schema.json` | one `$def` per WebSocket frame type (22), `x-direction` S2F / F2S / both, and the primitives they share |
+| `messages.schema.json` | one `$def` per WebSocket frame type (23), `x-direction` S2F / F2S / both, and the primitives they share |
 | `rest.schema.json` | REST fallback bodies; `x-endpoints` (method, path, auth, request/response), `x-error-status` |
 | `records.schema.json` | the draw record, the epoch record, `GET /v1/gateway` |
 | `asyncapi.json` | AsyncAPI 3.0: channel `/v1`, the gateway's send/receive operations, examples |
 | `vectors/messages.json`, `vectors/records.json` | valid example frames and fixture records (hashes real, `sig` a placeholder: r = s = 0, v = 27) |
+| `vectors/settle-attestations.json` | `settle.attestations` golden vectors: EVM and Canton source, real TEST-key signatures, the pushed frame and the REST body with one payload, and schema-valid payloads a filler must refuse |
 
 The same objects are exported as `PROTOCOL_SCHEMAS`, `ASYNCAPI`, `MESSAGE_DIRECTIONS` and
 `REST_ENDPOINTS`, with TypeScript shapes of every frame (`TicketOffer`, `QuoteAck`, …) and the
@@ -161,6 +162,30 @@ only. `ping`/`pong` go both ways: the gateway's copy is signed like every S→F 
 (`pingS2F`), the taker's is not (`pingF2S`); the second argument of `messageSchemaRef` picks one.
 `scripts/gen-protocol-docs.mjs` derives the examples, records and the AsyncAPI document from
 the schemas and the vectors.
+
+### Attestation signatures for `settle`
+
+Once filler-gateway holds at least `threshold` verified attestor signatures over a filler's
+`FillProof`, it pushes `settle.attestations` to that filler and serves the same payload on
+`GET /v1/filler/attestations/{orderHash}` (404 `ATTESTATIONS_NOT_READY` before that, 404
+`UNKNOWN_TICKET` when the filler holds no ticket on the order); the filler node submits `settle`
+itself (protocol §3.5, §3.6, §10 D-N). `proof` is the `FillProof` the source router hashes,
+field for field (`FILL_PROOF_TYPES`); variant A of protocol §3.3 (`fillerId`, `repayTo`) replaces
+it together with the router's struct. A signature entry follows `sourceChainId`: `{signer, signature}` with a
+65-byte signature on an EVM source, `{signer, pubKey, signature}` with the DER public key and a
+minimal DER signature on a Canton source, as `SwapIntent_SettleWithProof` takes them.
+
+```ts
+import { settleAttestationsErrors, settleAttestationsPayload, settleAttestationsPayloadHash, settleSigs } from '@cancore/contracts';
+
+const payload = settleAttestationsPayload(frame); // the same from WebSocket and REST
+settleAttestationsErrors(payload); // [] or what the schema cannot state: threshold, signer order, ids
+settleAttestationsPayloadHash(frame); // dedupe the two channels
+settleSigs(payload); // EVM: the sigs of settle(order, proof, sigs); Canton: cantonSigEntries(payload)
+```
+
+Recover every signer and check it against `attestationSetFor(orderHash)` with your own
+secp256k1 library (T-7). `scripts/gen-settle-attestations.mjs` writes the vectors.
 
 `FILLER_GATEWAYS` is where the gateway key and the ticket signers of each environment are
 published. It is empty in the RC: no gateway key exists yet.
@@ -258,6 +283,13 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- Unreleased — filler-gateway → filler `settle.attestations` and `GET /v1/filler/attestations/{orderHash}`
+  (protocol §3.5, §3.6, §10 D-N): the frame schema with the router's `FillProof` and the EVM and
+  Canton signature entries, the REST endpoint, the error code `ATTESTATIONS_NOT_READY` (404), an
+  AsyncAPI message, golden vectors (`spec/protocol/vectors/settle-attestations.json`), the
+  `SettleAttestations` types and the helpers `settleAttestationsPayload`,
+  `settleAttestationsPayloadHash`, `settleAttestationsErrors`, `settleSigs`, `cantonSigEntries`.
+  Additive only (V-2): no existing frame, type or vector changes.
 - `0.2.0-rc.6` — `auth.response` gains an optional `nonce` (bytes32): the `auth.challenge` nonce it
   answers, so filler-gateway's REST login (`POST /v1/filler/auth`) finds the challenge without trying
   every live one. Additive only (V-2); the `FillerAuth` type and every digest are unchanged.

@@ -76,6 +76,11 @@ Canton↔Canton self-custody trades settle through allocation-DvP. This changes 
   parties its network-fee leg may pay. The signed send may cost a holding-fee margin on top of
   `maxSplitCost` (1% of the fee, at least 0.1 CC, at most 1 CC). A send from a single holding is
   the transfer alone (the API defers its network fee), and verifies as such.
+- `SdkErrorCode` (and `SDK_ERROR_CODES`) gains the five codes of the agent mandate: `NO_ACTIVE_MANDATE`,
+  `MANDATE_EXISTS`, `MANDATE_AMBIGUOUS`, `IDEMPOTENCY_KEY_REUSED`, `MANDATE_NOT_YET_VISIBLE`. The spec
+  snapshot gains the `/agent/mandate*` routes. No client method calls them yet; `refusalForCode` maps
+  all five to `other`. **A program that switches on `SdkErrorCode` exhaustively stops compiling until
+  the five have a branch** — which is what the exhaustive switch is for.
 
 ### Migrating from 0.6.x
 

@@ -117,6 +117,8 @@ export type QuoteSkipReason =
   | 'no-fill-key'
   /** `inputAmount` below the source router's `minInput` (T-16). */
   | 'below-min-input'
+  /** The source router's `minInput` could not be read: no quote on a floor the filler did not see. */
+  | 'chain-unavailable'
   /** `windowCloseAt` passed (before or after the hook, or after signing). */
   | 'late'
   /** The hook returned null. */
@@ -142,7 +144,7 @@ export interface QuoteDecisionInput {
   validUntil: bigint | DecString;
 }
 
-/** The minimum `inputAmount` the source router of `chain` accepts for `token`; undefined when unknown. */
+/** The minimum `inputAmount` the source router of `chain` accepts for `token`; undefined when there is none to read; rejects when the read failed. */
 export type MinInputSource = (chain: string, token: unknown) => Promise<bigint | undefined>;
 
 export interface QuoteDeskOptions {
@@ -224,7 +226,12 @@ export class QuoteDesk {
     if (this.options.clock.now() >= windowCloseAt) return skip('late');
     if ((await this.options.store.getOverrides()).paused) return skip('paused');
 
-    const minInput = await this.options.minInput(request.route.src, request.inputToken);
+    let minInput: bigint | undefined;
+    try {
+      minInput = await this.options.minInput(request.route.src, request.inputToken);
+    } catch (error) {
+      return skip('chain-unavailable', { error: String(error) });
+    }
     if (minInput !== undefined && total < minInput) return skip('below-min-input', { minInput: minInput.toString() });
 
     const hook = this.options.onQuoteRequest();

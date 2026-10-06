@@ -11,6 +11,7 @@
  * accept any UPPER_SNAKE value besides them, and a receiver treats an unknown
  * one as OTHER/generic (V-2).
  */
+import type { SettleAttestations } from './settleAttestations';
 import type { Hex } from './typedData';
 
 /** Unsigned decimal string: uint64 and wider. */
@@ -28,11 +29,13 @@ export const DECLINE_REASONS = [
 export const ERROR_CODES = [
   'BAD_REQUEST', 'UNAUTHENTICATED', 'UNSUPPORTED_VERSION', 'UNSUPPORTED_TYPE', 'BAD_SIGNATURE',
   'UNKNOWN_REQUEST', 'UNKNOWN_TICKET', 'TICKET_CLOSED', 'NOT_ELIGIBLE', 'RATE_LIMITED', 'INTERNAL',
+  'ATTESTATIONS_NOT_READY',
 ] as const;
 /** HTTP status of each error code on the REST fallback. */
 export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   BAD_REQUEST: 400, UNAUTHENTICATED: 401, UNSUPPORTED_VERSION: 400, UNSUPPORTED_TYPE: 400, BAD_SIGNATURE: 422,
   UNKNOWN_REQUEST: 404, UNKNOWN_TICKET: 404, TICKET_CLOSED: 409, NOT_ELIGIBLE: 403, RATE_LIMITED: 429, INTERNAL: 500,
+  ATTESTATIONS_NOT_READY: 404,
 };
 export const EXPIRED_RESULTS = ['FILLED', 'NO_SHOW', 'NO_SHOW_UNCONFIRMED', 'EXEMPT'] as const;
 export const EXEMPT_REASONS = ['DESTINATION_HALTED', 'GATEWAY_FAULT', 'REORGED_AFTER_INCLUSION', 'RECIPIENT_NOT_READY', 'OTHER'] as const;
@@ -144,7 +147,7 @@ export interface PenaltyApplied extends S2FBase { type: 'penalty.applied'; viola
 
 export type S2FMessage =
   | AuthChallenge | AuthOk | PingS2F | PongS2F | ErrorMessage | EpochWeights | QuoteRequest | QuoteAck | QuoteReconfirm
-  | TicketOffer | TicketIntentAck | TicketIssued | TicketExpired | OrderSettled | PenaltyApplied;
+  | TicketOffer | TicketIntentAck | TicketIssued | TicketExpired | OrderSettled | PenaltyApplied | SettleAttestations;
 export type F2SMessage =
   | AuthResponse | PingF2S | PongF2S | QuoteMessage | QuoteReconfirmReply | TicketIntentMessage | TicketDecline | TicketReceiptMessage | FillReported;
 
@@ -155,6 +158,8 @@ export interface Page<T> { items: T[]; nextCursor: string | null }
 export type TicketList = Page<TicketOffer | TicketIssued>;
 export interface QuoteRecord { quote: QuoteMessage; ack: QuoteAck; status: QuoteFinalStatus }
 export type QuoteList = Page<QuoteRecord>;
+/** `GET /v1/filler/attestations/{orderHash}`: the `settle.attestations` frame itself, freshly signed. */
+export type AttestationsResponse = SettleAttestations;
 export interface StakeBindingRequest { partnerId: string; stakingAddress: Hex; chainId: DecString; nonce: DecString; sig: Hex }
 export interface FillerStats { won: number; delivered: number; noShow: number; reliability: number; capacityUsd: string; inFlightUsd: string }
 export interface PenaltyRecord { violationId: string; code: string; step: PenaltyStep; orderHash?: Hex; attempt?: number; at: TimeMs; details: Record<string, unknown> }
