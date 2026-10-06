@@ -5,7 +5,8 @@
  * stay in lock-step with `FeeVault.sol` and with the backend's signer, which is
  * why both are written here once rather than re-typed by each consumer.
  */
-import { FILL_PROOF_DOMAIN } from './generated/typedData';
+import { FILL_PROOF_DOMAIN, FILL_PROOF_TYPES } from './generated/typedData';
+import { hashTypedData } from './protocol/hash';
 
 export const FEE_CLAIM_DOMAIN_NAME = 'CancoreFeeVault';
 export const FEE_CLAIM_DOMAIN_VERSION = '1';
@@ -53,7 +54,7 @@ export const PROOF_KIND_ATTESTATION = 1;
 export interface FillProof {
   kind: number;
   orderHash: `0x${string}`;
-  /** bytes32: the destination chain id, left-padded. */
+  /** bytes32: EVM — the destination chain id, left-padded; Canton — `keccak256(utf8("canton:<network>"))`. */
   destination: `0x${string}`;
   /** EVM: the delivery transaction hash; Canton: keccak256 of the update id. */
   fillRef: `0x${string}`;
@@ -62,8 +63,10 @@ export interface FillProof {
   /** What arrived, not what was sent. */
   amountDelivered: bigint;
   filledAt: bigint;
-  /** The filler's payout address on the source chain. */
-  filler: `0x${string}`;
+  /** `fillerIdHash(fillerId)`: `Filled.fillerId` (EVM destination) or the hashed `DeliveryReceipt.fillerId` (Canton destination). */
+  fillerId: `0x${string}`;
+  /** The payee of `settle`, encoded for the source chain: `Filled.repayTo` or `DeliveryReceipt.repayTo`. */
+  repayTo: `0x${string}`;
   attempt: number;
   /** The attestor set live when the order opened — `attestationSetFor(orderHash)`, never `currentSetId`. */
   setId: number;
@@ -77,4 +80,13 @@ export interface FillProof {
  */
 export function fillProofDomain(chainId: number | bigint, verifyingContract: `0x${string}`) {
   return { ...FILL_PROOF_DOMAIN, chainId, verifyingContract } as const;
+}
+
+/**
+ * The router's `hashFillProof`: the digest attestors sign and `settle` (or Daml
+ * `SwapIntent_SettleWithProof` on a Canton source) verifies, in the domain of
+ * the order's source router.
+ */
+export function hashFillProof(proof: FillProof, chainId: number | bigint, verifyingContract: `0x${string}`): `0x${string}` {
+  return hashTypedData({ domain: fillProofDomain(chainId, verifyingContract), types: FILL_PROOF_TYPES, primaryType: 'FillProof', message: { ...proof } });
 }

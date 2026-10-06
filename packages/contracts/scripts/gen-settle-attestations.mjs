@@ -8,11 +8,10 @@
 //
 //   node packages/contracts/scripts/gen-settle-attestations.mjs
 //
-// FillProof is the router's struct as synced from evm-contracts
-// (spec/typed-data/FillProof.json), never a copy: when variant A (protocol
-// §3.3: fillerId, repayTo) replaces it (CAN-2139, CAN-2140), re-run this
-// script after the sync and give the proofs below the new fields.
-import { keccak256, SigningKey, Signature, toUtf8Bytes, TypedDataEncoder } from 'ethers';
+// FillProof is the router's struct as spec/typed-data/FillProof.json holds it
+// (the twelve variant A fields, protocol §3.3), never a copy: re-run this
+// script whenever that file changes.
+import { keccak256, SigningKey, Signature, toUtf8Bytes, TypedDataEncoder, zeroPadValue } from 'ethers';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,7 +23,7 @@ const FILL_PROOF_SPEC = read('typed-data', 'FillProof.json');
 const FILL_PROOF = FILL_PROOF_SPEC.types.FillProof;
 const GATEWAY_MESSAGE = [{ name: 'bodyHash', type: 'bytes32' }];
 const PROTOCOL = { name: 'CancoreFillerProtocol', version: '1' };
-const ENVELOPE = ['type', 'fillerId', 'sentAt', 'sig', 're'];
+const ENVELOPE = ['type', 'id', 'fillerId', 'sentAt', 'sig', 're'];
 const SPKI_PREFIX = '3056301006072a8648ce3d020106052b8104000a034200';
 
 const utf8Hash = (s) => keccak256(toUtf8Bytes(s));
@@ -84,15 +83,15 @@ const evmOrder = orderVectors[1];
 const EVM_DOMAIN = { name: 'CancoreRouter', version: '1', chainId: evmOrder.chainId, verifyingContract: evmOrder.verifyingContract };
 const CANTON_DOMAIN = { name: 'CancoreRouter', version: '1', chainId: cantonOrder.chainId, verifyingContract: cantonOrder.verifyingContract };
 
-function caseOf({ note, sourceChainId, domain, order, proof, threshold, signers, entry, refundAfter, sentAt, fillerId }) {
+function caseOf({ note, sourceChainId, domain, order, proof, threshold, signers, entry, refundAfter, sentAt, fillerId, ids }) {
   const digest = proofDigest(domain, proof);
   const signatures = signers.map((a) => entry(a, digest));
   const unsigned = {
-    type: 'settle.attestations', fillerId, sentAt: sentAt.ws, orderHash: proof.orderHash, attempt: proof.attempt, sourceChainId, proof, signatures,
+    type: 'settle.attestations', id: ids.ws, fillerId, sentAt: sentAt.ws, orderHash: proof.orderHash, attempt: proof.attempt, sourceChainId, proof, signatures,
     setId: proof.setId, threshold, refundAfter,
   };
   const ws = signFrame(unsigned);
-  const rest = signFrame({ ...unsigned, sentAt: sentAt.rest });
+  const rest = signFrame({ ...unsigned, id: ids.rest, sentAt: sentAt.rest });
   const payload = payloadOf(ws);
   return {
     note,
@@ -109,7 +108,8 @@ function caseOf({ note, sourceChainId, domain, order, proof, threshold, signers,
 }
 
 const ACME_PAYOUT = '0x742d35cc6634c0532925a3b844bc454e4438f44e';
-const RESERVE_PAYOUT = addressOf(testKey('reserve-filler'));
+/** The reserve filler's party on the Canton source: its keccak256 is the Canton-source repayTo (protocol §3.15). */
+const RESERVE_PARTY = `cancore-reserve::1220${'5e'.repeat(32)}`;
 const evmProof = {
   kind: 1,
   orderHash: evmOrder.digest,
@@ -119,7 +119,8 @@ const evmProof = {
   outputAsset: evmOrder.message.outputAsset,
   amountDelivered: evmOrder.message.minReceived,
   filledAt: '1790000100',
-  filler: ACME_PAYOUT,
+  fillerId: utf8Hash('acme-markets'),
+  repayTo: zeroPadValue(ACME_PAYOUT, 32),
   attempt: 0,
   setId: 1,
 };
@@ -134,6 +135,7 @@ const evm = caseOf({
   entry: evmEntry,
   refundAfter: '1790002400',
   sentAt: { ws: 1790000160000, rest: 1790000175000 },
+  ids: { ws: 'g-sa-1', rest: 'g-sa-2' },
   fillerId: 'acme-markets',
 });
 const cantonProof = {
@@ -145,12 +147,13 @@ const cantonProof = {
   outputAsset: cantonOrder.message.outputAsset,
   amountDelivered: cantonOrder.message.minReceived,
   filledAt: '1789999700',
-  filler: RESERVE_PAYOUT,
+  fillerId: utf8Hash('cancore-reserve'),
+  repayTo: utf8Hash(RESERVE_PARTY),
   attempt: 1,
   setId: 3,
 };
 const canton = caseOf({
-  note: 'Canton source (spec/vectors/canton-order.json, mainnet origin id): 3 of 3, k = 2; each entry is a SigEntry of SwapIntent_SettleWithProof (pubKey, signature, without 0x on the ledger); filler is the payout address named in the owner-signed fillerAddresses; rsv: the 65-byte form of the same signatures, for cross-checks',
+  note: 'Canton source (spec/vectors/canton-order.json, mainnet origin id): 3 of 3, k = 2; each entry is a SigEntry of SwapIntent_SettleWithProof (pubKey, signature, without 0x on the ledger); repayTo = keccak256(utf8(partyId)) of the reserve filler party, the payee SwapIntent_SettleWithProof finds under fillerId; rsv: the 65-byte form of the same signatures, for cross-checks',
   sourceChainId: 'canton:mainnet',
   domain: CANTON_DOMAIN,
   order: cantonOrder.message,
@@ -160,6 +163,7 @@ const canton = caseOf({
   entry: cantonEntry,
   refundAfter: '1790001800',
   sentAt: { ws: 1789999760000, rest: 1789999790000 },
+  ids: { ws: 'g-sa-3', rest: 'g-sa-4' },
   fillerId: 'cancore-reserve',
 });
 

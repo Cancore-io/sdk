@@ -137,6 +137,12 @@ export function gatewayBodyHash(message: Readonly<Record<string, unknown>>): Hex
   return toHex(keccak(utf8ToBytes(jcs(body))));
 }
 
+/** `FillerMessage.bodyHash`: keccak256 of the JCS text of a filler message without its `msgSig`; `id`, `fillerId`, `sentAt` and any inner `sig` stay in. */
+export function fillerMessageBodyHash(message: object): Hex {
+  const { msgSig: _msgSig, ...body } = message as Readonly<Record<string, unknown>>;
+  return toHex(keccak(utf8ToBytes(jcs(body))));
+}
+
 /** `FillerQuote.requestId`: keccak256(utf8(requestId)); the id is 1..64 printable ASCII (`Canonical.daml:90-93`). */
 export function requestIdHash(requestId: string): Hex {
   if (!/^[\x21-\x7e]{1,64}$/.test(requestId)) throw new TypeError(`requestId must be 1..64 printable ASCII characters: ${JSON.stringify(requestId)}`);

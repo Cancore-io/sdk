@@ -18,8 +18,7 @@ import type { Hex } from './typedData';
 
 /**
  * `FillProof` on the wire (§3.1), field for field the struct the source router
- * hashes (`FILL_PROOF_TYPES`). Variant A (protocol §3.3: `fillerId`, `repayTo`
- * in place of `filler`) replaces it together with the router's struct.
+ * hashes (`FILL_PROOF_TYPES`, the twelve variant A fields of protocol §3.3).
  */
 export interface FillProofJson {
   kind: number;
@@ -30,8 +29,10 @@ export interface FillProofJson {
   outputAsset: Hex;
   amountDelivered: DecString;
   filledAt: DecString;
-  /** The payee of `settle` on the source chain. */
-  filler: Hex;
+  /** `fillerIdHash(fillerId)` of the filler that delivered. */
+  fillerId: Hex;
+  /** The payee of `settle`, encoded for the source chain: the `repayTo` of the filler's ticket. */
+  repayTo: Hex;
   attempt: number;
   setId: number;
 }
@@ -73,18 +74,18 @@ export interface SettleAttestations extends S2FBase {
 }
 
 /** What `settle.attestations` carries apart from its envelope: identical on WebSocket and REST. */
-export type SettleAttestationsPayload = Omit<SettleAttestations, 'type' | 'fillerId' | 'sentAt' | 'sig' | 're'>;
+export type SettleAttestationsPayload = Omit<SettleAttestations, 'type' | 'id' | 'fillerId' | 'sentAt' | 'sig' | 're'>;
 
-const ENVELOPE = new Set(['type', 'fillerId', 'sentAt', 'sig', 're']);
+const ENVELOPE = new Set(['type', 'id', 'fillerId', 'sentAt', 'sig', 're']);
 
-/** The payload of a `settle.attestations` frame or REST body: everything but `type`, `fillerId`, `sentAt`, `sig`, `re`. */
+/** The payload of a `settle.attestations` frame or REST body: everything but `type`, `id`, `fillerId`, `sentAt`, `sig`, `re`. */
 export function settleAttestationsPayload(frame: object): SettleAttestationsPayload {
   return Object.fromEntries(Object.entries(frame).filter(([k]) => !ENVELOPE.has(k))) as unknown as SettleAttestationsPayload;
 }
 
 /**
  * `keccak256(utf8(JCS(payload)))`: equal for the pushed frame and the pulled
- * body of the same delivery, whatever their `sentAt` and `sig`.
+ * body of the same delivery, whatever their `id`, `sentAt` and `sig`.
  */
 export function settleAttestationsPayloadHash(frame: object): Hex {
   return toHex(keccak(utf8ToBytes(jcs(settleAttestationsPayload(frame)))));

@@ -81,12 +81,13 @@
     "gatewayInfo": {
       "type": "object",
       "description": "GET /v1/gateway: the mirror of @cancore/contracts FILLER_GATEWAYS for this environment. A taker trusts the package, and uses this to notice a rotation",
-      "required": ["env", "gateway", "ticketSigners", "protocolVersion"],
+      "required": ["env", "gateway", "ticketSigners", "protocolVersion", "maxMessageAgeMs"],
       "properties": {
         "env": { "type": "string", "minLength": 1 },
         "gateway": { "$ref": "messages.schema.json#/$defs/address" },
         "ticketSigners": { "type": "array", "items": { "$ref": "messages.schema.json#/$defs/address" } },
-        "protocolVersion": { "$ref": "messages.schema.json#/$defs/protocolVersion" }
+        "protocolVersion": { "$ref": "messages.schema.json#/$defs/protocolVersion" },
+        "maxMessageAgeMs": { "$ref": "messages.schema.json#/$defs/durationMs", "description": "freshness bound of §3.4 in both directions: |receivedAt − sentAt| ≤ maxMessageAgeMs, and a message id is not reused within it" }
       }
     }
   }

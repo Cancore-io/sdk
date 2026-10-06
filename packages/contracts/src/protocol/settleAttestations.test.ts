@@ -96,7 +96,7 @@ describe('schema', () => {
     const errors = errorsOf({ ...clone(evm.ws), [field]: bad });
     expect(errors.map((e) => e.instancePath)).toContain(`/${field}`);
   });
-  test.each(['filler', 'amountDelivered', 'setId'])('proof without %s is refused', (field) => {
+  test.each(['fillerId', 'repayTo', 'amountDelivered', 'setId'])('proof without %s is refused', (field) => {
     const frame = clone(evm.ws);
     delete (frame.proof as unknown as Record<string, unknown>)[field];
     expect(errorsOf(frame).length).toBeGreaterThan(0);
@@ -184,7 +184,7 @@ describe('invalid payloads a filler MUST refuse (T-7)', () => {
   const structural = ['threshold', 'ascending', 'attempt', 'setId', 'orderHash'];
   test.each(vectors.invalid.map((v) => [v.note, v] as const))('%s', (_, v) => {
     // schema-valid: the schema cannot see any of these
-    expect(errorsOf({ ...v.payload, type: 'settle.attestations', fillerId: 'acme-markets', sentAt: evm.ws.sentAt, sig: evm.ws.sig })).toEqual([]);
+    expect(errorsOf({ ...v.payload, type: 'settle.attestations', id: evm.ws.id, fillerId: 'acme-markets', sentAt: evm.ws.sentAt, sig: evm.ws.sig })).toEqual([]);
     const errors = settleAttestationsErrors(v.payload);
     if (structural.includes(v.rule)) {
       expect(errors.length).toBeGreaterThan(0);

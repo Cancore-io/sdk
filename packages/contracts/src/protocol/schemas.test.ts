@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   DECLINE_REASONS, DRAW_CLOSED_BY, ERROR_CODES, ERROR_HTTP_STATUS, EXEMPT_REASONS, EXPIRED_RESULTS, PENALTY_STEPS, QUOTE_ACK_STATUSES,
-  QUOTE_FINAL_STATUSES, TICKET_LIST_STATUSES,
+  QUOTE_FINAL_STATUSES, TICKET_LIST_STATUSES, TICKET_REFUSED_REASONS,
 } from './messages';
 import { MESSAGE_DIRECTIONS, messageSchemaRef, PROTOCOL_SCHEMAS, REST_ENDPOINTS, SCHEMA_VOCABULARY } from './schemas';
 
@@ -18,7 +18,9 @@ for (const s of Object.values(PROTOCOL_SCHEMAS)) ajv.addSchema(s as object);
 const errorsOf = (type: string, frame: unknown, dir?: 'S2F' | 'F2S') => (ajv.validate(messageSchemaRef(type, dir), frame) ? [] : ajv.errors!);
 const example = (type: string, i = 0): Frame => structuredClone(examples[type]![i]!);
 /** The S→F copy of a frame type: the example carrying the gateway sig. */
-const s2fExample = (type: string): Frame => structuredClone(examples[type]!.find((e) => 'sig' in e)!);
+const s2fExample = (type: string): Frame => structuredClone(examples[type]!.find((e) => 'sig' in e && !('msgSig' in e))!);
+/** The F→S copy of a frame type: the example carrying the filler's msgSig. */
+const f2sExample = (type: string): Frame => structuredClone(examples[type]!.find((e) => 'msgSig' in e)!);
 const OPEN = { $ref: 'messages.schema.json#/$defs/futureEnumValue' };
 const OPEN_LOCAL = { $ref: '#/$defs/futureEnumValue' };
 const OPEN_FORM = { type: 'string', pattern: '^[a-z][a-z0-9-]*$' };
@@ -42,6 +44,7 @@ test('23 frame types, each with a direction and at least one valid example', () 
   expect(MESSAGE_DIRECTIONS['ticket.offer']).toBe('S2F');
   expect(MESSAGE_DIRECTIONS['ticket.intent']).toBe('F2S');
   expect(MESSAGE_DIRECTIONS.ping).toBe('both');
+  expect(MESSAGE_DIRECTIONS.error).toBe('both');
   for (const type of Object.keys(MESSAGE_DIRECTIONS)) {
     expect(examples[type]?.length).toBeGreaterThan(0);
     for (const frame of examples[type]!) expect(errorsOf(type, frame)).toEqual([]);
@@ -52,7 +55,8 @@ test('23 frame types, each with a direction and at least one valid example', () 
 test.each([
   ['quote', 'amountOut', 999000000],
   ['ticket.intent', 'attempt', '0'],
-  ['quote', 'filler', '0x742D35CC6634C0532925A3B844BC454E4438F44F'],
+  ['ticket.intent', 'deliveryKey', '0x742D35CC6634C0532925A3B844BC454E4438F44F'],
+  ['ticket.intent', 'repayTo', '0x742d35cc6634c0532925a3b844bc454e4438f44e'],
   ['ticket.offer', 'orderHash', 'ab'.repeat(32)],
   ['quote.request', 'windowCloseAt', '1789999992'],
   ['quote.request', 'windowCloseAt', 1789999992],
@@ -65,7 +69,7 @@ test.each([
 
 test('A4: an unknown field is ignored, and an unknown S→F type passes the envelope a taker checks first', () => {
   expect(errorsOf('ticket.offer', { ...example('ticket.offer'), x: 1 })).toEqual([]);
-  const future = { type: 'future.info', fillerId: 'acme-markets', sentAt: 1790000000000, sig: example('ticket.offer').sig, note: 'new in v1.1' };
+  const future = { type: 'future.info', id: 'g-99', fillerId: 'acme-markets', sentAt: 1790000000000, sig: example('ticket.offer').sig, note: 'new in v1.1' };
   expect(ajv.validate(messageSchemaRef('s2fEnvelope'), future)).toBe(true);
 });
 
@@ -74,16 +78,88 @@ describe('D-C: every S→F frame is addressed, timed and signed, heartbeats incl
   test.each(s2f)('%s', (type) => {
     const frame = s2fExample(type);
     expect(errorsOf(type, frame, 'S2F')).toEqual([]);
-    for (const field of ['sentAt', 'sig']) expect(errorsOf(type, { ...frame, [field]: undefined }, 'S2F').length).toBeGreaterThan(0);
+    for (const field of ['id', 'sentAt', 'sig']) expect(errorsOf(type, { ...frame, [field]: undefined }, 'S2F').length).toBeGreaterThan(0);
     expect(errorsOf(type, { ...frame, sentAt: 1790000000 }, 'S2F').length).toBeGreaterThan(0); // seconds, not ms
     const unaddressed = errorsOf(type, { ...frame, fillerId: undefined }, 'S2F');
     expect(unaddressed.length > 0).toBe(!['auth.challenge', 'error'].includes(type));
   });
-  test.each(['ping', 'pong'])('%s: the F→S copy stays unsigned, and the S→F one is signed', (type) => {
-    const f2s = examples[type]!.find((e) => !('sig' in e))!;
+  test.each(['ping', 'pong', 'error'])('%s: each direction checks its own signature — msgSig from the filler, sig from the gateway', (type) => {
+    const f2s = f2sExample(type);
     expect(errorsOf(type, f2s, 'F2S')).toEqual([]);
     expect(errorsOf(type, f2s, 'S2F').length).toBeGreaterThan(0);
+    expect(errorsOf(type, s2fExample(type), 'F2S').length).toBeGreaterThan(0);
     expect(errorsOf(type, s2fExample(type))).toEqual([]);
+  });
+});
+
+// protocol §3.4, S-19: no filler message is accepted unsigned, unaddressed, untimed or without an id — no exceptions.
+describe('every F→S frame carries the envelope: id, fillerId, sentAt (ms) and msgSig', () => {
+  const f2s = Object.entries(MESSAGE_DIRECTIONS).filter(([, d]) => d !== 'S2F').map(([t]) => t);
+  test('ticket.decline, quote.reconfirm.reply, pong and error are among them', () => {
+    expect(f2s).toEqual(expect.arrayContaining(['ticket.decline', 'quote.reconfirm.reply', 'pong', 'error', 'fill.reported', 'auth.response']));
+  });
+  test.each(f2s)('%s', (type) => {
+    const frames = examples[type]!.filter((e) => 'msgSig' in e);
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
+      expect(errorsOf(type, frame, 'F2S')).toEqual([]);
+      for (const field of ['msgSig', 'fillerId', 'sentAt', 'id']) expect([field, errorsOf(type, { ...frame, [field]: undefined }, 'F2S').length > 0]).toEqual([field, true]);
+      expect(errorsOf(type, { ...frame, sentAt: 1790000000 }, 'F2S').length).toBeGreaterThan(0); // seconds, not ms
+      expect(errorsOf(type, { ...frame, sentAt: '1790000000000' }, 'F2S').length).toBeGreaterThan(0); // a JSON integer, not a string
+      expect(errorsOf(type, { ...frame, fillerId: 'Acme Markets' }, 'F2S').length).toBeGreaterThan(0);
+      expect(errorsOf(type, { ...frame, id: '' }, 'F2S').length).toBeGreaterThan(0);
+      expect(errorsOf(type, { ...frame, id: 'x'.repeat(65) }, 'F2S').length).toBeGreaterThan(0);
+      expect(errorsOf(type, { ...frame, msgSig: `0x${'00'.repeat(64)}00` }, 'F2S').length).toBeGreaterThan(0);
+    }
+  });
+  test('a REST request body carries it too: the stake binding', () => {
+    const rest = (value: unknown) => ajv.validate('https://cancore.io/schemas/filler-protocol/v1/rest.schema.json#/$defs/stakeBindingRequest', value);
+    const { id, fillerId, sentAt, msgSig } = example('fill.reported');
+    const envelope = { id: `${id}-stake`, fillerId, sentAt, msgSig };
+    const binding = { partnerId: 'acme-markets', stakingAddress: `0x${'ab'.repeat(20)}`, chainId: '1', nonce: '1', sig: msgSig };
+    expect(rest({ ...envelope, ...binding })).toBe(true);
+    expect(rest(binding)).toBe(false);
+  });
+});
+
+describe('variant A fields', () => {
+  test('ticket.intent names its deliveryKey and repayTo; the Canton-destination intent names the zero address', () => {
+    const intent = example('ticket.intent', 0);
+    for (const field of ['deliveryKey', 'repayTo', 'sig']) expect(errorsOf('ticket.intent', { ...intent, [field]: undefined }).length).toBeGreaterThan(0);
+    expect(example('ticket.intent', 1).deliveryKey).toBe(`0x${'00'.repeat(20)}`);
+    expect(errorsOf('ticket.intent', example('ticket.intent', 1))).toEqual([]);
+  });
+  test('the issued EVM ticket is the seven-field FillTicket; the Canton form carries repayTo', () => {
+    const evm = example('ticket.issued', 0);
+    const ticket = evm.ticket as Frame;
+    expect(Object.keys(ticket)).toEqual(['orderHash', 'fillerId', 'deliveryKey', 'repayTo', 'attempt', 'validFrom', 'validUntil']);
+    for (const field of ['fillerId', 'deliveryKey', 'repayTo']) {
+      expect(errorsOf('ticket.issued', { ...evm, ticket: { ...ticket, [field]: undefined } }).length).toBeGreaterThan(0);
+    }
+    expect(errorsOf('ticket.issued', { ...evm, ticket: { ...ticket, fillerId: 'acme-markets' } }).length).toBeGreaterThan(0); // bytes32 on-chain form
+    expect(errorsOf('ticket.issued', { ...example('ticket.issued', 1), repayTo: undefined }).length).toBeGreaterThan(0);
+  });
+  test('quote: the signed FillerQuote names the fillerId of the envelope, not an address', () => {
+    expect(example('quote')).not.toHaveProperty('filler');
+    expect(errorsOf('quote', { ...example('quote'), fillerId: undefined }).length).toBeGreaterThan(0);
+  });
+  test('repayTo of an EVM source: a non-zero top 12 bytes or the zero address is refused', () => {
+    const evm = (value: string) => ajv.validate(messageSchemaRef('repayToEvm'), value);
+    const padded = `0x${'00'.repeat(12)}742d35cc6634c0532925a3b844bc454e4438f44e`;
+    expect(evm(padded)).toBe(true);
+    expect(evm(`0x01${'00'.repeat(11)}742d35cc6634c0532925a3b844bc454e4438f44e`)).toBe(false);
+    expect(evm(`0x${'00'.repeat(11)}01742d35cc6634c0532925a3b844bc454e4438f44e`)).toBe(false);
+    expect(evm(`0x${'ff'.repeat(32)}`)).toBe(false);
+    expect(evm(`0x${'00'.repeat(32)}`)).toBe(false);
+    expect(evm('0x742d35cc6634c0532925a3b844bc454e4438f44e')).toBe(false); // unpadded
+    expect(evm(padded.toUpperCase().replace('0X', '0x'))).toBe(false); // senders emit lowercase
+  });
+  test('error TICKET_REFUSED names the failed pre-ticket check', () => {
+    const refused = example('error', 2);
+    expect(refused.code).toBe('TICKET_REFUSED');
+    expect(errorsOf('error', refused, 'S2F')).toEqual([]);
+    expect(errorsOf('error', { ...refused, reason: undefined }, 'S2F').length).toBeGreaterThan(0);
+    expect(errorsOf('error', { ...refused, reason: 'NEW_CHECK' }, 'S2F')).toEqual([]); // open enum (V-2)
   });
 });
 
@@ -108,9 +184,10 @@ describe('conditional shapes', () => {
     expect(errorsOf('ticket.expired', { ...example('ticket.expired', 1), exemptReason: 'SOLAR_FLARE' })).toEqual([]);
     expect(errorsOf('ticket.expired', { ...example('ticket.expired', 1), exemptReason: 'solar flare' }).length).toBeGreaterThan(0);
   });
-  test('quote.reconfirm.reply: an accept is signed, a decline need not be', () => {
+  test('quote.reconfirm.reply: an accept carries the FillerQuote sig, a decline only the envelope msgSig', () => {
     expect(errorsOf('quote.reconfirm.reply', { ...example('quote.reconfirm.reply', 0), sig: undefined }).length).toBeGreaterThan(0);
     expect(errorsOf('quote.reconfirm.reply', example('quote.reconfirm.reply', 1))).toEqual([]);
+    expect(errorsOf('quote.reconfirm.reply', { ...example('quote.reconfirm.reply', 1), msgSig: undefined }).length).toBeGreaterThan(0);
   });
   test.each([
     ['quote', 'requestId', 'has space'],
@@ -122,6 +199,7 @@ describe('conditional shapes', () => {
     ['quote.request', 'route', { src: 'eip155:01', dst: 'canton:cancore' }],
     ['quote', 'sig', `0x${'00'.repeat(65)}`],
     ['quote', 'sig', `0x${'00'.repeat(64)}01`],
+    ['quote', 'sig', `0x${'00'.repeat(32)}80${'00'.repeat(31)}1b`], // s with its top bit set: high-s
     ['ticket.decline', 'reason', 'no_inventory'],
     ['error', 'code', '9_BAD'],
   ])('%s.%s = %j is refused', (type, field, bad) => {
@@ -155,6 +233,7 @@ test('the enums of the schemas are the exported constants', () => {
   const rec = defs(PROTOCOL_SCHEMAS.records);
   expect(known(m.declineReason)).toEqual([...DECLINE_REASONS]);
   expect(known(m.errorCode)).toEqual([...ERROR_CODES]);
+  expect(known(m.ticketRefusedReason)).toEqual([...TICKET_REFUSED_REASONS]);
   expect(known(m.expiredResult)).toEqual([...EXPIRED_RESULTS]);
   expect(known(m.exemptReason)).toEqual([...EXEMPT_REASONS]);
   expect(known(m.quoteAckStatus)).toEqual([...QUOTE_ACK_STATUSES]);

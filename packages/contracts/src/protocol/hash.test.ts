@@ -1,7 +1,7 @@
 import { keccak256, toUtf8Bytes } from 'ethers';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { gatewayBodyHash, jcs, requestIdHash } from './hash';
+import { fillerMessageBodyHash, gatewayBodyHash, jcs, requestIdHash } from './hash';
 
 const dir = join(__dirname, '..', '..', 'spec', 'protocol');
 const load = <T>(...p: string[]): T => JSON.parse(readFileSync(join(dir, ...p), 'utf8')) as T;
@@ -62,6 +62,33 @@ describe('gatewayBodyHash', () => {
     const offer = gateway[0]!.body;
     expect(gatewayBodyHash({ ...offer, sig: `0x${'22'.repeat(65)}` })).toBe(gatewayBodyHash(offer));
     expect(gatewayBodyHash({ ...offer, x: 1 })).not.toBe(gatewayBodyHash(offer));
+  });
+});
+
+type FillerVector = { note: string; body: Record<string, unknown>; jcs: string; message: { bodyHash: string } };
+const filler = load<{ vectors: FillerVector[] }>('typed-data', 'FillerMessage.json').vectors;
+
+describe('fillerMessageBodyHash', () => {
+  test.each(filler.map((v) => [v.note, v] as const))('%s: canonical text and bodyHash of the vector', (_n, v) => {
+    const { msgSig: _m, ...unsigned } = v.body;
+    expect(jcs(unsigned)).toBe(v.jcs);
+    expect(fillerMessageBodyHash(v.body)).toBe(v.message.bodyHash);
+    expect(keccak256(toUtf8Bytes(v.jcs))).toBe(v.message.bodyHash);
+  });
+
+  test('msgSig is outside the body; id, fillerId, sentAt and the inner sig are inside it', () => {
+    const intent = filler[0]!.body;
+    expect(intent.sig).toBeDefined();
+    expect(fillerMessageBodyHash({ ...intent, msgSig: `0x${'22'.repeat(65)}` })).toBe(fillerMessageBodyHash(intent));
+    for (const [field, value] of [['id', 'i-2'], ['fillerId', 'zeta-liquidity'], ['sentAt', 1790000021001], ['sig', `0x${'33'.repeat(65)}`]] as const) {
+      expect([field, fillerMessageBodyHash({ ...intent, [field]: value })]).not.toEqual([field, fillerMessageBodyHash(intent)]);
+    }
+  });
+
+  test('the twin of gatewayBodyHash: each drops only its own signature field', () => {
+    const body = { type: 'pong', id: 'x', fillerId: 'acme', sentAt: 1790000000000, re: 'y' };
+    expect(fillerMessageBodyHash({ ...body, msgSig: '0x01' })).toBe(gatewayBodyHash({ ...body, sig: '0x01' }));
+    expect(fillerMessageBodyHash({ ...body, sig: '0x01' })).not.toBe(fillerMessageBodyHash(body));
   });
 });
 
