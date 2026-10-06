@@ -79,6 +79,7 @@ export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = {
       '06a6e3f1f5d9dfcdc885d72248b26decdde09c7f99bc4a8af385624a30be2544', // 1.0.0
       '2b8060d64191b963d7416e0e2d15d11b239f88ad31aca2f457c4eefa2e15e395', // 1.1.0
       '0164b8f54b26b673b24ba7ca6d141b65bd4dbc8c135cd61922477c871c927a2a', // 1.2.0
+      '01208653516ab062e71274729caec86254a9ac55022561cb68c189bfd6fc6742', // 1.3.0
     ],
   },
 };

@@ -1,5 +1,16 @@
 # Changelog — `@cancore/client`
 
+## 0.7.1
+
+### Fixed
+
+- DvP signing trusts `cancore-swap` 1.3.0 (`01208653516ab062e71274729caec86254a9ac55022561cb68c189bfd6fc6742`),
+  now on dev: 0.7.0 refused every proposal step there with `runs code from an untrusted package`.
+  1.3.0 changes only `Swap.Escrow` (`DvpLegDeposit` gains an optional `receiver`); the
+  `SwapProposal` / `SwapTrade` templates the check reads are unchanged. Any future `cancore-swap`
+  release needs its id pinned here, and the SDK released, before it is deployed to a stand
+  partners use.
+
 ## 0.7.0
 
 Canton↔Canton self-custody trades settle through allocation-DvP. This changes behaviour.
