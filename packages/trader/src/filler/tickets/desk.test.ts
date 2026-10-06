@@ -11,7 +11,7 @@ import {
 } from '@cancore/contracts';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
-import { hashOrder, hashTicket } from '../chain';
+import { hashOrder, hashTicket, type FillerChains } from '../chain';
 import type { FillerEvent } from '../events';
 import { createFiller, type Filler, type TicketOfferDecision } from '../filler';
 import { recoverAddress, type FillSigner } from '../signer';
@@ -79,6 +79,7 @@ function world(clock: FakeClock) {
 }
 
 interface Options {
+  fillSigner?: FillSigner;
   clock?: FakeClock;
   store?: InMemoryFillerStore;
   hook?: (offer: TicketOffer) => Promise<TicketOfferDecision>;
@@ -101,7 +102,7 @@ async function harness(options: Options = {}) {
     gatewaySigner: gateway.address,
     ticketSigners: [ticketSigner.address],
     quoteSigner: createTestTypedDataSigner(QUOTE_KEY),
-    fillSigners: { 'eip155:1': fill },
+    fillSigners: { 'eip155:1': options.fillSigner ?? fill },
     rpc: { 'eip155:56': [w.src], 'eip155:1': [w.dst] },
     chains: { 'eip155:56': { router: SRC_ROUTER, ...POLICY }, 'eip155:1': { router: DST_ROUTER, ...POLICY } },
     tickets: { deltaIssueMs: 3_000 },
@@ -305,6 +306,33 @@ describe('the offer stage: the hook decides, before acceptBy', () => {
     await h.filler.stop();
   });
 
+  test('a fill key that cannot sign the consent: decline OTHER, not silence', async () => {
+    const broken: FillSigner = { ...fill, signTypedData: async () => Promise.reject(new Error('KMS unavailable')) };
+    const h = await harness({ fillSigner: broken });
+    await consent(h);
+    expect(h.sent('ticket.intent')).toHaveLength(0);
+    expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ reason: 'OTHER', detail: 'the consent could not be signed' })]);
+    await h.filler.stop();
+  });
+
+  test('a frame for an attempt whose worker is busy is not dropped: the worker takes the next step after', async () => {
+    let release: (d: TicketOfferDecision) => void = () => undefined;
+    const h = await harness({ hook: () => new Promise((resolve) => (release = resolve)) });
+    const offer = h.offerFrame();
+    h.socket.receive(h.gateway.frame(offer));
+    await settle();
+    h.socket.receive(h.gateway.frame(await h.issuedFrame(offer)));
+    await settle();
+    expect((await h.record())!.state).toBe('checking');
+    release('accept');
+    await settle();
+    // The issued ticket had no consent behind it: refused once the worker came back to it, never left in `checking`.
+    expect(await h.record()).toMatchObject({ state: 'declined', decline: { reason: 'OTHER' } });
+    expect(h.sent('ticket.decline')).toHaveLength(1);
+    expect(h.sent('ticket.intent')).toHaveLength(0);
+    await h.filler.stop();
+  });
+
   test('TICKET_CLOSED for a late intent leaves the state as written', async () => {
     const h = await harness();
     const { intent } = await consent(h);
@@ -445,6 +473,17 @@ describe('a restart loses no ticket and sends nothing twice', () => {
     await h.filler.stop();
   });
 
+  test('RECEIPTED, not handed over, less than sendGuard left: no receipt, a TICKET_TTL_TOO_SHORT decline instead', async () => {
+    const h = await restartWith(async (h1) => {
+      const offer = h1.offerFrame({ validUntil: String(h1.w.nowS + 20n) });
+      return { state: 'receipted', offer: offer as unknown as TicketOffer, issued: (await h1.issuedFrame(offer)) as never, receipt: { type: 'ticket.receipt', id: 'late', orderHash: h1.w.orderHash, attempt: 0 } as never };
+    });
+    expect(h.sent('ticket.receipt')).toHaveLength(0);
+    expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ reason: 'TICKET_TTL_TOO_SHORT' })]);
+    expect(await h.record()).toMatchObject({ state: 'declined' });
+    await h.filler.stop();
+  });
+
   test('RECEIPTED and handed over: nothing is sent again', async () => {
     const h = await restartWith(async (h1) => {
       const offer = h1.offerFrame();
@@ -480,7 +519,7 @@ describe('a restart loses no ticket and sends nothing twice', () => {
 });
 
 describe('no fill without a receipt (T-22): receipted() is the only gate', () => {
-  test.each<[TicketState, boolean, boolean]>([
+  test.each<[TicketState, boolean | 'unsent', boolean]>([
     ['offered', false, false],
     ['intent-sent', false, false],
     ['intent-acked', false, false],
@@ -488,6 +527,7 @@ describe('no fill without a receipt (T-22): receipted() is the only gate', () =>
     ['declined', true, false],
     ['expired', false, false],
     ['receipted', false, false],
+    ['receipted', 'unsent', false],
     ['receipted', true, true],
   ])('%s, handed over: %s → may fill: %s', async (state, handedOver, mayFill) => {
     const clock = new FakeClock();
@@ -498,6 +538,7 @@ describe('no fill without a receipt (T-22): receipted() is the only gate', () =>
       store,
       protocol: new FillerProtocolClient({ store, clock, logger, events, restPollIntervalMs: 2_000 }),
       verifier: {} as TicketVerifier,
+      chains: {} as FillerChains,
       fillSigners: { 'eip155:1': fill },
       clock,
       logger,
@@ -508,7 +549,7 @@ describe('no fill without a receipt (T-22): receipted() is the only gate', () =>
     });
     const orderHash: Hex = `0x${'ab'.repeat(32)}`;
     await store.withOrder(orderHash, (tx) =>
-      tx.putTicket({ orderHash, attempt: 0, state, updatedAtMs: 0, ...(handedOver ? { sentAtMs: 1 } : {}), receipt: { type: 'ticket.receipt', id: 'r' } as never }),
+      tx.putTicket({ orderHash, attempt: 0, state, updatedAtMs: 0, ...(handedOver ? { sentAtMs: 1 } : {}), ...(handedOver === 'unsent' ? { unsent: true as const } : {}), receipt: { type: 'ticket.receipt', id: 'r' } as never }),
     );
     expect((await desk.receipted(orderHash, 0)) !== undefined).toBe(mayFill);
   });

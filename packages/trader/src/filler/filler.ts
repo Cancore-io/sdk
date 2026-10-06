@@ -462,6 +462,7 @@ export function createFiller(config: FillerConfig): Filler {
     store: config.store,
     protocol,
     verifier,
+    chains,
     fillSigners: config.fillSigners,
     clock,
     logger,
