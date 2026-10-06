@@ -107,6 +107,9 @@
         },
         "penalty.applied": {
           "$ref": "#/components/messages/penalty.applied"
+        },
+        "settle.attestations": {
+          "$ref": "#/components/messages/settle.attestations"
         }
       }
     }
@@ -373,6 +376,17 @@
       "messages": [
         {
           "$ref": "#/channels/filler/messages/penalty.applied"
+        }
+      ]
+    },
+    "sendSettleAttestations": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/filler"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/filler/messages/settle.attestations"
         }
       ]
     }
@@ -1053,6 +1067,103 @@
                 "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
                 "attempt": 0
               }
+            }
+          }
+        ]
+      },
+      "settle.attestations": {
+        "name": "settle.attestations",
+        "title": "settle.attestations (S2F)",
+        "payload": {
+          "schemaFormat": "application/schema+json;version=draft-2020-12",
+          "schema": {
+            "$ref": "messages.schema.json#/$defs/settle.attestations"
+          }
+        },
+        "examples": [
+          {
+            "name": "settle-attestations-1",
+            "payload": {
+              "type": "settle.attestations",
+              "fillerId": "acme-markets",
+              "sentAt": 1790000160000,
+              "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+              "attempt": 0,
+              "sourceChainId": "eip155:11155111",
+              "proof": {
+                "kind": 1,
+                "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+                "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
+                "fillRef": "0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740",
+                "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
+                "outputAsset": "0x00000000000000000000000075faf114eafb1bdbe2f0316df893fd58ce46aa4d",
+                "amountDelivered": "999000000",
+                "filledAt": "1790000100",
+                "fillerId": "0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5",
+                "repayTo": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
+                "attempt": 0,
+                "setId": 1
+              },
+              "signatures": [
+                {
+                  "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
+                  "signature": "0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c"
+                },
+                {
+                  "signer": "0x6805cf7ce01e1c392d47806813503e367c932544",
+                  "signature": "0x29a0148c3a5cdcadf63a4aaef763784751a3fa6064dc276330227729ddbc69015ea1efdab546cf1552ca726de9ccf4480e8d5ff3c3ed9b718c4964b5bc03ddcf1c"
+                }
+              ],
+              "setId": 1,
+              "threshold": 2,
+              "refundAfter": "1790002400",
+              "sig": "0x4a75bbbb0801a3a459bdd4418b30c31cecf7061700d006cc29a911d75d699620695e04af382054564e485b47ae72364276d6a401c1c7546f132cbf62247131f61c"
+            }
+          },
+          {
+            "name": "settle-attestations-2",
+            "payload": {
+              "type": "settle.attestations",
+              "fillerId": "cancore-reserve",
+              "sentAt": 1789999760000,
+              "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204",
+              "attempt": 1,
+              "sourceChainId": "canton:mainnet",
+              "proof": {
+                "kind": 1,
+                "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204",
+                "destination": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                "fillRef": "0xfba8fd8a079872a9efe9646fcf34cfbbe8711ebd63665e8f2e0924949264c471",
+                "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
+                "outputAsset": "0x000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                "amountDelivered": "1200250000",
+                "filledAt": "1789999700",
+                "fillerId": "0xe3a8297b35498225c7903ca1a305ef64fcd783cf42c6c687b7b332c83d4dd837",
+                "repayTo": "0xc460646f731a87c609249a89c035af307c3bc9cfdd64cfb0d5c7cbe79e0d1949",
+                "attempt": 1,
+                "setId": 3
+              },
+              "signatures": [
+                {
+                  "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
+                  "pubKey": "0x3056301006072a8648ce3d020106052b8104000a034200046e4ce4835ad9bacce317724d5a85bfb72f73c0e0e0d9bb0ece443a23c405994056f031b0c83296033a1fd06fc21cbfdab8a821b09c0172ed64ef1b1ee3469be3",
+                  "signature": "0x304402201efd50b46ecf6ad9cdadb348fb2901e54f5ecb6d2d4d09436853eafd99df18be0220514a9fa1d80bceb011635ee89921cf3f5c846fb0d7f3d2496dd34376b8b17b9e"
+                },
+                {
+                  "signer": "0x6805cf7ce01e1c392d47806813503e367c932544",
+                  "pubKey": "0x3056301006072a8648ce3d020106052b8104000a034200044f15010d9f9457006502d7cbe0cfc5ed67076c2d6f2d4d034b8412e1c07561c370356c5da930ec7a271c3c8d11d00a14e36a3cd3a2a4fad8c05b367357f15b7e",
+                  "signature": "0x3044022031b47447761d8af4c3b46d7c90d4bc08f4d9bec0305a13d73fc65833f5ce7ab902206e6a078f0d58f424ccba446f9ba7825e0e213915ec8f43ea6e784510ef18b13e"
+                },
+                {
+                  "signer": "0x695ba7eb3c2a35bfc8d16562560a01ba1f9931d0",
+                  "pubKey": "0x3056301006072a8648ce3d020106052b8104000a0342000479d89465d2de95e32eb728c63c58f4554dbecd39dacf7b680a326672cbc601af2abda0dd84f5b8a4bf8efebcb5eb0d24643dc0cc32af3f76a6ef877b71e19e2b",
+                  "signature": "0x30440220101a194fb687c2925c8bacad6ab819c9d82931865d602d7b56d0e5bf30e9283f02205792187f01d9e4c882fa68d816565e6f0566b549f7b329c45f756bdfdffe717f"
+                }
+              ],
+              "setId": 3,
+              "threshold": 2,
+              "refundAfter": "1790001800",
+              "sig": "0x935feb8a4303859a75567c0b5d6462452772c173f786e0e6ed84ef49f3c089b5258eb33a2c4dbcc50f6309cebaa5a51a48646c88092a24cf0bb12ce41685008b1b"
             }
           }
         ]
