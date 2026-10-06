@@ -562,6 +562,7 @@ describe('createFiller().start()', () => {
       quoteSigner: createTestTypedDataSigner(QUOTE_KEY),
       fillSigners: { 'eip155:1': fillSigner(FILL_KEY) },
       rpc: { 'eip155:1': [new FakeEvmRpc()] },
+      chains: { 'eip155:1': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: 5 } },
       store: new InMemoryFillerStore(clock),
       webSocket: ws.factory,
       fetch: createFakeFetch().fetch,

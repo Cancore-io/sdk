@@ -55,6 +55,33 @@ export type { EvmTransactionRequest, FillSigner, QuoteSigner, StakingSigner, Tra
 
 export type { EvmRpc, EvmRpcMap, EvmRpcRequest } from './rpc';
 
+export {
+  AbiDecodeError,
+  ChainClient,
+  ChainReadError,
+  hashFillProof,
+  hashOrder,
+  hashTicket,
+  INTENT_STATUS,
+  ROUTER_EVENTS,
+  RouterEventWatcher,
+  RouterReader,
+} from './chain';
+export type {
+  AttestorSetRecord,
+  BlockHeader,
+  ChainConfig,
+  ChainReadFailure,
+  EndpointHealth,
+  IntentRecord,
+  ReadAt,
+  RouterEventName,
+  RouterEventUpdate,
+  RouterEventWatcherOptions,
+  RouterLog,
+  SourceRouter,
+} from './chain';
+
 export type {
   CantonActiveContractsQuery,
   CantonContract,

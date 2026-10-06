@@ -31,6 +31,7 @@ const baseConfig = (): FillerConfig => ({
   quoteSigner: createTestTypedDataSigner(QUOTE_KEY),
   fillSigners: { 'eip155:1': fillSigner(FILL_KEY) },
   rpc: { 'eip155:1': [new FakeEvmRpc('a'), new FakeEvmRpc('b')] },
+  chains: { 'eip155:1': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: 5 } },
   store: new InMemoryFillerStore(),
   webSocket: createFakeWebSocketFactory().factory,
   instanceId: 'replica-1',
@@ -77,6 +78,11 @@ describe('createFiller: injected dependencies are validated up front', () => {
     ['gatewaySigner', { gatewaySigner: '0x1234' }],
     ['ticketSigners', { ticketSigners: [] }],
     ['rpc.eip155:1', { rpc: {} }],
+    ['chains', { chains: {} }],
+    ['chains.eip155:1.router', { chains: { 'eip155:1': { router: '0x12', openConfirmations: 3, maxHeadLagBlocks: 5 } } }],
+    ['chains.eip155:1.openConfirmations', { chains: { 'eip155:1': { router: '0x3333333333333333333333333333333333333333', maxHeadLagBlocks: 5 } } }],
+    ['chains.eip155:1.maxHeadLagBlocks', { chains: { 'eip155:1': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: -1 } } }],
+    ['chains.eip155:1', { chains: { 'eip155:56': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: 5 } }, rpc: { 'eip155:56': [new FakeEvmRpc()] } }],
     ['instanceId', { instanceId: '' }],
   ])('%s is checked', (field, patch) => {
     expect(configErrorField(() => createFiller({ ...baseConfig(), ...patch } as FillerConfig))).toBe(field);
