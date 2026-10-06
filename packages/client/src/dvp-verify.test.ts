@@ -56,6 +56,14 @@ describe('an honest transaction is signed', () => {
   test('the maker’s leg', async () => {
     await expect(verifyDvpPrepared('dvpAllocateLeg', [await fund('leg-main')], terms(MAKER))).resolves.toBeUndefined();
   });
+  test('a proposal from every pinned cancore-swap release, 1.3.0 (on dev) included', async () => {
+    const pinned = DEFAULT_TRUSTED_PACKAGES.swap['cancore-swap']!;
+    expect(pinned).toContain('01208653516ab062e71274729caec86254a9ac55022561cb68c189bfd6fc6742');
+    for (const packageId of pinned) {
+      const tx = await prepared(MAKER, [proposalCreate('0', { venue: VENUE, swapId: 'swap-1', legs: LEGS, approvers: [MAKER], packageId })]);
+      await expect(verifyDvpPrepared('dvpCreateProposal', [tx], terms(MAKER))).resolves.toBeUndefined();
+    }
+  });
   test('a trade without a fee, on a stand with no fee configured', async () => {
     const legs = { 'leg-main': LEGS['leg-main']!, 'leg-counter': { ...LEGS['leg-counter']!, amount: '5000' } };
     await expect(verifyDvpPrepared('dvpCreateProposal', [await create(legs)], terms(MAKER, { feeParty: null, feeRate: '0' }))).resolves.toBeUndefined();
@@ -238,6 +246,10 @@ describe('anything else is refused before the key is touched', () => {
   });
   test('a proposal step running code from another package', async () => {
     await refused(verifyDvpPrepared('dvpCreateProposal', [await create()], terms(MAKER, { packages: { ...DEFAULT_TRUSTED_PACKAGES, swap: { 'cancore-swap': ['00'.repeat(32)] } } })), /untrusted package \(cancore-swap/);
+  });
+  test('a proposal from a cancore-swap release nobody pinned, under the default pins', async () => {
+    const tx = await prepared(MAKER, [proposalCreate('0', { venue: VENUE, swapId: 'swap-1', legs: LEGS, approvers: [MAKER], packageId: 'ee'.repeat(32) })]);
+    await refused(verifyDvpPrepared('dvpCreateProposal', [tx], terms(MAKER)), /untrusted package \(cancore-swap e{64}\)/);
   });
   test('a create signed as an allocation', async () => {
     await refused(verifyDvpPrepared('dvpAllocateLeg', [await create()], terms(MAKER)), /not a token-standard allocation/);
