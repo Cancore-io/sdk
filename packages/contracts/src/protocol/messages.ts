@@ -6,6 +6,10 @@
  * uint8/16/32 as JSON integers, on-chain times in seconds (decimal string),
  * gateway times in milliseconds (JSON integer), hex lowercase.
  *
+ * Every frame in both directions is signed by its sender (protocol §3.4):
+ * `sig` (gateway key, `GatewayMessage`) on S→F, `msgSig` (the filler's message
+ * key, `FillerMessage`) on F→S, and carries `id`, `fillerId` and `sentAt`.
+ *
  * Receivers ignore unknown fields and unknown S→F types (V-2), so none of
  * these types is closed. The enum types list the known values; the schemas
  * accept any UPPER_SNAKE value besides them, and a receiver treats an unknown
@@ -27,13 +31,20 @@ export const DECLINE_REASONS = [
 ] as const;
 export const ERROR_CODES = [
   'BAD_REQUEST', 'UNAUTHENTICATED', 'UNSUPPORTED_VERSION', 'UNSUPPORTED_TYPE', 'BAD_SIGNATURE',
+  'STALE_MESSAGE', 'REPLAYED_MESSAGE', 'TICKET_REFUSED',
   'UNKNOWN_REQUEST', 'UNKNOWN_TICKET', 'TICKET_CLOSED', 'NOT_ELIGIBLE', 'RATE_LIMITED', 'INTERNAL',
 ] as const;
 /** HTTP status of each error code on the REST fallback. */
 export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   BAD_REQUEST: 400, UNAUTHENTICATED: 401, UNSUPPORTED_VERSION: 400, UNSUPPORTED_TYPE: 400, BAD_SIGNATURE: 422,
+  STALE_MESSAGE: 400, REPLAYED_MESSAGE: 409, TICKET_REFUSED: 409,
   UNKNOWN_REQUEST: 404, UNKNOWN_TICKET: 404, TICKET_CLOSED: 409, NOT_ELIGIBLE: 403, RATE_LIMITED: 429, INTERNAL: 500,
 };
+/** `error.reason` with `TICKET_REFUSED`: the pre-ticket check that failed (S-21). */
+export const TICKET_REFUSED_REASONS = [
+  'REPAY_TO_INVALID', 'REPAY_TO_BLOCKLISTED', 'DELIVERY_KEY_INVALID', 'PAYOUT_NOT_READY', 'RECIPIENT_NOT_READY',
+  'OPEN_TICKET_LIMIT', 'PROOF_WINDOW_TOO_SHORT', 'ATTESTOR_REVOCATION_PENDING', 'SERVICE_DEGRADED', 'OTHER',
+] as const;
 export const EXPIRED_RESULTS = ['FILLED', 'NO_SHOW', 'NO_SHOW_UNCONFIRMED', 'EXEMPT'] as const;
 export const EXEMPT_REASONS = ['DESTINATION_HALTED', 'GATEWAY_FAULT', 'REORGED_AFTER_INCLUSION', 'RECIPIENT_NOT_READY', 'OTHER'] as const;
 /** Verdict at receipt time, on the `quote.ack`. */
@@ -46,6 +57,7 @@ export const TICKET_LIST_STATUSES = ['OFFERED', 'ISSUED'] as const;
 
 export type DeclineReason = (typeof DECLINE_REASONS)[number];
 export type ErrorCode = (typeof ERROR_CODES)[number];
+export type TicketRefusedReason = (typeof TICKET_REFUSED_REASONS)[number];
 export type ExpiredResult = (typeof EXPIRED_RESULTS)[number];
 export type ExemptReason = (typeof EXEMPT_REASONS)[number];
 export type QuoteAckStatus = (typeof QUOTE_ACK_STATUSES)[number];
@@ -62,6 +74,7 @@ export interface OrderJson {
 /** Every S→F frame: signed by the gateway (`GatewayMessage`), addressed (`fillerId`) and timed (`sentAt`). */
 export interface S2FBase {
   type: string;
+  id: string;
   /** The addressee. Absent only on `auth.challenge` and on pre-auth `error`. */
   fillerId?: string;
   sentAt: TimeMs;
@@ -69,10 +82,21 @@ export interface S2FBase {
   /** The F→S `id` this frame answers. */
   re?: string;
 }
-/** Every F→S frame: `id` is unique per connection, ≤ 64 characters. */
-export interface F2SBase {
-  type: string;
+/**
+ * What every filler → filler-gateway message and REST request body carries (S-19, T-13): `id` unique per
+ * `fillerId` and direction, ≤ 64 characters; the sender's `fillerId`; `sentAt`; `msgSig` by the message key over
+ * `FillerMessage{bodyHash: fillerMessageBodyHash(message)}`.
+ */
+export interface F2SEnvelope {
   id: string;
+  fillerId: string;
+  sentAt: TimeMs;
+  msgSig: Hex;
+  /** The S→F `id` this message answers. */
+  re?: string;
+}
+export interface F2SBase extends F2SEnvelope {
+  type: string;
 }
 
 export interface AuthChallenge extends S2FBase { type: 'auth.challenge'; nonce: Hex; expiresAt: DecString }
@@ -86,15 +110,17 @@ export interface AuthResponse extends F2SBase {
   sig: Hex;
 }
 export interface AuthOk extends S2FBase { type: 'auth.ok'; fillerId: string; heartbeatIntervalMs: number }
-/** Heartbeat from the taker: unsigned, like every F→S frame. */
-export interface PingF2S { type: 'ping'; id: string }
-export interface PongF2S { type: 'pong'; re: string; id?: string }
+/** Heartbeat from the filler: signed with `msgSig`, like every F→S frame. */
+export interface PingF2S extends F2SBase { type: 'ping' }
+export interface PongF2S extends F2SBase { type: 'pong'; re: string }
 /** Heartbeat from the gateway: signed, addressed and timed, like every S→F frame (D-C). */
-export interface PingS2F extends S2FBase { type: 'ping'; fillerId: string; id: string }
+export interface PingS2F extends S2FBase { type: 'ping'; fillerId: string }
 export interface PongS2F extends S2FBase { type: 'pong'; fillerId: string; re: string }
 export type Ping = PingF2S | PingS2F;
 export type Pong = PongF2S | PongS2F;
-export interface ErrorMessage extends S2FBase { type: 'error'; code: ErrorCode; message: string }
+export interface ErrorMessage extends S2FBase { type: 'error'; code: ErrorCode; message: string; reason?: TicketRefusedReason }
+/** The filler's reply to a gateway frame it cannot handle; informational. */
+export interface ErrorF2S extends F2SBase { type: 'error'; re: string; code: ErrorCode; message: string }
 export interface EpochWeights extends S2FBase { type: 'epoch.weights'; epochId: DecString; startsAt: DecString; endsAt: DecString; weightsRoot: Hex }
 
 export interface QuoteRequest extends S2FBase {
@@ -111,7 +137,8 @@ export interface QuoteRequest extends S2FBase {
   quoteTtlMs: number;
   imbalanceHint?: { dstAsset: WireAsset; netFlow24hUsd: string };
 }
-export interface QuoteMessage extends F2SBase { type: 'quote'; requestId: string; filler: Hex; amountOut: DecString; validUntil: DecString; nonce: DecString; sig: Hex }
+/** `sig` = `FillerQuote{requestIdHash(requestId), fillerId, amountOut, validUntil, nonce}` by the message key. */
+export interface QuoteMessage extends F2SBase { type: 'quote'; requestId: string; amountOut: DecString; validUntil: DecString; nonce: DecString; sig: Hex }
 export interface QuoteAck extends S2FBase { type: 'quote.ack'; requestId: string; quoteHash: Hex; receivedAt: TimeMs; status: QuoteAckStatus }
 export interface QuoteReconfirm extends S2FBase {
   type: 'quote.reconfirm'; orderHash: Hex; requestId: string; order: OrderJson; amountOut: DecString; ticketTtl: number; replyBy: TimeMs;
@@ -123,13 +150,22 @@ export interface QuoteReconfirmReply extends F2SBase {
 export interface TicketOffer extends S2FBase {
   type: 'ticket.offer'; orderHash: Hex; attempt: number; order: OrderJson; amountOut: DecString; validFrom: DecString; validUntil: DecString; acceptBy: TimeMs;
 }
-export interface TicketIntentMessage extends F2SBase { type: 'ticket.intent'; orderHash: Hex; attempt: number; validFrom: DecString; validUntil: DecString; sig: Hex }
+/** `sig` = `TicketIntent{orderHash, attempt, validFrom, validUntil, fillerId, deliveryKey, repayTo}` by the message key. */
+export interface TicketIntentMessage extends F2SBase {
+  type: 'ticket.intent'; orderHash: Hex; attempt: number; validFrom: DecString; validUntil: DecString;
+  /** The address that will send `fill`; the zero address for a Canton destination. */
+  deliveryKey: Hex;
+  /** Where `settle` pays, encoded for the source chain. */
+  repayTo: Hex;
+  sig: Hex;
+}
 export interface TicketDecline extends F2SBase { type: 'ticket.decline'; orderHash: Hex; attempt: number; reason: DeclineReason; detail?: string }
 export interface TicketIntentAck extends S2FBase { type: 'ticket.intent.ack'; orderHash: Hex; attempt: number; intentHash: Hex; receivedAt: TimeMs }
-export interface TicketJson { orderHash: Hex; filler: Hex; attempt: number; validFrom: DecString; validUntil: DecString }
+/** `FillTicket` on the wire; `fillerId` is the on-chain form, `fillerIdHash(fillerId)`. */
+export interface TicketJson { orderHash: Hex; fillerId: Hex; deliveryKey: Hex; repayTo: Hex; attempt: number; validFrom: DecString; validUntil: DecString }
 export interface TicketIssuedEvm extends S2FBase { type: 'ticket.issued'; form: 'evm'; orderHash: Hex; attempt: number; ticket: TicketJson; ticketSig: Hex }
 export interface TicketIssuedCanton extends S2FBase {
-  type: 'ticket.issued'; form: 'canton'; orderHash: Hex; attempt: number; deliveryOrderCid: string; validUntil: DecString;
+  type: 'ticket.issued'; form: 'canton'; orderHash: Hex; attempt: number; deliveryOrderCid: string; validUntil: DecString; repayTo: Hex;
 }
 export type TicketIssued = TicketIssuedEvm | TicketIssuedCanton;
 export interface TicketReceiptMessage extends F2SBase {
@@ -146,7 +182,7 @@ export type S2FMessage =
   | AuthChallenge | AuthOk | PingS2F | PongS2F | ErrorMessage | EpochWeights | QuoteRequest | QuoteAck | QuoteReconfirm
   | TicketOffer | TicketIntentAck | TicketIssued | TicketExpired | OrderSettled | PenaltyApplied;
 export type F2SMessage =
-  | AuthResponse | PingF2S | PongF2S | QuoteMessage | QuoteReconfirmReply | TicketIntentMessage | TicketDecline | TicketReceiptMessage | FillReported;
+  | AuthResponse | PingF2S | PongF2S | ErrorF2S | QuoteMessage | QuoteReconfirmReply | TicketIntentMessage | TicketDecline | TicketReceiptMessage | FillReported;
 
 // --- REST (protocol §3.6); an error body is the `error` message itself.
 
@@ -155,7 +191,7 @@ export interface Page<T> { items: T[]; nextCursor: string | null }
 export type TicketList = Page<TicketOffer | TicketIssued>;
 export interface QuoteRecord { quote: QuoteMessage; ack: QuoteAck; status: QuoteFinalStatus }
 export type QuoteList = Page<QuoteRecord>;
-export interface StakeBindingRequest { partnerId: string; stakingAddress: Hex; chainId: DecString; nonce: DecString; sig: Hex }
+export interface StakeBindingRequest extends F2SEnvelope { partnerId: string; stakingAddress: Hex; chainId: DecString; nonce: DecString; sig: Hex }
 export interface FillerStats { won: number; delivered: number; noShow: number; reliability: number; capacityUsd: string; inFlightUsd: string }
 export interface PenaltyRecord { violationId: string; code: string; step: PenaltyStep; orderHash?: Hex; attempt?: number; at: TimeMs; details: Record<string, unknown> }
 export type PenaltyList = Page<PenaltyRecord>;
@@ -190,4 +226,10 @@ export interface EpochRecord {
   sig: Hex;
 }
 /** `GET /v1/gateway`: the mirror of `FILLER_GATEWAYS` for one environment. */
-export interface GatewayInfo { env: string; gateway: Hex; ticketSigners: Hex[]; protocolVersion: '1' }
+export interface GatewayInfo { env: string; gateway: Hex; ticketSigners: Hex[]; protocolVersion: '1'; maxMessageAgeMs: number }
+
+/**
+ * `FillerKeyRegistration` with its signature by the key being registered (§3.16): handed to Cancore at
+ * onboarding and, signed by the NEW key, at a manual key change by staff. Not a frame — no message changes a key.
+ */
+export interface SignedFillerKeyRegistration { fillerId: string; messageKey: Hex; issuedAt: DecString; sig: Hex }

@@ -26,10 +26,10 @@
     {
       "note": "receipt of the fixture ticket (illustrative signature 0x11…11 ‖ 0x1b)",
       "message": {
-        "ticketHash": "0x466bc75e5efad07ad975aeea9ec731902bc804461686a6c8f76ef4fd50297819",
+        "ticketHash": "0x8eaef6b8d59e72288487b0def58e0eb9200fa7600170351af985111eaec5a0a9",
         "ticketSigHash": "0x9d30145c6e97cad96cf7cee181ac9d5b879dea7fed0730d7197e84e28487292b"
       },
-      "digest": "0x17d874287b30326bf0bcc1d56425b6346d928bd7dec201e4521c6f33a85eddc9"
+      "digest": "0xa262dc6cb1498cad75349dd3fb456ba8993b3b396c560bec12770f6fbc577c25"
     },
     {
       "note": "all ones",

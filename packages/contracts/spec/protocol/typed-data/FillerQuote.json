@@ -1,5 +1,5 @@
 {
-  "$comment": "Filler protocol v1 (frozen, RC): `requestId` = keccak256(utf8(requestId)); each vector names the string it hashes. Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.",
+  "$comment": "Filler protocol v1, settlement design (variant A, CAN-2139; protocol.md §3.3): `requestId` = keccak256(utf8(requestId)), each vector names the string it hashes; `fillerId` is the quoting filler's id as a string. Signed by the message key. Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.",
   "primaryType": "FillerQuote",
   "domain": {
     "name": "CancoreFillerProtocol",
@@ -9,7 +9,7 @@
       "version"
     ]
   },
-  "typeString": "FillerQuote(bytes32 requestId,address filler,uint256 amountOut,uint64 validUntil,uint64 nonce)",
+  "typeString": "FillerQuote(bytes32 requestId,string fillerId,uint256 amountOut,uint64 validUntil,uint64 nonce)",
   "types": {
     "FillerQuote": [
       {
@@ -17,8 +17,8 @@
         "type": "bytes32"
       },
       {
-        "name": "filler",
-        "type": "address"
+        "name": "fillerId",
+        "type": "string"
       },
       {
         "name": "amountOut",
@@ -40,36 +40,36 @@
       "requestIdString": "req-7f3a9c21-4d88-4e5b-9a1e-0c2f6b8d4e31",
       "message": {
         "requestId": "0x4b719538a6492794ff50c3ddbfde37e42bc802b9063ff4356c0945b5e9639f24",
-        "filler": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+        "fillerId": "acme-markets",
         "amountOut": "999000000",
         "validUntil": "1790000060",
         "nonce": "1"
       },
-      "digest": "0xdfbd4a1d732d8a105714d38ed6c46b8ee6e299e8bf90990ac502ebaea19fbe70"
+      "digest": "0xe3b63a6ae2730532fb841002059d6e8c92124d95e98c09857d7e0f5ba3512e3b"
     },
     {
-      "note": "every integer at its maximum, 64-character request id",
+      "note": "every integer at its maximum, 64-character request id, 63-character fillerId",
       "requestIdString": "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
       "message": {
         "requestId": "0xed68c8357dc6066eb99776f6a12613ca306bb78066e20c62fe30eafcc78ace8b",
-        "filler": "0xffffffffffffffffffffffffffffffffffffffff",
+        "fillerId": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
         "amountOut": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
         "validUntil": "18446744073709551615",
         "nonce": "18446744073709551615"
       },
-      "digest": "0xc4f6d68322e4db0d5a93dadc7e490af67f615187f0e823e2b667485493976035"
+      "digest": "0x44f94a3bd804f9a24e94d2b731e75f8cb48c31257726185e7f1330d628032364"
     },
     {
-      "note": "zero values, one-character request id",
+      "note": "zero values, one-character request id, one-character fillerId",
       "requestIdString": "!",
       "message": {
         "requestId": "0x3275a893b2c93461554cf2a4dd7f413d56decdd6f3fdf0589dbb8bc4fd742386",
-        "filler": "0x0000000000000000000000000000000000000000",
+        "fillerId": "0",
         "amountOut": "0",
         "validUntil": "0",
         "nonce": "0"
       },
-      "digest": "0xb0fd33938ca8ba7c8fcac62ad4e6cb008b2b05f384491c60b292db295acbc5ab"
+      "digest": "0xfd2112078aeedf176c9d476e5afd3a6da22c69abaaed33904b2a042754d9925f"
     }
   ]
 }

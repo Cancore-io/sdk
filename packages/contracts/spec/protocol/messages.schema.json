@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cancore.io/schemas/filler-protocol/v1/messages.schema.json",
   "title": "Cancore filler protocol v1 — WebSocket frames",
-  "$comment": "One $def per frame type, validated by name ($defs/<type>). The schemas encode the SENDER rule (protocol §3.1): lowercase hex, uint64 and wider as canonical decimal strings, uint8/16/32 as JSON integers, gateway times in milliseconds. No object is closed (V-2): receivers ignore unknown fields, takers ignore unknown S→F types, and treat an unknown reason/result/code as OTHER/generic. Every enum is open: anyOf [known values, futureEnumValue]. x-direction: S2F = gateway to taker (signed, addressed, timed), F2S = taker to gateway, both = either way (ping/pong; <type>S2F is the signed gateway copy, <type>F2S the taker's).",
+  "$comment": "One $def per frame type, validated by name ($defs/<type>). The schemas encode the SENDER rule (protocol §3.1): lowercase hex, uint64 and wider as canonical decimal strings, uint8/16/32 as JSON integers, gateway times in milliseconds. No object is closed (V-2): receivers ignore unknown fields, takers ignore unknown S→F types, and treat an unknown reason/result/code as OTHER/generic. Every enum is open: anyOf [known values, futureEnumValue]. x-direction: S2F = gateway to filler, F2S = filler to gateway, both = either way (ping, pong, error; <type>S2F is the gateway's copy, <type>F2S the filler's). Every frame in both directions carries id, sentAt and fillerId (absent only on auth.challenge, optional on a pre-auth gateway error) and is signed (protocol §3.4): `sig` = the gateway key over GatewayMessage{bodyHash} on S2F, `msgSig` = the filler's message key over FillerMessage{bodyHash} on F2S, bodyHash = keccak256(JCS(frame without that field)). No exceptions: ticket.decline, a declining quote.reconfirm.reply, fill.reported, pong and error from the filler are signed too.",
   "$defs": {
     "uintDec64": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20, "description": "uint64 as a decimal string: digits only, no sign, no exponent, no leading zero" },
     "uintDec256": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 78, "description": "uint256 as a decimal string" },
@@ -12,7 +12,10 @@
     "uint32": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
     "address": { "type": "string", "pattern": "^0x[0-9a-f]{40}$", "description": "EVM address, lowercase hex" },
     "bytes32": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
-    "sig65": { "type": "string", "pattern": "^0x[0-9a-f]{128}(1b|1c)$", "description": "65-byte r ‖ s ‖ v, low-s, v ∈ {27, 28}" },
+    "repayTo": { "$ref": "#/$defs/bytes32", "description": "where settle pays the filler, encoded for the SOURCE chain (protocol §3.15): EVM — the address left-padded to 32 bytes (repayToEvm); Canton — keccak256(utf8(partyId)) of the filler's registered party" },
+    "repayToEvm": { "type": "string", "pattern": "^0x0{24}(?!0{40})[0-9a-f]{40}$", "description": "repayTo for an EVM source: zero top 12 bytes (the router refuses others, InvalidBytes32Address) and not the zero address (ZeroAddress). A receiver that knows the source chain checks repayTo against this" },
+    "deliveryKey": { "$ref": "#/$defs/address", "description": "the address that sends fill on the destination (FillTicket.deliveryKey); the zero address for a Canton destination" },
+    "sig65": { "type": "string", "pattern": "^0x[0-9a-f]{64}[0-7][0-9a-f]{63}(1b|1c)$", "description": "65-byte r ‖ s ‖ v of an EOA, low-s, v ∈ {27, 28}; no EIP-1271. The pattern refuses any other length or v and an s with its top bit set; isEoaSignature checks the exact bound s ≤ n/2" },
     "timeMs": { "type": "integer", "minimum": 1000000000000, "maximum": 9007199254740991, "description": "unix milliseconds, gateway clock; the minimum rejects seconds" },
     "durationMs": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
     "timeS": { "$ref": "#/$defs/uintDec64", "description": "unix seconds as a decimal string (on-chain and signed times)" },
@@ -25,7 +28,7 @@
     "asset": { "oneOf": [{ "$ref": "#/$defs/address" }, { "$ref": "#/$defs/cantonAsset" }] },
     "requestId": { "type": "string", "pattern": "^[!-~]{1,64}$", "description": "1..64 printable ASCII (Canonical.daml:90-93)" },
     "fillerId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
-    "messageId": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "messageId": { "type": "string", "minLength": 1, "maxLength": 64, "description": "unique per fillerId and direction across every session of that fillerId; never reused by its sender within maxMessageAgeMs" },
     "protocolVersion": { "const": "1" },
     "order": {
       "type": "object",
@@ -47,10 +50,13 @@
     },
     "ticket": {
       "type": "object",
-      "required": ["orderHash", "filler", "attempt", "validFrom", "validUntil"],
+      "description": "FillTicket(bytes32 orderHash,bytes32 fillerId,address deliveryKey,bytes32 repayTo,uint32 attempt,uint64 validFrom,uint64 validUntil); fillerId is keccak256(utf8(fillerId)), deliveryKey and repayTo are those of the filler's signed ticket.intent (S-22)",
+      "required": ["orderHash", "fillerId", "deliveryKey", "repayTo", "attempt", "validFrom", "validUntil"],
       "properties": {
         "orderHash": { "$ref": "#/$defs/bytes32" },
-        "filler": { "$ref": "#/$defs/address" },
+        "fillerId": { "$ref": "#/$defs/bytes32" },
+        "deliveryKey": { "$ref": "#/$defs/address" },
+        "repayTo": { "$ref": "#/$defs/repayTo" },
         "attempt": { "$ref": "#/$defs/uint32" },
         "validFrom": { "$ref": "#/$defs/timeS" },
         "validUntil": { "$ref": "#/$defs/timeS" }
@@ -65,9 +71,16 @@
     },
     "errorCode": {
       "anyOf": [
-        { "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL"] },
+        { "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "STALE_MESSAGE", "REPLAYED_MESSAGE", "TICKET_REFUSED", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL"] },
         { "$ref": "#/$defs/futureEnumValue" }
       ]
+    },
+    "ticketRefusedReason": {
+      "anyOf": [
+        { "enum": ["REPAY_TO_INVALID", "REPAY_TO_BLOCKLISTED", "DELIVERY_KEY_INVALID", "PAYOUT_NOT_READY", "RECIPIENT_NOT_READY", "OPEN_TICKET_LIMIT", "PROOF_WINDOW_TOO_SHORT", "ATTESTOR_REVOCATION_PENDING", "SERVICE_DEGRADED", "OTHER"] },
+        { "$ref": "#/$defs/futureEnumValue" }
+      ],
+      "description": "error.reason with TICKET_REFUSED: the pre-ticket check that failed (S-21); the order is re-drawn, nothing is recorded against the filler"
     },
     "expiredResult": { "anyOf": [{ "enum": ["FILLED", "NO_SHOW", "NO_SHOW_UNCONFIRMED", "EXEMPT"] }, { "$ref": "#/$defs/futureEnumValue" }] },
     "exemptReason": { "anyOf": [{ "enum": ["DESTINATION_HALTED", "GATEWAY_FAULT", "REORGED_AFTER_INCLUSION", "RECIPIENT_NOT_READY", "OTHER"] }, { "$ref": "#/$defs/futureEnumValue" }] },
@@ -75,9 +88,10 @@
     "penaltyStep": { "anyOf": [{ "enum": ["L1", "L2", "L3", "L4"] }, { "$ref": "#/$defs/futureEnumValue" }] },
     "s2fEnvelope": {
       "type": "object",
-      "required": ["type", "sentAt", "sig"],
+      "required": ["type", "id", "sentAt", "sig"],
       "properties": {
         "type": { "type": "string" },
+        "id": { "$ref": "#/$defs/messageId" },
         "fillerId": { "$ref": "#/$defs/fillerId", "description": "the addressee" },
         "sentAt": { "$ref": "#/$defs/timeMs" },
         "sig": { "$ref": "#/$defs/sig65", "description": "gateway key over GatewayMessage{bodyHash = keccak256(JCS(frame without sig))}" },
@@ -85,10 +99,29 @@
       }
     },
     "s2fBase": { "allOf": [{ "$ref": "#/$defs/s2fEnvelope" }, { "type": "object", "required": ["fillerId"], "properties": { "fillerId": { "$ref": "#/$defs/fillerId" } } }] },
-    "f2sBase": {
+    "f2sEnvelope": {
       "type": "object",
-      "required": ["type", "id"],
-      "properties": { "type": { "type": "string" }, "id": { "$ref": "#/$defs/messageId" } }
+      "description": "What every filler → filler-gateway message and REST request body carries (protocol §3.4, S-19): the gateway refuses one without it, with another fillerId than the session's, with a stale sentAt or a reused id",
+      "required": ["id", "fillerId", "sentAt", "msgSig"],
+      "properties": {
+        "id": { "$ref": "#/$defs/messageId" },
+        "fillerId": { "$ref": "#/$defs/fillerId", "description": "the sender; must be the fillerId the session is authenticated for" },
+        "sentAt": { "$ref": "#/$defs/timeMs" },
+        "msgSig": { "$ref": "#/$defs/sig65", "description": "the filler's message key over FillerMessage{bodyHash = keccak256(JCS(message without msgSig))}; the body keeps id, fillerId, sentAt and any inner sig" },
+        "re": { "$ref": "#/$defs/messageId" }
+      }
+    },
+    "f2sBase": { "allOf": [{ "$ref": "#/$defs/f2sEnvelope" }, { "type": "object", "required": ["type"], "properties": { "type": { "type": "string" } } }] },
+    "fillerKeyRegistration": {
+      "type": "object",
+      "description": "Proof of possession of a message key (protocol §3.16): FillerKeyRegistration{fillerId, messageKey, issuedAt} signed by that key — at onboarding, and with the NEW key at a manual key change by Cancore staff, who submit it to the key registry of filler-gateway. Not a frame: there is no key-change message. sig must be an EOA signature (65 bytes, low-s, v ∈ {27, 28}) that recovers to messageKey; an EIP-1271 signature is refused",
+      "required": ["fillerId", "messageKey", "issuedAt", "sig"],
+      "properties": {
+        "fillerId": { "$ref": "#/$defs/fillerId" },
+        "messageKey": { "$ref": "#/$defs/address" },
+        "issuedAt": { "$ref": "#/$defs/timeS" },
+        "sig": { "$ref": "#/$defs/sig65" }
+      }
     },
     "auth.challenge": {
       "x-direction": "S2F",
@@ -101,7 +134,7 @@
     "auth.response": {
       "x-direction": "F2S",
       "type": "object",
-      "description": "sig = FillerAuth{fillerId, nonce, expiresAt} by a registered quote key",
+      "description": "sig = FillerAuth{fillerId, nonce, expiresAt} by the registered message key of fillerId (keyAddress = its address); msgSig by the same key",
       "allOf": [{ "$ref": "#/$defs/f2sBase" }],
       "required": ["type", "fillerId", "keyAddress", "protocolVersion", "sig"],
       "properties": {
@@ -122,11 +155,12 @@
     },
     "ping": {
       "x-direction": "both",
-      "description": "Heartbeat, either way. A receiver checks the copy of its direction: pingS2F (gateway to taker: signed, addressed, timed) or pingF2S (unsigned)",
+      "description": "Heartbeat, either way. A receiver checks the copy of its direction: pingS2F (gateway sig) or pingF2S (filler msgSig)",
       "anyOf": [{ "$ref": "#/$defs/pingF2S" }, { "$ref": "#/$defs/pingS2F" }]
     },
     "pingF2S": {
       "type": "object",
+      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
       "required": ["type", "id"],
       "properties": { "type": { "const": "ping" }, "id": { "$ref": "#/$defs/messageId" } }
     },
@@ -138,11 +172,12 @@
     },
     "pong": {
       "x-direction": "both",
-      "description": "Answer to a ping, re = ping.id. A receiver checks the copy of its direction: pongS2F (signed, addressed, timed) or pongF2S (unsigned)",
+      "description": "Answer to a ping, re = ping.id. A receiver checks the copy of its direction: pongS2F (gateway sig) or pongF2S (filler msgSig)",
       "anyOf": [{ "$ref": "#/$defs/pongF2S" }, { "$ref": "#/$defs/pongS2F" }]
     },
     "pongF2S": {
       "type": "object",
+      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
       "required": ["type", "re"],
       "properties": { "type": { "const": "pong" }, "re": { "$ref": "#/$defs/messageId" } }
     },
@@ -153,12 +188,25 @@
       "properties": { "type": { "const": "pong" }, "re": { "$ref": "#/$defs/messageId" } }
     },
     "error": {
-      "x-direction": "S2F",
+      "x-direction": "both",
+      "description": "Either way. A receiver checks the copy of its direction: errorS2F (the gateway's reply, also the REST error body) or errorF2S (the filler's reply to a gateway frame it cannot handle)",
+      "anyOf": [{ "$ref": "#/$defs/errorF2S" }, { "$ref": "#/$defs/errorS2F" }]
+    },
+    "errorS2F": {
       "type": "object",
-      "description": "Reply to the F→S frame `re`; also the REST error body. fillerId is absent before authentication",
+      "description": "Reply to the F→S frame `re`; also the REST error body. fillerId is absent before authentication. reason names the failed pre-ticket check with TICKET_REFUSED",
       "allOf": [{ "$ref": "#/$defs/s2fEnvelope" }],
       "required": ["type", "code", "message"],
-      "properties": { "type": { "const": "error" }, "code": { "$ref": "#/$defs/errorCode" }, "message": { "type": "string" } }
+      "properties": { "type": { "const": "error" }, "code": { "$ref": "#/$defs/errorCode" }, "message": { "type": "string" }, "reason": { "$ref": "#/$defs/ticketRefusedReason" } },
+      "if": { "type": "object", "properties": { "code": { "const": "TICKET_REFUSED" } }, "required": ["code"] },
+      "then": { "type": "object", "required": ["reason"], "properties": { "reason": true } }
+    },
+    "errorF2S": {
+      "type": "object",
+      "description": "The filler's reply to the S→F frame `re` it cannot handle (malformed, unknown orderHash); informational, it changes no state in filler-gateway. Signed like every filler message",
+      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
+      "required": ["type", "re", "code", "message"],
+      "properties": { "type": { "const": "error" }, "re": { "$ref": "#/$defs/messageId" }, "code": { "$ref": "#/$defs/errorCode" }, "message": { "type": "string" } }
     },
     "epoch.weights": {
       "x-direction": "S2F",
@@ -203,13 +251,12 @@
     "quote": {
       "x-direction": "F2S",
       "type": "object",
-      "description": "sig = FillerQuote{keccak256(utf8(requestId)), filler, amountOut, validUntil, nonce} by the quote key; counts only if validUntil × 1000 ≥ windowCloseAt + quoteTtlMs",
+      "description": "sig = FillerQuote{keccak256(utf8(requestId)), fillerId, amountOut, validUntil, nonce} by the message key, fillerId the envelope's; counts only if validUntil × 1000 ≥ windowCloseAt + quoteTtlMs",
       "allOf": [{ "$ref": "#/$defs/f2sBase" }],
-      "required": ["type", "requestId", "filler", "amountOut", "validUntil", "nonce", "sig"],
+      "required": ["type", "requestId", "amountOut", "validUntil", "nonce", "sig"],
       "properties": {
         "type": { "const": "quote" },
         "requestId": { "$ref": "#/$defs/requestId" },
-        "filler": { "$ref": "#/$defs/address" },
         "amountOut": { "$ref": "#/$defs/uintDec256" },
         "validUntil": { "$ref": "#/$defs/timeS" },
         "nonce": { "$ref": "#/$defs/uintDec64" },
@@ -248,6 +295,7 @@
     "quote.reconfirm.reply": {
       "x-direction": "F2S",
       "type": "object",
+      "description": "An accept carries sig = FillerQuote{keccak256(utf8(requestId)), fillerId, amountOut, validUntil, nonce} by the message key; a decline carries only the envelope msgSig",
       "allOf": [{ "$ref": "#/$defs/f2sBase" }],
       "required": ["type", "orderHash", "accept"],
       "properties": {
@@ -280,15 +328,17 @@
     "ticket.intent": {
       "x-direction": "F2S",
       "type": "object",
-      "description": "sig = TicketIntent{orderHash, attempt, validFrom, validUntil} by the filler address; values equal the offer",
+      "description": "sig = TicketIntent{orderHash, attempt, validFrom, validUntil, fillerId, deliveryKey, repayTo} by the message key, fillerId the envelope's; orderHash, attempt, validFrom, validUntil equal the offer; the issued ticket carries exactly this deliveryKey and repayTo (S-22), or the gateway answers error TICKET_REFUSED (S-21)",
       "allOf": [{ "$ref": "#/$defs/f2sBase" }],
-      "required": ["type", "orderHash", "attempt", "validFrom", "validUntil", "sig"],
+      "required": ["type", "orderHash", "attempt", "validFrom", "validUntil", "deliveryKey", "repayTo", "sig"],
       "properties": {
         "type": { "const": "ticket.intent" },
         "orderHash": { "$ref": "#/$defs/bytes32" },
         "attempt": { "$ref": "#/$defs/uint32" },
         "validFrom": { "$ref": "#/$defs/timeS" },
         "validUntil": { "$ref": "#/$defs/timeS" },
+        "deliveryKey": { "$ref": "#/$defs/deliveryKey" },
+        "repayTo": { "$ref": "#/$defs/repayTo" },
         "sig": { "$ref": "#/$defs/sig65" }
       }
     },
@@ -322,7 +372,7 @@
     "ticket.issued": {
       "x-direction": "S2F",
       "type": "object",
-      "description": "form discriminates the EVM-destination ticket (FillTicket + ticketSig) from the Canton-destination one (DeliveryOrder); a form added within v1 (V-2) is checked against the common fields only",
+      "description": "form discriminates the EVM-destination ticket (FillTicket + ticketSig) from the Canton-destination one (DeliveryOrder, with its repayTo); a form added within v1 (V-2) is checked against the common fields only. The filler checks fillerId, deliveryKey and repayTo against its own ticket.intent before it delivers (T-15)",
       "required": ["type", "form", "orderHash", "attempt"],
       "properties": {
         "type": { "const": "ticket.issued" },
@@ -338,14 +388,14 @@
         },
         {
           "if": { "type": "object", "properties": { "form": { "const": "canton" } }, "required": ["form"] },
-          "then": { "type": "object", "required": ["deliveryOrderCid", "validUntil"], "properties": { "deliveryOrderCid": { "type": "string", "minLength": 1 }, "validUntil": { "$ref": "#/$defs/timeS" } } }
+          "then": { "type": "object", "required": ["deliveryOrderCid", "validUntil", "repayTo"], "properties": { "deliveryOrderCid": { "type": "string", "minLength": 1 }, "validUntil": { "$ref": "#/$defs/timeS" }, "repayTo": { "$ref": "#/$defs/repayTo", "description": "the repayTo of the DeliveryOrder, = the filler's signed ticket.intent (S-22); fillerId is the envelope's" } } }
         }
       ]
     },
     "ticket.receipt": {
       "x-direction": "F2S",
       "type": "object",
-      "description": "sig = TicketReceipt{ticketHash, ticketSigHash} by the filler address",
+      "description": "sig = TicketReceipt{ticketHash, ticketSigHash} by the message key",
       "allOf": [{ "$ref": "#/$defs/f2sBase" }],
       "required": ["type", "orderHash", "attempt", "ticketHash", "ticketSigHash", "sig"],
       "properties": {

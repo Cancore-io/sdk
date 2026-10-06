@@ -53,8 +53,10 @@ describe('verifying the fixture draw from its records', () => {
 });
 
 test('A6: a gateway identity built from FILLER_GATEWAYS is what GET /v1/gateway returns', () => {
-  const info: GatewayInfo = { env: 'devnet', gateway: `0x${'ab'.repeat(20)}`, ticketSigners: [`0x${'cd'.repeat(20)}`], protocolVersion: PROTOCOL_VERSION };
+  const info: GatewayInfo = { env: 'devnet', gateway: `0x${'ab'.repeat(20)}`, ticketSigners: [`0x${'cd'.repeat(20)}`], protocolVersion: PROTOCOL_VERSION, maxMessageAgeMs: 30000 };
   expect(valid('gatewayInfo', info)).toBe(true);
+  const { maxMessageAgeMs: _m, ...withoutAge } = info;
+  expect(valid('gatewayInfo', withoutAge)).toBe(false); // the freshness bound of §3.4 is published
   expect(valid('gatewayInfo', { ...info, protocolVersion: '2' })).toBe(false);
   expect(valid('gatewayInfo', { ...info, gateway: info.gateway.toUpperCase().replace('0X', '0x') })).toBe(false);
   expect(Object.keys(FILLER_GATEWAYS).sort()).toEqual(['devnet', 'mainnet', 'testnet']);

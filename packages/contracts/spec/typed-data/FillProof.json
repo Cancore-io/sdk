@@ -1,5 +1,5 @@
 {
-  "$comment": "EIP-712 schema of FillProof — the struct CancoreRouter.settle verifies attestor signatures over — and its golden vectors. The contract is the source of truth: test/CancoreRouter.ts checks this file against FILLPROOF_TYPEHASH and hashFillProof. @cancore/contracts mirrors it (sdk: npm run sync) and checks the same vectors with its own encoder. Change the struct here and this repository's test fails at once; the SDK's fails once its `npm run sync` pulls the change (nothing checks the two repositories against each other automatically).",
+  "$comment": "EIP-712 schema of the variant A FillProof (twelve fields, CAN-2139; protocol.md §3.3) — the struct attestors sign, CancoreRouter.settle verifies (paying repayTo) and Daml Intent.FillProofVerify verifies on a Canton source — and its golden vectors. Written in @cancore/contracts ahead of the router: CAN-2140 copies this file byte for byte to evm-contracts abi/typed-data/FillProof.json, where test/CancoreRouter.ts checks every vector against FILLPROOF_TYPEHASH and hashFillProof; from then on evm-contracts is the source again and `npm run sync` brings it here. canton-contracts takes the Canton-source vector (typeHash, domainSeparator, structHash, digest) into intent-test AttestationVectors (CAN-2144). Digests by ethers TypedDataEncoder; this package checks them with an encoder of its own.",
   "primaryType": "FillProof",
   "domain": {
     "$comment": "The SOURCE router of the order: settle recomputes the digest in its own domain, so a proof never verifies on another chain or router.",
@@ -12,7 +12,8 @@
       "verifyingContract"
     ]
   },
-  "typeString": "FillProof(uint8 kind,bytes32 orderHash,bytes32 destination,bytes32 fillRef,bytes32 recipient,bytes32 outputAsset,uint256 amountDelivered,uint64 filledAt,address filler,uint32 attempt,uint32 setId)",
+  "typeString": "FillProof(uint8 kind,bytes32 orderHash,bytes32 destination,bytes32 fillRef,bytes32 recipient,bytes32 outputAsset,uint256 amountDelivered,uint64 filledAt,bytes32 fillerId,bytes32 repayTo,uint32 attempt,uint32 setId)",
+  "typeHash": "0xc37e18cdd22fbc1e707c1bcc554d9d29c2e6c5a44bb4a9a4dc38e2c28e2419ae",
   "types": {
     "FillProof": [
       {
@@ -48,8 +49,12 @@
         "type": "uint64"
       },
       {
-        "name": "filler",
-        "type": "address"
+        "name": "fillerId",
+        "type": "bytes32"
+      },
+      {
+        "name": "repayTo",
+        "type": "bytes32"
       },
       {
         "name": "attempt",
@@ -63,7 +68,7 @@
   },
   "vectors": [
     {
-      "note": "baseline",
+      "note": "baseline: EVM source and destination, fillerId keccak256(\"acme\"), repayTo a padded EVM address",
       "chainId": 31337,
       "verifyingContract": "0x00000000000000000000000000000000caFe0001",
       "message": {
@@ -75,33 +80,39 @@
         "outputAsset": "0x0000000000000000000000004444444444444444444444444444444444444444",
         "amountDelivered": "95000000000000000000",
         "filledAt": "1790000000",
-        "filler": "0x5555555555555555555555555555555555555555",
+        "fillerId": "0xe29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf",
+        "repayTo": "0x0000000000000000000000005555555555555555555555555555555555555555",
         "attempt": 1,
         "setId": 1
       },
-      "digest": "0x60710cde56b0ce205921f022e5bbeb6f3e9c016810f9597d5f5d4cd8388de68f"
+      "domainSeparator": "0x503f410fe6d9a92cb96e0a70062885290f68a1f72fb40330678e25b874731300",
+      "structHash": "0x800e6b4a1224dad7ca66111790954bd1f8eeb719f634932412949ab7534de529",
+      "digest": "0xb8567a7df02431d496c14b998f686c050d86c7552939aa67f66612d3602f4b6c"
     },
     {
-      "note": "every integer at its maximum: no field is narrower than the contract says",
+      "note": "every integer at its maximum, every word all ones: no field is narrower than the contract says",
       "chainId": 31337,
       "verifyingContract": "0x00000000000000000000000000000000caFe0001",
       "message": {
         "kind": 255,
-        "orderHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-        "destination": "0x0000000000000000000000000000000000000000000000000000000000aa36a7",
-        "fillRef": "0x2222222222222222222222222222222222222222222222222222222222222222",
-        "recipient": "0x0000000000000000000000003333333333333333333333333333333333333333",
-        "outputAsset": "0x0000000000000000000000004444444444444444444444444444444444444444",
+        "orderHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "destination": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "fillRef": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "recipient": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "outputAsset": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "amountDelivered": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
         "filledAt": "18446744073709551615",
-        "filler": "0x5555555555555555555555555555555555555555",
+        "fillerId": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "repayTo": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "attempt": 4294967295,
         "setId": 4294967295
       },
-      "digest": "0x01ce524359fa8b9b4cc736fc5da949f435071a25c07dd3af691318272c968379"
+      "domainSeparator": "0x503f410fe6d9a92cb96e0a70062885290f68a1f72fb40330678e25b874731300",
+      "structHash": "0x6d4f2ee32e02ff5cb479dbd8f18fd1306b89a2513db6cfa3da06c69992c96a3f",
+      "digest": "0x5850aac6189524d1b34d16b467bce6a3a5f6681255cb4abe83a28147d534fcdb"
     },
     {
-      "note": "zero words and the zero address",
+      "note": "zero words",
       "chainId": 31337,
       "verifyingContract": "0x00000000000000000000000000000000caFe0001",
       "message": {
@@ -113,11 +124,14 @@
         "outputAsset": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "amountDelivered": "0",
         "filledAt": "0",
-        "filler": "0x0000000000000000000000000000000000000000",
+        "fillerId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "repayTo": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "attempt": 0,
         "setId": 0
       },
-      "digest": "0x149dddd5a7f61b04d9bd11113d684e20464ae92b4c05d13ec039b157224ab723"
+      "domainSeparator": "0x503f410fe6d9a92cb96e0a70062885290f68a1f72fb40330678e25b874731300",
+      "structHash": "0x51713b6c288966f3e995793ff65a3cec60bfbc51c240bd2aa50ade3da1c284d0",
+      "digest": "0x5d5d4907e300a8d705d3d61c23c0b7bf0d34039c85e6e4eadc601fe3fe60e439"
     },
     {
       "note": "same proof, another router: the digest is bound to verifyingContract",
@@ -132,33 +146,39 @@
         "outputAsset": "0x0000000000000000000000004444444444444444444444444444444444444444",
         "amountDelivered": "95000000000000000000",
         "filledAt": "1790000000",
-        "filler": "0x5555555555555555555555555555555555555555",
+        "fillerId": "0xe29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf",
+        "repayTo": "0x0000000000000000000000005555555555555555555555555555555555555555",
         "attempt": 1,
         "setId": 1
       },
-      "digest": "0x3c8add09c5e2c9fcdf3329f25bcfd8f2aa5f19ada2647d310df4dd6c2062021c"
+      "domainSeparator": "0x282a771d1c663bbda15fa1376f122d013f85569d94bdfa5c681ca6215c7db6b8",
+      "structHash": "0x800e6b4a1224dad7ca66111790954bd1f8eeb719f634932412949ab7534de529",
+      "digest": "0xce35f3f8838fad5b41bc9ab963682a6965334abf7340ea4618958b0ac26f6712"
     },
     {
-      "note": "a Canton destination and a later attempt under set 2",
+      "note": "Canton destination (protocol.md §3.13): destination keccak256(\"canton:mainnet\"), recipient keccak256(party), outputAsset keccak256(abi.encode(\"cancore:instrument:v1\", admin, id)), amount Numeric 10 × 10^10 (1200.25); a later attempt under set 2. The encoder itself is CAN-1935",
       "chainId": 31337,
       "verifyingContract": "0x00000000000000000000000000000000caFe0001",
       "message": {
         "kind": 1,
         "orderHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-        "destination": "0x0000000000000000000000000000000000000000000000008000000000000003",
+        "destination": "0x8d6e3eea79c707a9549bdb1206260cd46ef29e86763e19a8a3f494bc6b499440",
         "fillRef": "0x2222222222222222222222222222222222222222222222222222222222222222",
-        "recipient": "0x0000000000000000000000003333333333333333333333333333333333333333",
-        "outputAsset": "0x0000000000000000000000004444444444444444444444444444444444444444",
-        "amountDelivered": "95000000000000000000",
+        "recipient": "0x8330f18e4203206b15fc33cb80a36595317e2638ec444305e71b9502faa9e628",
+        "outputAsset": "0x034bad92a7c82fb0e37b03e7795ae88257786ea0e2cfe2c43b88b420993dc98f",
+        "amountDelivered": "12002500000000",
         "filledAt": "1790000000",
-        "filler": "0x5555555555555555555555555555555555555555",
+        "fillerId": "0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5",
+        "repayTo": "0x0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc",
         "attempt": 3,
         "setId": 2
       },
-      "digest": "0x7c2d541d8b5cb9cea85e2a509b5135cae5b8b23b000a7530e030d3663e8096a5"
+      "domainSeparator": "0x503f410fe6d9a92cb96e0a70062885290f68a1f72fb40330678e25b874731300",
+      "structHash": "0x3c76a53bbcb8fe01a0902d30794bcabf6948476a85f7be9fc9c178e74af5d272",
+      "digest": "0xdebb837668be49db1a9a6a4b0aeb69839b92ce0095dc5016a3b0d541aad346ba"
     },
     {
-      "note": "computed by CancoreRouter.hashFillProof on the local stand (CAN-1776): same proof, chain id 11155111",
+      "note": "same proof, another chain (11155111) and router",
       "chainId": 11155111,
       "verifyingContract": "0xa5Ca448044cbF78a8b2a3853598b879e2722ce65",
       "message": {
@@ -170,14 +190,19 @@
         "outputAsset": "0x0000000000000000000000004444444444444444444444444444444444444444",
         "amountDelivered": "95000000000000000000",
         "filledAt": "1790000000",
-        "filler": "0x5555555555555555555555555555555555555555",
+        "fillerId": "0xe29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf",
+        "repayTo": "0x0000000000000000000000005555555555555555555555555555555555555555",
         "attempt": 1,
         "setId": 1
       },
-      "digest": "0xdde67a41f980bd1d31af88addcbbd5a08e095816d7acc2fd9323e5dce7d28410"
+      "domainSeparator": "0x311d9cdf77fccd430656cbd12f0da889d7c14ab9832dec4dcf90f76557a4e9bf",
+      "structHash": "0x800e6b4a1224dad7ca66111790954bd1f8eeb719f634932412949ab7534de529",
+      "digest": "0x81c3633199fbeed50c8d6aa235b1fdd5e0fa98d21caf70dc331d47936faced4b"
     },
     {
-      "note": "Canton source (CAN-2061): the delivery of test/vectors/canton-order.json's order, in the domain Daml settles in — chainId CANTON_ORIGIN_ID = 2^63 + 1 (a string: it does not survive a JSON number), verifyingContract CANTON_SOURCE_ANCHOR. Both are the test vector's, not a per-network deployment. The digest is canton-contracts intent-test/daml/Intent/Test/AttestationVectors.daml vDigestExpected (fillProofDigest cantonMainnet (goldenProofOff 0)); no router computes it",
+      "note": "Canton source: the delivery of spec/vectors/canton-order.json's order, in the domain Daml settles in — chainId CANTON_ORIGIN_ID = 2^63 + 1 (a string: it does not survive a JSON number), verifyingContract CANTON_SOURCE_ANCHOR; repayTo = keccak256(utf8(partyId)) of the filler party (repayToParty), fillerId keccak256(\"acme-markets\"). Daml FillProofVerify must reproduce typeHash, domainSeparator, structHash and digest",
+      "fillerIdString": "acme-markets",
+      "repayToParty": "acme-markets::1220acdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacde",
       "chainId": "9223372036854775809",
       "verifyingContract": "0x2f37b46Ea93001829498b145985fb53028033701",
       "message": {
@@ -189,11 +214,14 @@
         "outputAsset": "0x000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
         "amountDelivered": "1246760000",
         "filledAt": "1789999700",
-        "filler": "0x5b38da6a701c568545dcfcb03fcb875f56beddc4",
+        "fillerId": "0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5",
+        "repayTo": "0xe61d35ec4ca48f587165d3138bd11c79b42e52f6de0cec4b9e2d4350017f1e87",
         "attempt": 1,
         "setId": 1
       },
-      "digest": "0x4f6622ad6a74c4e5e173e9baaa2bfb2b4f32c1ff2e160076df172d4ef557b660"
+      "domainSeparator": "0x1f754285aeeb7c329e1107ea7f22092765deea7fd0db2c98bce7e0bda644ec16",
+      "structHash": "0xde3d93c38518796a0d639e855b5a875eeccd7e2dc9417b28d4b7c36d04d9f58d",
+      "digest": "0xfdc7e00e2d79fb63ee6bcb3c46dbe531ee0c40eaa0a670c371902a862615df80"
     }
   ]
 }

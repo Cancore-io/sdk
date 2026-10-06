@@ -18,8 +18,8 @@ need one dependency, `@noble/hashes`.
 | --- | --- | --- |
 | `@cancore/contracts/abi` | `HTLC_ABI`, `FEE_VAULT_ABI`, `CNRX_ABI`, `IHTLC_ABI`, `IBURN_MINT_ERC20_ABI`, `IPERMIT2_ABI`, `MULTI_BALANCE_CHECKER_ABI`, `CANCORE_ROUTER_ABI`, `ICANCORE_ROUTER_ABI`, `ATTESTOR_SET_ABI`, `CNRX_STAKING_ABI`, `POINTS_CLAIM_ABI`; an `*_ERRORS` table for each contract that declares custom errors | `Cancore-io/evm-contracts/abi/*.json` — the reviewed snapshots that repository keeps in lock-step with its compiled contracts; `CNRX` and `IBurnMintERC20` from `evm-contracts/vendor/*.json`, a build of `cancore-token-evm` vendored there |
 | `@cancore/contracts/networks` | `NETWORKS`, `networkOf`, `networkKindOf`, `networkByChainId` | the chain ids the Cancore API uses |
-| `@cancore/contracts` (filler protocol v1) | EIP-712 types and domains of the intent rail, `hashTypedData` / `jcs` / `gatewayBodyHash` / `requestIdHash`, `drawValue` / `drawWinner` / `firstRoundAtOrAfter`, wire message types and enums, `FILLER_GATEWAYS` | `docs/intents/protocol.md` and `auction-and-draw.md` in Cancore-io/meta; `CancoreRouter.sol` for the code types |
-| `@cancore/contracts` | all of the above, plus `DEPLOYMENTS` / `deploymentOf`, `FEE_CLAIM_TYPES` / `feeClaimDomain`, `FILL_PROOF_TYPES` / `fillProofDomain` / `FillProof`, `BUILD_HASHES` (and its deprecated alias `BYTECODE_HASHES`), `CONTRACTS_RELEASE`, `describeRevert` | the contracts repository's `version.json` and bytecode hashes; the FeeVault contract's own struct and domain; `evm-contracts/abi/typed-data/FillProof.json` for the router's `FillProof` |
+| `@cancore/contracts` (filler protocol v1) | EIP-712 types and domains of the intent rail, `hashTypedData` / `jcs` / `gatewayBodyHash` / `fillerMessageBodyHash` / `requestIdHash`, one digest helper per settlement type (`hashFillTicket`, `hashFillerQuote`, `hashTicketIntent`, `hashFillerMessage`, `hashFillerKeyRegistration`), `fillerIdHash` / `repayToFromEvm` / `repayToFromParty` / `isEvmRepayTo` / `evmAddressFromRepayTo`, `isEoaSignature`, `fillerEnvelopeError`, `drawValue` / `drawWinner` / `firstRoundAtOrAfter`, wire message types and enums, `FILLER_GATEWAYS` | `docs/intents/protocol.md` and `auction-and-draw.md` in Cancore-io/meta; `CancoreRouter.sol` for the code types |
+| `@cancore/contracts` | all of the above, plus `DEPLOYMENTS` / `deploymentOf`, `FEE_CLAIM_TYPES` / `feeClaimDomain`, `FILL_PROOF_TYPES` / `fillProofDomain` / `hashFillProof` / `FillProof`, `BUILD_HASHES` (and its deprecated alias `BYTECODE_HASHES`), `CONTRACTS_RELEASE`, `describeRevert` | the contracts repository's `version.json` and bytecode hashes; the FeeVault contract's own struct and domain; `evm-contracts/abi/typed-data/FillProof.json` for the router's `FillProof` |
 
 The ABIs and selector tables are **generated**, never edited: `npm run sync` reads a checkout
 of `evm-contracts` (`EVM_CONTRACTS_DIR`) and rewrites `spec/abi/*.json` and
@@ -66,10 +66,13 @@ type hash is the router's `ORDER_TYPEHASH`. Router addresses are not in this pac
 ## FillProof: what attestors sign
 
 `CancoreRouter.settle(order, proof, sigs)` pays a filler out only against k attestor
-signatures over one EIP-712 `FillProof`, in the domain of the order's **source** router.
+signatures over one EIP-712 `FillProof`, in the domain of the order's **source** router, and
+pays `proof.repayTo`. Twelve fields: `fillerId` (`keccak256(utf8(fillerId))`) and `repayTo`
+(encoded for the source chain) come from the delivery — `Filled` on an EVM destination, the
+`DeliveryReceipt` on a Canton one — and sit before `attempt` and `setId`.
 
 ```ts
-import { FILL_PROOF_TYPES, fillProofDomain, PROOF_KIND_ATTESTATION } from '@cancore/contracts';
+import { FILL_PROOF_TYPES, fillProofDomain, hashFillProof, PROOF_KIND_ATTESTATION } from '@cancore/contracts';
 
 const signature = await wallet.signTypedData({
   domain: fillProofDomain(sourceChainId, sourceRouter),
@@ -80,10 +83,14 @@ const signature = await wallet.signTypedData({
 ```
 
 This repository keeps golden vectors for the schema in `spec/typed-data/FillProof.json` (shipped
-in the package since 0.2.0, under `@cancore/contracts/spec/*`). `evm-contracts` checks every vector against the router's own
-`hashFillProof`, and this package's test checks the same file with an encoder of its own: a
-field changed there fails there at once, and here after the next `npm run sync`. The schema is
-synced like the ABIs.
+in the package since 0.2.0, under `@cancore/contracts/spec/*`), each with its `domainSeparator`,
+`structHash` and digest, and the file's `typeHash`. The twelve-field file is written here ahead
+of the router (`scripts/gen-protocol-vectors.mjs`): evm-contracts takes it byte for byte into
+`abi/typed-data/FillProof.json` and checks every vector against the router's own `hashFillProof`
+(CAN-2140); canton-contracts takes the Canton-source vector into its `FillProofVerify` vectors.
+From then on the schema is synced from evm-contracts like the ABIs. Until then, do not run
+`scripts/sync-typed-data.mjs` against an evm-contracts checkout that still has the eleven-field
+struct: it would overwrite this file with the old one.
 
 ## Filler protocol v1 (RC)
 
@@ -93,31 +100,41 @@ breaking protocol change is `0.3`.
 
 ```ts
 import {
-  FILLER_PROTOCOL_DOMAIN, TICKET_INTENT_TYPES, hashTypedData, gatewayBodyHash, GATEWAY_MESSAGE_TYPES,
+  gatewayBodyHash, hashFillerMessage, hashTicketIntent, repayToFromEvm, fillerIdHash,
 } from '@cancore/contracts';
 
-// what the filler address signs to take an offered ticket
-const digest = hashTypedData({
-  domain: FILLER_PROTOCOL_DOMAIN,
-  types: TICKET_INTENT_TYPES,
-  primaryType: 'TicketIntent',
-  message: { orderHash, attempt, validFrom, validUntil },
+// what the filler's message key signs to take an offered ticket: its delivery key and payout address
+const intentDigest = hashTicketIntent({
+  orderHash, attempt, validFrom, validUntil,
+  fillerId: 'acme',
+  deliveryKey,                     // the address that will send fill (zero for a Canton destination)
+  repayTo: repayToFromEvm(payout), // EVM source; repayToFromParty(partyId) for a Canton source
 });
+
+// what msgSig of EVERY filler → filler-gateway message is over: FillerMessage{bodyHash}
+const msgDigest = hashFillerMessage(message); // bodyHash = keccak256(JCS(message without msgSig))
 
 // what every S→F frame's `sig` is over: GatewayMessage{bodyHash} in the same domain
 const bodyHash = gatewayBodyHash(frame); // keccak256(JCS(frame without sig))
+
+fillerIdHash('acme'); // the on-chain fillerId of FillTicket, Filled, FillProof, Settled
 ```
 
 `hashTypedData` encodes flat structs (address, bool, bytes, bytesN, string, uintN) and throws on
 anything else; it takes wire values as they come — decimal strings, numbers or bigints. There
-is no signing in this package: hand the digest to your own secp256k1 key.
+is no signing in this package: hand the digest to your own secp256k1 key. The filler signs
+everything with one message key, an EOA: 65 bytes `r ‖ s ‖ v`, low-s, `v ∈ {27, 28}`, no
+EIP-1271 — `isEoaSignature` checks that shape before recovery. A message key is registered
+with `FillerKeyRegistration` signed by that key, at onboarding and, with the new key, at a
+manual key change by Cancore staff; there is no key-rotation type or message.
 
 | Types | Domain | Status |
 | --- | --- | --- |
-| `FillerQuote`, `TicketIntent`, `TicketReceipt`, `StakeBinding`, `FillerAuth`, `GatewayMessage` | `CancoreFillerProtocol` v1 | frozen v1 (RC) — vectors in `spec/protocol/typed-data/` |
+| `TicketReceipt`, `StakeBinding`, `FillerAuth`, `GatewayMessage` | `CancoreFillerProtocol` v1 | v1 RC — vectors in `spec/protocol/typed-data/` |
+| `FillerQuote` (`string fillerId`), `TicketIntent` (with `fillerId`, `deliveryKey`, `repayTo`), `FillerMessage`, `FillerKeyRegistration` | `CancoreFillerProtocol` v1 | settlement design (variant A), next RC — vectors in `spec/protocol/typed-data/` |
 | `Order` (11 fields, with `createdAt`), `Quote` | `CancoreRouter` v1, source router | router code; provisional copies in `spec/typed-data/` until evm-contracts publishes them |
-| `FillTicket` | `CancoreFillTicket` v1 | router code; provisional copy, as above |
-| `FillProof` | `CancoreRouter` v1, source router | synced from evm-contracts (above) |
+| `FillTicket` (`orderHash`, `fillerId`, `deliveryKey`, `repayTo`, `attempt`, `validFrom`, `validUntil`) | `CancoreFillTicket` v1 | variant A, written here ahead of the router (CAN-2140) |
+| `FillProof` (twelve fields) | `CancoreRouter` v1, source router | variant A, written here ahead of the router (above) |
 
 Golden vectors are generated with ethers by `scripts/gen-protocol-vectors.mjs` from the literal
 inputs in `scripts/protocol-fixtures.mjs`, and checked by this package's own encoder too. The
@@ -152,13 +169,19 @@ ajv.validate(messageSchemaRef(frame.type, 'S2F'), frame); // errors name the fie
 ```
 
 The schemas describe what a v1 **sender** emits: lowercase hex, uint64 and wider as decimal
-strings, gateway times in milliseconds, every S→F frame with `fillerId`, `sentAt` and `sig`. No
+strings, times in milliseconds, every frame with `id`, `fillerId` and `sentAt`, every S→F frame
+signed with `sig` and every F→S frame — `ticket.decline`, a declining `quote.reconfirm.reply`,
+`fill.reported`, `pong` and `error` included — with `msgSig` (`f2sEnvelope`); REST request
+bodies carry the same envelope. `fillerEnvelopeError` runs the key-free checks of §3.4 (shape of
+`msgSig`, the session's `fillerId`, freshness, `id`); recovering `msgSig` against the registered
+message key and refusing a replayed `id` stay with the receiver. The `repayToEvm` definition
+refuses a `repayTo` with non-zero top 12 bytes, for a receiver that knows the source is EVM. No
 object is closed: a receiver ignores unknown fields and a taker ignores unknown S→F types
 (V-2), so check a frame of an unknown type against `s2fEnvelope` and skip it. Every enum is
 open the same way: the known values, or any UPPER_SNAKE value added within v1, which a receiver
 treats as `OTHER`/generic; a `ticket.issued` of an unknown `form` is checked on its common fields
-only. `ping`/`pong` go both ways: the gateway's copy is signed like every S→F frame
-(`pingS2F`), the taker's is not (`pingF2S`); the second argument of `messageSchemaRef` picks one.
+only. `ping`, `pong` and `error` go both ways: the gateway's copy carries `sig` (`pingS2F`), the
+filler's `msgSig` (`pingF2S`); the second argument of `messageSchemaRef` picks one.
 `scripts/gen-protocol-docs.mjs` derives the examples, records and the AsyncAPI document from
 the schemas and the vectors.
 
@@ -258,6 +281,30 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- Unreleased (next RC) — the settlement design of variant A (protocol.md §3.3, §3.4, §3.15,
+  §3.16; CAN-2139). **Breaking within the RC line**: every digest of the changed types changes.
+  - `FillTicket` is `(orderHash, bytes32 fillerId, address deliveryKey, bytes32 repayTo, attempt,
+    validFrom, validUntil)`; `FillProof` has twelve fields, `fillerId` and `repayTo` in place of
+    `address filler`; `TicketIntent` adds `string fillerId`, `deliveryKey`, `repayTo`;
+    `FillerQuote` names `string fillerId` instead of `address filler`. Type hashes:
+    `FillTicket` `0x3b13cc38…73ec82`, `FillProof` `0xc37e18cd…2419ae`.
+  - New types `FillerMessage(bytes32 bodyHash)` (the envelope signature `msgSig` of every filler
+    message) and `FillerKeyRegistration(string fillerId,address messageKey,uint64 issuedAt)`
+    (proof of possession of the message key, also for a manual key change by staff). No
+    key-rotation type, no `key.rotate` message, no refund-redirect type.
+  - Helpers: `hashFillTicket`, `hashFillProof`, `hashFillerQuote`, `hashTicketIntent`,
+    `hashFillerMessage`, `hashFillerKeyRegistration`, `fillerMessageBodyHash`, `fillerIdHash`,
+    `repayToFromEvm`, `repayToFromParty`, `isEvmRepayTo`, `evmAddressFromRepayTo`,
+    `isEoaSignature`, `fillerEnvelopeError`.
+  - Schemas: every F→S frame carries `id`, `fillerId`, `sentAt`, `msgSig` (`f2sEnvelope`), as does
+    the stake-binding REST body; every S→F frame carries `id`; `error` goes both ways
+    (`errorS2F`, `errorF2S`); `quote` drops `filler`; `ticket.intent` adds `deliveryKey`,
+    `repayTo`; the issued EVM ticket is the seven-field `FillTicket` and the Canton form adds
+    `repayTo`; error codes `STALE_MESSAGE`, `REPLAYED_MESSAGE`, `TICKET_REFUSED` with
+    `reason` (`TICKET_REFUSED_REASONS`); `repayToEvm`, `fillerKeyRegistration` definitions;
+    `sig65` refuses an `s` with its top bit set; `GET /v1/gateway` returns `maxMessageAgeMs`.
+  - Vectors for every new and changed type; `FillProof.json` is written here ahead of the
+    router (see «FillProof: what attestors sign»).
 - `0.2.0-rc.6` — `auth.response` gains an optional `nonce` (bytes32): the `auth.challenge` nonce it
   answers, so filler-gateway's REST login (`POST /v1/filler/auth`) finds the challenge without trying
   every live one. Additive only (V-2); the `FillerAuth` type and every digest are unchanged.
