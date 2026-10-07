@@ -133,7 +133,7 @@ describe('InMemoryFillerStore: idempotent writes', () => {
 });
 
 describe('InMemoryFillerStore: nonce leases by store time (N-34)', () => {
-  const tx = (hash: string): InFlightTransaction => ({ hash: `0x${hash}`, raw: '0x02', kind: 'fill', maxFeePerGas: 2n, maxPriorityFeePerGas: 1n, sentAtMs: 0 });
+  const tx = (hash: string): InFlightTransaction => ({ hash: `0x${hash}`, raw: '0x02', kind: 'fill', to: `0x${'11'.repeat(20)}`, data: '0x', value: 0n, gasLimit: 21_000n, maxFeePerGas: 2n, maxPriorityFeePerGas: 1n, sentAtMs: 0 });
   const where = { chain: 'eip155:1' as const, address: FILLER };
 
   test('allocation is max(chain nonce, last allocated + 1) and never repeats', async () => {

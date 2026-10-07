@@ -25,6 +25,10 @@ export interface ChainConfig {
   sendGuardSec: number;
   /** Native balance the delivery address must hold for gas, wei (V-E5; filler-node `ops.minGas`). */
   minGasWei: bigint;
+  /** Blocks deep an own transaction (`fill`, `settle`) must be before it counts as done; until then a reorg is answered by resending. Default `openConfirmations`. */
+  fillConfirmations?: number;
+  /** Ceiling on `maxFeePerGas`, wei: no transaction and no replacement is priced above it. Default none. */
+  maxFeePerGasWei?: bigint;
 }
 
 export interface ChainReaders {

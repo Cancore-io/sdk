@@ -182,6 +182,48 @@ offered ──► intent-sent ──► intent-acked ──► checking ──�
   (an unknown result as `OTHER`); `penalty.applied` and `order.settled` become the `penalty` and `settled`
   events; every decline the `declined` event.
 
+## Delivery
+
+Once a receipt went out, the SDK delivers the attempt on its EVM destination (fillers.md §4.6):
+
+```
+receipted ──► pending ──► sent ──► included ──► confirmed   (ticket → filled, `filled` event)
+                 │          │  ▲        │
+                 │          │  └─reorg──┘ (resent while the ticket is live)
+                 └──────────┴──► failed (reverted; nonce spent elsewhere; cancelled after validUntil)
+```
+
+- **What is sent.** `fill(order, amount, ticket, ticketSig)` from the fill key the ticket names as
+  `deliveryKey` (T-25), after re-checking that the issued ticket names this filler, its delivery key and its
+  `repayTo` (S13). `amount` is the offer's `amountOut`; `delivery.fillAmount` may raise it to over-send a
+  fee-on-transfer output — the router measures what the recipient got (T-26), kept as `received`. Below
+  `order.minReceived` nothing is sent. `eth_estimateGas` runs first: a revert (`AlreadyFilled`,
+  `TicketExpired`, an ERC-20 refusal) is named and nothing is sent.
+- **sendGuard.** Nothing goes out with less than `chains.<caip2>.sendGuardSec` left to `validUntil` (T-29).
+  A fill still pending after `delivery.replaceAfterMs` (30 s) is replaced on its nonce with both fees raised
+  by `delivery.feeBumpPercent` (15 %, at least 10), while `validUntil` has not passed and never above
+  `chains.<caip2>.maxFeePerGasWei`. Once the chain's own time is past `validUntil` the fill can never succeed,
+  and its nonce is freed by a zero-value transfer to self.
+- **Reorgs.** A fill is done `chains.<caip2>.fillConfirmations` deep (default `openConfirmations`). An
+  inclusion that disappears is resent — the same bytes on the same nonce — while the ticket is live (T-30);
+  the block header and receipt of the last inclusion seen stay on the fill record as evidence (R-3).
+- **One writer per nonce** (N-9, N-34). Transactions go out only on nonces leased from the store
+  (`delivery.nonceLeaseTtlMs`, default 60 s), recorded before they are broadcast; the lease is re-checked
+  at the record and renewed while the nonce is driven. Every lease TTL a replica claims the expired leases of
+  dead replicas and drives their nonces from the chain. A held nonce with nothing recorded is reused, so an
+  abandoned send never strands the transactions behind it.
+- **Restart** (N-15). The fill record, the nonce journal and `filled(orderHash)` decide: a fill already
+  recorded on a nonce is driven, never sent a second time; a receipted attempt with nothing under way is
+  delivered.
+- **Allowance.** The router is approved for the output asset when the allowance cannot cover a fill — up to
+  `delivery.approvals[<caip2>][<token>]`, or exactly the fill without a limit; never unlimited by default. With
+  a limit, the allowance is topped up at start when it has fallen below half of it. One approve per token at a
+  time; a token that refuses to change a non-zero allowance is approved to zero first.
+- **Events.** `filled { orderHash, attempt, txHash, amount }` once confirmed; stages `fill.sent` (nonce,
+  gas limit, fees), `fill.replaced`, `fill.included`, `fill.reorged`, `fill.reverted`, `fill.cancelled`,
+  `fill.confirmed` (`gasUsed`, `effectiveGasPrice`, `latencyMs`, `replacements`), `fill.refused`,
+  `approve.sent`, `approve.confirmed`.
+
 ## Checks before the receipt
 
 Before the SDK signs a `ticket.receipt` — and when the node calls `verifyEscrow(ticket)` — it runs the checks
@@ -356,8 +398,10 @@ import {
   createFakeWebSocketFactory,
   createTestGatewaySigner,
   createTestTypedDataSigner,
+  createTestFillSigner,
   createRecordingEventSink,
   createRecordingLogger,
+  FakeChain,
 } from '@cancore/trader/filler/testing';
 ```
 
@@ -372,6 +416,12 @@ import {
 - `createFakeFetch(routes)` is an `HttpFetch` answering `"METHOD /path"` routes and recording requests — the
   REST side of filler-gateway in a test.
 - `createTestTypedDataSigner(privateKey)` — the reference behaviour of the signer contract, for test keys.
+- `createTestFillSigner(privateKey)` — a `FillSigner` that also signs real EIP-1559 transactions;
+  `decodeSignedTransaction(raw)` reads one back with its sender.
+- `FakeChain` — blocks, routers, tokens and logs behind `EvmRpc`, with a mempool: `eth_sendRawTransaction`
+  (replacements need +10 % on both fees), `mine()` includes and executes `fill`, `approve` and transfers,
+  receipts, `minTip` to keep transactions stuck, `setTimestamp` for block times, and `reorg(fromBlock)` that
+  undoes what the replaced blocks did (`dropOnReorg` drops their transactions instead of re-queuing them).
 
 ## License
 
