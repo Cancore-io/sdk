@@ -513,9 +513,14 @@ instead, and only ever places orders:
 import { io } from 'socket.io-client';
 
 const socket = io(`${baseUrl}/presence`, {
-  // A function, so every reconnect signs in with a fresh token.
-  auth: (cb) => acct.session.token().then((token) => cb({ token })),
+  // A function, so every reconnect signs in with a fresh token. A failed sign-in still answers
+  // (without a token, so the gateway refuses it) rather than leaving an unhandled rejection.
+  auth: (cb) => void acct.session.token().then((token) => cb({ token }), () => cb({})),
   transports: ['websocket'],
+});
+// socket.io never retries a refused handshake; the poll carries on, and this tries again.
+socket.on('connect_error', () => {
+  if (!socket.active) setTimeout(() => socket.connect(), 60_000);
 });
 
 const loop = acct.serve({

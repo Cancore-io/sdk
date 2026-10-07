@@ -28,7 +28,8 @@ export interface SettleRun extends SettleOptions {
 export interface ServeOptions extends Omit<SettleOptions, 'signal'> {
   /**
    * A connected Socket.IO socket on the gateway's `/presence` namespace (see `@cancore/client/realtime`),
-   * signed in as this account: `auth: (cb) => acct.session.token().then((token) => cb({ token }))`.
+   * signed in as this account: `auth: (cb) => void acct.session.token().then((token) => cb({ token }), () => cb({}))`
+   * (a failed sign-in must still answer the callback: the gateway refuses the handshake, never an unhandled rejection).
    * Without one, the poll alone drives the trades, `reconcileMs` apart.
    */
   socket?: SocketLike;

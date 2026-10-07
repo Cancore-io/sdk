@@ -345,8 +345,14 @@ One loop drives every DvP trade of the account. Your strategy only places and ca
 import { io } from 'socket.io-client';
 
 const socket = io(`${baseUrl}/presence`, {
-  auth: (cb) => void acct.session.token().then((token) => cb({ token })), // fresh JWT on every reconnect
+  // Fresh JWT on every reconnect. A failed sign-in still answers (no token: the gateway refuses the
+  // handshake) instead of an unhandled rejection that would kill the process.
+  auth: (cb) => void acct.session.token().then((token) => cb({ token }), () => cb({})),
   transports: ['websocket'],
+});
+// socket.io never retries a refused handshake; the poll carries on, and this tries again.
+socket.on('connect_error', () => {
+  if (!socket.active) setTimeout(() => socket.connect(), 60_000);
 });
 
 const loop = acct.serve({
@@ -549,7 +555,7 @@ the package (`npm run typecheck`), and a test keeps the copies below identical t
 Environment: `CANCORE_MNEMONIC`, `CANCORE_INVITE_CODE` (first run), `CANCORE_API` (default dev),
 `CANCORE_ACCOUNT_INDEX`, `CANCORE_LEGAL_DOCUMENTS` (the JSON array of documents Cancore gave you,
 when the stand requires them), plus the per-script variables in each header. The taker needs
-`CANCORE_ORDER_ID` and `MAX_PAY`, and refuses mainnet (or an unknown host) without
+`CANCORE_ORDER_ID`, `PAY_TOKEN` and `MAX_PAY`, and refuses mainnet (or an unknown host) without
 `CANCORE_ALLOW_MAINNET=yes`.
 
 `partner-account.ts` (shared: signer, sign-in, onboarding, terms):
@@ -594,7 +600,12 @@ export async function openAccount(): Promise<SelfCustodyAccount> {
   // Orders are refused until the documents the stand requires are accepted. Only ever accept what you read.
   const { accepted, requiredVersion } = await acct.legalStatus();
   if (!accepted && requiredVersion) {
-    const documents = JSON.parse(need('CANCORE_LEGAL_DOCUMENTS')) as ConsentedDocument[];
+    const documents: unknown = JSON.parse(need('CANCORE_LEGAL_DOCUMENTS'));
+    const isDocument = (d: unknown): d is ConsentedDocument =>
+      typeof d === 'object' && d !== null && ['key', 'version', 'url'].every((k) => typeof (d as Record<string, unknown>)[k] === 'string');
+    if (!Array.isArray(documents) || documents.length === 0 || !documents.every(isDocument)) {
+      throw new Error('CANCORE_LEGAL_DOCUMENTS must be a JSON array of {"key","version","url"} strings, as Cancore gave them');
+    }
     await acct.acceptTerms(requiredVersion, documents);
   }
 
@@ -609,6 +620,7 @@ export async function openAccount(): Promise<SelfCustodyAccount> {
 // A minimal Canton market maker: keep exactly one sell order on a pair, settle every trade with serve().
 // Run ONE process per account: two processes with the same key would both quote and both sign.
 //   CANCORE_MNEMONIC=… CANCORE_INVITE_CODE=… CANCORE_PAIR_ID=… npx tsx partner-maker.ts
+import type { OrderStatus } from '@cancore/client';
 import { io } from 'socket.io-client';
 import { baseUrl, openAccount } from './partner-account';
 
@@ -623,17 +635,23 @@ console.log('CC balance', (await acct.balance('CC')).balance);
 
 let stopping = false;
 
-// Our open orders on this pair. listMine also returns orders we took, so keep only the ones we placed.
-const openOrders = async () => {
-  const { items } = await acct.swap.listMine({ statusFilter: 'open', pageSize: 100 });
-  return items.filter((o) => o.initiatorUserId === me.id && o.tradingPairId === tradingPairId);
+// Our orders on this pair in the given states. listMine also returns orders we took, so keep only the ones we placed.
+const ownOrders = async (statuses: OrderStatus[]) => {
+  const pages = await Promise.all(statuses.map((statusFilter) => acct.swap.listMine({ statusFilter, pageSize: 100 })));
+  return pages.flatMap((p) => p.items).filter((o) => o.initiatorUserId === me.id && o.tradingPairId === tradingPairId);
 };
+const openOrders = () => ownOrders(['open']);
 
-// Converge on exactly one open order: keep the first, cancel extras (left by a crash), place one if none.
+// One order at a time, from placing to settling: a taken order still holds our funds until it settles,
+// so a new one is placed only once none of ours is open or in flight. Extra open orders (left by a
+// crash) are cancelled. An open order left by an earlier run keeps that run's price: after a crash
+// with a changed ASK_AMOUNT, cancel it by hand and the next tick quotes the new one.
 const reconcile = async () => {
-  const [keep, ...extra] = await openOrders();
-  for (const o of extra) await acct.swap.cancel(o.id);
-  if (keep || stopping) return;
+  // Open first: an order taken between the two reads then shows up in the second.
+  const open = await openOrders();
+  const inFlight = await ownOrders(['accepted', 'swap_created', 'claimed']);
+  for (const o of inFlight.length > 0 ? open : open.slice(1)) await acct.swap.cancel(o.id);
+  if (inFlight.length > 0 || open.length > 0 || stopping) return;
   // Canton↔Canton: the SDK sends dvp: true, so the order settles through allocation-DvP.
   const order = await acct.swap.createForPair({ tradingPairId, sourceAmount: sell, targetAmount: ask, side: 'sell' });
   console.log('placed', order.id);
@@ -650,8 +668,15 @@ const requote = () => {
 
 // Realtime makes the loop react at once; without the socket the 30 s poll alone drives it.
 const socket = io(`${baseUrl}/presence`, {
-  auth: (cb) => void acct.session.token().then((token) => cb({ token })),
+  // No token (sign-in failed): connect without one, the gateway refuses it and the handler below retries.
+  auth: (cb) => void acct.session.token().then((token) => cb({ token }), () => cb({})),
   transports: ['websocket'],
+});
+// A refused handshake is never retried by socket.io itself; try again in a minute, the poll covers the gap.
+socket.on('connect_error', () => {
+  if (!socket.active && !stopping) setTimeout(() => {
+    if (!stopping) socket.connect();
+  }, 60_000);
 });
 
 const loop = acct.serve({
@@ -670,22 +695,15 @@ await requote();
 // Also once a minute: an order that expired by itself (expirationHours) sends no event.
 const timer = setInterval(() => void requote(), 60_000);
 
-// Cashback: claim whatever accrued, once an hour.
-const cashback = setInterval(() => {
-  void (async () => {
-    const summary = await acct.cashback.summary();
-    if (summary.claimable.length > 0 && !summary.hasPendingClaim) {
-      const { claim, pending } = await acct.cashback.collect();
-      console.log('cashback claim', claim.id, claim.status, 'payouts pending', pending);
-    }
-  })().catch((err: unknown) => console.error('cashback', err));
-}, 60 * 60_000);
+// No cashback here: a maker never funds the fee leg, so it earns none (guide, section 8).
 
-process.on('SIGTERM', () => {
+let shuttingDown = false;
+const shutdown = () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
   void (async () => {
     stopping = true;
     clearInterval(timer);
-    clearInterval(cashback);
     try {
       // Stop signing first and let the step in flight finish; taken orders resume on the next start.
       await loop.stop();
@@ -701,21 +719,27 @@ process.on('SIGTERM', () => {
       process.exit();
     }
   })();
-});
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 ```
 
 `partner-taker.ts`:
 
 ```ts
 // A minimal taker: take one named Canton↔Canton order and settle the taker side.
-//   CANCORE_MNEMONIC=… CANCORE_ORDER_ID=… MAX_PAY=… npx tsx partner-taker.ts
-// MAX_PAY is the most of the order's target token you agree to pay. On mainnet also set CANCORE_ALLOW_MAINNET=yes.
+//   CANCORE_MNEMONIC=… CANCORE_ORDER_ID=… PAY_TOKEN=… MAX_PAY=… npx tsx partner-taker.ts
+// PAY_TOKEN is the token you pay with (the order's target token, e.g. CC), MAX_PAY the most of it you agree to pay.
+// On mainnet also set CANCORE_ALLOW_MAINNET=yes.
 import { API_NETWORKS, SettleError } from '@cancore/client/selfcustody';
 import { baseUrl, openAccount } from './partner-account';
 
 const orderId = process.env.CANCORE_ORDER_ID;
+const payToken = process.env.PAY_TOKEN;
 const maxPay = process.env.MAX_PAY;
-if (!orderId || !maxPay) throw new Error('set CANCORE_ORDER_ID (the order to take) and MAX_PAY (the most you pay for it)');
+if (!orderId || !payToken || !maxPay) {
+  throw new Error('set CANCORE_ORDER_ID (the order to take), PAY_TOKEN (the token you pay) and MAX_PAY (the most you pay)');
+}
 const network = API_NETWORKS[new URL(baseUrl).hostname];
 if (network !== 'devnet' && network !== 'testnet' && process.env.CANCORE_ALLOW_MAINNET !== 'yes') {
   // Mainnet, or a host the SDK cannot place: real funds may move, so refuse unless the operator opted in.
@@ -725,6 +749,7 @@ if (network !== 'devnet' && network !== 'testnet' && process.env.CANCORE_ALLOW_M
 const acct = await openAccount();
 const order = await acct.swap.get(orderId);
 if (order.status !== 'open' || order.dvp !== true) throw new Error(`order ${order.id} is ${order.status}, dvp=${order.dvp}`);
+if (order.targetTokenName !== payToken) throw new Error(`order ${order.id} asks for ${order.targetTokenName}, not PAY_TOKEN ${payToken}`);
 if (!(Number(order.targetAmount) <= Number(maxPay))) { // a MAX_PAY that is not a number refuses too
   throw new Error(`order ${order.id} asks ${order.targetAmount} ${order.targetTokenName}, above MAX_PAY ${maxPay}`);
 }
@@ -736,6 +761,8 @@ try {
     autoWithdraw: true, // release our allocation if the maker never funds
   });
   console.log('settled', swap.id, swap.status);
+  // The taker funds the fee leg, so a qualifying trade earns cashback about a minute later (guide, section 8):
+  // claim it from a later run or a scheduled job with acct.cashback.collect().
 } catch (err) {
   if (!(err instanceof SettleError)) throw err;
   console.error(err.message);
