@@ -95,7 +95,14 @@ export type FillerStage =
   | 'tx.confirmed'
   /** No further replacement: the cap (3× the first fee on the nonce, or `maxFeePerGasWei`) is reached; the last transaction is rebroadcast. */
   | 'tx.capped'
+  /** A `settle.attestations` kept for an attempt (`detail.channel`: `ws` or `rest`). */
   | 'attestations.received'
+  /** Nothing sent: `detail.reason` (`SettleRefusal`), the revert or the mismatch in `detail.error` / `detail.detail`. */
+  | 'settle.refused'
+  /** Operator alert (`detail.kind`): `half-window`, `refund-near`, `refunded`, `divergent`, `insufficient-signatures`, `set-not-active`, `mismatch`. */
+  | 'settle.alert'
+  /** Own `settle` mined and reverted. */
+  | 'settle.reverted'
   | 'settle.sent'
   | 'settle.confirmed';
 

@@ -558,6 +558,29 @@ describe('REST fallback (protocol §3.6)', () => {
     expect(h.client.send(await h.client.seal({ type: 'fill.reported', id: 'f', orderHash: ORDER_HASH, attempt: 1, txRef: '0x01' }))).toBe(false);
   });
 
+  test('GET /v1/filler/attestations/{orderHash}: 404 ATTESTATIONS_NOT_READY is «not yet»; a verified frame goes to the settle.attestations handler as rest', async () => {
+    const h = harness();
+    const seen = record(h, 'settle.attestations');
+    const path = `GET /v1/filler/attestations/${ORDER_HASH}`;
+    h.http.routes[path] = () => ({ status: 404, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code: 'ATTESTATIONS_NOT_READY', message: 'fewer than threshold' }) });
+    await expect(h.client.pullAttestations(ORDER_HASH)).resolves.toBe(false);
+    expect(seen).toEqual([]);
+
+    const frame = h.gateway.frame({ type: 'settle.attestations', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1, sourceChainId: 'eip155:56', proof: {}, signatures: [], setId: 1, threshold: 2, refundAfter: '1790003600' });
+    h.http.routes[path] = () => ({ status: 200, body: frame });
+    await expect(h.client.pullAttestations(ORDER_HASH)).resolves.toBe(true);
+    expect(seen).toEqual([expect.objectContaining({ channel: 'rest', firstSeen: true, frame: expect.objectContaining({ type: 'settle.attestations', sig: frame.sig }) })]);
+    expect(h.store.journal().filter((e) => e.type === 'settle.attestations')).toHaveLength(1);
+  });
+
+  test('an attestation body not signed by filler-gateway is refused, never handled', async () => {
+    const h = harness();
+    const seen = record(h, 'settle.attestations');
+    h.http.routes[`GET /v1/filler/attestations/${ORDER_HASH}`] = () => ({ status: 200, body: h.impostor.frame({ type: 'settle.attestations', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1 }) });
+    await expect(h.client.pullAttestations(ORDER_HASH)).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE' });
+    expect(seen).toEqual([]);
+  });
+
   test('restOrigin maps ws to http for the local stand', async () => {
     const h = harness();
     const rest = new GatewayRest({ gatewayUrl: 'ws://localhost:3010/v1', fillerId: FILLER, gatewaySigner: h.gateway.address, quoteSigner: h.quoteSigner, seal: h.client.seal, fetch: h.http.fetch, clock: h.clock, logger: h.logger, nextId: () => 'x' });
