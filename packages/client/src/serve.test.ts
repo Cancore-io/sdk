@@ -1,5 +1,5 @@
-import { serve, type ServeEvent } from './serve';
-import type { SelfCustodyAccount, Settled, SettleOptions, SettleRun, Withdrawal } from './selfcustody';
+import { serve, type ServeEvent, type SettleRun } from './serve';
+import type { SelfCustodyAccount, Settled, SettleOptions, Withdrawal } from './selfcustody';
 import type { Order } from './swap';
 
 /**
@@ -217,4 +217,79 @@ test('with autoWithdraw on, the expired event found by the poll carries the with
     { type: 'expired', orderId: 'o2', swapId: 's2', error: expect.any(Error), withdrawal },
     { type: 'withdrawn', orderId: 'o2', swapId: 's2', withdrawal },
   ]);
+});
+
+test('a newly taken order gets its proposal signed without waiting behind a restart’s expired backlog', async () => {
+  // 250 expired swaps, all clean, each look a slow read: the first poll queues 200 of them at concurrency 1.
+  const { acct } = expiredAccount(250, new Set());
+  let looked = 0;
+  const locked = async () => {
+    looked++;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    return false;
+  };
+  const live = order('live', { status: 'accepted' });
+  const get = acct.swap.get;
+  acct.swap.get = async (id: string) => (id === 'live' ? live : get(id));
+  let lookedAtProposal = -1;
+  acct.make = async (id, opts) => {
+    await (opts as SettleRun).gate!(async () => void (lookedAtProposal = looked)); // the proposal step
+    return settledOf(id);
+  };
+  const handlers = new Map<string, (payload: unknown) => void>();
+  const socket = { on: (event: string, handler: (payload: unknown) => void) => void handlers.set(event, handler), off: () => {} };
+  const events: ServeEvent[] = [];
+  const handle = serve(acct, { socket, concurrency: 1, reconcileMs: 3_600_000, onEvent: (e) => events.push(e) }, locked);
+  await until(() => looked >= 3);
+  handlers.get('order:updated')!(live);
+  await until(() => events.some((e) => e.type === 'settled'));
+  await handle.stop();
+  // At most the look in hand when the order arrived, and one more between its look and its step — not the 200 queued.
+  expect(lookedAtProposal).toBeLessThan(10);
+});
+
+test('under live load that never lets up, a locked expired swap is still withdrawn within a bounded number of steps', async () => {
+  // Five expired swaps, the last one locked; three live trades signing step after step at concurrency 1,
+  // so a live step is always waiting when a slot is released.
+  const { acct, withdrawn, locked } = expiredAccount(5, new Set(['s4']));
+  const live = ['l0', 'l1', 'l2'].map((id) => order(id));
+  const get = acct.swap.get;
+  acct.swap.get = async (id: string) => live.find((o) => o.id === id) ?? get(id);
+  acct.swap.listMine = (async ({ statusFilter }: { statusFilter?: string }) => {
+    const items = live.filter((o) => o.status === statusFilter);
+    return { items, page: 1, pageSize: 100, total: items.length };
+  }) as SelfCustodyAccount['swap']['listMine'];
+  let steps = 0;
+  acct.make = async (id, opts) => {
+    while (!opts?.signal?.aborted && withdrawn.length === 0 && steps < 500) {
+      await (opts as SettleRun).gate!(async () => {
+        steps++;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      });
+    }
+    return settledOf(id);
+  };
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, locked);
+  await until(() => withdrawn.length === 1 || steps >= 500);
+  await handle.stop();
+  expect(withdrawn).toEqual(['s4']);
+  // Five backlog looks, one per four released slots: about 20 live steps, never the whole load.
+  expect(steps).toBeLessThan(40);
+});
+
+test('serve reads me() once per poll, not per look, and a changed party is seen on the next poll', async () => {
+  // Each poll lists one more expired swap; the account's party changes between polls.
+  const { acct, locked } = expiredAccount(4, new Set());
+  let meCalls = 0;
+  let polls = 0;
+  acct.me = (async () => ({ id: 'me', partyId: `p${++meCalls}` })) as SelfCustodyAccount['me'];
+  const listSwaps = acct.listSwaps;
+  acct.listSwaps = (async () => (polls++, (await listSwaps({ pageSize: 100 })).slice(0, polls))) as SelfCustodyAccount['listSwaps'];
+  const seen: string[] = [];
+  const handle = serve(acct, { reconcileMs: 5 }, async (swapId, self) => (seen.push(`${swapId}:${self.partyId}`), locked(swapId)));
+  await until(() => seen.length === 4);
+  await handle.stop();
+  expect(meCalls).toBeLessThanOrEqual(polls);
+  // Each swap is looked at with the party read on the poll that first listed it.
+  expect(seen).toEqual(['s0:p1', 's1:p2', 's2:p3', 's3:p4']);
 });

@@ -14,16 +14,23 @@
   wrapping), so a missed event or a restart never strands a trade; an expired trade still locked
   is an `expired` event once per swap, found by the poll or not. One handler per order;
   `concurrency` (default 4) bounds orders being looked at or signing a step, while waiting trades
-  hold no slot. Failures are `error` events, never throws; after `stop()` no new step is signed,
-  and it resolves once the step under way is. Every signature still goes through `make` /
-  `take` / `withdrawAllocation`, verified before signing. See README, "Running a market maker
-  with serve()".
+  hold no slot; looks at expired swaps the poll lists wait in a lane of their own that gets every
+  fourth released slot, the rest going to live trades first, so a live trade's signature waits for the
+  looks already holding slots and one backlog look in four, never for a restart's whole expired
+  history, and live load
+  never starves an expired locked allocation of its withdraw; `/auth/me` is read once per poll, not
+  once per expired swap, so a changed party is seen within one poll. Failures are `error` events, never throws; after
+  `stop()` no new step is signed, and it resolves once the step under way is (a wait ends within
+  one poll interval). Every signature still goes through `make` / `take` / `withdrawAllocation`,
+  verified before signing. See README, "Running a market maker with serve()".
 - `acct.listSwaps(query?)`: `GET /htlc/swaps` — one page (`page`, `pageSize` ≤ 100, `status`) of
   the account's swaps, HTLC or DvP, newest first.
 - `acct.session.token()`: a fresh JWT, for the realtime socket's handshake.
 - `SettleOptions.signal`: an `AbortSignal` checked before every new step (taking, recording the
   trade, each signature, autoWithdraw) and in every wait, never between a step's signing and its
-  submit: once aborted, `make` / `take` sign nothing new and reject with a `SettleError`.
+  submit: once aborted, `make` / `take` sign nothing new and reject with a `SettleError`. An
+  autoWithdraw stopped before its turn signs nothing and rethrows the trade's own error
+  (`withdrawable: true`), not a failed withdrawal.
 - `SWAP_UPDATED_EVENT` and `SwapUpdate` (`./realtime`), pinned in the realtime contract.
 
 ### Changed

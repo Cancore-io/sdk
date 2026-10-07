@@ -32,7 +32,7 @@ export { API_NETWORKS, DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAUL
 import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
-import { serve, type ServeHandle, type ServeOptions } from './serve';
+import { serve, type ServeHandle, type ServeOptions, type SettleRun } from './serve';
 
 export type { ServeEvent, ServeHandle, ServeOptions } from './serve';
 
@@ -275,11 +275,6 @@ export interface SettleOptions {
    * make / take again to resume where it stopped.
    */
   signal?: AbortSignal;
-}
-
-/** `make` / `take` options as `serve` passes them: `gate` holds each new step, never a wait, to its `concurrency`. */
-export interface SettleRun extends SettleOptions {
-  gate?: <T>(run: () => Promise<T>) => Promise<T>;
 }
 
 export interface SelfCustodyOptions extends SessionOptions {
@@ -1021,7 +1016,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   }
 
   /** Every new step of a settle starts here: never once its signal is aborted, and inside its gate when it has one. */
-  function step<T>(opts: SettleRun, what: string, swapId: string | null, last: HtlcSwap | Order, run: () => Promise<T>): Promise<T> {
+  function step<T>(opts: SettleRun, what: string, swapId: string | null, last: HtlcSwap | Order | undefined, run: () => Promise<T>): Promise<T> {
     const go = () => (opts.signal?.aborted ? Promise.reject(new SettleError(`aborted before ${what}: nothing more was signed`, swapId, last)) : run());
     return opts.gate ? opts.gate(go) : go();
   }
@@ -1127,8 +1122,10 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       const swapId = err.swapId;
       let withdrawal: Withdrawal;
       try {
-        withdrawal = await step(opts, 'withdrawing', swapId, err.last ?? ({ id: swapId, status: 'dvp_expired' } as HtlcSwap), () => withdrawAllocation(swapId));
+        withdrawal = await step(opts, 'withdrawing', swapId, err.last, () => withdrawAllocation(swapId));
       } catch (cause) {
+        // Stopped before the withdraw got its turn: nothing was signed, and the trade's own error says it is still withdrawable.
+        if (opts.signal?.aborted) throw err;
         // Not even the legs could be read: the trade's own error stays the one reported.
         withdrawal = { swapId: err.swapId, withdrawn: [], gone: [], failed: [{ leg: 'all', error: cause }] };
       }
@@ -1325,9 +1322,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       collect,
     },
     serve: (serveOptions) =>
-      serve(account, serveOptions, async (swapId) => {
+      serve(account, serveOptions, async (swapId, self) => {
         const info = await swapInfo(swapId);
-        return info.swap.status === 'dvp_expired' && lockedLegs(info, (await me()).partyId ?? (await ownParty())).length > 0;
+        return info.swap.status === 'dvp_expired' && lockedLegs(info, self.partyId ?? (await ownParty())).length > 0;
       }),
   };
   return account;

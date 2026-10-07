@@ -17,8 +17,13 @@
  * A failure is reported as an `error` event and retried on the next poll; it never stops the loop.
  */
 import { ORDER_UPDATED_EVENT, SWAP_UPDATED_EVENT, type SocketLike, type SwapUpdate } from './realtime';
-import type { HtlcSwap, IncomingTransfer, SelfCustodyAccount, SettleOptions, SettleRun, Settled, Withdrawal } from './selfcustody';
+import type { AccountUser, HtlcSwap, IncomingTransfer, SelfCustodyAccount, SettleOptions, Settled, Withdrawal } from './selfcustody';
 import { TERMINAL_ORDER_STATUSES, type Order, type OrderStatus } from './swap';
+
+/** `make` / `take` options as serve passes them: `gate` holds each new step, never a wait, to its `concurrency`. Internal to serve. */
+export interface SettleRun extends SettleOptions {
+  gate?: <T>(run: () => Promise<T>) => Promise<T>;
+}
 
 export interface ServeOptions extends Omit<SettleOptions, 'signal'> {
   /**
@@ -65,7 +70,7 @@ export interface ServeHandle {
   take(orderId: string): void;
   /**
    * Stop: nothing new is started or signed from here on; resolves once the handlers in flight are done — a
-   * step already being signed is finished, a wait ends at once.
+   * step already being signed is finished, a wait ends within one poll interval (`pollMs`, 5 s by default).
    */
   stop(): Promise<void>;
 }
@@ -73,22 +78,32 @@ export interface ServeHandle {
 /** Orders that are still somewhere between taken and settled. */
 const IN_FLIGHT: OrderStatus[] = ['accepted', 'swap_created'];
 const PAGE = 100;
+/** Every AGING-th released slot goes to the expired backlog first. */
+const AGING = 4;
 
-/** `locked(swapId)`: the swap is `dvp_expired` with this account's allocation still locked (the account's own read). */
-export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, locked: (swapId: string) => Promise<boolean>): ServeHandle {
+/** `locked(swapId, self)`: the swap is `dvp_expired` with this account's allocation still locked (the account's own read; `self` is serve's `me()`, read once per poll). */
+export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, locked: (swapId: string, self: AccountUser) => Promise<boolean>): ServeHandle {
   const { socket, reconcileMs = 30_000, concurrency = 4, autoWithdraw = true, acceptIncoming = false, onEvent } = options;
   const stopper = new AbortController();
 
   let busy = 0;
   const waiting: Array<() => void> = [];
-  /** One of `concurrency` slots, for a look at an order or one signing step; the waits between steps hold none. */
-  async function slot<T>(run: () => Promise<T>): Promise<T> {
+  /** Looks at the expired swaps the poll lists: a released slot goes to a live trade first, except every `AGING`th. */
+  const backlog: Array<() => void> = [];
+  let released = 0;
+  /**
+   * One of `concurrency` slots, for a look at an order or one signing step; the waits between steps hold none.
+   * `expired` puts a look in the backlog lane, so a restart over a long expired history never queues a live
+   * trade's signature behind all of it; every `AGING`th released slot goes to the backlog, so live load
+   * never starves a locked expired allocation of its withdraw.
+   */
+  async function slot<T>(run: () => Promise<T>, expired = false): Promise<T> {
     if (busy < concurrency) busy++;
-    else await new Promise<void>((resolve) => waiting.push(resolve));
+    else await new Promise<void>((resolve) => (expired ? backlog : waiting).push(resolve));
     try {
       return await run();
     } finally {
-      const next = waiting.shift();
+      const next = ++released % AGING === 0 ? (backlog.shift() ?? waiting.shift()) : (waiting.shift() ?? backlog.shift());
       if (next) next();
       else busy--;
     }
@@ -109,19 +124,20 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   /** Swaps an `expired` event was sent for. */
   const reported = new Set<string>();
   const active = new Map<string, Promise<void>>();
-  let self: Promise<{ id: string }> | undefined;
+  let self: Promise<AccountUser> | undefined;
   const me = () => (self ??= acct.me().catch((err: unknown) => {
     self = undefined;
     throw err;
   }));
 
-  function kick(orderId: string): void {
+  /** `expired`: the poll found it among the `dvp_expired` swaps (the backlog lane). */
+  function kick(orderId: string, expired = false): void {
     if (stopper.signal.aborted || done.has(orderId)) return;
     if (active.has(orderId)) {
       again.add(orderId);
       return;
     }
-    const running = work(orderId)
+    const running = work(orderId, expired)
       .catch((error: unknown) => {
         if (!stopper.signal.aborted) emit({ type: 'error', orderId, error });
       })
@@ -155,8 +171,8 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
     return maker;
   }
 
-  async function work(orderId: string): Promise<void> {
-    const maker = await slot(() => look(orderId));
+  async function work(orderId: string, expired: boolean): Promise<void> {
+    const maker = await slot(() => look(orderId), expired);
     if (maker === undefined || stopper.signal.aborted) return;
     try {
       const settled = await (maker ? acct.make : acct.take)(orderId, settle);
@@ -183,7 +199,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
    * allocation still locked, say so and, with `autoWithdraw`, release it. A settled or clean one is left alone.
    */
   async function expiredLocked(orderId: string, swapId: string): Promise<void> {
-    if (!(await locked(swapId)) || stopper.signal.aborted) return;
+    if (!(await locked(swapId, await me())) || stopper.signal.aborted) return;
     const withdrawal = autoWithdraw ? await acct.withdrawAllocation(swapId) : undefined;
     if (!reported.has(swapId)) {
       reported.add(swapId);
@@ -213,7 +229,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
       older = await acct.listSwaps({ status: 'dvp_expired', page: olderPage, pageSize: PAGE });
       olderPage = older.length < PAGE ? 2 : olderPage + 1;
     }
-    for (const swap of [...newest, ...older]) if (swap.orderId) kick(swap.orderId);
+    for (const swap of [...newest, ...older]) if (swap.orderId) kick(swap.orderId, true);
     for (const orderId of toTake) kick(orderId);
     if (acceptIncoming) {
       const { accepted, failed } = await acct.acceptIncoming(typeof acceptIncoming === 'function' ? acceptIncoming : undefined);
@@ -224,6 +240,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   async function tick(): Promise<void> {
+    self = undefined; // `/auth/me` once per poll: a changed party is seen within one tick
     try {
       await reconcile();
     } catch (error) {
