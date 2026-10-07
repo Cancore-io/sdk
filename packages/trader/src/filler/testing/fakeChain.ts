@@ -17,6 +17,7 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
 import { decodeParams, encodeEventLog, encodeFunctionResult, selectorOf, topicOf, type AbiEntry } from '../chain/abi';
 import { decodeSignedTransaction, type DecodedTransaction } from './transactions';
+import { recoverAddress } from '../signer';
 import { hashFillProof, hashOrder, hashTicket } from '../chain/hashes';
 import type { AttestorSetRecord, IntentRecord } from '../chain/router';
 import type { EvmRpc, EvmRpcRequest } from '../rpc';
@@ -27,6 +28,7 @@ const ROUTER_FUNCTIONS = new Map(ROUTER_ABI.filter((e) => e.type === 'function')
 const ERC20_FUNCTIONS = new Map(ERC20_ABI.filter((e) => e.type === 'function' && (e.name === 'balanceOf' || e.name === 'allowance')).map((e) => [selectorOf(e), e]));
 const ERC20_APPROVE = ERC20_ABI.find((e) => e.type === 'function' && e.name === 'approve')!;
 const ROUTER_FILL = ROUTER_ABI.find((e) => e.type === 'function' && e.name === 'fill')!;
+const ROUTER_SETTLE = ROUTER_ABI.find((e) => e.type === 'function' && e.name === 'settle')!;
 
 /** The revert data of a custom error without arguments: its selector. */
 export const errorSelector = (name: string): Hex => `0x${bytesToHex(keccak_256(utf8ToBytes(`${name}()`))).slice(0, 8)}`;
@@ -392,6 +394,7 @@ export class FakeChain implements EvmRpc {
         ],
       };
     }
+    if (router && selector === selectorOf(ROUTER_SETTLE)) return this.settleEffect(router, tx, timestamp);
     const token = this.tokens.get(to);
     if (token && selector === selectorOf(ERC20_APPROVE)) {
       const [spender, value] = decodeParams(ERC20_APPROVE.inputs ?? [], `0x${tx.data.slice(10)}`) as [Hex, bigint];
@@ -402,6 +405,63 @@ export class FakeChain implements EvmRpc {
       return { gasUsed: 46_000n, logs: [], undo: [() => token.allowances.set(k, before)] };
     }
     return undefined;
+  }
+
+  /**
+   * `CancoreRouter.settle(order, proof, sigs)` on this (source) router: the
+   * checks of attestors.md §4.8 in code order, then the payout of
+   * `inputAmount × 10⁴ / (10⁴ + feeBps)` in `inputToken` from the router to
+   * `proof.repayTo`.
+   */
+  private settleEffect(router: FakeRouter, tx: { to: string; data: Hex }, timestamp: bigint): { gasUsed: bigint; logs: Array<{ address: string; name: string; args: Record<string, unknown> }>; undo: Array<() => void> } {
+    const [order, proof, sigs] = decodeParams(ROUTER_SETTLE.inputs ?? [], `0x${tx.data.slice(10)}`) as [Order, FillProof & Record<string, unknown>, Hex[]];
+    const orderHash = hashOrder(order, { chainId: this.chainId, router: router.address });
+    const intent = router.intents.get(lower(orderHash));
+    if (!intent || intent.status !== 1) throw revert('IntentNotOpen');
+    if (Number(proof.kind) !== 1) throw revert('UnsupportedProofKind');
+    if (lower(proof.orderHash) !== lower(orderHash) || lower(proof.destination) !== lower(String(order.destination)) || lower(proof.recipient) !== lower(String(order.recipient)) || lower(proof.outputAsset) !== lower(String(order.outputAsset))) {
+      throw revert('ProofOrderMismatch');
+    }
+    if (BigInt(proof.amountDelivered) < BigInt(String(order.minReceived))) throw revert('BelowMinReceived');
+    if (BigInt(proof.filledAt) > BigInt(String(order.fillDeadline))) throw revert('FilledAfterDeadline');
+    if (BigInt(proof.filledAt) < intent.openedAt) throw revert('FilledBeforeOpen');
+    if (BigInt(proof.fillRef) === 0n) throw revert('ZeroFillRef');
+    const repayTo = String(proof.repayTo);
+    if (!/^0x0{24}[0-9a-fA-F]{40}$/.test(repayTo) || BigInt(repayTo) === 0n) throw revert('ZeroAddress');
+    const set = router.attestorSets.get(Number(proof.setId));
+    if (!set || timestamp < set.activeFrom || (set.retiredAt !== 0n && timestamp >= set.retiredAt)) throw revert('AttestorSetNotActive');
+    if (sigs.length < set.threshold) throw revert('InsufficientSignatures');
+    const digest = hashFillProof(proof as FillProof, { chainId: this.chainId, router: router.address });
+    let previous = 0n;
+    for (const sig of sigs) {
+      let signer: Hex;
+      try {
+        signer = recoverAddress(digest, sig);
+      } catch {
+        throw revert('ECDSAInvalidSignature');
+      }
+      if (BigInt(signer) <= previous) throw revert('UnsortedSigners');
+      previous = BigInt(signer);
+      if (!set.members.some((m) => lower(m) === signer)) throw revert('NotAttestor');
+      if (router.revokedAttestors.has(signer)) throw revert('AttestorRevoked');
+    }
+    const payout = (BigInt(String(order.inputAmount)) * 10_000n) / (10_000n + BigInt(String(order.feeBps)));
+    const token = this.token(String(order.inputToken) as Hex);
+    const payee = lower(`0x${repayTo.slice(26)}`);
+    const routerBalance = token.balances.get(lower(router.address)) ?? 0n;
+    const payeeBalance = token.balances.get(payee) ?? 0n;
+    token.balances.set(lower(router.address), routerBalance - payout);
+    token.balances.set(payee, payeeBalance + payout);
+    intent.status = 2;
+    return {
+      gasUsed: 120_000n,
+      logs: [{ address: lower(router.address), name: 'Settled', args: { orderHash, fillerId: proof.fillerId, repayTo, payout, fee: BigInt(String(order.inputAmount)) - payout } }],
+      undo: [
+        () => token.balances.set(lower(router.address), routerBalance),
+        () => token.balances.set(payee, payeeBalance),
+        () => (intent.status = 1),
+      ],
+    };
   }
 
   /** `eth_estimateGas`: runs the call in the next block and undoes it at once; a revert is thrown. */
@@ -570,6 +630,11 @@ export class FakeChain implements EvmRpc {
   private call(to: string, data: Hex, block: bigint): Hex {
     const selector = data.slice(0, 10).toLowerCase() as Hex;
     const router = this.routers.get(to);
+    if (router && selector === selectorOf(ROUTER_SETTLE)) {
+      // A state-changing call simulated in `block` and undone: '0x' or the revert.
+      this.settleEffect(router, { to, data }, this.timestampOf(block)).undo.reverse().forEach((u) => u());
+      return '0x';
+    }
     if (router) {
       const entry = ROUTER_FUNCTIONS.get(selector);
       if (!entry) throw Object.assign(new Error('execution reverted'), { code: 3 });

@@ -120,6 +120,27 @@ export class GatewayRest {
     return out;
   }
 
+  /**
+   * `GET /v1/filler/attestations/{orderHash}`: the verified `settle.attestations`
+   * of this filler's delivered attempt, or undefined while filler-gateway answers
+   * 404 `ATTESTATIONS_NOT_READY`. Any other refusal is thrown.
+   */
+  async getAttestations(orderHash: Hex): Promise<VerifiedFrame | undefined> {
+    const path = `/v1/filler/attestations/${encodeURIComponent(orderHash)}`;
+    let text: string;
+    try {
+      ({ text } = await this.authed('GET', path));
+    } catch (error) {
+      if (error instanceof GatewayError && error.code === 'ATTESTATIONS_NOT_READY') return undefined;
+      throw error;
+    }
+    const check = verifyGatewayObject(parseJson(text, path), utf8(text), this.expect);
+    if (!check.ok || check.verified.frame.type !== 'settle.attestations') {
+      throw new GatewayError('UNVERIFIED_RESPONSE', false, `${path}: the body failed verification (${check.ok ? check.verified.frame.type : check.reason})`);
+    }
+    return check.verified;
+  }
+
   /** Forgets the token; the next call logs in again. */
   reset(): void {
     this.token = undefined;

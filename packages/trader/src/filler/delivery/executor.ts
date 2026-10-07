@@ -143,7 +143,12 @@ export interface ExecutorOptions {
   logger: Logger;
   events: EventSink;
   delivery?: DeliveryOptions;
+  /** Called once a fill is confirmed (settlement pulls its attestations at once). */
+  onFilled?: (orderHash: Hex, attempt: number) => void;
 }
+
+/** A `settle` of this replica's, `fillConfirmations` deep: success or revert (`receipt.status`). */
+export type SettleIncludedListener = (chain: EvmChainId, tx: InFlightTransaction, receipt: TransactionReceipt) => Promise<void>;
 
 // ---------------------------------------------------------------------------
 
@@ -192,6 +197,7 @@ export class Executor {
   private readonly busy = new Map<string, Promise<DeliveryResult>>();
   private readonly approving = new Map<string, Promise<void>>();
   private sweep: Cancel | undefined;
+  private settleListener: SettleIncludedListener | undefined;
   private started = false;
   private stopped = false;
 
@@ -231,6 +237,11 @@ export class Executor {
       this.drivers.set(chain, driver);
     }
     return driver;
+  }
+
+  /** Where a tracked `settle` goes once it is deep enough (the settlement). */
+  onSettleIncluded(listener: SettleIncludedListener): void {
+    this.settleListener = listener;
   }
 
   // -- lifecycle ----------------------------------------------------------------
@@ -606,6 +617,10 @@ export class Executor {
   // -- tracking -----------------------------------------------------------------------
 
   /** Drives the nonce of `lease` until it is done: confirmed, reverted, cancelled — or the lease is lost. */
+  watch(driver: TransactionDriver, lease: NonceLease): void {
+    this.track(driver, lease);
+  }
+
   private track(driver: TransactionDriver, lease: NonceLease): void {
     const k = `${driver.chain}:${lease.nonce}`;
     if (this.stopped || this.trackers.has(k)) return;
@@ -656,6 +671,12 @@ export class Executor {
   private async included(t: Tracker, tx: InFlightTransaction, receipt: TransactionReceipt, depth: bigint, txs: readonly InFlightTransaction[]): Promise<boolean> {
     const { store } = this.options;
     const chain = t.driver.chain;
+    if (tx.kind === 'settle') {
+      if (depth < this.confirmations(chain)) return false;
+      await this.settleListener?.(chain, tx, receipt);
+      await store.nonces.complete(t.lease, tx.hash);
+      return true;
+    }
     if (tx.kind !== 'fill' || !tx.orderHash || tx.attempt === undefined) {
       if (tx.kind === 'cancel') await this.cancelled(chain, tx, txs, receipt);
       else this.stage(tx.kind === 'approve' ? 'approve.confirmed' : 'tx.confirmed', tx.orderHash, tx.attempt, { chain, kind: tx.kind, txHash: tx.hash, status: receipt.status, gasUsed: receipt.gasUsed.toString() });
@@ -713,6 +734,7 @@ export class Executor {
         latencyMs: (confirmed.inclusion?.seenAtMs ?? this.options.clock.now()) - first.sentAtMs,
       });
       this.options.logger.info('delivery: fill confirmed', { orderHash, attempt, chain, txHash: tx.hash });
+      this.options.onFilled?.(orderHash, attempt);
     }
     await store.nonces.complete(t.lease, tx.hash);
     return true;

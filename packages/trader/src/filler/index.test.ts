@@ -139,8 +139,11 @@ describe('the skeleton of sdk.md §3.6', () => {
     expect(configErrorField(() => createFiller(baseConfig()).onTicketOffer('accept' as never))).toBe('onTicketOffer');
   });
 
+  test('selfSettle() of an order with no confirmed fill sends nothing: SettleError no-fill', async () => {
+    await expect(withHooks().selfSettle(`0x${'ab'.repeat(32)}`)).rejects.toMatchObject({ name: 'SettleError', reason: 'no-fill' });
+  });
+
   test.each([
-    ['selfSettle', 'CAN-1856', (f: Filler) => f.selfSettle('0x00')],
     ['verifyDraw', 'CAN-1848', (f: Filler) => f.verifyDraw('0x00')],
     ['bindStake', 'CAN-1857', (f: Filler) => f.bindStake(createTestTypedDataSigner(FILL_KEY), { chain: 'eip155:1' })],
     ['stats', 'CAN-1940', (f: Filler) => f.stats()],
