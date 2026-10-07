@@ -1,6 +1,7 @@
 // A minimal Canton market maker: keep exactly one sell order on a pair, settle every trade with serve().
 // Run ONE process per account: two processes with the same key would both quote and both sign.
 //   CANCORE_MNEMONIC=… CANCORE_INVITE_CODE=… CANCORE_PAIR_ID=… npx tsx partner-maker.ts
+import type { OrderStatus } from '@cancore/client';
 import { io } from 'socket.io-client';
 import { baseUrl, openAccount } from './partner-account';
 
@@ -15,17 +16,23 @@ console.log('CC balance', (await acct.balance('CC')).balance);
 
 let stopping = false;
 
-// Our open orders on this pair. listMine also returns orders we took, so keep only the ones we placed.
-const openOrders = async () => {
-  const { items } = await acct.swap.listMine({ statusFilter: 'open', pageSize: 100 });
-  return items.filter((o) => o.initiatorUserId === me.id && o.tradingPairId === tradingPairId);
+// Our orders on this pair in the given states. listMine also returns orders we took, so keep only the ones we placed.
+const ownOrders = async (statuses: OrderStatus[]) => {
+  const pages = await Promise.all(statuses.map((statusFilter) => acct.swap.listMine({ statusFilter, pageSize: 100 })));
+  return pages.flatMap((p) => p.items).filter((o) => o.initiatorUserId === me.id && o.tradingPairId === tradingPairId);
 };
+const openOrders = () => ownOrders(['open']);
 
-// Converge on exactly one open order: keep the first, cancel extras (left by a crash), place one if none.
+// One order at a time, from placing to settling: a taken order still holds our funds until it settles,
+// so a new one is placed only once none of ours is open or in flight. Extra open orders (left by a
+// crash) are cancelled. An open order left by an earlier run keeps that run's price: after a crash
+// with a changed ASK_AMOUNT, cancel it by hand and the next tick quotes the new one.
 const reconcile = async () => {
-  const [keep, ...extra] = await openOrders();
-  for (const o of extra) await acct.swap.cancel(o.id);
-  if (keep || stopping) return;
+  // Open first: an order taken between the two reads then shows up in the second.
+  const open = await openOrders();
+  const inFlight = await ownOrders(['accepted', 'swap_created', 'claimed']);
+  for (const o of inFlight.length > 0 ? open : open.slice(1)) await acct.swap.cancel(o.id);
+  if (inFlight.length > 0 || open.length > 0 || stopping) return;
   // Canton↔Canton: the SDK sends dvp: true, so the order settles through allocation-DvP.
   const order = await acct.swap.createForPair({ tradingPairId, sourceAmount: sell, targetAmount: ask, side: 'sell' });
   console.log('placed', order.id);
@@ -42,8 +49,15 @@ const requote = () => {
 
 // Realtime makes the loop react at once; without the socket the 30 s poll alone drives it.
 const socket = io(`${baseUrl}/presence`, {
-  auth: (cb) => void acct.session.token().then((token) => cb({ token })),
+  // No token (sign-in failed): connect without one, the gateway refuses it and the handler below retries.
+  auth: (cb) => void acct.session.token().then((token) => cb({ token }), () => cb({})),
   transports: ['websocket'],
+});
+// A refused handshake is never retried by socket.io itself; try again in a minute, the poll covers the gap.
+socket.on('connect_error', () => {
+  if (!socket.active && !stopping) setTimeout(() => {
+    if (!stopping) socket.connect();
+  }, 60_000);
 });
 
 const loop = acct.serve({
@@ -62,22 +76,15 @@ await requote();
 // Also once a minute: an order that expired by itself (expirationHours) sends no event.
 const timer = setInterval(() => void requote(), 60_000);
 
-// Cashback: claim whatever accrued, once an hour.
-const cashback = setInterval(() => {
-  void (async () => {
-    const summary = await acct.cashback.summary();
-    if (summary.claimable.length > 0 && !summary.hasPendingClaim) {
-      const { claim, pending } = await acct.cashback.collect();
-      console.log('cashback claim', claim.id, claim.status, 'payouts pending', pending);
-    }
-  })().catch((err: unknown) => console.error('cashback', err));
-}, 60 * 60_000);
+// No cashback here: a maker never funds the fee leg, so it earns none (guide, section 8).
 
-process.on('SIGTERM', () => {
+let shuttingDown = false;
+const shutdown = () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
   void (async () => {
     stopping = true;
     clearInterval(timer);
-    clearInterval(cashback);
     try {
       // Stop signing first and let the step in flight finish; taken orders resume on the next start.
       await loop.stop();
@@ -93,4 +100,6 @@ process.on('SIGTERM', () => {
       process.exit();
     }
   })();
-});
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

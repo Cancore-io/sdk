@@ -37,7 +37,12 @@ export async function openAccount(): Promise<SelfCustodyAccount> {
   // Orders are refused until the documents the stand requires are accepted. Only ever accept what you read.
   const { accepted, requiredVersion } = await acct.legalStatus();
   if (!accepted && requiredVersion) {
-    const documents = JSON.parse(need('CANCORE_LEGAL_DOCUMENTS')) as ConsentedDocument[];
+    const documents: unknown = JSON.parse(need('CANCORE_LEGAL_DOCUMENTS'));
+    const isDocument = (d: unknown): d is ConsentedDocument =>
+      typeof d === 'object' && d !== null && ['key', 'version', 'url'].every((k) => typeof (d as Record<string, unknown>)[k] === 'string');
+    if (!Array.isArray(documents) || documents.length === 0 || !documents.every(isDocument)) {
+      throw new Error('CANCORE_LEGAL_DOCUMENTS must be a JSON array of {"key","version","url"} strings, as Cancore gave them');
+    }
     await acct.acceptTerms(requiredVersion, documents);
   }
 
