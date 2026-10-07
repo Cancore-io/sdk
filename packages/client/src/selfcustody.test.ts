@@ -13,6 +13,7 @@ import {
   SettleError,
   type IncomingTransfer,
   type SelfCustodyOptions,
+  type ServeEvent,
 } from './selfcustody';
 import { createSession, expiresWithin, type KeySigner } from './session';
 
@@ -518,6 +519,17 @@ function venue({
       return json(order, 201);
     }
     if (route === 'GET /orders/o1') return json(order);
+    if (route === 'GET /orders/my') {
+      const filter = searchParams.get('statusFilter');
+      const mine = [order.initiatorUserId, order.opponentUserId].includes(caller.id) && (!filter || filter === order.status);
+      return json({ items: mine ? [order] : [], page: Number(searchParams.get('page') ?? 1), pageSize: Number(searchParams.get('pageSize') ?? 20), total: mine ? 1 : 0 });
+    }
+    if (route === 'GET /htlc/swaps') {
+      const filter = searchParams.get('status');
+      const mine = swap && [swap.sender, swap.receiver].includes(caller.partyId) && (!filter || filter === swap.status);
+      return json(mine ? [swap] : []);
+    }
+    if (route === 'GET /htlc/s1') return swap ? json(swap) : refuse(404, 'Swap not found');
     if (route === 'POST /orders/o1/accept') {
       order.status = 'accepted';
       order.opponentUserId = caller.id;
@@ -1772,4 +1784,190 @@ test('faucet signs the faucet terms for this account’s party and asks for test
   expect(posted).toEqual({ agreementSignature: expect.any(String), agreementTimestamp: at });
   const message = `CANCORE_FAUCET_TERMS_OF_SERVICE_V1:p::1220:${at}`;
   expect(ed25519.verify(hex(String(posted!.agreementSignature)), new TextEncoder().encode(message), hex(signer.public_key))).toBe(true);
+});
+
+/** A socket the test drives: `emit` delivers to whatever `serve` subscribed. */
+function fakeSocket() {
+  const handlers = new Map<string, Set<(payload: unknown) => void>>();
+  return {
+    on: (event: string, handler: (payload: unknown) => void) => handlers.set(event, (handlers.get(event) ?? new Set()).add(handler)),
+    off: (event: string, handler: (payload: unknown) => void) => handlers.get(event)?.delete(handler),
+    emit: (event: string, payload: unknown) => handlers.get(event)?.forEach((handler) => handler(payload)),
+    listeners: () => [...handlers.values()].reduce((n, set) => n + set.size, 0),
+  };
+}
+
+/** Resolve once `check` holds, yielding a macrotask between looks. */
+async function until(check: () => boolean, budgetMs = 10_000): Promise<void> {
+  const end = Date.now() + budgetMs;
+  while (!check()) {
+    if (Date.now() > end) throw new Error('condition not met in time');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
+describe('serve(): the maker runs nothing but serve()', () => {
+  test('an order taken while serve runs is settled on the maker side, triggered by the realtime event alone', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [60, 61]);
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    const socket = fakeSocket();
+    const events: ServeEvent[] = [];
+    // The poll runs once at start (the order is still open) and not again within the test.
+    const handle = maker.serve({ socket, reconcileMs: 3_600_000, onEvent: (e) => events.push(e) });
+    await until(() => api.routes.has('get /htlc/swaps'));
+
+    const taking = taker.take('o1');
+    await until(() => api.order.status === 'accepted');
+    // The broadcast reaches every client; serve keeps its own orders only.
+    socket.emit('order:updated', { ...api.order, id: 'not-mine', initiatorUserId: 'someone', opponentUserId: 'else' });
+    socket.emit('order:updated', { ...api.order });
+
+    await until(() => events.some((e) => e.type === 'settled'));
+    expect(await taking).toMatchObject({ swap: { status: 'dvp_settled' } });
+    expect(events).toEqual([expect.objectContaining({ type: 'settled', orderId: 'o1', swapId: 's1' })]);
+    expect(dvpSteps(api)).toEqual([
+      'dvp:dvpCreateProposal:maker', 'dvp:dvpAcceptProposal:taker', 'dvp:dvpAllocateLeg:taker', 'dvp:dvpAllocateLeg:maker',
+    ]);
+    await handle.stop();
+    expect(socket.listeners()).toBe(0);
+  });
+
+  test('with no event at all, the reconcile poll finds the taken order and settles it', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [62, 63]);
+    const events: ServeEvent[] = [];
+    const handle = maker.serve({ reconcileMs: 5, onEvent: (e) => events.push(e) });
+    const [taken] = await Promise.all([taker.take('o1'), until(() => events.some((e) => e.type === 'settled'))]);
+    await handle.stop();
+    expect(taken.swap.status).toBe('dvp_settled');
+    expect(events.filter((e) => e.type === 'settled')).toHaveLength(1);
+    // Polled many times over, each step was still signed exactly once.
+    expect(dvpSteps(api)).toEqual([
+      'dvp:dvpCreateProposal:maker', 'dvp:dvpAcceptProposal:taker', 'dvp:dvpAllocateLeg:taker', 'dvp:dvpAllocateLeg:maker',
+    ]);
+  });
+
+  test('a burst of events for one swap runs one handler, and signs each step once', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [64, 65]);
+    await taker.swap.accept('o1');
+    const socket = fakeSocket();
+    const events: ServeEvent[] = [];
+    const handle = maker.serve({ socket, reconcileMs: 3_600_000, onEvent: (e) => events.push(e) });
+    for (let i = 0; i < 5; i++) {
+      socket.emit('order:updated', { ...api.order });
+      socket.emit('swap:updated', { swapId: 's1', orderId: 'o1', status: 'dvp_proposed', timestamp: '' });
+    }
+    // make() called directly while serve has the order joins the same run.
+    const [direct] = await Promise.all([maker.make('o1'), taker.take('o1')]);
+    await until(() => events.some((e) => e.type === 'settled'));
+    await handle.stop();
+    expect(direct.swap.status).toBe('dvp_settled');
+    expect(api.proposals).toHaveLength(1);
+    expect(dvpSteps(api).filter((s) => s.endsWith(':maker'))).toEqual(['dvp:dvpCreateProposal:maker', 'dvp:dvpAllocateLeg:maker']);
+    expect(events.filter((e) => e.type === 'settled')).toHaveLength(1);
+  });
+
+  test('a trade that expired with this account’s allocation locked is withdrawn by serve, once', async () => {
+    const api = venue({ takerFundedThenExpired: 'stillLocked' });
+    const { maker, taker } = await tradingPair(api, [66, 67]);
+    await taker.swap.accept('o1');
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    // take() without autoWithdraw leaves the taker's two legs locked.
+    expect(await taker.take('o1').catch((e: unknown) => e)).toMatchObject({ withdrawable: true });
+    await making;
+
+    const events: ServeEvent[] = [];
+    const handle = taker.serve({ reconcileMs: 5, onEvent: (e) => events.push(e) });
+    await until(() => events.some((e) => e.type === 'withdrawn'));
+    // Several more polls: the swap is still listed as dvp_expired, and nothing is signed again.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await handle.stop();
+    expect(events.filter((e) => e.type === 'withdrawn')).toEqual([
+      expect.objectContaining({ orderId: 'o1', swapId: 's1', withdrawal: { swapId: 's1', withdrawn: ['counter', 'fee'], gone: [], failed: [] } }),
+    ]);
+    expect(events.filter((e) => e.type === 'error')).toEqual([]);
+    expect(api.log.filter((e) => e.type === 'dvp:dvpWithdrawAllocation').map((e) => e.params.legIds)).toEqual([['leg-counter'], ['leg-fee']]);
+    expect(api.legs().filter((l) => l.sender === 'party-taker').map((l) => l.status)).toEqual(['cancelled', 'cancelled']);
+  });
+
+  test('handle.take(orderId) takes an open order and settles the taker side', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [68, 69]);
+    const events: ServeEvent[] = [];
+    const [makerLoop, takerLoop] = [maker.serve({ reconcileMs: 5 }), taker.serve({ reconcileMs: 5, onEvent: (e) => events.push(e) })];
+    takerLoop.take('o1');
+    await until(() => events.some((e) => e.type === 'settled'));
+    await Promise.all([makerLoop.stop(), takerLoop.stop()]);
+    expect(api.takes()).toBe(1);
+    expect(api.legs().every((l) => l.lockRef)).toBe(true);
+  });
+});
+
+describe('stopping a settle: an abort signs nothing new and ends every wait', () => {
+  test('a make waiting for its order to be taken ends on abort with a SettleError', async () => {
+    const api = venue();
+    const { maker } = await tradingPair(api, [70, 71]);
+    const controller = new AbortController();
+    const making = maker.make('o1', { signal: controller.signal }).catch((e: unknown) => e);
+    await until(() => api.routes.has('get /orders/{id}'));
+    controller.abort();
+    expect(await making).toMatchObject({ name: 'SettleError', message: expect.stringMatching(/^aborted while waiting for order o1 to be taken/) });
+  });
+
+  test('an aborted make whose next step is ready signs it not: no proposal, no signature', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [72, 73]);
+    await taker.swap.accept('o1');
+    expect(await maker.make('o1', { signal: AbortSignal.abort() }).catch((e: unknown) => e)).toMatchObject({
+      name: 'SettleError',
+      message: expect.stringMatching(/^aborted before recording the trade/),
+    });
+    expect(api.proposals).toEqual([]);
+    expect(dvpSteps(api)).toEqual([]);
+  });
+
+  test('an aborted take does not take the order', async () => {
+    const api = venue();
+    const { taker } = await tradingPair(api, [74, 75]);
+    expect(await taker.take('o1', { signal: AbortSignal.abort() }).catch((e: unknown) => e)).toMatchObject({ message: expect.stringMatching(/^aborted before taking the order/) });
+    expect(api.takes()).toBe(0);
+    expect(api.order.status).toBe('open');
+  });
+
+  test('a make joining one in flight: its own signal ends its own wait, and the run in flight goes on to settle', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [76, 77]);
+    const running = maker.make('o1');
+    const controller = new AbortController();
+    const joined = maker.make('o1', { signal: controller.signal }).catch((e: unknown) => e);
+    controller.abort();
+    expect(await joined).toMatchObject({ name: 'SettleError', message: expect.stringMatching(/already in flight \(it goes on\)/) });
+    const [made] = await Promise.all([running, taker.take('o1')]);
+    expect(made.swap.status).toBe('dvp_settled');
+    expect(api.proposals).toHaveLength(1);
+  });
+});
+
+test('session.token() renews an expiring token before handing it out, and reuses a fresh one', async () => {
+  const signer = await providerFromMnemonic(PHRASE);
+  const renewed = jwt('a');
+  const seen: string[] = [];
+  const fetchImpl: FetchLike = async (url) => {
+    const path = new URL(url).pathname;
+    seen.push(path);
+    if (path === '/auth/challenge') return json({ challenge: 'Welcome to Cancore 2026-09-28 sig:1' });
+    if (path === '/auth/login-signature') return json({ token: jwt('a', Math.floor(Date.now() / 1000) + 30), refreshToken: 'r1', user: {} });
+    if (path === '/auth/refresh') return json({ token: renewed, refreshToken: 'r2' });
+    return refuse(404, 'Not found');
+  };
+  const session = createSession({ baseUrl, signer, fetchImpl });
+  await session.login();
+  expect(await session.token()).toBe(renewed);
+  expect(await session.token()).toBe(renewed);
+  expect(seen).toEqual(['/auth/challenge', '/auth/login-signature', '/auth/refresh']);
 });

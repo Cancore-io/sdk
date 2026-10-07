@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ORDER_UPDATED_EVENT, waitForOrder } from './realtime';
+import { ORDER_UPDATED_EVENT, SWAP_UPDATED_EVENT, waitForOrder } from './realtime';
 import type { Order } from './swap';
 
 /**
@@ -54,7 +54,7 @@ async function fieldsTheClientReads(): Promise<string[]> {
 }
 
 test('the contract names the events this module subscribes to', () => {
-  expect(contract.events.map((event) => event.name)).toEqual([ORDER_UPDATED_EVENT]);
+  expect(contract.events.map((event) => event.name)).toEqual([ORDER_UPDATED_EVENT, SWAP_UPDATED_EVENT]);
 });
 
 test('every payload field the client reads is one the contract declares', async () => {
@@ -67,6 +67,7 @@ test('every payload field the client reads is one the contract declares', async 
 test('every payload field the contract declares is a field OrderResponseDto has', () => {
   const known = Object.keys(spec.components.schemas.OrderResponseDto?.properties ?? {});
   expect(known.length).toBeGreaterThan(0);
-  const declared = contract.events.flatMap((event) => event.payload.fieldsRead);
+  // `swap:updated` carries ids, not an order: only the order feed is held to the order DTO.
+  const declared = contract.events.filter((event) => event.name === ORDER_UPDATED_EVENT).flatMap((event) => event.payload.fieldsRead);
   expect(declared.filter((field) => !known.includes(field))).toEqual([]);
 });

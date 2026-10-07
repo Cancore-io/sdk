@@ -78,7 +78,7 @@ async function routesTheClientCalls(): Promise<string[]> {
   await acct.session.register({ inviteCode: 'ABCD-EFGH-JKMN' });
   await Promise.all([
     acct.me(), acct.onboard(), acct.legalStatus(), acct.acceptTerms('v', [doc]), acct.execute('tokens.consolidate'),
-    acct.swapState('o1'), acct.incoming(), acct.acceptIncoming(), acct.consolidate(), acct.balance('CC'),
+    acct.swapState('o1'), acct.listSwaps({ status: 'dvp_expired' }), acct.incoming(), acct.acceptIncoming(), acct.consolidate(), acct.balance('CC'),
     acct.send({ receiverPartyId: 'p', amount: '1' }),
     acct.cashback.summary(), acct.cashback.claims(), acct.cashback.claim(), acct.cashback.collect(),
     acct.faucet(), acct.swap.createForPair({ tradingPairId: 'o1', sourceAmount: '1', targetAmount: '1' }),
@@ -214,6 +214,7 @@ const QUERY_FIELDS: Record<string, string[]> = {
   '/orders/my': ['page', 'pageSize', 'sortBy', 'sortDir', 'sourceNetwork', 'targetNetwork', 'sourceTokenAddress', 'targetTokenAddress', 'statusFilter'],
   '/canton-wallet/bridge/history': ['page', 'pageSize'],
   '/auto-trader/pairs': ['sourceToken', 'targetToken', 'sortBy', 'sortDir'],
+  '/htlc/swaps': ['page', 'pageSize', 'status'],
 };
 
 test.each(Object.entries(QUERY_FIELDS))('GET %s: every query field the client types is a parameter the route declares', (path, fields) => {
@@ -249,7 +250,7 @@ const RESPONSE_FIELDS: Record<string, string[]> = {
   UserResponseDto: ['id', 'partyId', 'partyName', 'roles', 'status', 'signingMethod', 'email', 'walletPublicKey'],
   HtlcSwapResponseDto: [
     'id', 'status', 'sender', 'receiver', 'tokenId', 'amount', 'counterTokenId', 'counterAmount',
-    'hashLock', 'timeout', 'counterTimeout', 'rejectReason', 'proposalContractId', 'orderId',
+    'hashLock', 'timeout', 'counterTimeout', 'rejectReason', 'proposalContractId', 'orderId', 'createdAt', 'updatedAt',
   ],
   FullSwapInfoDto: ['swap', 'legs', 'dvp'],
   SwapLegDto: ['role', 'sender', 'receiver', 'tokenId', 'amount', 'lockRef', 'status', 'legId', 'userActionRequired'],
