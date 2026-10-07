@@ -78,20 +78,24 @@ export interface ServeHandle {
 /** Orders that are still somewhere between taken and settled. */
 const IN_FLIGHT: OrderStatus[] = ['accepted', 'swap_created'];
 const PAGE = 100;
+/** Every AGING-th released slot goes to the expired backlog first. */
+const AGING = 4;
 
-/** `locked(swapId, self)`: the swap is `dvp_expired` with this account's allocation still locked (the account's own read; `self` is serve's cached `me()`). */
+/** `locked(swapId, self)`: the swap is `dvp_expired` with this account's allocation still locked (the account's own read; `self` is serve's `me()`, read once per poll). */
 export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, locked: (swapId: string, self: AccountUser) => Promise<boolean>): ServeHandle {
   const { socket, reconcileMs = 30_000, concurrency = 4, autoWithdraw = true, acceptIncoming = false, onEvent } = options;
   const stopper = new AbortController();
 
   let busy = 0;
   const waiting: Array<() => void> = [];
-  /** Looks at the expired swaps the poll lists: a slot goes to these only when no live trade wants one. */
+  /** Looks at the expired swaps the poll lists: a released slot goes to a live trade first, except every `AGING`th. */
   const backlog: Array<() => void> = [];
+  let released = 0;
   /**
    * One of `concurrency` slots, for a look at an order or one signing step; the waits between steps hold none.
    * `expired` puts a look in the backlog lane, so a restart over a long expired history never queues a live
-   * trade's signature behind it.
+   * trade's signature behind all of it; every `AGING`th released slot goes to the backlog, so live load
+   * never starves a locked expired allocation of its withdraw.
    */
   async function slot<T>(run: () => Promise<T>, expired = false): Promise<T> {
     if (busy < concurrency) busy++;
@@ -99,7 +103,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
     try {
       return await run();
     } finally {
-      const next = waiting.shift() ?? backlog.shift();
+      const next = ++released % AGING === 0 ? (backlog.shift() ?? waiting.shift()) : (waiting.shift() ?? backlog.shift());
       if (next) next();
       else busy--;
     }
@@ -236,6 +240,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   async function tick(): Promise<void> {
+    self = undefined; // `/auth/me` once per poll: a changed party is seen within one tick
     try {
       await reconcile();
     } catch (error) {

@@ -14,9 +14,12 @@
   wrapping), so a missed event or a restart never strands a trade; an expired trade still locked
   is an `expired` event once per swap, found by the poll or not. One handler per order;
   `concurrency` (default 4) bounds orders being looked at or signing a step, while waiting trades
-  hold no slot; looks at expired swaps the poll lists take a slot only when no live trade wants one,
-  so a restart over a long expired history never delays a live trade's signature, and `/auth/me` is
-  read once per loop, not once per expired swap. Failures are `error` events, never throws; after
+  hold no slot; looks at expired swaps the poll lists wait in a lane of their own that gets every
+  fourth released slot, the rest going to live trades first, so a live trade's signature waits for the
+  looks already holding slots and one backlog look in four, never for a restart's whole expired
+  history, and live load
+  never starves an expired locked allocation of its withdraw; `/auth/me` is read once per poll, not
+  once per expired swap, so a changed party is seen within one poll. Failures are `error` events, never throws; after
   `stop()` no new step is signed, and it resolves once the step under way is (a wait ends within
   one poll interval). Every signature still goes through `make` / `take` / `withdrawAllocation`,
   verified before signing. See README, "Running a market maker with serve()".

@@ -1896,6 +1896,32 @@ describe('serve(): the maker runs nothing but serve()', () => {
     expect(api.legs().filter((l) => l.sender === 'party-taker').map((l) => l.status)).toEqual(['cancelled', 'cancelled']);
   });
 
+  test('one poll over an expired swap still locked reads /auth/me once: look and locked check share it', async () => {
+    const api = venue({ takerFundedThenExpired: 'stillLocked' });
+    const { maker, taker } = await tradingPair(api, [70, 71]);
+    await taker.swap.accept('o1');
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    expect(await taker.take('o1').catch((e: unknown) => e)).toMatchObject({ withdrawable: true });
+    await making;
+
+    let meCalls = 0;
+    const fetchImpl = api.fetchImpl;
+    const counted = createSelfCustody({ baseUrl, signer: (await providerFromMnemonic(PHRASE, { account: 71 }))!, fetchImpl: async (url, init) => {
+      if (new URL(url).pathname === '/auth/me') meCalls++;
+      return fetchImpl(url, init);
+    }, ...fast });
+    await counted.session.login();
+    // The order ended while no loop ran (a restart): the poll finds it terminal and checks the swap.
+    Object.assign(api.order, { status: 'cancelled' });
+    meCalls = 0;
+    const events: ServeEvent[] = [];
+    // One poll only; autoWithdraw off, so nothing but the look and the locked check reads the account.
+    const handle = counted.serve({ reconcileMs: 3_600_000, autoWithdraw: false, onEvent: (e) => events.push(e) });
+    await until(() => events.some((e) => e.type === 'expired'));
+    await handle.stop();
+    expect(meCalls).toBe(1);
+  });
+
   test('handle.take(orderId) takes an open order and settles the taker side', async () => {
     const api = venue();
     const { maker, taker } = await tradingPair(api, [68, 69]);

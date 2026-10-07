@@ -557,8 +557,10 @@ rejects the joiner too. The joiner's own `signal` only ends the joiner's wait; t
 trades: at most that many orders are being looked at or have a step being signed at once. A trade
 waiting on its counterparty or the venue holds no slot, so a newly taken order gets its proposal
 at once however many trades are waiting. Looks at the expired swaps the poll lists (a restart over a
-long history queues hundreds) get a slot only when no live trade wants one, so they never hold a
-live trade's next signature back.
+long history queues hundreds) wait in a lane of their own: a released slot goes to a live trade
+first, except every fourth, which goes to that backlog. A live trade's next signature waits at most
+for the looks already holding a slot (one may be signing a withdraw) and one backlog look in four,
+never for the whole backlog; and live load never keeps a locked expired allocation from its withdraw.
 
 **Errors are events.** serve() never throws. A failure is an `error` event with its `orderId`,
 and the order is looked at again on the next poll; one order failing does not stop the others.
