@@ -269,10 +269,17 @@ export interface SettleOptions {
    */
   allowUnverifiedSplit?: boolean;
   /**
-   * Stop waiting: checked between steps only, so a step already prepared is still signed and submitted. An
-   * aborted settle is a `SettleError`; run make / take again to resume where it stopped.
+   * Stop: checked before each new step (taking the order, recording the trade, each signature, an
+   * autoWithdraw) and in every wait, never between a step's signing and its submit — so once aborted nothing
+   * new is signed, and a step already under way still finishes. An aborted settle is a `SettleError`; run
+   * make / take again to resume where it stopped.
    */
   signal?: AbortSignal;
+}
+
+/** `make` / `take` options as `serve` passes them: `gate` holds each new step, never a wait, to its `concurrency`. */
+export interface SettleRun extends SettleOptions {
+  gate?: <T>(run: () => Promise<T>) => Promise<T>;
 }
 
 export interface SelfCustodyOptions extends SessionOptions {
@@ -1006,27 +1013,33 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   const owes = (info: SwapInfo, party: string) => info.legs.some((l) => l.sender === party && !l.lockRef);
 
   /** Fund every leg this party owes once the trade exists, then wait for the venue's atomic settle. */
-  async function fundAndSettle(swapId: string, terms: DvpTerms, info: SwapInfo, deadline: number, signal?: AbortSignal): Promise<Settled> {
-    if (owes(info, terms.party)) await signDvp('dvpAllocateLeg', swapId, terms);
-    const settled = await waitDvp(swapId, terms.party, (i) => i.swap.status === 'dvp_settled', deadline, `swap ${swapId} to settle`, signal);
+  async function fundAndSettle(swapId: string, terms: DvpTerms, info: SwapInfo, deadline: number, opts: SettleRun): Promise<Settled> {
+    if (owes(info, terms.party)) await step(opts, 'dvpAllocateLeg', swapId, info.swap, () => signDvp('dvpAllocateLeg', swapId, terms));
+    const settled = await waitDvp(swapId, terms.party, (i) => i.swap.status === 'dvp_settled', deadline, `swap ${swapId} to settle`, opts.signal);
     // Allocation settlement moves the holdings themselves: there is no transfer left to accept.
     return { swap: settled.swap, delivery: 'direct', flow: 'dvp' };
   }
 
-  async function makeOnce(orderId: string, opts: SettleOptions): Promise<Settled> {
+  /** Every new step of a settle starts here: never once its signal is aborted, and inside its gate when it has one. */
+  function step<T>(opts: SettleRun, what: string, swapId: string | null, last: HtlcSwap | Order, run: () => Promise<T>): Promise<T> {
+    const go = () => (opts.signal?.aborted ? Promise.reject(new SettleError(`aborted before ${what}: nothing more was signed`, swapId, last)) : run());
+    return opts.gate ? opts.gate(go) : go();
+  }
+
+  async function makeOnce(orderId: string, opts: SettleRun): Promise<Settled> {
     const deadline = now() + (opts.deadlineMs ?? DEFAULT_DEADLINE_MS);
     const order = await waitFor(() => swap.get(orderId), (o) => o.status !== 'open', deadline, `order ${orderId} to be taken`, null, opts.signal);
     assertCantonOrder(order);
     let swapId = order.swapId ?? null;
     if (!swapId) {
       if (TERMINAL_ORDER_STATUSES.has(order.status)) throw new SettleError(`order ${orderId} is ${order.status}`, null, order);
-      swapId = await proposeDvp(order, opts);
+      swapId = await step(opts, 'recording the trade', null, order, () => proposeDvp(order, opts));
     }
     const party = await ownParty();
     let info = await waitDvp(swapId, party, () => true, deadline, `swap ${swapId}`, opts.signal);
     const terms = await dvpTerms(order, swapId, party, 'maker');
     // The drafted row becomes a proposal only with the maker's own signature; a resumed make skips a done step.
-    if (!info.swap.proposalContractId && !info.dvp?.tradeCid) await signDvp('dvpCreateProposal', swapId, terms);
+    if (!info.swap.proposalContractId && !info.dvp?.tradeCid) await step(opts, 'dvpCreateProposal', swapId, info.swap, () => signDvp('dvpCreateProposal', swapId, terms));
     // The taker funds first: whoever allocates first gives the other side a free option to walk away.
     info = await waitDvp(
       swapId,
@@ -1036,7 +1049,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       'the taker to approve and fund its legs',
       opts.signal,
     );
-    return fundAndSettle(swapId, terms, info, deadline, opts.signal);
+    return fundAndSettle(swapId, terms, info, deadline, opts);
   }
 
   /**
@@ -1072,12 +1085,15 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
   }
 
-  async function takeOnce(orderId: string, opts: SettleOptions): Promise<Settled> {
+  async function takeOnce(orderId: string, opts: SettleRun): Promise<Settled> {
     const deadline = now() + (opts.deadlineMs ?? DEFAULT_DEADLINE_MS);
     let order = await swap.get(orderId);
     assertCantonOrder(order);
     const self = await me();
-    if (order.status === 'open') order = await acceptOrder(order, self.partyId ?? undefined, opts);
+    if (order.status === 'open') {
+      const open = order;
+      order = await step(opts, 'taking the order', null, open, () => acceptOrder(open, self.partyId ?? undefined, opts));
+    }
     if (order.opponentUserId && order.opponentUserId !== self.id) {
       throw new SettleError(`order ${orderId} was taken by another account`, null, order);
     }
@@ -1096,21 +1112,22 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     // The maker's signature turns the draft into a proposal; this account's approval completes it.
     let info = await waitDvp(swapId, party, (i) => Boolean(i.swap.proposalContractId || i.dvp?.tradeCid), deadline, 'the maker to sign the proposal', opts.signal);
     const terms = await dvpTerms(order, swapId, party, 'taker');
-    if (!info.dvp?.tradeCid && info.dvp?.awaitingApprovalFrom.includes(party)) await signDvp('dvpAcceptProposal', swapId, terms);
+    if (!info.dvp?.tradeCid && info.dvp?.awaitingApprovalFrom.includes(party)) await step(opts, 'dvpAcceptProposal', swapId, info.swap, () => signDvp('dvpAcceptProposal', swapId, terms));
     // The venue turns a fully approved proposal into the trade on its next tick.
     info = await waitDvp(swapId, party, (i) => Boolean(i.dvp?.tradeCid), deadline, 'the venue to open the trade', opts.signal);
-    return fundAndSettle(swapId, terms, info, deadline, opts.signal);
+    return fundAndSettle(swapId, terms, info, deadline, opts);
   }
 
   /** Run a settle; on an expiry that left this account's allocation locked, withdraw it first when asked to. */
-  async function autoWithdrawing(opts: SettleOptions, run: () => Promise<Settled>): Promise<Settled> {
+  async function autoWithdrawing(opts: SettleRun, run: () => Promise<Settled>): Promise<Settled> {
     try {
       return await run();
     } catch (err) {
-      if (!(err instanceof SettleError) || !err.withdrawable || !opts.autoWithdraw || !err.swapId) throw err;
+      if (!(err instanceof SettleError) || !err.withdrawable || !opts.autoWithdraw || !err.swapId || opts.signal?.aborted) throw err;
+      const swapId = err.swapId;
       let withdrawal: Withdrawal;
       try {
-        withdrawal = await withdrawAllocation(err.swapId);
+        withdrawal = await step(opts, 'withdrawing', swapId, err.last ?? ({ id: swapId, status: 'dvp_expired' } as HtlcSwap), () => withdrawAllocation(swapId));
       } catch (cause) {
         // Not even the legs could be read: the trade's own error stays the one reported.
         withdrawal = { swapId: err.swapId, withdrawn: [], gone: [], failed: [{ leg: 'all', error: cause }] };
@@ -1132,19 +1149,28 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
 
   /**
    * One settle per order on this account at a time: a second make / take of an order already being settled
-   * joins the run in flight (with that run's options) instead of preparing and signing the same step twice.
+   * joins the run in flight instead of preparing and signing the same step twice. The run keeps its own
+   * options (autoWithdraw, deadline, signal); the joiner's signal only stops the joiner's own wait.
    */
   const settling = new Map<string, Promise<Settled>>();
-  function singleFlight(orderId: string, run: () => Promise<Settled>): Promise<Settled> {
-    let running = settling.get(orderId);
+  function singleFlight(orderId: string, opts: SettleOptions, run: () => Promise<Settled>): Promise<Settled> {
+    const running = settling.get(orderId);
     if (!running) {
-      running = run().finally(() => settling.delete(orderId));
-      settling.set(orderId, running);
+      const started = run().finally(() => settling.delete(orderId));
+      settling.set(orderId, started);
+      return started;
     }
-    return running;
+    const { signal } = opts;
+    if (!signal) return running;
+    return new Promise<Settled>((resolve, reject) => {
+      const stop = () => reject(new SettleError(`aborted while waiting for order ${orderId}'s settle already in flight (it goes on)`, null));
+      if (signal.aborted) return stop();
+      signal.addEventListener('abort', stop, { once: true });
+      running.then(resolve, reject).finally(() => signal.removeEventListener('abort', stop));
+    });
   }
-  const make = (orderId: string, opts: SettleOptions = {}) => singleFlight(orderId, () => autoWithdrawing(opts, () => makeOnce(orderId, opts)));
-  const take = (orderId: string, opts: SettleOptions = {}) => singleFlight(orderId, () => autoWithdrawing(opts, () => takeOnce(orderId, opts)));
+  const make = (orderId: string, opts: SettleOptions = {}) => singleFlight(orderId, opts, () => autoWithdrawing(opts, () => makeOnce(orderId, opts)));
+  const take = (orderId: string, opts: SettleOptions = {}) => singleFlight(orderId, opts, () => autoWithdrawing(opts, () => takeOnce(orderId, opts)));
 
   /** The backend says so when a leg's allocation is already off the ledger (its own row not yet marked released). */
   const alreadyGone = (err: unknown) =>
@@ -1298,7 +1324,11 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       claim: () => http.post<CashbackClaim>('/partner/cashback/claim'),
       collect,
     },
-    serve: (serveOptions) => serve(account, serveOptions),
+    serve: (serveOptions) =>
+      serve(account, serveOptions, async (swapId) => {
+        const info = await swapInfo(swapId);
+        return info.swap.status === 'dvp_expired' && lockedLegs(info, (await me()).partyId ?? (await ownParty())).length > 0;
+      }),
   };
   return account;
 }

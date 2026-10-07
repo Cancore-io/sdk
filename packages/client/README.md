@@ -533,7 +533,7 @@ What it does for every Canton↔Canton DvP order of this account:
 | this account's, still open | waits — the take is announced by an event or found by the next poll |
 | this account's, taken | `make(orderId)`: records the trade, signs the proposal, funds after the taker, waits for the settle → `settled` |
 | taken by this account (or queued with `loop.take`) | `take(orderId)`: accepts if still open, approves, funds → `settled` |
-| ended `dvp_expired` with this account's allocation still locked | `withdrawAllocation(swapId)` → `expired` and `withdrawn` |
+| ended `dvp_expired` with this account's allocation still locked | `expired` (once per swap per loop, also when found by the poll after a restart); with `autoWithdraw`, `withdrawAllocation(swapId)` first → `expired` carrying `withdrawal`, then `withdrawn` |
 
 Both sides resume from whatever step the trade is at, so a restart of the process loses nothing.
 Every signature goes through the same path as `make` / `take`: the transaction read and held to
@@ -543,12 +543,20 @@ the order before the key signs it.
 account (the feed reaches every client; others are ignored) and `swap:updated` (sent only to the
 order's two users). Without a socket, or when an event is lost, the reconcile poll — every
 `reconcileMs`, default 30 s — lists this account's orders in `accepted` / `swap_created` and its
-`dvp_expired` swaps, and looks at each. Nothing depends on an event arriving.
+`dvp_expired` swaps, and looks at each. Expired swaps stay listed after they are cleaned up, so
+each poll reads the newest page of them plus one older page in turn, wrapping at the end: every
+expired swap is looked at again within (its count / 100) polls. Nothing depends on an event arriving.
 
 **One handler per order.** An order is worked on by one handler at a time: a second event while
 it runs schedules one re-run after it, never a second handler, so a step is never prepared or
-signed twice. `make` / `take` called directly for an order serve is already settling join that
-run. At most `concurrency` orders (default 4) are worked on at once; the rest wait their turn.
+signed twice. `make` / `take` called directly for an order this account is already settling
+(by serve or by another call) join that run and resolve or reject with it: the run keeps **its
+own** options — `autoWithdraw` (serve's is on), `deadlineMs`, and its signal, so stopping serve
+rejects the joiner too. The joiner's own `signal` only ends the joiner's wait; the run goes on.
+`make` and `take` of one order share that run. `concurrency` (default 4) bounds the work, not the
+trades: at most that many orders are being looked at or have a step being signed at once. A trade
+waiting on its counterparty or the venue holds no slot, so a newly taken order gets its proposal
+at once however many trades are waiting.
 
 **Errors are events.** serve() never throws. A failure is an `error` event with its `orderId`,
 and the order is looked at again on the next poll; one order failing does not stop the others.
@@ -557,7 +565,7 @@ An `onEvent` listener that throws is ignored.
 | Event | Carries |
 | --- | --- |
 | `settled` | `orderId`, `swapId`, `settled` (what `make` / `take` resolve) |
-| `expired` | `orderId`, `swapId`, `error` (the `SettleError`), `withdrawal` when it ran |
+| `expired` | `orderId`, `swapId`, `error` (the `SettleError`, or an `Error` when the poll found it), `withdrawal` when it ran |
 | `withdrawn` | `orderId`, `swapId`, `withdrawal` — this account's legs released with its own signature |
 | `accepted` | `transfer` — an incoming transfer accepted (with `acceptIncoming`) |
 | `error` | `orderId?`, `swapId?`, `error` |
@@ -566,17 +574,18 @@ An `onEvent` listener that throws is ignored.
 | --- | --- | --- |
 | `socket` | none | a connected `/presence` socket, signed in as this account |
 | `reconcileMs` | 30 000 | the safety-net poll |
-| `concurrency` | 4 | orders worked on at once |
+| `concurrency` | 4 | orders being looked at, or with a step being signed, at once; waiting trades hold no slot |
 | `autoWithdraw` | **true** | release this account's allocation of an expired trade. On by default here, off for `make` / `take`: nobody watches a serve loop, and funds left locked are what it exists to prevent. Pass `false` to only be told (`expired`) |
 | `acceptIncoming` | false | `true`, or a filter: accept incoming transfers (registry-token deliveries, cashback payouts) on every poll |
 | `autoSplitForFee`, `allowUnverifiedSplit` | false | as for `take`, for orders taken through `loop.take` |
 | `deadlineMs`, `timeoutHours`, `maxFeeRate`… | as `make` / `take` | passed through; an order whose wait runs out is an `error`, then picked up again |
 | `signal` | none | an `AbortSignal` that stops the loop like `stop()` |
 
-**Stopping.** `stop()` starts nothing new and resolves once the handlers in flight have stopped.
-They stop at their next wait, never in the middle of a step: a step already prepared is signed
-and submitted first. A stopped trade is resumed by the next `serve()` (or `make` / `take`).
-`make` / `take` take the same `signal` option.
+**Stopping.** After `stop()` no new step is signed: the abort is checked before each step
+(taking the order, recording the trade, each signature, a withdraw) and in every wait, never
+between a step's signing and its submit. A step already under way is signed and submitted, and
+`stop()` resolves once it is; a waiting trade stops at once. A stopped trade is resumed by the next
+`serve()` (or `make` / `take`). `make` / `take` take the same `signal` option, with the same rule.
 
 What serve() does not do: place or price orders (that is your strategy), settle an order with an
 EVM leg or one placed without `dvp: true` (it leaves them alone), or keep its memory across a

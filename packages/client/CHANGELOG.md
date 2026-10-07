@@ -10,22 +10,29 @@
   allocation when a trade expires with it still locked (`autoWithdraw`, **on by default here**;
   `make` / `take` keep it off). Triggered by the realtime `order:updated` / `swap:updated` events
   when a socket is given, with a reconcile poll (`reconcileMs`, default 30 s) over the account's
-  orders in flight and its `dvp_expired` swaps, so a missed event never strands a trade. One
-  handler per order, at most `concurrency` (default 4) at once; failures are `error` events, never
-  throws; `stop()` waits for the steps in flight. Every signature still goes through `make` /
+  orders in flight and all its `dvp_expired` swaps (the newest page plus one older page per poll,
+  wrapping), so a missed event or a restart never strands a trade; an expired trade still locked
+  is an `expired` event once per swap, found by the poll or not. One handler per order;
+  `concurrency` (default 4) bounds orders being looked at or signing a step, while waiting trades
+  hold no slot. Failures are `error` events, never throws; after `stop()` no new step is signed,
+  and it resolves once the step under way is. Every signature still goes through `make` /
   `take` / `withdrawAllocation`, verified before signing. See README, "Running a market maker
   with serve()".
 - `acct.listSwaps(query?)`: `GET /htlc/swaps` — one page (`page`, `pageSize` ≤ 100, `status`) of
   the account's swaps, HTLC or DvP, newest first.
 - `acct.session.token()`: a fresh JWT, for the realtime socket's handshake.
-- `SettleOptions.signal`: an `AbortSignal` that stops `make` / `take` at their next wait (never
-  in the middle of a step).
+- `SettleOptions.signal`: an `AbortSignal` checked before every new step (taking, recording the
+  trade, each signature, autoWithdraw) and in every wait, never between a step's signing and its
+  submit: once aborted, `make` / `take` sign nothing new and reject with a `SettleError`.
 - `SWAP_UPDATED_EVENT` and `SwapUpdate` (`./realtime`), pinned in the realtime contract.
 
 ### Changed
 
 - `make` / `take` of an order this account is already settling join the run in flight instead of
-  starting a second one, so the same step is never prepared and signed twice.
+  starting a second one, so the same step is never prepared and signed twice. The joiner gets the
+  run's result under the run's **own** options (`autoWithdraw`, `deadlineMs`, `signal` — so a
+  stopped `serve()` rejects the joiner too); the joiner's options are ignored, except its `signal`,
+  which ends only the joiner's own wait. `make` and `take` of one order share the run.
 
 ## 0.7.1
 

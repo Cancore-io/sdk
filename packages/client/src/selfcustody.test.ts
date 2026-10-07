@@ -1907,3 +1907,67 @@ describe('serve(): the maker runs nothing but serve()', () => {
     expect(api.legs().every((l) => l.lockRef)).toBe(true);
   });
 });
+
+describe('stopping a settle: an abort signs nothing new and ends every wait', () => {
+  test('a make waiting for its order to be taken ends on abort with a SettleError', async () => {
+    const api = venue();
+    const { maker } = await tradingPair(api, [70, 71]);
+    const controller = new AbortController();
+    const making = maker.make('o1', { signal: controller.signal }).catch((e: unknown) => e);
+    await until(() => api.routes.has('get /orders/{id}'));
+    controller.abort();
+    expect(await making).toMatchObject({ name: 'SettleError', message: expect.stringMatching(/^aborted while waiting for order o1 to be taken/) });
+  });
+
+  test('an aborted make whose next step is ready signs it not: no proposal, no signature', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [72, 73]);
+    await taker.swap.accept('o1');
+    expect(await maker.make('o1', { signal: AbortSignal.abort() }).catch((e: unknown) => e)).toMatchObject({
+      name: 'SettleError',
+      message: expect.stringMatching(/^aborted before recording the trade/),
+    });
+    expect(api.proposals).toEqual([]);
+    expect(dvpSteps(api)).toEqual([]);
+  });
+
+  test('an aborted take does not take the order', async () => {
+    const api = venue();
+    const { taker } = await tradingPair(api, [74, 75]);
+    expect(await taker.take('o1', { signal: AbortSignal.abort() }).catch((e: unknown) => e)).toMatchObject({ message: expect.stringMatching(/^aborted before taking the order/) });
+    expect(api.takes()).toBe(0);
+    expect(api.order.status).toBe('open');
+  });
+
+  test('a make joining one in flight: its own signal ends its own wait, and the run in flight goes on to settle', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [76, 77]);
+    const running = maker.make('o1');
+    const controller = new AbortController();
+    const joined = maker.make('o1', { signal: controller.signal }).catch((e: unknown) => e);
+    controller.abort();
+    expect(await joined).toMatchObject({ name: 'SettleError', message: expect.stringMatching(/already in flight \(it goes on\)/) });
+    const [made] = await Promise.all([running, taker.take('o1')]);
+    expect(made.swap.status).toBe('dvp_settled');
+    expect(api.proposals).toHaveLength(1);
+  });
+});
+
+test('session.token() renews an expiring token before handing it out, and reuses a fresh one', async () => {
+  const signer = await providerFromMnemonic(PHRASE);
+  const renewed = jwt('a');
+  const seen: string[] = [];
+  const fetchImpl: FetchLike = async (url) => {
+    const path = new URL(url).pathname;
+    seen.push(path);
+    if (path === '/auth/challenge') return json({ challenge: 'Welcome to Cancore 2026-09-28 sig:1' });
+    if (path === '/auth/login-signature') return json({ token: jwt('a', Math.floor(Date.now() / 1000) + 30), refreshToken: 'r1', user: {} });
+    if (path === '/auth/refresh') return json({ token: renewed, refreshToken: 'r2' });
+    return refuse(404, 'Not found');
+  };
+  const session = createSession({ baseUrl, signer, fetchImpl });
+  await session.login();
+  expect(await session.token()).toBe(renewed);
+  expect(await session.token()).toBe(renewed);
+  expect(seen).toEqual(['/auth/challenge', '/auth/login-signature', '/auth/refresh']);
+});
