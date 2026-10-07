@@ -62,7 +62,15 @@ function entryPoints(): Record<string, string> {
 
 const ENTRIES = entryPoints();
 
-const DOCUMENTS = ['README.md', ...PACKAGE_DIRS.map((dir) => `packages/${dir}/README.md`)];
+const DOCUMENTS = [
+  'README.md',
+  ...PACKAGE_DIRS.map((dir) => `packages/${dir}/README.md`),
+  // The partner guide is published documentation like any README.
+  'docs/partner-guide.md',
+];
+
+/** The guide's full examples, which `npm run typecheck` compiles with the client package. */
+const GUIDE_EXAMPLES = ['partner-account.ts', 'partner-maker.ts', 'partner-taker.ts'];
 
 
 /** Every name an entry exports, following `export * from './x'` one level down. */
@@ -125,6 +133,11 @@ describe('published documentation', () => {
       for (const name of names) if (!known.has(name)) missing.push(`${spec}#${name}`);
     }
     expect(missing).toEqual([]);
+  });
+
+  // A copy in prose is what a partner pastes; the file is what the compiler checks. They must not drift.
+  it.each(GUIDE_EXAMPLES)('docs/partner-guide.md carries packages/client/examples/%s verbatim', (file) => {
+    expect(read('docs/partner-guide.md')).toContain('```ts\n' + read(`packages/client/examples/${file}`) + '```');
   });
 
   it.each(PACKAGE_DIRS)('packages/%s/README.md installs the package it documents', (dir) => {

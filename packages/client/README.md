@@ -228,6 +228,10 @@ bot. The account's key signs every step that needs its authority: its sign-in, i
 party, each leg of a swap, the acceptance of a delivery or a cashback payout. Only the
 signatures leave your process; the API never holds the key.
 
+**Partners:** the [partner guide](../../docs/partner-guide.md) walks through the whole setup — key
+management, registration, funding, orders, `serve()`, cashback, errors and going to mainnet — with
+full maker and taker examples.
+
 ```ts
 import { providerFromMnemonic } from '@cancore/wallet';
 import { createSelfCustody } from '@cancore/client/selfcustody';
