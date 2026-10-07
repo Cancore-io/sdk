@@ -1,5 +1,32 @@
 # Changelog — `@cancore/client`
 
+## 0.8.0
+
+### Added
+
+- `acct.serve(options?)` (`./selfcustody`): one long-running loop that drives every Canton↔Canton
+  DvP trade of a self-custody account — the maker side of each of its orders once taken, the
+  taker side of each it took (or queued with `handle.take(orderId)`), and a withdraw of its own
+  allocation when a trade expires with it still locked (`autoWithdraw`, **on by default here**;
+  `make` / `take` keep it off). Triggered by the realtime `order:updated` / `swap:updated` events
+  when a socket is given, with a reconcile poll (`reconcileMs`, default 30 s) over the account's
+  orders in flight and its `dvp_expired` swaps, so a missed event never strands a trade. One
+  handler per order, at most `concurrency` (default 4) at once; failures are `error` events, never
+  throws; `stop()` waits for the steps in flight. Every signature still goes through `make` /
+  `take` / `withdrawAllocation`, verified before signing. See README, "Running a market maker
+  with serve()".
+- `acct.listSwaps(query?)`: `GET /htlc/swaps` — one page (`page`, `pageSize` ≤ 100, `status`) of
+  the account's swaps, HTLC or DvP, newest first.
+- `acct.session.token()`: a fresh JWT, for the realtime socket's handshake.
+- `SettleOptions.signal`: an `AbortSignal` that stops `make` / `take` at their next wait (never
+  in the middle of a step).
+- `SWAP_UPDATED_EVENT` and `SwapUpdate` (`./realtime`), pinned in the realtime contract.
+
+### Changed
+
+- `make` / `take` of an order this account is already settling join the run in flight instead of
+  starting a second one, so the same step is never prepared and signed twice.
+
 ## 0.7.1
 
 ### Fixed

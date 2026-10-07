@@ -91,6 +91,11 @@ export interface Session {
    * package as its `request`.
    */
   readonly request: FetchLike;
+  /**
+   * A JWT good for at least another minute, renewed (or signed in afresh) when it is not — for a credential
+   * this transport does not carry itself, such as the realtime socket's handshake.
+   */
+  token(): Promise<string>;
   /** Sign in with the key. The account must exist. */
   login(): Promise<AccountUser>;
   /**
@@ -189,8 +194,13 @@ export function createSession({ baseUrl, signer, fetchImpl, now = Date.now, slee
     headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${token}` },
   });
 
-  const request: FetchLike = async (url, init) => {
+  async function fresh(): Promise<string> {
     if (!token || expiresWithin(token, RENEW_AHEAD_MS, now())) await once(renew);
+    return token!;
+  }
+
+  const request: FetchLike = async (url, init) => {
+    await fresh();
     const res = await send(url, withBearer(init));
     if (res.status !== 401) return res;
     // A 401 means the request was not processed, so sending it again is safe:
@@ -240,7 +250,7 @@ export function createSession({ baseUrl, signer, fetchImpl, now = Date.now, slee
     return authed.get<AccountUser>('/auth/me');
   }
 
-  return { publicKey, request, login, register };
+  return { publicKey, request, token: fresh, login, register };
 }
 
 /** Whether a JWT's `exp` falls within `aheadMs` of `nowMs`. An unreadable token is left to the 401 path. */

@@ -24,6 +24,20 @@ import { TERMINAL_ORDER_STATUSES, type Order } from './swap';
 export const ORDER_UPDATED_EVENT = 'order:updated';
 
 /**
+ * The gateway's event for a swap whose status changed. Unlike `order:updated` it goes only to the two users
+ * of the swap's order (their `user_<id>` rooms), and carries ids, not the swap.
+ */
+export const SWAP_UPDATED_EVENT = 'swap:updated';
+
+/** The `swap:updated` payload. */
+export interface SwapUpdate {
+  swapId: string;
+  orderId: string;
+  status: string;
+  timestamp: string;
+}
+
+/**
  * The part of a Socket.IO client this module uses — `socket.io-client`'s own
  * `Socket` satisfies it, and so does a two-method stub in a test. That
  * assignability is checked, not assumed: see `realtime.socket-io.test.ts`.

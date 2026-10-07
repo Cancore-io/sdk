@@ -9,7 +9,9 @@
   "namespace": "/presence",
   "source": "apps/gateway/src/presence/gateways/presence.gateway.ts:40",
   "handshake": {
-    "auth": { "token": "the same JWT the REST client sends; the handshake is rejected without it" },
+    "auth": {
+      "token": "the same JWT the REST client sends; the handshake is rejected without it"
+    },
     "source": "apps/gateway/src/presence/gateways/presence-auth.middleware.ts:22"
   },
   "join": {
@@ -28,8 +30,26 @@
           "libs/trading-core/src/orders/services/order-enrichment.service.ts:41",
           "libs/trading-core/src/orders/services/orders.service.ts:239"
         ],
-        "fieldsRead": ["id", "status"]
+        "fieldsRead": [
+          "id",
+          "status"
+        ]
       }
+    },
+    {
+      "name": "swap:updated",
+      "audience": "the order's initiator and opponent only — `server.to(`user_<id>`)` for each, looked up from the event's orderId; an event without an orderId is not sent",
+      "source": "apps/gateway/src/presence/gateways/presence-swap-broadcast.util.ts:54",
+      "payload": {
+        "shape": "{ swapId, orderId, status, timestamp } — ids, not the swap",
+        "source": [
+          "apps/gateway/src/presence/gateways/presence-swap-broadcast.util.ts:24"
+        ],
+        "fieldsRead": [
+          "orderId"
+        ]
+      },
+      "readBy": "acct.serve() (src/serve.ts): each event names an order to look at"
     }
   ]
 }

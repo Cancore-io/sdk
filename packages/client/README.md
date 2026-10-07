@@ -264,11 +264,14 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `session.register(input?)` | `register-challenge` → signed `register`, carrying `inviteCode` when given |
 | `session.login()` | `challenge` → signed `login-signature` |
 | `session.request` | the authenticated transport: renews the JWT before it expires, signs in again on a 401 |
+| `session.token()` | a JWT good for at least another minute, for a credential the transport does not carry (the realtime socket's handshake) |
 | `me()` | `GET /auth/me` |
 | `onboard()` | `wallet.topology` (the party, signed by the key) then `tokens.preapproval` (CC receipts, venue-paid); skips what exists |
 | `legalStatus()` / `acceptTerms(version, documents)` | `GET` / signed `POST /legal/consent` |
 | `make(orderId, options?)` | maker: wait for the taker, record the DvP trade and sign its proposal, fund its leg after the taker, wait for the atomic settle |
 | `take(orderId, options?)` | taker: accept the order, sign the approval, fund its legs (the platform fee among them), wait for the atomic settle |
+| `serve(options?)` | one loop that drives every DvP trade of the account (maker and taker sides, withdraws of expired trades); see [Running a market maker with serve()](#running-a-market-maker-with-serve) |
+| `listSwaps(query?)` | `GET /htlc/swaps`: one page (`page`, `pageSize` ≤ 100, `status`) of the account's swaps, newest first; a bare list with no total — a page shorter than `pageSize` is the last |
 | `withdrawAllocation(swapId)` | release this account's own allocation(s) of a trade that ended `dvp_expired` while the venue's recovery could not: one prepare → verify → sign → submit per locked leg; resolves `{ swapId, withdrawn, gone, failed }`, per leg (all `[]` when nothing is locked): a leg already off the ledger is `gone`, one that cannot be withdrawn is in `failed` and the rest are still attempted |
 | `swap.create(input)` / `swap.createForPair(input)` | `POST /orders` / `POST /orders/pair`; a Canton↔Canton order is always sent with `dvp: true` (for a pair, read from `GET /trading-pairs/{id}`) |
 | `incoming()` / `accept(transfer)` / `acceptIncoming(filter?)` | transfers waiting for this account's signature |
@@ -496,6 +499,88 @@ the last state seen).
 
 Canton↔Canton orders only: an EVM leg is locked by an EVM key, which is not this signer, so
 `make` / `take` refuse an order with one before anything is signed.
+
+### Running a market maker with serve()
+
+`make` / `take` settle one order and return. A partner that places orders all day runs one loop
+instead, and only ever places orders:
+
+```ts
+import { io } from 'socket.io-client';
+
+const socket = io(`${baseUrl}/presence`, {
+  // A function, so every reconnect signs in with a fresh token.
+  auth: (cb) => acct.session.token().then((token) => cb({ token })),
+  transports: ['websocket'],
+});
+
+const loop = acct.serve({
+  socket,                      // optional: without it the poll alone drives the trades
+  onEvent: (e) => log(e.type, e.type === 'accepted' ? e.transfer.contractId : e.orderId, e),
+});
+
+await acct.swap.createForPair({ tradingPairId, sourceAmount: '100', targetAmount: '20' });
+// …place as many as you like; serve() settles each one once it is taken.
+
+loop.take(someoneElsesOrderId);   // optional: take an open order and settle the taker side too
+process.on('SIGTERM', () => loop.stop().then(() => process.exit(0)));
+```
+
+What it does for every Canton↔Canton DvP order of this account:
+
+| The order is | serve() |
+| --- | --- |
+| this account's, still open | waits — the take is announced by an event or found by the next poll |
+| this account's, taken | `make(orderId)`: records the trade, signs the proposal, funds after the taker, waits for the settle → `settled` |
+| taken by this account (or queued with `loop.take`) | `take(orderId)`: accepts if still open, approves, funds → `settled` |
+| ended `dvp_expired` with this account's allocation still locked | `withdrawAllocation(swapId)` → `expired` and `withdrawn` |
+
+Both sides resume from whatever step the trade is at, so a restart of the process loses nothing.
+Every signature goes through the same path as `make` / `take`: the transaction read and held to
+the order before the key signs it.
+
+**When it looks.** Each realtime event names an order: `order:updated` for an order of this
+account (the feed reaches every client; others are ignored) and `swap:updated` (sent only to the
+order's two users). Without a socket, or when an event is lost, the reconcile poll — every
+`reconcileMs`, default 30 s — lists this account's orders in `accepted` / `swap_created` and its
+`dvp_expired` swaps, and looks at each. Nothing depends on an event arriving.
+
+**One handler per order.** An order is worked on by one handler at a time: a second event while
+it runs schedules one re-run after it, never a second handler, so a step is never prepared or
+signed twice. `make` / `take` called directly for an order serve is already settling join that
+run. At most `concurrency` orders (default 4) are worked on at once; the rest wait their turn.
+
+**Errors are events.** serve() never throws. A failure is an `error` event with its `orderId`,
+and the order is looked at again on the next poll; one order failing does not stop the others.
+An `onEvent` listener that throws is ignored.
+
+| Event | Carries |
+| --- | --- |
+| `settled` | `orderId`, `swapId`, `settled` (what `make` / `take` resolve) |
+| `expired` | `orderId`, `swapId`, `error` (the `SettleError`), `withdrawal` when it ran |
+| `withdrawn` | `orderId`, `swapId`, `withdrawal` — this account's legs released with its own signature |
+| `accepted` | `transfer` — an incoming transfer accepted (with `acceptIncoming`) |
+| `error` | `orderId?`, `swapId?`, `error` |
+
+| Option | Default | |
+| --- | --- | --- |
+| `socket` | none | a connected `/presence` socket, signed in as this account |
+| `reconcileMs` | 30 000 | the safety-net poll |
+| `concurrency` | 4 | orders worked on at once |
+| `autoWithdraw` | **true** | release this account's allocation of an expired trade. On by default here, off for `make` / `take`: nobody watches a serve loop, and funds left locked are what it exists to prevent. Pass `false` to only be told (`expired`) |
+| `acceptIncoming` | false | `true`, or a filter: accept incoming transfers (registry-token deliveries, cashback payouts) on every poll |
+| `autoSplitForFee`, `allowUnverifiedSplit` | false | as for `take`, for orders taken through `loop.take` |
+| `deadlineMs`, `timeoutHours`, `maxFeeRate`… | as `make` / `take` | passed through; an order whose wait runs out is an `error`, then picked up again |
+| `signal` | none | an `AbortSignal` that stops the loop like `stop()` |
+
+**Stopping.** `stop()` starts nothing new and resolves once the handlers in flight have stopped.
+They stop at their next wait, never in the middle of a step: a step already prepared is signed
+and submitted first. A stopped trade is resumed by the next `serve()` (or `make` / `take`).
+`make` / `take` take the same `signal` option.
+
+What serve() does not do: place or price orders (that is your strategy), settle an order with an
+EVM leg or one placed without `dvp: true` (it leaves them alone), or keep its memory across a
+restart — a new loop simply looks at the account's orders again.
 
 ### Test funds on dev
 

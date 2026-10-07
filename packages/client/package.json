@@ -1,6 +1,6 @@
 {
   "name": "@cancore/client",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "type": "module",
   "description": "A typed client for the Cancore API: orders and pool trades (./swap), USDCx bridge (./bridge), live order updates (./realtime), scoped trading grants by device flow (./auth), and a self-custody account run by a program with its own key (./selfcustody). No keys — signing stays with @cancore/wallet or the dApp connector.",
   "exports": {
