@@ -30,8 +30,9 @@ What you get:
   and the platform fee move in one ledger transaction. There is no hash lock, no escrow and no
   HTLC fallback. Either the whole trade settles or nothing moves.
 - **Partner economics.** An account with the `partner-bot` role (granted by your invite code)
-  pays the platform fee on each trade and gets **100% of it back as cashback**
-  ([section 8](#8-cashback)). Partner accounts pay **no network fee**.
+  can earn cashback on the platform fee of trades it takes from other automated accounts. Which
+  trades qualify is narrower than "every trade": see [section 8](#8-cashback). Partner accounts pay
+  **no network fee**.
 
 What stays on your side: the recovery phrase (or the derived key) and the signer built from it.
 `@cancore/client` takes a signer object and nothing else. It has no code path that sends key
@@ -131,11 +132,15 @@ signPreparedHash }`, which is the signer `createSelfCustody` takes. Any other ob
 works too (an HSM wrapper, for example).
 
 **Keeping only the derived key.** If the bot should not hold the phrase, derive the key once and
-store `seedHex` instead:
+store `seedHex` instead. `seedHex` **is the private key**: keep it exactly like the phrase (secret
+manager, never in git or a log).
 
 ```ts
-import { deriveWalletKey, hexToBytes, createEd25519Signer, createPasskeySigningProvider } from '@cancore/wallet';
+import { deriveWalletKey, isValidMnemonic, hexToBytes, createEd25519Signer, createPasskeySigningProvider } from '@cancore/wallet';
 
+// deriveWalletKey does not check the BIP39 checksum: a mistyped word derives a different, valid key.
+if (!isValidMnemonic(phrase)) throw new Error('not a valid BIP39 recovery phrase');
+// seedHex IS the private key: store it like the phrase (secret manager, never in git or a log).
 const { seedHex, publicKeyHex } = deriveWalletKey(phrase, 'standard', 0); // once, offline
 // At startup:
 const signer = createPasskeySigningProvider(await createEd25519Signer(hexToBytes(seedHex)), publicKeyHex);
@@ -178,9 +183,12 @@ console.log(user.partyId, user.roles); // roles includes 'partner-bot'
 ```
 
 - `register({ inviteCode, partyName?, email? })` is challenge → signed `POST /auth/register`. It
-  needs no email and no captcha. A code the API does not know is `404`. A code another key already
-  used is `409`. A `409 Public key already registered` means an earlier sign-up went through, so
-  call `login()`.
+  needs no email and no captcha: an unused code (or one this same key already used) replaces the
+  captcha. A `409 Public key already registered` means an earlier sign-up went through, so call
+  `login()`. What a bad code returns depends on the stand: where the sign-up captcha is enabled
+  (dev, for example), a code the API does not know, or one another key already used, is refused
+  with **`403 Captcha is required`**, because the captcha check runs first. Without the captcha it
+  is `404` (unknown) or `409` (used by another key). Check the code before anything else.
 - After sign-up the session renews its JWT and signs in again on a `401` by itself. Every later run
   only needs `login()`. You can also skip it and let the first request sign in.
 - `onboard()` checks `GET /auth/me` and creates the party only if it does not exist. It then
@@ -189,22 +197,25 @@ console.log(user.partyId, user.roles); // roles includes 'partner-bot'
 **Terms.** The API refuses orders until the stand's document bundle is accepted. The acceptance is
 signed with the account key:
 
+**The document list comes from Cancore.** The API records whatever you send and does not check it
+against the stand's documents, so never invent or copy a key, version or URL. Put the list Cancore
+gives you, for this stand, in your configuration, and refuse to start without it:
+
 ```ts
 import type { ConsentedDocument } from '@cancore/client/selfcustody';
 
 const { accepted, requiredVersion } = await acct.legalStatus();
 if (!accepted && requiredVersion) {
-  // The documents you actually read, each pinned to the version you read.
-  const documents: ConsentedDocument[] = [
-    { key: 'terms-of-use', version: '2026-08-01', url: 'https://cancore.io/legal/terms-of-use' },
-  ];
+  // A JSON array of { key, version, url }: the documents Cancore gave you and you read. No default.
+  const raw = process.env.CANCORE_LEGAL_DOCUMENTS;
+  if (!raw) throw new Error(`the stand requires terms ${requiredVersion}: set CANCORE_LEGAL_DOCUMENTS from Cancore's list`);
+  const documents = JSON.parse(raw) as ConsentedDocument[];
   await acct.acceptTerms(requiredVersion, documents);
 }
 ```
 
 `requiredVersion: null` means the stand requires nothing. Acceptances are append-only, so
-accepting the same version twice is harmless. The keys, versions and URLs above are an example.
-Use the documents Cancore gives you.
+accepting the same version twice is harmless.
 
 ## 5. Funding and wallet management
 
@@ -266,8 +277,10 @@ const pairs = await http.get<TradingPair[]>('/trading-pairs', { network: 'canton
 const pair = pairs.find((p) => p.baseToken.symbol === 'CC' && p.quoteToken.symbol === 'CBTC');
 ```
 
-Which pairs settle through DvP is the stand's choice. If a pair is not enabled for DvP, `make`
-refuses before anything is recorded ([section 9](#9-errors-and-troubleshooting)).
+Which pairs settle through DvP is configured per stand, and testnet and mainnet may enable fewer
+pairs than dev. Ask Cancore which pairs are enabled where you trade. Pick a pair whose base and
+quote are both on `canton`: the list also has cross-chain pairs. If a pair is not enabled for DvP,
+`make` refuses before anything is recorded ([section 9](#9-errors-and-troubleshooting)).
 
 `acct.swap.pairs()` and `quote()` / `execute()` are a different product: instant trades against
 Cancore's pool, with no counterparty. A market maker does not need them.
@@ -319,8 +332,10 @@ const settled = await other.take(order.id, { autoSplitForFee: true, autoWithdraw
 `SettleOptions`: `deadlineMs` (default 45 minutes: stop waiting for the other side), `autoWithdraw`
 (default `false`), `autoSplitForFee` / `allowUnverifiedSplit` (taker, default `false`),
 `timeoutHours`, and `signal` (an `AbortSignal`). `make` and `take` resume a trade from its first
-unfinished step, so you can run them again after a crash. A second `make`/`take` of an order that is
-already settling joins the run in progress. It never signs a step twice.
+unfinished step, so you can run them again after a crash. Inside one process, a second
+`make`/`take` of an order that is already settling joins the run in progress and never signs a step
+twice. That guard lives in memory: two processes (or replicas) with the same key do not see each
+other and both sign. **Run one process per account.**
 
 ### Option B (recommended for market makers): `acct.serve()`
 
@@ -386,7 +401,22 @@ and involve no one outside the trade. `serve()` does this by default (`autoWithd
 
 ## 8. Cashback
 
-The `partner-bot` role accrues 100% of the platform fee your trades paid, per token:
+How cashback accrues today. These rules describe the current backend and may change; **cashback
+terms are set in your partner agreement**, which wins over this page.
+
+- **Which trades.** Only trades between two automated accounts (`bot` or `partner-bot`) where at
+  least one side is `partner-bot`: those trades are charged the partner fee. A trade with a regular
+  (retail) account on either side is charged the retail fee and earns no cashback.
+- **Who pays the fee.** It is carved out of the leg that delivers to the maker, not added on top.
+  The taker sends the agreed amount (the fee part from a holding of its own, see
+  [section 5](#5-funding-and-wallet-management)); the maker receives that amount minus the fee.
+- **Who gets the cashback.** The account that funds the fee leg, which is the taker, if it has the
+  `partner-bot` role. It accrues the full fee leg amount, in the fee's token. A maker accrues nothing
+  on its orders that others take, partner or not.
+- **When.** Settled trades created after cashback was switched on for the stand, about a minute
+  after they settle.
+
+Read and claim it:
 
 ```ts
 const s = await acct.cashback.summary(); // { claimable, claimed, swapsAccrued, swapsClaimed, hasPendingClaim }
@@ -406,22 +436,39 @@ while `hasPendingClaim` is true.
 | Error | Thrown by | Means |
 | --- | --- | --- |
 | `CancoreApiError` (`@cancore/client`) | any call | a non-2xx answer: `status`, `method`, `path`, `body`, and `errorCode` when the gateway names the refusal |
-| `SettleError` (`./selfcustody`) | `make`, `take`, order placement, `splitForFee`, `withdrawAllocation` | the trade cannot go on: `swapId`, `last` (the last swap/order seen), `withdrawable`, `withdrawal` |
-| `CeremonyError` (`./selfcustody`) | any signing step | `operation`, `stage` (`'prepare'`: nothing was signed; `'submit'`: signed, the submit failed), `cause`, `errorCode` |
+| `SettleError` (`./selfcustody`) | `make`, `take`, order placement, `splitForFee`, `withdrawAllocation` | the trade cannot go on: `swapId`, `last` (the last swap/order seen), `withdrawable`, `withdrawal`. **No `errorCode`, no `cause`**: only the `message` says why |
+| `CeremonyError` (`./selfcustody`) | any signing step | `operation`, `stage` (`'prepare'`: nothing was signed; `'submit'`: signed, the submit failed), `cause` (often a `CancoreApiError`), `meta`, and `errorCode` copied from `cause` when it is a `CancoreApiError` with a code |
 | `TrackTimeoutError` | `swap.track` | still not terminal after `timeoutMs`; carries `last` |
 
-Switch on `err.errorCode`: it is one of `SdkErrorCode`, or `undefined` for a body without a code
-this SDK version knows. Use `isSdkError(err, 'CODE')` to narrow it. The codes a partner sees:
+The three are separate classes: a `CeremonyError` is **not** a `CancoreApiError`, and `isSdkError`
+matches only a `CancoreApiError`. Check each one its own way:
+
+```ts
+import { isSdkError } from '@cancore/client';
+import { CeremonyError, SettleError } from '@cancore/client/selfcustody';
+
+try {
+  await work();
+} catch (err) {
+  if (isSdkError(err, 'MAINTENANCE_MODE')) { /* a plain API refusal: err.status, err.body */ }
+  else if (err instanceof CeremonyError && err.errorCode === 'WALLET_TOO_FRAGMENTED') { /* a signing step the API refused; err.cause is the API error */ }
+  else if (err instanceof SettleError) { /* make/take/placement: err.message, err.swapId, err.withdrawable */ }
+  else throw err;
+}
+```
+
+`errorCode` is one of `SdkErrorCode`, or `undefined` for a body without a code this SDK version
+knows. The codes a partner sees, and where each one arrives:
 
 | `errorCode` | What happened | What to do |
 | --- | --- | --- |
 | `ACCOUNT_NOT_FOUND` | no account for this key (the SDK already asked again twice) | `register({ inviteCode })` |
-| `DVP_NOT_ALLOWED` (403) | DvP is not open to this account on this stand; a `SettleError` | contact Cancore. Self-custody accounts are open on every stand that runs the current gateway |
-| `DVP_FEE_HOLDING_REQUIRED` (409) | the taker's target token sits in one holding; a `SettleError` saying who must split | taker: `splitForFee`, or `take(id, { autoSplitForFee: true })`; maker: run `make()` again after the taker splits |
-| `DVP_FEE_BALANCE_INSUFFICIENT` (409) | the payer (`err.body.payerPartyId`) cannot cover the trade leg plus the fee | if the payer is you, top up; otherwise the counterparty must. 0.8.0 does not know this code yet: `errorCode` is `undefined`, so read `err.body.errorCode` |
+| `DVP_NOT_ALLOWED` (403) | DvP is not open to this account on this stand. Arrives as a `SettleError` without the code: its message contains `allocation-DvP is not open to this account` | contact Cancore. Self-custody accounts are open on every stand that runs the current gateway |
+| `DVP_FEE_HOLDING_REQUIRED` (409) | the taker's target token sits in one holding. Arrives as a `SettleError` without the code: its message contains `needs a holding of its own` and says who must split | taker: `splitForFee`, or `take(id, { autoSplitForFee: true })`; maker: run `make()` again after the taker splits |
+| `DVP_FEE_BALANCE_INSUFFICIENT` (409) | the payer (`err.body.payerPartyId`) cannot cover the trade leg plus the fee | if the payer is you, top up; otherwise the counterparty must. 0.8.0 does not know this code yet: `errorCode` is `undefined`, so read `body.errorCode` of the `CancoreApiError` (for a `CeremonyError`, of its `cause`) |
 | `SUBMISSION_TIMEOUT_RETRYABLE` | the submit timed out | handled: the SDK resubmits the same signatures (up to twice) |
 | `PREPARED_SUBMISSION_EXPIRED` | the prepared transaction expired before the submit | handled for DvP steps: prepared and signed again, once |
-| `WALLET_TOO_FRAGMENTED` | too many small holdings | `consolidate()`, then retry |
+| `WALLET_TOO_FRAGMENTED` | too many small holdings; from `send`/`consolidate` it arrives on a `CeremonyError` | `consolidate()`, then retry |
 | `MAINTENANCE_MODE` | the venue is paused | retry later |
 
 `SettleError` messages that do not carry a code:
@@ -438,24 +485,45 @@ this SDK version knows. Use `isSdkError(err, 'CODE')` to narrow it. The codes a 
 
 `CeremonyError` at `prepare` whose message contains `refusing to sign` means the SDK's check
 refused the transaction. If the message says **`runs code from an untrusted package`**, Cancore
-has deployed a `cancore-swap` release this SDK version does not pin yet. **Update
-`@cancore/client`.** Every new `cancore-swap` release ships in an SDK release before it reaches a
-stand partners use. Do not work around it unless Cancore confirms the package id for you: the
-only escape hatch, `trustedPackages: { swap: { 'cancore-swap': ['<id>'] } }`, adds an id you then
-trust with your key.
+has deployed a `cancore-swap` release this SDK version does not pin. Cancore aims to publish an SDK
+release with the new pin before deploying, but a stand has received a release first before
+(`cancore-swap` 1.3.0 on dev, see the [CHANGELOG](../packages/client/CHANGELOG.md) for 0.7.1). What
+to do:
+
+1. **Update `@cancore/client` to the latest version** and restart.
+2. If the latest version still refuses, stop trading on that stand and tell Cancore. Nothing was
+   signed. A trade already in progress expires, and its allocations are released
+   ([expired trades](#expired-trades-and-locked-funds)).
+3. Do not work around it unless Cancore confirms the package id to you over a channel you trust:
+   the only escape hatch, `trustedPackages: { swap: { 'cancore-swap': ['<id>'] } }`, adds an id you
+   then trust with your key.
 
 **Retries.** The SDK retries only what the API says is safe. It never re-sends a submit blindly. A
 `CeremonyError` at `submit` may have reached the ledger, so check the swap (`swapState(swapId)`)
 before you start the step again. `make`, `take` and `serve()` re-read the trade and resume, which is
-always safe. For everything else, retry `5xx` and network errors with backoff, and treat `4xx` as
-final until you change something.
+always safe.
+
+A `send()`, `splitForFee()` or `consolidate()` that failed with a `CeremonyError` at `submit` may
+also have committed, and there is no swap to check. **Do not repeat it** until you know it did not
+land:
+
+- `acct.balance(tokenId)`: did the balance drop by the amount (and the fee)? This is the ledger's
+  answer and the one to trust.
+- The account's transfer history, `GET /tokens/transfers/my?direction=outgoing&tokenId=…` (the SDK
+  does not wrap it; call it with `createHttp` as in [section 6](#6-orders)). A send whose submit
+  request died half-way may be missing from it, so a missing row alone does not prove anything.
+
+If you still cannot tell, contact Cancore support with the error before you send again. For
+everything else, retry `5xx` and network errors with backoff, and treat `4xx` as final until you
+change something.
 
 ## 10. Security checklist and going to mainnet
 
 - [ ] The phrase or seed lives in a secret manager. It is injected at runtime, never in git, an
       image, a log or a crash report.
 - [ ] Backups of the phrase are offline and tested: a fresh machine can `login()` with it.
-- [ ] One account per bot (`account` index). Separate accounts for dev, testnet and mainnet.
+- [ ] One account per bot (`account` index), and **one process per account**: no second replica
+      with the same key. Separate accounts for dev, testnet and mainnet.
 - [ ] `baseUrl` is one of the hosts in [section 2](#2-prerequisites), or `network` is set to match.
 - [ ] Verification stays on. `allowUnverified` (`splitForFee`) and `allowUnverifiedSplit`
       (`take`/`serve`) sign a send the SDK could not read. Leave them off in production.
@@ -467,8 +535,11 @@ final until you change something.
       update.
 - [ ] `serve()` runs with `autoWithdraw` on (the default), and your process handles `SIGTERM` with
       `loop.stop()`.
-- [ ] You alert on `error` and `expired` events and on growing `cashback.summary().claimable`.
-- [ ] Start mainnet with small sizes, and check a full maker/taker round on testnet first.
+- [ ] You alert on `error` and `expired` events. Reconcile `cashback.summary()` against the trades
+      that qualify ([section 8](#8-cashback)), not against every trade.
+- [ ] Ask Cancore which pairs settle through DvP on each stand: that is configured per stand
+      (testnet and mainnet may enable fewer pairs than dev, or none). Rehearse a full maker/taker
+      round on a stand where your pair is enabled, then start mainnet with small sizes.
 
 ## 11. Full examples
 
@@ -476,8 +547,10 @@ Three files in [`packages/client/examples`](../packages/client/examples). CI typ
 the package (`npm run typecheck`), and a test keeps the copies below identical to them.
 
 Environment: `CANCORE_MNEMONIC`, `CANCORE_INVITE_CODE` (first run), `CANCORE_API` (default dev),
-`CANCORE_ACCOUNT_INDEX`, `CANCORE_LEGAL_DOCUMENTS` (a JSON array of the documents you accepted, when
-the stand requires them), plus the per-script variables in each header.
+`CANCORE_ACCOUNT_INDEX`, `CANCORE_LEGAL_DOCUMENTS` (the JSON array of documents Cancore gave you,
+when the stand requires them), plus the per-script variables in each header. The taker needs
+`CANCORE_ORDER_ID` and `MAX_PAY`, and refuses mainnet (or an unknown host) without
+`CANCORE_ALLOW_MAINNET=yes`.
 
 `partner-account.ts` (shared: signer, sign-in, onboarding, terms):
 
@@ -533,23 +606,46 @@ export async function openAccount(): Promise<SelfCustodyAccount> {
 `partner-maker.ts`:
 
 ```ts
-// A minimal Canton market maker: keep one sell order on a pair, settle every trade with serve().
+// A minimal Canton market maker: keep exactly one sell order on a pair, settle every trade with serve().
+// Run ONE process per account: two processes with the same key would both quote and both sign.
 //   CANCORE_MNEMONIC=… CANCORE_INVITE_CODE=… CANCORE_PAIR_ID=… npx tsx partner-maker.ts
 import { io } from 'socket.io-client';
 import { baseUrl, openAccount } from './partner-account';
 
 const acct = await openAccount();
+const me = await acct.me();
 const tradingPairId = process.env.CANCORE_PAIR_ID;
-if (!tradingPairId) throw new Error('set CANCORE_PAIR_ID (GET /trading-pairs?network=canton lists them)');
+if (!tradingPairId) throw new Error('set CANCORE_PAIR_ID (a pair whose base and quote are both on canton)');
 const sell = process.env.SELL_AMOUNT ?? '10'; // base token offered per order
 const ask = process.env.ASK_AMOUNT ?? '2'; // quote token wanted for it
 
 console.log('CC balance', (await acct.balance('CC')).balance);
 
-const place = async () => {
+let stopping = false;
+
+// Our open orders on this pair. listMine also returns orders we took, so keep only the ones we placed.
+const openOrders = async () => {
+  const { items } = await acct.swap.listMine({ statusFilter: 'open', pageSize: 100 });
+  return items.filter((o) => o.initiatorUserId === me.id && o.tradingPairId === tradingPairId);
+};
+
+// Converge on exactly one open order: keep the first, cancel extras (left by a crash), place one if none.
+const reconcile = async () => {
+  const [keep, ...extra] = await openOrders();
+  for (const o of extra) await acct.swap.cancel(o.id);
+  if (keep || stopping) return;
   // Canton↔Canton: the SDK sends dvp: true, so the order settles through allocation-DvP.
   const order = await acct.swap.createForPair({ tradingPairId, sourceAmount: sell, targetAmount: ask, side: 'sell' });
   console.log('placed', order.id);
+};
+
+// One reconcile at a time, so a settle and the timer never place two orders.
+let quoting: Promise<void> = Promise.resolve();
+const requote = () => {
+  quoting = quoting
+    .then(() => (stopping ? undefined : reconcile()))
+    .catch((err: unknown) => console.error('quoting failed, next tick retries', err));
+  return quoting;
 };
 
 // Realtime makes the loop react at once; without the socket the 30 s poll alone drives it.
@@ -562,16 +658,17 @@ const loop = acct.serve({
   socket,
   acceptIncoming: true, // registry-token deliveries and cashback payouts
   onEvent: (e) => {
-    if (e.type === 'settled') {
-      console.log('settled', e.orderId, e.swapId);
-      void place().catch((err: unknown) => console.error('re-placing failed', err));
-    } else if (e.type === 'expired') console.warn('expired', e.swapId, e.error.message);
+    if (e.type === 'settled') console.log('settled', e.orderId, e.swapId);
+    else if (e.type === 'expired') console.warn('expired', e.swapId, e.error.message);
     else if (e.type === 'withdrawn') console.log('released', e.swapId, e.withdrawal.withdrawn);
     else if (e.type === 'error') console.error('error', e.orderId ?? '', e.error);
+    if (e.type === 'settled' || e.type === 'expired') void requote();
   },
 });
 
-await place();
+await requote();
+// Also once a minute: an order that expired by itself (expirationHours) sends no event.
+const timer = setInterval(() => void requote(), 60_000);
 
 // Cashback: claim whatever accrued, once an hour.
 const cashback = setInterval(() => {
@@ -586,13 +683,23 @@ const cashback = setInterval(() => {
 
 process.on('SIGTERM', () => {
   void (async () => {
+    stopping = true;
+    clearInterval(timer);
     clearInterval(cashback);
-    // Pull open offers first, then let the step in flight finish. Taken orders resume on the next start.
-    const { items } = await acct.swap.listMine({ statusFilter: 'open', pageSize: 100 });
-    await Promise.allSettled(items.map((o) => acct.swap.cancel(o.id)));
-    await loop.stop();
-    socket.close();
-    process.exit(0);
+    try {
+      // Stop signing first and let the step in flight finish; taken orders resume on the next start.
+      await loop.stop();
+      await quoting;
+      // Then pull the open offer, so nobody takes an order no process is serving.
+      const cancels = await Promise.allSettled((await openOrders()).map((o) => acct.swap.cancel(o.id)));
+      if (cancels.some((c) => c.status === 'rejected')) throw new Error('an open order could not be cancelled; cancel it by hand');
+    } catch (err) {
+      console.error('shutdown', err);
+      process.exitCode = 1;
+    } finally {
+      socket.close();
+      process.exit();
+    }
   })();
 });
 ```
@@ -600,22 +707,27 @@ process.on('SIGTERM', () => {
 `partner-taker.ts`:
 
 ```ts
-// A minimal taker: take one open Canton↔Canton order and settle the taker side.
-//   CANCORE_MNEMONIC=… CANCORE_ORDER_ID=… npx tsx partner-taker.ts   (no order id: the first open DvP order not ours)
-import { SettleError } from '@cancore/client/selfcustody';
-import { openAccount } from './partner-account';
+// A minimal taker: take one named Canton↔Canton order and settle the taker side.
+//   CANCORE_MNEMONIC=… CANCORE_ORDER_ID=… MAX_PAY=… npx tsx partner-taker.ts
+// MAX_PAY is the most of the order's target token you agree to pay. On mainnet also set CANCORE_ALLOW_MAINNET=yes.
+import { API_NETWORKS, SettleError } from '@cancore/client/selfcustody';
+import { baseUrl, openAccount } from './partner-account';
 
-const acct = await openAccount();
-const me = await acct.me();
-
-let orderId = process.env.CANCORE_ORDER_ID;
-if (!orderId) {
-  const { items } = await acct.swap.listOpen({ sourceNetwork: 'canton', targetNetwork: 'canton' });
-  orderId = items.find((o) => o.dvp === true && o.initiatorUserId !== me.id)?.id;
-  if (!orderId) throw new Error('no open Canton↔Canton DvP order to take');
+const orderId = process.env.CANCORE_ORDER_ID;
+const maxPay = process.env.MAX_PAY;
+if (!orderId || !maxPay) throw new Error('set CANCORE_ORDER_ID (the order to take) and MAX_PAY (the most you pay for it)');
+const network = API_NETWORKS[new URL(baseUrl).hostname];
+if (network !== 'devnet' && network !== 'testnet' && process.env.CANCORE_ALLOW_MAINNET !== 'yes') {
+  // Mainnet, or a host the SDK cannot place: real funds may move, so refuse unless the operator opted in.
+  throw new Error(`${baseUrl} may be mainnet; set CANCORE_ALLOW_MAINNET=yes to take orders there`);
 }
 
+const acct = await openAccount();
 const order = await acct.swap.get(orderId);
+if (order.status !== 'open' || order.dvp !== true) throw new Error(`order ${order.id} is ${order.status}, dvp=${order.dvp}`);
+if (!(Number(order.targetAmount) <= Number(maxPay))) { // a MAX_PAY that is not a number refuses too
+  throw new Error(`order ${order.id} asks ${order.targetAmount} ${order.targetTokenName}, above MAX_PAY ${maxPay}`);
+}
 console.log(`taking ${order.id}: pay ${order.targetAmount} ${order.targetTokenName}, get ${order.sourceAmount} ${order.sourceTokenName}`);
 
 try {
@@ -632,6 +744,6 @@ try {
 }
 ```
 
-Run the maker with one account, then the taker with a second account (another `account` index, or
-another partner) against an order the maker placed. The maker's `serve()` logs `settled` when the
+Run the maker with one account (one process), then the taker with a second account (another
+`account` index, or another partner) against an order the maker placed. The maker's `serve()` logs `settled` when the
 taker's `take()` returns.
