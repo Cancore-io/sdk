@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cancore.io/schemas/filler-protocol/v1/rest.schema.json",
   "title": "Cancore filler protocol v1 — REST fallback",
-  "$comment": "protocol §3.6. Bodies are the WebSocket frames (S→F responses carry the gateway sig). /v1/filler/* needs `Authorization: Bearer <token>` from POST /v1/filler/auth; the token is bound to the fillerId it was issued for, and a ticket of another filler is 404 UNKNOWN_TICKET. GET /v1/filler/attestations/{orderHash} answers 404 ATTESTATIONS_NOT_READY until the gateway holds ≥ threshold verified signatures for this filler's fill, and 404 UNKNOWN_TICKET when this filler holds no ticket on the order. /v1/draws/* and /v1/gateway are public. Every non-2xx body is the `error` frame, with the HTTP status of x-error-status. x-endpoints: request/response name a $def here or in messages.schema.json.",
+  "$comment": "protocol §3.6. Bodies are the WebSocket frames: every request body is a filler message with its envelope (id, fillerId, sentAt) and msgSig, verified before processing as on the WebSocket (S-19); every response is a freshly signed S→F message. /v1/filler/* needs `Authorization: Bearer <token>` from POST /v1/filler/auth; the token is bound to the fillerId it was issued for, and a ticket of another filler is 404 UNKNOWN_TICKET. GET /v1/filler/attestations/{orderHash} answers 404 ATTESTATIONS_NOT_READY until the gateway holds ≥ threshold verified signatures for this filler's fill, and 404 UNKNOWN_TICKET when this filler holds no ticket on the order. /v1/draws/* and /v1/gateway are public. Every non-2xx body is the `error` frame, with the HTTP status of x-error-status. x-endpoints: request/response name a $def here or in messages.schema.json.",
   "x-endpoints": [
     { "method": "GET", "path": "/v1/filler/auth/challenge", "auth": "none", "response": "messages.schema.json#/$defs/auth.challenge" },
     { "method": "POST", "path": "/v1/filler/auth", "auth": "none", "request": "messages.schema.json#/$defs/auth.response", "response": "#/$defs/authToken" },
@@ -21,11 +21,11 @@
   ],
   "x-error-status": {
     "BAD_REQUEST": 400, "UNAUTHENTICATED": 401, "UNSUPPORTED_VERSION": 400, "UNSUPPORTED_TYPE": 400, "BAD_SIGNATURE": 422,
-    "UNKNOWN_REQUEST": 404, "UNKNOWN_TICKET": 404, "TICKET_CLOSED": 409, "NOT_ELIGIBLE": 403, "RATE_LIMITED": 429, "INTERNAL": 500,
+    "STALE_MESSAGE": 400, "REPLAYED_MESSAGE": 409, "TICKET_REFUSED": 409, "UNKNOWN_REQUEST": 404, "UNKNOWN_TICKET": 404, "TICKET_CLOSED": 409, "NOT_ELIGIBLE": 403, "RATE_LIMITED": 429, "INTERNAL": 500,
     "ATTESTATIONS_NOT_READY": 404
   },
   "$defs": {
-    "errorBody": { "$ref": "messages.schema.json#/$defs/error" },
+    "errorBody": { "$ref": "messages.schema.json#/$defs/errorS2F" },
     "empty": { "type": "object", "description": "no fields in v1; receivers ignore unknown ones (V-2)" },
     "authToken": {
       "type": "object",
@@ -59,7 +59,8 @@
     },
     "stakeBindingRequest": {
       "type": "object",
-      "description": "sig = StakeBinding{partnerId, stakingAddress, chainId, nonce} by the staking address",
+      "description": "sig = StakeBinding{partnerId, stakingAddress, chainId, nonce} by the staking address; the body carries the filler envelope and msgSig like every request body",
+      "allOf": [{ "$ref": "messages.schema.json#/$defs/f2sEnvelope" }],
       "required": ["partnerId", "stakingAddress", "chainId", "nonce", "sig"],
       "properties": {
         "partnerId": { "$ref": "messages.schema.json#/$defs/fillerId" },

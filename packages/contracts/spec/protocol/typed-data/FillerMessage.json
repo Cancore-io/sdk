@@ -1,0 +1,115 @@
+{
+  "$comment": "Filler protocol v1, settlement design (variant A, CAN-2139; protocol.md §3.3): `bodyHash` = keccak256(utf8(JCS(message without \"msgSig\"))), JCS = RFC 8785; the body keeps id, fillerId, sentAt and any inner typed sig. Each vector carries the F→S body, its canonical text and the hash. msgSig in a body is a placeholder: the excluded field. Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.",
+  "primaryType": "FillerMessage",
+  "domain": {
+    "name": "CancoreFillerProtocol",
+    "version": "1",
+    "fields": [
+      "name",
+      "version"
+    ]
+  },
+  "typeString": "FillerMessage(bytes32 bodyHash)",
+  "types": {
+    "FillerMessage": [
+      {
+        "name": "bodyHash",
+        "type": "bytes32"
+      }
+    ]
+  },
+  "vectors": [
+    {
+      "note": "ticket.intent: the inner TicketIntent sig is in the body, msgSig is not",
+      "body": {
+        "type": "ticket.intent",
+        "id": "i-1",
+        "fillerId": "acme-markets",
+        "sentAt": 1790000021000,
+        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "attempt": 0,
+        "validFrom": "1790000040",
+        "validUntil": "1790000400",
+        "deliveryKey": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+        "repayTo": "0x0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+        "sig": "0x111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222221c",
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b"
+      },
+      "jcs": "{\"attempt\":0,\"deliveryKey\":\"0x742d35cc6634c0532925a3b844bc454e4438f44e\",\"fillerId\":\"acme-markets\",\"id\":\"i-1\",\"orderHash\":\"0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6\",\"repayTo\":\"0x0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc\",\"sentAt\":1790000021000,\"sig\":\"0x111111111111111111111111111111111111111111111111111111111111111122222222222222222222222222222222222222222222222222222222222222221c\",\"type\":\"ticket.intent\",\"validFrom\":\"1790000040\",\"validUntil\":\"1790000400\"}",
+      "message": {
+        "bodyHash": "0xfb7c6cbfc7c9db05936598d58d8691affe325f5aa23dc750228b9c55299fbf5a"
+      },
+      "digest": "0x6d290885737e5c0045c9374bea1a1d55ac27c8b638cdad4fbdb15d25378ba586"
+    },
+    {
+      "note": "ticket.decline: no inner signature, the envelope is the only one",
+      "body": {
+        "type": "ticket.decline",
+        "id": "d-1",
+        "fillerId": "acme-markets",
+        "sentAt": 1790000027001,
+        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "attempt": 0,
+        "reason": "TICKET_ISSUED_LATE",
+        "detail": "ticket.issued 3001 ms after acceptBy",
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b"
+      },
+      "jcs": "{\"attempt\":0,\"detail\":\"ticket.issued 3001 ms after acceptBy\",\"fillerId\":\"acme-markets\",\"id\":\"d-1\",\"orderHash\":\"0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6\",\"reason\":\"TICKET_ISSUED_LATE\",\"sentAt\":1790000027001,\"type\":\"ticket.decline\"}",
+      "message": {
+        "bodyHash": "0xbce98e0bf252ac12261023c2182f57109ae8464e9e5732a90b2b456a8b8c7b41"
+      },
+      "digest": "0xf3902941f23658e47a4085e26270b084619a2fce12a7ca7356120890feaea1be"
+    },
+    {
+      "note": "quote.reconfirm.reply declining: signed by the envelope only",
+      "body": {
+        "type": "quote.reconfirm.reply",
+        "id": "r-2",
+        "fillerId": "acme-markets",
+        "sentAt": 1790000014000,
+        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "accept": false,
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b"
+      },
+      "jcs": "{\"accept\":false,\"fillerId\":\"acme-markets\",\"id\":\"r-2\",\"orderHash\":\"0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6\",\"sentAt\":1790000014000,\"type\":\"quote.reconfirm.reply\"}",
+      "message": {
+        "bodyHash": "0x3408b67652613536d8c2b1cf1be3acf7e7fa2ec5dd9515a9729e19108b4aa67e"
+      },
+      "digest": "0x1aa4c883ead3820c13bb033585574a5b1b9a318333f896a5e55222c31073abfb"
+    },
+    {
+      "note": "pong to a gateway ping",
+      "body": {
+        "type": "pong",
+        "id": "po-1",
+        "fillerId": "acme-markets",
+        "sentAt": 1789999995100,
+        "re": "gp-1",
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b"
+      },
+      "jcs": "{\"fillerId\":\"acme-markets\",\"id\":\"po-1\",\"re\":\"gp-1\",\"sentAt\":1789999995100,\"type\":\"pong\"}",
+      "message": {
+        "bodyHash": "0x59ce596a6f75b446a92f1a8e26a3e299a1c963e06ad2fce66f17671e9b0d3eba"
+      },
+      "digest": "0xd2cf52769b873de0eec06857660e595e6b25ddad5f1ff782ebc74d7ec4cf9ab7"
+    },
+    {
+      "note": "error from the filler: a frame it cannot handle",
+      "body": {
+        "type": "error",
+        "id": "e-1",
+        "fillerId": "acme-markets",
+        "sentAt": 1790000030000,
+        "re": "g-77",
+        "code": "UNKNOWN_TICKET",
+        "message": "no ticket for this orderHash",
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b"
+      },
+      "jcs": "{\"code\":\"UNKNOWN_TICKET\",\"fillerId\":\"acme-markets\",\"id\":\"e-1\",\"message\":\"no ticket for this orderHash\",\"re\":\"g-77\",\"sentAt\":1790000030000,\"type\":\"error\"}",
+      "message": {
+        "bodyHash": "0xc9cd1026df66737e04da90ecd692f7c2d13b1dc328d3aca964baebfe78be96b6"
+      },
+      "digest": "0x3fba365492f3b5498fa1861648f4625d94d15278fd07e92fb95e5733c2434b2f"
+    }
+  ]
+}

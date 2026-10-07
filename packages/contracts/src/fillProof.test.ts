@@ -1,7 +1,11 @@
 import { keccak_256 } from '@noble/hashes/sha3';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { FILL_PROOF_DOMAIN, FILL_PROOF_TYPES, FILL_PROOF_TYPE_STRING, fillProofDomain, PROOF_KIND_ATTESTATION } from './index';
+import { TypedDataEncoder } from 'ethers';
+import {
+  FILL_PROOF_DOMAIN, FILL_PROOF_TYPES, FILL_PROOF_TYPE_STRING, fillerIdHash, fillProofDomain, hashFillProof, isEvmRepayTo, PROOF_KIND_ATTESTATION,
+  repayToFromParty,
+} from './index';
 import type { FillProof } from './index';
 
 // The FillProof interface is hand-written; the types are generated. A field
@@ -18,9 +22,13 @@ void sameFields;
 const spec = JSON.parse(readFileSync(join(__dirname, '..', 'spec', 'typed-data', 'FillProof.json'), 'utf8')) as {
   domain: { name: string; version: string };
   typeString: string;
+  typeHash: string;
   types: typeof FILL_PROOF_TYPES;
   // A string where a number would round: the Canton origin id is 2^63 + n.
-  vectors: { note: string; chainId: number | string; verifyingContract: string; message: Record<string, string | number>; digest: string }[];
+  vectors: {
+    note: string; chainId: number | string; verifyingContract: string; message: Record<string, string | number>;
+    domainSeparator: string; structHash: string; digest: string; fillerIdString?: string; repayToParty?: string;
+  }[];
 };
 
 const enc = new TextEncoder();
@@ -67,6 +75,36 @@ test('the exported FillProof types are the synced schema, field for field, in or
 
 test.each(spec.vectors.map((v) => [v.note, v] as const))('golden vector: %s', (_note, v) => {
   expect(digest(v)).toBe(v.digest);
+  // what canton-contracts' FillProofVerify reproduces piece by piece, and the shipped helper
+  expect(TypedDataEncoder.hashDomain(fillProofDomain(BigInt(v.chainId), v.verifyingContract as `0x${string}`))).toBe(v.domainSeparator);
+  expect(TypedDataEncoder.hashStruct('FillProof', JSON.parse(JSON.stringify(FILL_PROOF_TYPES)), v.message)).toBe(v.structHash);
+  const proof = { ...v.message, amountDelivered: BigInt(v.message.amountDelivered!), filledAt: BigInt(v.message.filledAt!) } as unknown as FillProof;
+  expect(hashFillProof(proof, BigInt(v.chainId), v.verifyingContract as `0x${string}`)).toBe(v.digest);
+});
+
+test('twelve fields with fillerId and repayTo before attempt and setId; the type hash is protocol.md §3.3 FILLPROOF_TYPEHASH', () => {
+  expect(FILL_PROOF_TYPE_STRING).toBe(
+    'FillProof(uint8 kind,bytes32 orderHash,bytes32 destination,bytes32 fillRef,bytes32 recipient,bytes32 outputAsset,uint256 amountDelivered,uint64 filledAt,bytes32 fillerId,bytes32 repayTo,uint32 attempt,uint32 setId)',
+  );
+  expect(spec.typeHash).toBe('0xc37e18cdd22fbc1e707c1bcc554d9d29c2e6c5a44bb4a9a4dc38e2c28e2419ae');
+  expect(`0x${hex(keccak(enc.encode(FILL_PROOF_TYPE_STRING)))}`).toBe(spec.typeHash);
+});
+
+test('the payee is repayTo: an EVM source pays a padded address, a Canton source the hash of the filler party', () => {
+  const evm = spec.vectors[0]!;
+  expect(isEvmRepayTo(String(evm.message.repayTo))).toBe(true);
+  expect(evm.message.fillerId).toBe(fillerIdHash('acme'));
+  const canton = spec.vectors.find((v) => v.repayToParty)!;
+  expect(canton.message.repayTo).toBe(repayToFromParty(canton.repayToParty!));
+  expect(canton.message.fillerId).toBe(fillerIdHash(canton.fillerIdString!));
+  expect(isEvmRepayTo(String(canton.message.repayTo))).toBe(false);
+  // the same proof paying another address is another digest: k signatures bind the payee
+  expect(digest({ ...evm, message: { ...evm.message, repayTo: canton.message.repayTo! } })).not.toBe(evm.digest);
+  expect(digest({ ...evm, message: { ...evm.message, fillerId: fillerIdHash('acme-markets') } })).not.toBe(evm.digest);
+});
+
+test('evm-contracts can pin it: at least four vectors on the Hardhat chain id, the router test runs those through hashFillProof', () => {
+  expect(spec.vectors.filter((v) => Number(v.chainId) === 31337).length).toBeGreaterThan(3);
 });
 
 test('the vectors cover what a schema drift would hide: extremes, zeros, two routers, two chains', () => {
@@ -77,10 +115,11 @@ test('the vectors cover what a schema drift would hide: extremes, zeros, two rou
   expect(spec.vectors.some((v) => v.message.amountDelivered === ((1n << 256n) - 1n).toString())).toBe(true);
 });
 
-// canton-contracts AttestationVectors vDigestExpected: Daml settles a
-// Canton-source order in this domain (CANTON_ORIGIN_ID, CANTON_SOURCE_ANCHOR
-// of the test vector), so the SDK's domain must carry a chain id above 2^53.
-test('the Canton-source vector: chain id 2^63 + 1 survives the domain, digest is Daml\'s', () => {
+// Daml settles a Canton-source order in this domain (CANTON_ORIGIN_ID,
+// CANTON_SOURCE_ANCHOR of the test vector), so the SDK's domain must carry a
+// chain id above 2^53. canton-contracts takes this vector into intent-test
+// AttestationVectors (CAN-2144): its vDigestExpected becomes this digest.
+test('the Canton-source vector: chain id 2^63 + 1 survives the domain', () => {
   const v = spec.vectors.find((x) => BigInt(x.chainId) === (1n << 63n) + 1n)!;
   expect(typeof v.chainId).toBe('string');
   expect(fillProofDomain(BigInt(v.chainId), v.verifyingContract as `0x${string}`).chainId).toBe((1n << 63n) + 1n);

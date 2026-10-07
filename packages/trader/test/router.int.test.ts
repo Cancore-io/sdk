@@ -10,7 +10,7 @@
  * no stand (the stand in CI is CAN-1876).
  */
 import { readFileSync } from 'node:fs';
-import type { FillProof, FillTicket, Hex, Order } from '@cancore/contracts';
+import { fillerIdHash, repayToFromEvm, type FillProof, type FillTicket, type Hex, type Order } from '@cancore/contracts';
 import { ChainClient, ChainReadError, hashFillProof, hashOrder, hashTicket, INTENT_STATUS, RouterEventWatcher, RouterReader, type RouterEventUpdate } from '../src/filler/chain';
 import type { EvmRpc } from '../src/filler/rpc';
 import { createRecordingLogger } from '../src/filler/testing';
@@ -94,7 +94,10 @@ live('RouterReader against the stand router (make intent-genesis)', () => {
     const orderHash = hashOrder(order, source);
     await expect(r.hashOrder(order)).resolves.toBe(orderHash);
     await expect(r.sourceOrderHash(order)).resolves.toBe(orderHash);
-    const ticket = { orderHash, filler: '0x2222222222222222222222222222222222222222', attempt: 3, validFrom: '1790000100', validUntil: '1790000400' } as unknown as FillTicket;
+    // Variant A types (CAN-2139): these match only a stand router built from CAN-2140 on, with its ABI synced here.
+    const fillerId = fillerIdHash('acme');
+    const repayTo = repayToFromEvm('0x2222222222222222222222222222222222222222');
+    const ticket: FillTicket = { orderHash, fillerId, deliveryKey: '0x2222222222222222222222222222222222222222', repayTo, attempt: 3, validFrom: '1790000100', validUntil: '1790000400' };
     await expect(r.hashTicket(ticket)).resolves.toBe(hashTicket(ticket));
     const proof: FillProof = {
       kind: 1,
@@ -105,7 +108,8 @@ live('RouterReader against the stand router (make intent-genesis)', () => {
       outputAsset: order.outputAsset,
       amountDelivered: 99n,
       filledAt: 1_790_000_200n,
-      filler: '0x2222222222222222222222222222222222222222',
+      fillerId,
+      repayTo,
       attempt: 3,
       setId: 1,
     };

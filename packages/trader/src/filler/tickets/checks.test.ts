@@ -1,4 +1,6 @@
-import { FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, type Hex, type OrderJson, type TicketIssuedEvm, type TicketOffer } from '@cancore/contracts';
+import {
+  FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, fillerIdHash, repayToFromEvm, type Hex, type OrderJson, type TicketIntentMessage, type TicketIssuedEvm, type TicketOffer,
+} from '@cancore/contracts';
 import { FillerChains, hashOrder, type ChainConfig } from '../chain';
 import type { FillSigner } from '../signer';
 import { createRecordingEventSink, createRecordingLogger, createTestTypedDataSigner, FakeChain, FakeClock } from '../testing';
@@ -58,6 +60,7 @@ async function setup(shape: Shape = {}) {
 
   const offer: TicketOffer = {
     type: 'ticket.offer',
+    id: 'g-1',
     fillerId: 'acme-1',
     sentAt: clock.now(),
     sig: '0x',
@@ -69,7 +72,7 @@ async function setup(shape: Shape = {}) {
     validUntil: String(validUntil),
     acceptBy: clock.now() + 5_000,
   };
-  const ticket = { orderHash, filler: fill.address, attempt: 0, validFrom: String(validFrom), validUntil: String(validUntil), ...shape.ticket };
+  const ticket = { orderHash, fillerId: fillerIdHash('acme-1'), deliveryKey: fill.address.toLowerCase(), repayTo: repayToFromEvm(fill.address), attempt: 0, validFrom: String(validFrom), validUntil: String(validUntil), ...shape.ticket };
   const ticketSig = await (shape.signer ?? ticketSigner).signTypedData({ domain: FILL_TICKET_DOMAIN, types: FILL_TICKET_TYPES, primaryType: 'FillTicket', message: ticket });
   const issued = { type: 'ticket.issued', form: 'evm', fillerId: 'acme-1', sentAt: clock.now(), sig: '0x', orderHash, attempt: 0, ticket, ticketSig } as unknown as TicketIssuedEvm;
 
@@ -77,10 +80,16 @@ async function setup(shape: Shape = {}) {
   const logger = createRecordingLogger();
   const events = createRecordingEventSink();
   const chains = new FillerChains({ 'eip155:56': [src], 'eip155:1': [dst] }, { 'eip155:56': config(SRC_ROUTER, 3), 'eip155:1': config(DST_ROUTER, 3) }, logger);
-  const verifier = new TicketVerifier({ chains, fillSigners: { 'eip155:1': fill }, ticketSigners: [ticketSigner.address], deltaIssueMs: 3_000, clock, events, logger });
+  const verifier = new TicketVerifier({ chains, fillSigners: { 'eip155:1': fill }, fillerId: 'acme-1', ticketSigners: [ticketSigner.address], deltaIssueMs: 3_000, clock, events, logger });
   const input: TicketCheckInput = { offer, issued, issuedAtMs: clock.now() };
   return { clock, src, dst, dstRouter, offer, issued, input, verifier, events, orderHash, nowS };
 }
+
+/** The consent this filler signed for the setup's offer (the signatures are placeholders: the checks compare fields). */
+const intentOf = (h: Awaited<ReturnType<typeof setup>>): TicketIntentMessage => ({
+  type: 'ticket.intent', id: 'i', fillerId: 'acme-1', sentAt: h.clock.now(), msgSig: '0x', orderHash: h.orderHash, attempt: 0,
+  validFrom: h.offer.validFrom, validUntil: h.offer.validUntil, deliveryKey: fill.address.toLowerCase() as Hex, repayTo: repayToFromEvm(fill.address), sig: '0x',
+});
 
 const ORDER_OF_CHECKS = ['form', 'V-T4', 'V-T2', 'V-T3', 'V-E1', 'V-E2', 'V-E3', 'V-T1', 'V-E4', 'V-E5'];
 
@@ -118,10 +127,13 @@ describe('each check refuses with its own code, and nothing after it runs', () =
   type Case = [name: string, shape: Shape, mutate: ((h: Awaited<ReturnType<typeof setup>>) => void) | undefined, check: string, reason: string];
   const cases: Case[] = [
     ['V-T4: ticket.issued after acceptBy + δ_issue', {}, (h) => void (h.input.issuedAtMs = h.offer.acceptBy + 3_001), 'V-T4', 'TICKET_ISSUED_LATE'],
-    ['V-T2: the ticket names another filler', { ticket: { filler: stranger.address } }, undefined, 'V-T2', 'TICKET_MISMATCH'],
+    ['V-T2: the ticket names another filler', { ticket: { fillerId: fillerIdHash('stranger') } }, undefined, 'V-T2', 'TICKET_MISMATCH'],
+    ['V-T2 (T-15): the ticket names another delivery key', { ticket: { deliveryKey: stranger.address.toLowerCase() } }, undefined, 'V-T2', 'TICKET_MISMATCH'],
+    ['V-T2 (T-15): the ticket pays another repayTo', { ticket: { repayTo: repayToFromEvm(stranger.address) } }, undefined, 'V-T2', 'TICKET_MISMATCH'],
     ['V-T2: another attempt in the ticket', { ticket: { attempt: 1 } }, undefined, 'V-T2', 'TICKET_MISMATCH'],
     ['V-T2: another validUntil than the offer', { ticket: { validUntil: '1790000301' } }, undefined, 'V-T2', 'TICKET_MISMATCH'],
-    ['V-T2: another validFrom than the signed intent', {}, (h) => void (h.input.intent = { type: 'ticket.intent', id: 'i', orderHash: h.orderHash, attempt: 0, validFrom: '1', validUntil: h.offer.validUntil, sig: '0x' }), 'V-T2', 'TICKET_MISMATCH'],
+    ['V-T2: another validFrom than the signed intent', {}, (h) => void (h.input.intent = { ...intentOf(h), validFrom: '1' }), 'V-T2', 'TICKET_MISMATCH'],
+    ['V-T2 (T-15): the ticket repeats the offer but not the repayTo of the signed intent', {}, (h) => void (h.input.intent = { ...intentOf(h), repayTo: repayToFromEvm(stranger.address) }), 'V-T2', 'TICKET_MISMATCH'],
     ['V-T2: the frame names another order than the offer', {}, (h) => void ((h.issued as { orderHash: Hex }).orderHash = `0x${'cd'.repeat(32)}`), 'V-T2', 'TICKET_MISMATCH'],
     ['V-T2: offer.amountOut below order.minReceived (fill would revert BelowMinReceived)', { amountOut: '98' }, undefined, 'V-T2', 'TICKET_MISMATCH'],
     ['V-T3: validUntil equals fillDeadline', {}, undefined, 'V-T3', 'TICKET_BEYOND_DEADLINE'],
@@ -206,9 +218,11 @@ describe('boundaries pass', () => {
   });
 });
 
-describe('V-E4 is a stub until the ticket carries repayTo', () => {
-  test('tripwire: the pinned FillTicket has no repayTo — when it gains one (CAN-2139 / CAN-2151), V-E4 must be implemented', () => {
-    // Fails the day the contracts types carry repayTo while checks.ts still skips V-E4.
-    expect(FILL_TICKET_TYPES.FillTicket.map((f) => f.name)).not.toContain('repayTo');
+describe('V-E4 until the blocklist read (CAN-2151)', () => {
+  test('the ticket carries repayTo, V-T2 holds it to the node\'s own; the blocklist part of V-E4 is reported skipped, never passed', async () => {
+    expect(FILL_TICKET_TYPES.FillTicket.map((f) => f.name)).toContain('repayTo');
+    const h = await setup();
+    const result = await h.verifier.verify(h.input);
+    expect(result.checks.find((c) => c.check === 'V-E4')).toMatchObject({ status: 'skipped', detail: expect.stringMatching(/blocklist.*CAN-2151/) });
   });
 });

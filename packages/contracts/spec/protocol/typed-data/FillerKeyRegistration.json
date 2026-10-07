@@ -1,0 +1,69 @@
+{
+  "$comment": "Filler protocol v1, settlement design (variant A, CAN-2139; protocol.md §3.3): Signed by the key being registered (an EOA: 65 bytes, low-s, v ∈ {27, 28}; no EIP-1271) — at onboarding, and with the NEW key at a manual key change by Cancore staff; there is no rotation type. issuedAt in unix seconds. Signed vectors carry `signature` by a test key derived from a public label: it recovers to messageKey. Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.",
+  "primaryType": "FillerKeyRegistration",
+  "domain": {
+    "name": "CancoreFillerProtocol",
+    "version": "1",
+    "fields": [
+      "name",
+      "version"
+    ]
+  },
+  "typeString": "FillerKeyRegistration(string fillerId,address messageKey,uint64 issuedAt)",
+  "types": {
+    "FillerKeyRegistration": [
+      {
+        "name": "fillerId",
+        "type": "string"
+      },
+      {
+        "name": "messageKey",
+        "type": "address"
+      },
+      {
+        "name": "issuedAt",
+        "type": "uint64"
+      }
+    ]
+  },
+  "vectors": [
+    {
+      "note": "onboarding: acme-markets registers its message key",
+      "message": {
+        "fillerId": "acme-markets",
+        "messageKey": "0x4fee983989d3a8046f29d376080ef9c334323105",
+        "issuedAt": "1789900000"
+      },
+      "digest": "0xe73be03b7204b06997bb67d4aefe464f0edbc784e46727a375397cc0c1a508aa",
+      "signature": "0x6e2e04d4bd17c204745afb4208c718a77268f6ec07ee39221f12031ccf63fe457bb6fae86dc7fbcbbd6b0818e394d17f1f8812d30fb56ec58b161184af6e5f7d1c"
+    },
+    {
+      "note": "manual key change by Cancore staff: the same registration, signed by the NEW key",
+      "message": {
+        "fillerId": "acme-markets",
+        "messageKey": "0x9ee9e7c9421a25e3f77088f23b16022ecce80ec2",
+        "issuedAt": "1790100000"
+      },
+      "digest": "0xbbadffdde7a3aadf87d8c37d4419936581c647e0f92deccaf393456165f50bd3",
+      "signature": "0xddd5690d91e92ab1180b40bcac2e34a815121afe76c8ce949c747392e1ff06af206edd720a4bed70948df02e7483d327db0cc68c5e4f097f63fac04f0c5ccc571c"
+    },
+    {
+      "note": "every integer at its maximum (unsigned)",
+      "message": {
+        "fillerId": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "messageKey": "0xffffffffffffffffffffffffffffffffffffffff",
+        "issuedAt": "18446744073709551615"
+      },
+      "digest": "0xc1ffbf3b5782193f003dd8701be0dc59a94fbcee164641fe7aec31ee391e50b9"
+    },
+    {
+      "note": "zero values (unsigned)",
+      "message": {
+        "fillerId": "",
+        "messageKey": "0x0000000000000000000000000000000000000000",
+        "issuedAt": "0"
+      },
+      "digest": "0xf0170117e8dfc4f1e76def69dffe11d7bf46d2f3f0b849851650bd374b552549"
+    }
+  ]
+}

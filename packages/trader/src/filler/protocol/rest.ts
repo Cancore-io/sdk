@@ -26,6 +26,7 @@ import {
 import { GatewayError } from '../errors';
 import type { Clock, HttpFetch, Logger } from '../runtime';
 import { signTypedDataChecked, type QuoteSigner } from '../signer';
+import type { Sealer } from './envelope';
 import { frameBytes, gatewayErrorOf, utf8, verifyGatewayObject, type FrameExpectations, type VerifiedFrame } from './frames';
 
 export interface RestOptions {
@@ -34,6 +35,8 @@ export interface RestOptions {
   fillerId: string;
   gatewaySigner: Hex;
   quoteSigner: QuoteSigner;
+  /** Seals the `auth.response` body; ticket bodies arrive sealed. */
+  seal: Sealer;
   fetch: HttpFetch;
   clock: Clock;
   logger: Logger;
@@ -183,15 +186,14 @@ export class GatewayRest {
     });
     // `nonce` names the challenge being answered, so filler-gateway finds it
     // without trying every live one (optional field, @cancore/contracts 0.2.0-rc.6).
-    const response: AuthResponse & { nonce: Hex } = {
+    const response = await this.options.seal<AuthResponse>({
       type: 'auth.response',
       id: this.options.nextId(),
-      fillerId: this.options.fillerId,
       keyAddress: this.options.quoteSigner.address.toLowerCase() as Hex,
       protocolVersion: PROTOCOL_VERSION,
       nonce: nonce.toLowerCase() as Hex,
       sig,
-    };
+    });
     const authPath = '/v1/filler/auth';
     const reply = this.ok(await this.call('POST', authPath, JSON.stringify(response)), authPath);
     const token = parseJson(reply.text, authPath);

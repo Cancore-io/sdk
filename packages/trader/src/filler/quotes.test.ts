@@ -1,6 +1,7 @@
 import {
   FILLER_PROTOCOL_DOMAIN,
   FILLER_QUOTE_TYPES,
+  hashFillerMessage,
   hashTypedData,
   requestIdHash,
   type F2SMessage,
@@ -10,9 +11,10 @@ import {
 } from '@cancore/contracts';
 import { createFiller } from './filler';
 import type { Delivery, FillerProtocolClient } from './protocol/client';
+import { createSealer, type Sealer } from './protocol/envelope';
 import type { QuoteListItem } from './protocol/rest';
 import { cantonFillerPayout, evmFillerPayout, QuoteDesk, type FillerQuoteRequest, type FillerReconfirm, type QuoteDeskOptions, type QuoteDecisionInput } from './quotes';
-import { recoverTypedDataSigner, type FillSigner } from './signer';
+import { recoverAddress, recoverTypedDataSigner, type FillSigner } from './signer';
 import {
   createFakeFetch,
   createFakeWebSocketFactory,
@@ -109,14 +111,15 @@ describe('cantonFillerPayout (protocol §3.11, T-12: SwapIntent.daml, Numeric 10
 
 // ---------------------------------------------------------------------------
 
-/** A protocol client stand-in: records what the desk sends. */
-function fakeProtocol(store: InMemoryFillerStore) {
+/** A protocol client stand-in: records what the desk sends, sealed by the real sealer. */
+function fakeProtocol(store: InMemoryFillerStore, seal: Sealer) {
   const sent: F2SMessage[] = [];
   const quoteItems: QuoteListItem[] = [];
   const protocol = {
     connected: true,
     sent,
     quoteItems,
+    seal,
     send(frame: F2SMessage) {
       if (!protocol.connected) return false;
       sent.push(frame);
@@ -135,14 +138,15 @@ function desk(over: Partial<QuoteDeskOptions> & { hook?: (r: FillerQuoteRequest)
   const store = new InMemoryFillerStore(clock);
   const logger = createRecordingLogger();
   const events = createRecordingEventSink();
-  const protocol = fakeProtocol(store);
   const quoteSigner = createTestTypedDataSigner(QUOTE_KEY);
+  const protocol = fakeProtocol(store, createSealer({ fillerId: FILLER, messageSigner: quoteSigner, clock }));
   const fill1 = fillSigner(FILL_KEY);
   const fill56 = fillSigner(BSC_FILL_KEY);
   const seenRequests: FillerQuoteRequest[] = [];
   const seenReconfirms: FillerReconfirm[] = [];
   let id = 0;
   const options: QuoteDeskOptions = {
+    fillerId: FILLER,
     quoteSigner,
     fillSigners: { 'eip155:1': fill1, 'eip155:56': fill56 },
     store,
@@ -185,11 +189,11 @@ const request = (clock: FakeClock, over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-const quoteInput = (requestId: string, q: { filler: Hex; amountOut: string; validUntil: string; nonce: string }) => ({
+const quoteInput = (requestId: string, q: { amountOut: string; validUntil: string; nonce: string }) => ({
   domain: FILLER_PROTOCOL_DOMAIN,
   types: FILLER_QUOTE_TYPES,
   primaryType: 'FillerQuote',
-  message: { requestId: requestIdHash(requestId), filler: q.filler, amountOut: q.amountOut, validUntil: q.validUntil, nonce: q.nonce },
+  message: { requestId: requestIdHash(requestId), fillerId: FILLER, amountOut: q.amountOut, validUntil: q.validUntil, nonce: q.nonce },
 });
 
 describe('quote.request → onQuoteRequest → FillerQuote', () => {
@@ -201,7 +205,9 @@ describe('quote.request → onQuoteRequest → FillerQuote', () => {
 
     expect(result).toHaveProperty('sent');
     const [quote] = h.protocol.sent as QuoteMessage[];
-    expect(quote).toMatchObject({ type: 'quote', requestId: 'rq-1', filler: h.fill1.address, amountOut: '99', nonce: '1' });
+    expect(quote).toMatchObject({ type: 'quote', fillerId: FILLER, sentAt: h.clock.now(), requestId: 'rq-1', amountOut: '99', nonce: '1' });
+    expect(quote).not.toHaveProperty('filler');
+    expect(recoverAddress(hashFillerMessage(quote!), quote!.msgSig)).toBe(h.quoteSigner.address);
     const input = quoteInput('rq-1', quote!);
     expect(recoverTypedDataSigner(input, quote!.sig)).toBe(h.quoteSigner.address);
     const [stored] = await h.store.quotes.listQuotes('rq-1');
@@ -213,13 +219,15 @@ describe('quote.request → onQuoteRequest → FillerQuote', () => {
     const h = desk();
     await h.desk.onRequest(delivery(request(h.clock, { requestId: 'rq-cs', route: { src: 'canton:devnet', dst: 'eip155:1' }, inputAmount: '10000000000000', feeBps: 30 })));
     expect(h.seenRequests[0]).toMatchObject({ payout: 9_970_089_730_808n, fee: 29_910_269_192n });
-    expect(h.protocol.sent[0]).toMatchObject({ type: 'quote', requestId: 'rq-cs', filler: h.fill1.address });
+    expect(h.protocol.sent[0]).toMatchObject({ type: 'quote', requestId: 'rq-cs', fillerId: FILLER });
   });
 
-  test('the filler address is the fill key of the destination; for a Canton destination, of the source', async () => {
+  test('a Canton destination is quoted when the source has a fill key; the quote names the fillerId, not an address', async () => {
     const h = desk();
     await h.desk.onRequest(delivery(request(h.clock, { requestId: 'rq-c', route: { src: 'eip155:56', dst: 'canton:devnet' } })));
-    expect((h.protocol.sent[0] as QuoteMessage).filler).toBe(h.fill56.address);
+    const quote = h.protocol.sent[0] as QuoteMessage;
+    expect(quote).toMatchObject({ type: 'quote', fillerId: FILLER });
+    expect(recoverTypedDataSigner(quoteInput('rq-c', quote), quote.sig)).toBe(h.quoteSigner.address);
   });
 
   test.each([
@@ -372,16 +380,28 @@ describe('quote.reconfirm → onReconfirm → quote.reconfirm.reply (T-20)', () 
     const reply = h.protocol.sent.at(-1) as QuoteReconfirmReply;
     const validUntil = String(Math.ceil(frame.replyBy / 1000) + 180 + 30);
     expect(reply).toMatchObject({ type: 'quote.reconfirm.reply', orderHash: ORDER_HASH, accept: true, nonce: '2', validUntil });
-    const input = quoteInput('rq-1', { filler: h.fill1.address, amountOut: '97', validUntil, nonce: '2' });
+    const input = quoteInput('rq-1', { amountOut: '97', validUntil, nonce: '2' });
     expect(recoverTypedDataSigner(input, reply.sig!)).toBe(h.quoteSigner.address);
     await expect(h.desk.firmQuote('rq-1')).resolves.toMatchObject({ quoteHash: hashTypedData(input), quote: { amountOut: '97' } });
+    // The reconfirmed price never went out as a quote frame: it is kept as content, with the sealed
+    // reply that carried it as the evidence — an envelope that verifies over its own body (review F-2).
+    const firm = (await h.desk.firmQuote('rq-1'))!;
+    expect(firm.quote).not.toHaveProperty('msgSig');
+    expect(firm.quote).not.toHaveProperty('id');
+    expect(firm.via).toEqual(reply);
+    expect(recoverAddress(hashFillerMessage(firm.via!), firm.via!.msgSig)).toBe(h.quoteSigner.address);
   });
 
   test('a changed price is not signed: amountOut ≠ order.minReceived is declined without asking the hook', async () => {
     const h = desk();
     await h.desk.onReconfirm(delivery(reconfirm(h.clock, { amountOut: '98' })));
     expect(h.seenReconfirms).toHaveLength(0);
-    expect(h.protocol.sent).toEqual([{ type: 'quote.reconfirm.reply', id: expect.any(String), orderHash: ORDER_HASH, accept: false }]);
+    const decline = h.protocol.sent[0] as QuoteReconfirmReply;
+    expect(h.protocol.sent).toEqual([
+      { type: 'quote.reconfirm.reply', id: expect.any(String), orderHash: ORDER_HASH, accept: false, fillerId: FILLER, sentAt: h.clock.now(), msgSig: expect.any(String) },
+    ]);
+    // a decline carries no FillerQuote, and is signed by its envelope alone
+    expect(recoverAddress(hashFillerMessage(decline), decline.msgSig)).toBe(h.quoteSigner.address);
   });
 
   test('the hook says no → declined, no signature', async () => {
@@ -414,13 +434,14 @@ describe('quote.reconfirm → onReconfirm → quote.reconfirm.reply (T-20)', () 
     await expect(h.desk.onReconfirm(delivery(reconfirm(h.clock), false))).resolves.toEqual({ skipped: 'redelivered' });
   });
 
-  test('the filler address follows the order destination', async () => {
+  test('an order to another EVM destination with a fill key there is reconfirmed under the same fillerId', async () => {
     const h = desk();
     const toBsc = order({ originChainId: '1', destination: `0x${(56).toString(16).padStart(64, '0')}` });
     await h.desk.onReconfirm(delivery(reconfirm(h.clock, { order: toBsc })));
     const reply = h.protocol.sent[0] as QuoteReconfirmReply;
-    const input = quoteInput('rq-1', { filler: h.fill56.address, amountOut: '97', validUntil: reply.validUntil!, nonce: reply.nonce! });
+    const input = quoteInput('rq-1', { amountOut: '97', validUntil: reply.validUntil!, nonce: reply.nonce! });
     expect(recoverTypedDataSigner(input, reply.sig!)).toBe(h.quoteSigner.address);
+    expect(recoverAddress(hashFillerMessage(reply), reply.msgSig)).toBe(h.quoteSigner.address);
   });
 });
 

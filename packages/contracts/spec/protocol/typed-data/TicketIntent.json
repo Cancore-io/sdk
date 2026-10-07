@@ -1,5 +1,5 @@
 {
-  "$comment": "Filler protocol v1 (frozen, RC): Field order orderHash, attempt, validFrom, validUntil (CAN-1842 A2). Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.",
+  "$comment": "Filler protocol v1, settlement design (variant A, CAN-2139; protocol.md §3.3): Field order orderHash, attempt, validFrom, validUntil, fillerId, deliveryKey, repayTo. deliveryKey = the address that sends fill (the zero address for a Canton destination); repayTo = where settle pays, encoded for the source chain (§3.15). Signed by the message key; the issued FillTicket carries the same deliveryKey and repayTo (S-22). Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.",
   "primaryType": "TicketIntent",
   "domain": {
     "name": "CancoreFillerProtocol",
@@ -9,7 +9,7 @@
       "version"
     ]
   },
-  "typeString": "TicketIntent(bytes32 orderHash,uint32 attempt,uint64 validFrom,uint64 validUntil)",
+  "typeString": "TicketIntent(bytes32 orderHash,uint32 attempt,uint64 validFrom,uint64 validUntil,string fillerId,address deliveryKey,bytes32 repayTo)",
   "types": {
     "TicketIntent": [
       {
@@ -27,19 +27,61 @@
       {
         "name": "validUntil",
         "type": "uint64"
+      },
+      {
+        "name": "fillerId",
+        "type": "string"
+      },
+      {
+        "name": "deliveryKey",
+        "type": "address"
+      },
+      {
+        "name": "repayTo",
+        "type": "bytes32"
       }
     ]
   },
   "vectors": [
     {
-      "note": "intent on the fixture ticket",
+      "note": "intent on the fixture ticket: EVM source and destination",
       "message": {
         "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
         "attempt": 0,
         "validFrom": "1790000040",
-        "validUntil": "1790000400"
+        "validUntil": "1790000400",
+        "fillerId": "acme-markets",
+        "deliveryKey": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+        "repayTo": "0x0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc"
       },
-      "digest": "0xf3a07f98be564fb062f1574d933fc33f40e5c9e36c0fec83d3b3c4c15e9199c2"
+      "digest": "0xd56c4d45d5405c70c5220da1c3e49d6051b0370a3040d1709ae097b37f3ba041"
+    },
+    {
+      "note": "Canton destination: deliveryKey is the zero address, repayTo the padded EVM payout address",
+      "message": {
+        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "attempt": 2,
+        "validFrom": "1790000100",
+        "validUntil": "1790000400",
+        "fillerId": "acme-markets",
+        "deliveryKey": "0x0000000000000000000000000000000000000000",
+        "repayTo": "0x0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc"
+      },
+      "digest": "0x472bb7ba922e513713469a165faf96cf09b28b2ea06a09b524c86debb245a498"
+    },
+    {
+      "note": "Canton source: repayTo = keccak256(utf8(partyId)) of the filler party",
+      "repayToParty": "acme-markets::1220acdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacde",
+      "message": {
+        "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204",
+        "attempt": 1,
+        "validFrom": "1789999500",
+        "validUntil": "1789999800",
+        "fillerId": "acme-markets",
+        "deliveryKey": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+        "repayTo": "0xe61d35ec4ca48f587165d3138bd11c79b42e52f6de0cec4b9e2d4350017f1e87"
+      },
+      "digest": "0x3275e22a2cb1a588dc8cc8cd81d5adac7a37d268fae8c4680aa0bf5ba3748e51"
     },
     {
       "note": "every integer at its maximum",
@@ -47,9 +89,12 @@
         "orderHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "attempt": 4294967295,
         "validFrom": "18446744073709551615",
-        "validUntil": "18446744073709551615"
+        "validUntil": "18446744073709551615",
+        "fillerId": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "deliveryKey": "0xffffffffffffffffffffffffffffffffffffffff",
+        "repayTo": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
       },
-      "digest": "0xfc7e1cd80e6b3d6efc98bb80656c57f0dd5bc994126ee21f78de5880ce57b103"
+      "digest": "0x76b8eb102ed001f2a87fe13d2b121aa4ab35c871f657d49beba7eab4a7c5128b"
     },
     {
       "note": "zero",
@@ -57,9 +102,12 @@
         "orderHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "attempt": 0,
         "validFrom": "0",
-        "validUntil": "0"
+        "validUntil": "0",
+        "fillerId": "",
+        "deliveryKey": "0x0000000000000000000000000000000000000000",
+        "repayTo": "0x0000000000000000000000000000000000000000000000000000000000000000"
       },
-      "digest": "0xd55f2a9c08605111f25c5b6b93b90f060b1c1318e46c40d8f0e6e3668828aaa7"
+      "digest": "0x28a00667600c0cf54721d77ac4a3ad6f7d976165bab8cfe6922ee94f97205c1a"
     }
   ]
 }

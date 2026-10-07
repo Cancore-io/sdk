@@ -17,7 +17,7 @@ const quote: TypedDataInput = {
   primaryType: 'FillerQuote',
   message: {
     requestId: requestIdHash('req-1'),
-    filler: ADDRESS_A,
+    fillerId: 'acme-1',
     amountOut: '1000000',
     validUntil: '1790000060',
     nonce: '1',

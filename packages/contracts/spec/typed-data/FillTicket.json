@@ -1,5 +1,5 @@
 {
-  "$comment": "PROVISIONAL hand copy of the CancoreRouter.sol struct (evm-contracts f936594) until evm-contracts publishes abi/typed-data for it with its own vectors (follow-up F-1); digests by ethers TypedDataEncoder, checked in this package by the shipped encoder as well.",
+  "$comment": "Variant A FillTicket (CAN-2139; protocol.md §3.3): seven fields, written here ahead of CancoreRouter.sol, which takes the same string before its first deployment and pins these vectors with hashTicket (CAN-2140). fillerId = keccak256(utf8(fillerId)); repayTo encoded for the source chain (§3.15). Digests by ethers TypedDataEncoder, checked in this package by the shipped encoder as well.",
   "primaryType": "FillTicket",
   "domain": {
     "name": "CancoreFillTicket",
@@ -9,7 +9,7 @@
       "version"
     ]
   },
-  "typeString": "FillTicket(bytes32 orderHash,address filler,uint32 attempt,uint64 validFrom,uint64 validUntil)",
+  "typeString": "FillTicket(bytes32 orderHash,bytes32 fillerId,address deliveryKey,bytes32 repayTo,uint32 attempt,uint64 validFrom,uint64 validUntil)",
   "types": {
     "FillTicket": [
       {
@@ -17,8 +17,16 @@
         "type": "bytes32"
       },
       {
-        "name": "filler",
+        "name": "fillerId",
+        "type": "bytes32"
+      },
+      {
+        "name": "deliveryKey",
         "type": "address"
+      },
+      {
+        "name": "repayTo",
+        "type": "bytes32"
       },
       {
         "name": "attempt",
@@ -36,48 +44,72 @@
   },
   "vectors": [
     {
-      "note": "protocol.md §3.3 hashTicket example: a fixed bytes32 orderHash input (the pre-CAN-1683 golden value)",
+      "note": "protocol.md §3.3 hashTicket example: a fixed bytes32 orderHash input, fillerId keccak256(\"acme\"), repayTo the padded delivery key",
       "message": {
         "orderHash": "0xe61e980d40d1a666a509d2296c0d2658a40ff681e290c7646a75a550629ce1ad",
-        "filler": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+        "fillerId": "0xe29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf",
+        "deliveryKey": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+        "repayTo": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
         "attempt": 0,
         "validFrom": "1789999000",
         "validUntil": "1789999180"
       },
-      "digest": "0x80a86c8877ddb8c8ff1924b52311c1f2a7000b8d3ee3e69ed4314b2d38cab2c1"
+      "digest": "0xb751ce266445dfc74d2a1e7ec2b23f51bf36ccc97706f6d0d73e4be74f9d5c33"
     },
     {
-      "note": "ticket for the test-kit fixture order, attempt 0",
+      "note": "ticket for the test-kit fixture order, attempt 0: EVM source, repayTo another address than the delivery key",
+      "fillerIdString": "acme-markets",
       "message": {
         "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
-        "filler": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+        "fillerId": "0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5",
+        "deliveryKey": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+        "repayTo": "0x0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc",
         "attempt": 0,
         "validFrom": "1790000040",
         "validUntil": "1790000400"
       },
-      "digest": "0x466bc75e5efad07ad975aeea9ec731902bc804461686a6c8f76ef4fd50297819"
+      "digest": "0x8eaef6b8d59e72288487b0def58e0eb9200fa7600170351af985111eaec5a0a9"
+    },
+    {
+      "note": "Canton source (canton-order.json): repayTo = keccak256(utf8(partyId)) of the filler party",
+      "fillerIdString": "acme-markets",
+      "repayToParty": "acme-markets::1220acdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacde",
+      "message": {
+        "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204",
+        "fillerId": "0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5",
+        "deliveryKey": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+        "repayTo": "0xe61d35ec4ca48f587165d3138bd11c79b42e52f6de0cec4b9e2d4350017f1e87",
+        "attempt": 1,
+        "validFrom": "1789999500",
+        "validUntil": "1789999800"
+      },
+      "digest": "0xbbec903b320790bbe11b93446e183872ad43b3e2fa83d0a3daeb2cd79672b9c1"
     },
     {
       "note": "every integer at its maximum",
       "message": {
         "orderHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-        "filler": "0xffffffffffffffffffffffffffffffffffffffff",
+        "fillerId": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "deliveryKey": "0xffffffffffffffffffffffffffffffffffffffff",
+        "repayTo": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "attempt": 4294967295,
         "validFrom": "18446744073709551615",
         "validUntil": "18446744073709551615"
       },
-      "digest": "0xc42ba85a1f897e17c385efd7de3b6e7948c18c129a7c2580b71a18205edb628e"
+      "digest": "0x041820b7007543c4750057958545f330ece16fc5ae81d4d30571b2f09269ccb3"
     },
     {
       "note": "zero",
       "message": {
         "orderHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
-        "filler": "0x0000000000000000000000000000000000000000",
+        "fillerId": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "deliveryKey": "0x0000000000000000000000000000000000000000",
+        "repayTo": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "attempt": 0,
         "validFrom": "0",
         "validUntil": "0"
       },
-      "digest": "0xfeddbe10514c1cd10524b20487f96b3335e92fcb74b9aa9368a21caad1eef948"
+      "digest": "0x205fd8f9d58d390da2bf1158f6a4025274dfc0d1db56422610b271d0a5ddd098"
     }
   ]
 }
