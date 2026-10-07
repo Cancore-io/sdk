@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CANCORE_ROUTER_ABI, CONTRACTS_RELEASE, type FillProof, type FillTicket, type Hex, type Order } from '@cancore/contracts';
+import type { FillProof, FillTicket, Hex, Order } from '@cancore/contracts';
 import { createRecordingLogger, FakeChain } from '../testing';
 import { ChainClient } from './client';
 import { hashFillProof, hashOrder, hashTicket } from './hashes';
@@ -97,26 +97,11 @@ describe('RouterReader reads every view the filler needs off the pinned router',
     await expect(reader.hashOrder(order)).resolves.toBe(hashOrder(order, { chainId: 56n, router: ROUTER }));
   });
 
-  // The FillTicket of @cancore/contracts is the variant A struct; the router ABI is synced from
-  // evm-contracts, where it is merged (evm-contracts#97). The sync into this package is a separate,
-  // coordinated sdk PR (the CAN-2140 session). Not a silent skip (review F-3 of sdk#58): on the
-  // snapshot synced before it — and only on that one — the gap is asserted by name; any ABI whose
-  // hashTicket takes repayTo runs the golden-vector check; any other sync without it fails.
-  const PRE_VARIANT_A_SYNC = '8c7d36f6a4f1cb76e6d5098c4f4b18367d46e350';
-  const hashTicketInput = (CANCORE_ROUTER_ABI as readonly { type: string; name?: string; inputs?: readonly { components?: readonly { name: string }[] }[] }[])
-    .find((e) => e.type === 'function' && e.name === 'hashTicket')?.inputs?.[0]?.components?.map((c) => c.name);
-  if (hashTicketInput?.includes('repayTo')) {
-    test('the router hashTicket view equals the FillTicket golden vector', async () => {
-      const reader = setup();
-      const [ticket] = vectors('FillTicket');
-      await expect(reader.hashTicket(ticket!.message as unknown as FillTicket)).resolves.toBe(ticket!.digest);
-    });
-  } else {
-    test('tripwire: only the pre-variant-A router snapshot may lack repayTo in hashTicket — the next ABI sync must bring it', () => {
-      expect(CONTRACTS_RELEASE.commit).toBe(PRE_VARIANT_A_SYNC);
-      expect(hashTicketInput).toContain('filler');
-    });
-  }
+  test('the router hashTicket view equals the FillTicket golden vector', async () => {
+    const reader = setup();
+    const [ticket] = vectors('FillTicket');
+    await expect(reader.hashTicket(ticket!.message as unknown as FillTicket)).resolves.toBe(ticket!.digest);
+  });
 });
 
 describe('router addresses come only from the node config', () => {

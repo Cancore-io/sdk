@@ -58,3 +58,42 @@ export const FILL_PROOF_TYPE_STRING = "FillProof(uint8 kind,bytes32 orderHash,by
 
 /** Name and version of the domain; chain id and verifying contract are the deployment's. */
 export const FILL_PROOF_DOMAIN = {"name":"CancoreRouter","version":"1"} as const;
+
+/** `FillTicket(bytes32 orderHash,bytes32 fillerId,address deliveryKey,bytes32 repayTo,uint32 attempt,uint64 validFrom,uint64 validUntil)` — from evm-contracts/abi/typed-data/FillTicket.json. */
+export const FILL_TICKET_TYPES = {
+  "FillTicket": [
+    {
+      "name": "orderHash",
+      "type": "bytes32"
+    },
+    {
+      "name": "fillerId",
+      "type": "bytes32"
+    },
+    {
+      "name": "deliveryKey",
+      "type": "address"
+    },
+    {
+      "name": "repayTo",
+      "type": "bytes32"
+    },
+    {
+      "name": "attempt",
+      "type": "uint32"
+    },
+    {
+      "name": "validFrom",
+      "type": "uint64"
+    },
+    {
+      "name": "validUntil",
+      "type": "uint64"
+    }
+  ]
+} as const;
+
+export const FILL_TICKET_TYPE_STRING = "FillTicket(bytes32 orderHash,bytes32 fillerId,address deliveryKey,bytes32 repayTo,uint32 attempt,uint64 validFrom,uint64 validUntil)";
+
+/** Name and version of the domain; chain id and verifying contract are the deployment's. */
+export const FILL_TICKET_DOMAIN = {"name":"CancoreFillTicket","version":"1"} as const;
