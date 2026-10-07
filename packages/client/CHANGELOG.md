@@ -14,16 +14,20 @@
   wrapping), so a missed event or a restart never strands a trade; an expired trade still locked
   is an `expired` event once per swap, found by the poll or not. One handler per order;
   `concurrency` (default 4) bounds orders being looked at or signing a step, while waiting trades
-  hold no slot. Failures are `error` events, never throws; after `stop()` no new step is signed,
-  and it resolves once the step under way is. Every signature still goes through `make` /
-  `take` / `withdrawAllocation`, verified before signing. See README, "Running a market maker
-  with serve()".
+  hold no slot; looks at expired swaps the poll lists take a slot only when no live trade wants one,
+  so a restart over a long expired history never delays a live trade's signature, and `/auth/me` is
+  read once per loop, not once per expired swap. Failures are `error` events, never throws; after
+  `stop()` no new step is signed, and it resolves once the step under way is (a wait ends within
+  one poll interval). Every signature still goes through `make` / `take` / `withdrawAllocation`,
+  verified before signing. See README, "Running a market maker with serve()".
 - `acct.listSwaps(query?)`: `GET /htlc/swaps` — one page (`page`, `pageSize` ≤ 100, `status`) of
   the account's swaps, HTLC or DvP, newest first.
 - `acct.session.token()`: a fresh JWT, for the realtime socket's handshake.
 - `SettleOptions.signal`: an `AbortSignal` checked before every new step (taking, recording the
   trade, each signature, autoWithdraw) and in every wait, never between a step's signing and its
-  submit: once aborted, `make` / `take` sign nothing new and reject with a `SettleError`.
+  submit: once aborted, `make` / `take` sign nothing new and reject with a `SettleError`. An
+  autoWithdraw stopped before its turn signs nothing and rethrows the trade's own error
+  (`withdrawable: true`), not a failed withdrawal.
 - `SWAP_UPDATED_EVENT` and `SwapUpdate` (`./realtime`), pinned in the realtime contract.
 
 ### Changed

@@ -1,5 +1,5 @@
-import { serve, type ServeEvent } from './serve';
-import type { SelfCustodyAccount, Settled, SettleOptions, SettleRun, Withdrawal } from './selfcustody';
+import { serve, type ServeEvent, type SettleRun } from './serve';
+import type { SelfCustodyAccount, Settled, SettleOptions, Withdrawal } from './selfcustody';
 import type { Order } from './swap';
 
 /**
@@ -217,4 +217,33 @@ test('with autoWithdraw on, the expired event found by the poll carries the with
     { type: 'expired', orderId: 'o2', swapId: 's2', error: expect.any(Error), withdrawal },
     { type: 'withdrawn', orderId: 'o2', swapId: 's2', withdrawal },
   ]);
+});
+
+test('a newly taken order gets its proposal signed without waiting behind a restart’s expired backlog', async () => {
+  // 250 expired swaps, all clean, each look a slow read: the first poll queues 200 of them at concurrency 1.
+  const { acct } = expiredAccount(250, new Set());
+  let looked = 0;
+  const locked = async () => {
+    looked++;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    return false;
+  };
+  const live = order('live', { status: 'accepted' });
+  const get = acct.swap.get;
+  acct.swap.get = async (id: string) => (id === 'live' ? live : get(id));
+  let lookedAtProposal = -1;
+  acct.make = async (id, opts) => {
+    await (opts as SettleRun).gate!(async () => void (lookedAtProposal = looked)); // the proposal step
+    return settledOf(id);
+  };
+  const handlers = new Map<string, (payload: unknown) => void>();
+  const socket = { on: (event: string, handler: (payload: unknown) => void) => void handlers.set(event, handler), off: () => {} };
+  const events: ServeEvent[] = [];
+  const handle = serve(acct, { socket, concurrency: 1, reconcileMs: 3_600_000, onEvent: (e) => events.push(e) }, locked);
+  await until(() => looked >= 3);
+  handlers.get('order:updated')!(live);
+  await until(() => events.some((e) => e.type === 'settled'));
+  await handle.stop();
+  // At most the look in hand when the order arrived, and one more between its look and its step — not the 200 queued.
+  expect(lookedAtProposal).toBeLessThan(10);
 });

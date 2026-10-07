@@ -556,7 +556,9 @@ rejects the joiner too. The joiner's own `signal` only ends the joiner's wait; t
 `make` and `take` of one order share that run. `concurrency` (default 4) bounds the work, not the
 trades: at most that many orders are being looked at or have a step being signed at once. A trade
 waiting on its counterparty or the venue holds no slot, so a newly taken order gets its proposal
-at once however many trades are waiting.
+at once however many trades are waiting. Looks at the expired swaps the poll lists (a restart over a
+long history queues hundreds) get a slot only when no live trade wants one, so they never hold a
+live trade's next signature back.
 
 **Errors are events.** serve() never throws. A failure is an `error` event with its `orderId`,
 and the order is looked at again on the next poll; one order failing does not stop the others.
@@ -584,7 +586,7 @@ An `onEvent` listener that throws is ignored.
 **Stopping.** After `stop()` no new step is signed: the abort is checked before each step
 (taking the order, recording the trade, each signature, a withdraw) and in every wait, never
 between a step's signing and its submit. A step already under way is signed and submitted, and
-`stop()` resolves once it is; a waiting trade stops at once. A stopped trade is resumed by the next
+`stop()` resolves once it is; a waiting trade stops within one poll interval (`pollMs`, 5 s by default). A stopped trade is resumed by the next
 `serve()` (or `make` / `take`). `make` / `take` take the same `signal` option, with the same rule.
 
 What serve() does not do: place or price orders (that is your strategy), settle an order with an

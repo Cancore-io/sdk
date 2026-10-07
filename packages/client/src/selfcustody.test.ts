@@ -16,6 +16,7 @@ import {
   type ServeEvent,
 } from './selfcustody';
 import { createSession, expiresWithin, type KeySigner } from './session';
+import type { SettleRun } from './serve';
 
 /**
  * A fake venue that settles one Canton↔Canton swap the way the API does: every
@@ -1950,6 +1951,64 @@ describe('stopping a settle: an abort signs nothing new and ends every wait', ()
     const [made] = await Promise.all([running, taker.take('o1')]);
     expect(made.swap.status).toBe('dvp_settled');
     expect(api.proposals).toHaveLength(1);
+  });
+
+  test('a make waiting for the taker to fund ends on abort within a poll, and signs nothing more', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [78, 79]);
+    await taker.swap.accept('o1');
+    const controller = new AbortController();
+    // The default deadline is 45 minutes: only the abort can end this wait inside the test.
+    const making = maker.make('o1', { signal: controller.signal }).catch((e: unknown) => e);
+    await until(() => dvpSteps(api).includes('dvp:dvpCreateProposal:maker'));
+    controller.abort();
+    const outcome = await Promise.race([making, new Promise((resolve) => setTimeout(() => resolve('still waiting'), 2_000))]);
+    expect(outcome).toMatchObject({ name: 'SettleError', swapId: 's1', message: expect.stringMatching(/^aborted while waiting for the taker to approve and fund its legs/) });
+    expect(dvpSteps(api)).toEqual(['dvp:dvpCreateProposal:maker']);
+  });
+
+  test('every step of make and take runs inside the gate serve passes — the take, the trade, each signature', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [80, 81]);
+    /** What `side` did while its gate held a slot: its DvP signatures, plus the trade it recorded or the order it took. */
+    const gated = (side: 'maker' | 'taker', seen: string[]): SettleRun => ({
+      gate: async (run) => {
+        const [logAt, proposalsAt, takesAt] = [api.log.length, api.proposals.length, api.takes()];
+        const result = await run();
+        if (side === 'maker' && api.proposals.length > proposalsAt) seen.push('recording the trade');
+        if (side === 'taker' && api.takes() > takesAt) seen.push('taking the order');
+        seen.push(...api.log.slice(logAt).map((e) => `${e.type}:${e.params.by}`).filter((s) => s.endsWith(`:${side}`)));
+        return result;
+      },
+    });
+    const [makerSteps, takerSteps]: [string[], string[]] = [[], []];
+    const [made, taken] = await Promise.all([maker.make('o1', gated('maker', makerSteps)), taker.take('o1', gated('taker', takerSteps))]);
+    expect([made.swap.status, taken.swap.status]).toEqual(['dvp_settled', 'dvp_settled']);
+    expect(makerSteps).toEqual(['recording the trade', 'dvp:dvpCreateProposal:maker', 'dvp:dvpAllocateLeg:maker']);
+    expect(takerSteps).toEqual(['taking the order', 'dvp:dvpAcceptProposal:taker', 'dvp:dvpAllocateLeg:taker']);
+  });
+
+  test('an autoWithdraw stopped while it waits for its slot signs no withdraw, and the allocation stays withdrawable', async () => {
+    const api = venue({ takerFundedThenExpired: 'stillLocked' });
+    const { maker, taker } = await tradingPair(api, [82, 83]);
+    await taker.swap.accept('o1');
+    const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
+    const controller = new AbortController();
+    // serve stopped while the withdraw waits for a slot: the first gate call once the taker's legs are locked is the withdraw's.
+    const opts: SettleRun = {
+      autoWithdraw: true,
+      signal: controller.signal,
+      gate: (run) => {
+        if (api.legs().some((l) => l.sender === 'party-taker' && l.lockRef)) controller.abort();
+        return run();
+      },
+    };
+    const error = await taker.take('o1', opts).catch((e: unknown) => e);
+    await making;
+    expect(error).toBeInstanceOf(SettleError);
+    expect(error).toMatchObject({ swapId: 's1', withdrawable: true, message: expect.stringMatching(/dvp_expired/) });
+    expect((error as SettleError).withdrawal).toBeUndefined();
+    expect(api.log.filter((e) => e.type === 'dvp:dvpWithdrawAllocation')).toEqual([]);
   });
 });
 
