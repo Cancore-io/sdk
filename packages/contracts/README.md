@@ -84,13 +84,11 @@ const signature = await wallet.signTypedData({
 
 This repository keeps golden vectors for the schema in `spec/typed-data/FillProof.json` (shipped
 in the package since 0.2.0, under `@cancore/contracts/spec/*`), each with its `domainSeparator`,
-`structHash` and digest, and the file's `typeHash`. The twelve-field file is written here ahead
-of the router (`scripts/gen-protocol-vectors.mjs`): evm-contracts takes it byte for byte into
-`abi/typed-data/FillProof.json` and checks every vector against the router's own `hashFillProof`
-(CAN-2140); canton-contracts takes the Canton-source vector into its `FillProofVerify` vectors.
-From then on the schema is synced from evm-contracts like the ABIs. Until then, do not run
-`scripts/sync-typed-data.mjs` against an evm-contracts checkout that still has the eleven-field
-struct: it would overwrite this file with the old one.
+`structHash` and digest, and the file's `typeHash`. The twelve-field schema and vectors are
+synced from `evm-contracts/abi/typed-data/FillProof.json` at `CONTRACTS_RELEASE.commit`; the
+router tests check every vector against its own `hashFillProof` (CAN-2140). Sync only from a
+variant A checkout: an older eleven-field struct would overwrite this file with the old one.
+The Canton-source verifier and its rollout remain a separate compatibility gate.
 
 ## Filler protocol v1 (RC)
 
@@ -131,10 +129,10 @@ manual key change by Cancore staff; there is no key-rotation type or message.
 | Types | Domain | Status |
 | --- | --- | --- |
 | `TicketReceipt`, `StakeBinding`, `FillerAuth`, `GatewayMessage` | `CancoreFillerProtocol` v1 | v1 RC — vectors in `spec/protocol/typed-data/` |
-| `FillerQuote` (`string fillerId`), `TicketIntent` (with `fillerId`, `deliveryKey`, `repayTo`), `FillerMessage`, `FillerKeyRegistration` | `CancoreFillerProtocol` v1 | settlement design (variant A), next RC — vectors in `spec/protocol/typed-data/` |
+| `FillerQuote` (`string fillerId`), `TicketIntent` (with `fillerId`, `deliveryKey`, `repayTo`), `FillerMessage`, `FillerKeyRegistration` | `CancoreFillerProtocol` v1 | variant A — vectors in `spec/protocol/typed-data/` |
 | `Order` (11 fields, with `createdAt`), `Quote` | `CancoreRouter` v1, source router | router code; provisional copies in `spec/typed-data/` until evm-contracts publishes them |
-| `FillTicket` (`orderHash`, `fillerId`, `deliveryKey`, `repayTo`, `attempt`, `validFrom`, `validUntil`) | `CancoreFillTicket` v1 | variant A, written here ahead of the router (CAN-2140) |
-| `FillProof` (twelve fields) | `CancoreRouter` v1, source router | variant A, written here ahead of the router (above) |
+| `FillTicket` (`orderHash`, `fillerId`, `deliveryKey`, `repayTo`, `attempt`, `validFrom`, `validUntil`) | `CancoreFillTicket` v1 | variant A, synced from the router (CAN-2140) |
+| `FillProof` (twelve fields) | `CancoreRouter` v1, source router | variant A, synced from the router (above) |
 
 Golden vectors are generated with ethers by `scripts/gen-protocol-vectors.mjs` from the literal
 inputs in `scripts/protocol-fixtures.mjs`, and checked by this package's own encoder too. The
@@ -195,8 +193,8 @@ Once filler-gateway holds at least `threshold` verified attestor signatures over
 `GET /v1/filler/attestations/{orderHash}` (404 `ATTESTATIONS_NOT_READY` before that, 404
 `UNKNOWN_TICKET` when the filler holds no ticket on the order); the filler node submits `settle`
 itself (protocol §3.5, §3.6, §10 D-N). `proof` is the `FillProof` the source router hashes,
-field for field (`FILL_PROOF_TYPES`); variant A of protocol §3.3 (`fillerId`, `repayTo`) replaces
-it together with the router's struct. A signature entry follows `sourceChainId`: `{signer, signature}` with a
+field for field (`FILL_PROOF_TYPES`), including variant A's `fillerId` and `repayTo`
+(protocol §3.3). A signature entry follows `sourceChainId`: `{signer, signature}` with a
 65-byte signature on an EVM source, `{signer, pubKey, signature}` with the DER public key and a
 minimal DER signature on a Canton source, as `SwapIntent_SettleWithProof` takes them.
 
@@ -308,7 +306,21 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
-- Unreleased (next RC) — the settlement design of variant A (protocol.md §3.3, §3.4, §3.15,
+- `0.2.0-rc.7` — sync the variant A `CancoreRouter` and `ICancoreRouter` ABIs from
+  evm-contracts commit `c214f56f6fe5a62097833c5f1335b0cb5351b225` (CAN-2140).
+  - Both the package root and `/abi`, and the shipped `spec/abi/` JSON, expose
+    `Filled(orderHash, fillerId, deliveryKey, repayTo, received, recipient, filledAt, attempt)`
+    and `Settled(orderHash, fillerId, repayTo, payout, fee)`. Both events index `orderHash` and
+    `fillerId`. **Breaking within the RC line**: consumers must decode the new event topics
+    and fields; the published `0.2.0-rc.6` still has the old router ABIs.
+  - The router's `FillTicket` and `FillProof` tuples now match the variant A typed data
+    already shipped in `0.2.0-rc.6`. No typed-data digest changes from `rc.6` to `rc.7`.
+    The generated typed-data snapshot now also includes `FillTicket` from the synced schema.
+  - Remove the old on-router filler registry views, `setFiller` and `FillerSet`;
+    `WrongDeliveryKey` replaces `WrongTicketFiller` and `NotFiller`. Refresh
+    `CONTRACTS_RELEASE.commit` and the router build hashes.
+  - This package does not deploy a router or complete the Canton/backend/trader rollout.
+- `0.2.0-rc.6` (CAN-2139; previously listed as unreleased) — the settlement design of variant A (protocol.md §3.3, §3.4, §3.15,
   §3.16; CAN-2139). **Breaking within the RC line**: every digest of the changed types changes.
   - `FillTicket` is `(orderHash, bytes32 fillerId, address deliveryKey, bytes32 repayTo, attempt,
     validFrom, validUntil)`; `FillProof` has twelve fields, `fillerId` and `repayTo` in place of
@@ -330,9 +342,9 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
     `repayTo`; error codes `STALE_MESSAGE`, `REPLAYED_MESSAGE`, `TICKET_REFUSED` with
     `reason` (`TICKET_REFUSED_REASONS`); `repayToEvm`, `fillerKeyRegistration` definitions;
     `sig65` refuses an `s` with its top bit set; `GET /v1/gateway` returns `maxMessageAgeMs`.
-  - Vectors for every new and changed type; `FillProof.json` is written here ahead of the
-    router (see «FillProof: what attestors sign»).
-- Unreleased (CAN-2018) — filler-gateway → filler `settle.attestations` and `GET /v1/filler/attestations/{orderHash}`
+  - Vectors for every new and changed type; the router ABI catches up with these types in
+    `0.2.0-rc.7` (see «FillProof: what attestors sign»).
+- `0.2.0-rc.6` (CAN-2018; previously listed as unreleased) — filler-gateway → filler `settle.attestations` and `GET /v1/filler/attestations/{orderHash}`
   (protocol §3.5, §3.6, §10 D-N): the frame schema with the router's `FillProof` and the EVM and
   Canton signature entries, the REST endpoint, the error code `ATTESTATIONS_NOT_READY` (404), an
   AsyncAPI message, golden vectors (`spec/protocol/vectors/settle-attestations.json`), the
