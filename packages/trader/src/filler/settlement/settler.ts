@@ -117,7 +117,13 @@ export interface SettlerOptions {
 const ROUTER_ABI = CANCORE_ROUTER_ABI as unknown as readonly AbiEntry[];
 const SETTLE = entryOf(ROUTER_ABI, 'function', 'settle');
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
-const DONE: ReadonlySet<SettlementRecord['state']> = new Set(['sent', 'confirmed', 'settled', 'failed']);
+/**
+ * Nothing more to do for the settlement: confirmed, settled, or lost to a refund.
+ * A `failed` settle for any other reason, and a `sent` one whose nonce was lost,
+ * are retried while the intent is open and `refundAfter` has not come.
+ */
+const isTerminal = (s: SettlementRecord | undefined): boolean =>
+  s?.state === 'confirmed' || s?.state === 'settled' || (s?.state === 'failed' && (s.reason?.startsWith('refunded') ?? false));
 const decoder = new TextDecoder();
 
 const lower = (value: unknown): string => String(value).toLowerCase();
@@ -163,6 +169,7 @@ export class Settler {
     protocol.on('order.settled', async (d) => this.onOrderSettled(d));
     protocol.onLogin(() => void this.sweep());
     executor.onSettleIncluded((chain, tx, receipt) => this.onIncluded(chain, tx, receipt));
+    executor.onSettleLost((chain, tx) => this.onLost(chain, tx));
   }
 
   /** Sweeps now and then every `pullIntervalMs`. */
@@ -244,11 +251,13 @@ export class Settler {
     for (const orderHash of orders) {
       try {
         const s = await this.load(orderHash);
-        if (!s || (s.settlement && DONE.has(s.settlement.state))) continue;
+        if (!s || isTerminal(s.settlement)) continue;
         const source = chainsOf(s.order)?.source;
         if (!source) continue;
-        const status = await this.checkWindow(s, source);
-        if (status !== INTENT_STATUS.Opened) continue;
+        // The alerts run for a settle in flight or one that failed, too.
+        const { status, refundAfter } = await this.checkWindow(s, source);
+        if (status !== INTENT_STATUS.Opened || s.settlement?.state === 'sent') continue;
+        if (BigInt(Math.floor(this.options.clock.now() / 1000)) >= refundAfter) continue;
         if (s.payload) await this.settle(orderHash).catch((error: unknown) => this.quiet(orderHash, error));
         else await this.pull(orderHash);
       } catch (error) {
@@ -257,19 +266,19 @@ export class Settler {
     }
   }
 
-  /** Reads the intent; raises the window alerts; closes a refunded intent. Returns its status. */
-  private async checkWindow(s: Settleable, source: EvmChainId): Promise<number> {
+  /** Reads the intent; raises the window alerts; closes a refunded or settled intent. Returns its status and `refundAfter`. */
+  private async checkWindow(s: Settleable, source: EvmChainId): Promise<{ status: number; refundAfter: bigint }> {
     const readers = this.options.chains.get(source);
-    if (!readers) return INTENT_STATUS.None;
+    if (!readers) return { status: INTENT_STATUS.None, refundAfter: 0n };
     const intent = await readers.router.intents(s.orderHash);
     if (intent.status === INTENT_STATUS.Refunded) {
       await this.close(s.orderHash, s.fill.attempt, 'failed', 'refunded: the maker refunded before settle (R-5)');
       this.alert(s.orderHash, s.fill.attempt, 'refunded', {});
-      return intent.status;
+      return intent;
     }
     if (intent.status === INTENT_STATUS.Settled) {
       await this.close(s.orderHash, s.fill.attempt, 'settled', 'the intent is settled');
-      return intent.status;
+      return intent;
     }
     const nowS = BigInt(Math.floor(this.options.clock.now() / 1000));
     const filledAt = s.fill.inclusion ? BigInt(String(s.fill.inclusion.header.timestamp ?? '0')) : undefined;
@@ -280,7 +289,7 @@ export class Settler {
     if (nowS * 1000n + BigInt(this.settings.alertBeforeRefundMs) >= intent.refundAfter * 1000n) {
       this.alert(s.orderHash, s.fill.attempt, 'refund-near', { refundAfter: intent.refundAfter.toString() });
     }
-    return intent.status;
+    return intent;
   }
 
   /** `GET /v1/filler/attestations/{orderHash}`; false while not ready or filler-gateway is unreachable. */
@@ -302,7 +311,7 @@ export class Settler {
   async selfSettle(orderHash: Hex): Promise<{ txHash: Hex }> {
     const hash = lower(orderHash) as Hex;
     const s = await this.load(hash);
-    if (s && !s.payload && !(s.settlement && DONE.has(s.settlement.state))) await this.pull(hash);
+    if (s && !s.payload && !isTerminal(s.settlement) && s.settlement?.state !== 'sent') await this.pull(hash);
     return { txHash: await this.settle(hash) };
   }
 
@@ -366,21 +375,24 @@ export class Settler {
     const claimed = await store.withOrder(orderHash, async (tx) => {
       const current = await tx.getSettlement();
       const now = await store.now();
-      if (current && DONE.has(current.state)) return false;
+      if (current && (isTerminal(current) || current.state === 'sent')) return false;
       if (current?.state === 'pending' && current.owner !== instanceId && (current.leaseUntilMs ?? 0) > now) return false;
       await tx.putSettlement({ orderHash, attempt, state: 'pending', chain: source, owner: instanceId, leaseUntilMs: now + 60_000, updatedAtMs: now });
       return true;
     });
     if (!claimed) {
       const current = await store.withOrder(orderHash, (tx) => tx.getSettlement());
-      if (current?.txHash) return current.txHash;
+      // Only a settle in flight or confirmed answers with its hash; never one that failed.
+      if (current?.txHash && (current.state === 'sent' || current.state === 'confirmed')) return current.txHash;
+      if (current?.state === 'settled') throw new SettleError('already-settled', 'the intent is settled');
+      if (current?.state === 'failed' && current.reason?.startsWith('refunded')) throw new SettleError('refunded', current.reason);
       throw new SettleError('unavailable', 'another replica is settling the order');
     }
 
     let sent: InFlightTransaction;
     try {
       const gasLimit = await driver.estimateGas(call);
-      const lease = await driver.acquire();
+      const lease = await executor.acquire(driver);
       sent = await driver.send(lease, call, gasLimit, await driver.marketFees(), { kind: 'settle', orderHash, attempt }, clock.now());
       executor.watch(driver, lease);
     } catch (error) {
@@ -517,11 +529,22 @@ export class Settler {
     const readers = this.options.chains.get(chain);
     const status = readers ? (await readers.router.intents(orderHash)).status : INTENT_STATUS.None;
     if (status === INTENT_STATUS.Settled) await this.close(orderHash, attempt, 'settled', 'settled by another transaction');
-    else {
+    else if (status === INTENT_STATUS.Refunded) {
+      await this.close(orderHash, attempt, 'failed', 'refunded: the maker refunded before settle (R-5)');
+      this.alert(orderHash, attempt, 'refunded', {});
+    } else {
+      // Still open: not terminal — the sweep settles again (verified afresh, eth_call first) until refundAfter.
       await this.close(orderHash, attempt, 'failed', `reverted in block ${receipt.blockNumber}`);
-      if (status === INTENT_STATUS.Refunded) this.alert(orderHash, attempt, 'refunded', {});
+      this.alert(orderHash, attempt, 'settle-reverted', { txHash: tx.hash });
     }
     this.stage('settle.reverted', orderHash, attempt, { chain, txHash: tx.hash, block: receipt.blockNumber.toString() });
+  }
+
+  /** The nonce of a `settle` of this replica's went to another transaction: it will never be mined; the sweep settles again. */
+  private async onLost(chain: EvmChainId, tx: InFlightTransaction): Promise<void> {
+    if (!tx.orderHash) return;
+    await this.close(tx.orderHash, tx.attempt ?? 0, 'failed', 'its nonce was spent by another transaction');
+    this.stage('settle.reverted', tx.orderHash, tx.attempt ?? 0, { chain, txHash: tx.hash, lost: true });
   }
 
   // -- store --------------------------------------------------------------------------------
@@ -535,11 +558,14 @@ export class Settler {
         const record = await tx.getAttestations(ticket.attempt);
         const settlement = await tx.getSettlement();
         let payload: SettleAttestationsPayload | undefined;
+        let unreadable: string | undefined;
         if (record && (record.verified || !record.reason)) {
           try {
             payload = settleAttestationsPayload(JSON.parse(decoder.decode(record.raw)) as object);
-          } catch {
-            payload = undefined;
+          } catch (error) {
+            // A stored frame that does not parse is a failed set: the reason lets the next frame on either channel replace it.
+            unreadable = `mismatch: the stored settle.attestations does not parse (${reasonOf(error)})`;
+            await tx.putAttestations({ ...record, verified: false, reason: unreadable });
           }
         }
         return {
@@ -549,7 +575,7 @@ export class Settler {
           order: ticket.offer.order,
           ...(settlement ? { settlement } : {}),
           ...(payload ? { payload, channel: record!.channel } : {}),
-          ...(record?.reason && !record.verified ? { rejected: record.reason } : {}),
+          ...(unreadable ? { rejected: unreadable } : record?.reason && !record.verified ? { rejected: record.reason } : {}),
         };
       }
       return undefined;
@@ -559,7 +585,7 @@ export class Settler {
   private async close(orderHash: Hex, attempt: number, state: SettlementRecord['state'], reason?: string, txHash?: Hex): Promise<void> {
     await this.options.store.withOrder(orderHash, async (tx) => {
       const current = await tx.getSettlement();
-      if (current?.state === 'settled' || (current?.state === state && state !== 'confirmed')) return;
+      if (current?.state === 'settled' || (current?.state === state && current.reason === reason && state !== 'confirmed')) return;
       const { owner: _o, leaseUntilMs: _l, ...rest } = current ?? ({} as Partial<SettlementRecord>);
       await tx.putSettlement({ ...rest, orderHash, attempt, state, ...(txHash ? { txHash } : {}), ...(reason ? { reason } : {}), updatedAtMs: await this.options.store.now() });
     });
