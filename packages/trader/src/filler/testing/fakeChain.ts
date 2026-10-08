@@ -217,6 +217,8 @@ export class FakeChain implements EvmRpc {
   minTip = 0n;
   /** A reorg drops the transactions it undoes instead of returning them to the mempool. */
   dropOnReorg = false;
+  /** `eth_getTransactionReceipt` answers null for every transaction: an endpoint whose receipts lag its state. */
+  hideReceipts = false;
   /** `timestamp` of block 0; later blocks are `blockTime` apart unless set with `setTimestamp`. */
   genesisTime = 1_789_998_800n;
   blockTime = 12n;
@@ -505,7 +507,7 @@ export class FakeChain implements EvmRpc {
       }
       case 'eth_getTransactionReceipt': {
         const mined = this.minedTransactions.get(lower(String(params[0])));
-        if (!mined || mined.blockNumber > head) return null;
+        if (!mined || mined.blockNumber > head || this.hideReceipts) return null;
         return {
           transactionHash: mined.hash,
           status: hex(BigInt(mined.status)),
@@ -526,12 +528,18 @@ export class FakeChain implements EvmRpc {
         return this.call(lower(to), data, block);
       }
       case 'eth_getLogs': {
-        const filter = params[0] as { address: string; fromBlock: string; toBlock: string; topics?: Hex[][] };
+        const filter = params[0] as { address: string; fromBlock: string; toBlock: string; topics?: Array<Hex | Hex[] | null> };
         const from = BigInt(filter.fromBlock);
-        const to = BigInt(filter.toBlock);
-        const topic0 = filter.topics?.[0]?.map((t) => t.toLowerCase());
+        const to = filter.toBlock === 'latest' ? head : BigInt(filter.toBlock);
+        // A topic position is one value or a list of alternatives (JSON-RPC); positions after the first narrow by equality.
+        const position = (i: number) => {
+          const value = filter.topics?.[i];
+          return value === undefined || value === null ? undefined : (Array.isArray(value) ? value : [value]).map((t) => t.toLowerCase());
+        };
+        const topic0 = position(0);
+        const topic1 = position(1);
         return this.logs
-          .filter((l) => l.address === lower(filter.address) && l.blockNumber >= from && l.blockNumber <= to && l.blockNumber <= head && (!topic0 || topic0.includes(l.topics[0]!)))
+          .filter((l) => l.address === lower(filter.address) && l.blockNumber >= from && l.blockNumber <= to && l.blockNumber <= head && (!topic0 || topic0.includes(l.topics[0]!)) && (!topic1 || topic1.includes(l.topics[1]!)))
           .map((l) => ({
             address: l.address,
             topics: l.topics,

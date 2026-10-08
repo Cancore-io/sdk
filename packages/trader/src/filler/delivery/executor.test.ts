@@ -400,3 +400,67 @@ describe('Executor — one writer per nonce, restart (N-9, N-15, N-34)', () => {
     expect(again.nonce).toBe(first.nonce);
   });
 });
+
+describe('review sdk#65', () => {
+  const driverOf = (w: Awaited<ReturnType<typeof world>>, owner: string) =>
+    new TransactionDriver({ chain: DST, client: w.chains.get(DST)!.client, signer: fillSigner, store: w.store, owner, leaseTtlMs: 5_000, fees: { feeBumpPercent: 15, gasLimitMarginPercent: 20 }, logger: w.logger });
+
+  test('F-1: an abandoned empty nonce whose lease EXPIRED is reused by the next fill, not skipped', async () => {
+    const w = await world();
+    const abandoned = await driverOf(w, 'r1').acquire(); // a send that failed after taking nonce 0
+    expect(abandoned.nonce).toBe(0n);
+    w.clock.advance(6_000); // past the 5 s lease, no delivery meanwhile
+    const executor = w.executor('r1');
+    expect(await executor.deliver(w.orderHash, 0)).toMatchObject({ status: 'sent' });
+    expect(w.fills().map((t) => t.nonce)).toEqual([0n]);
+    executor.stop();
+  });
+
+  test('F-1: an empty nonce another replica abandoned below our fill is filled by the sweep, and the fill is mined', async () => {
+    const w = await world();
+    await driverOf(w, 'r2').acquire(); // r2 holds nonce 0 and dies before sending
+    const executor = w.executor('r1');
+    await executor.start();
+    expect(await executor.deliver(w.orderHash, 0)).toMatchObject({ status: 'sent' });
+    expect(w.fills().map((t) => t.nonce)).toEqual([1n]);
+    await w.tick(4_000);
+    expect(w.dst.minedTransactions.size).toBe(0); // nonce 1 waits for nonce 0
+    await w.tick(10_000); // r2's lease expires, the sweep claims nonce 0 and sends a transfer to self on it
+    expect([...w.dst.minedTransactions.values()].map((t) => [t.nonce, t.to === fillSigner.address.toLowerCase() ? 'gap' : 'fill'])).toEqual([[0n, 'gap'], [1n, 'fill']]);
+    expect(await fillOf(w)).toMatchObject({ state: 'confirmed' });
+    executor.stop();
+  });
+
+  test('F-2: a fill executed while the endpoint shows no receipt is never recorded failed; it confirms once the receipt shows', async () => {
+    const w = await world();
+    const executor = w.executor();
+    await executor.start();
+    const sent = await executor.deliver(w.orderHash, 0);
+    w.dst.hideReceipts = true;
+    await w.tick(8_000); // mined, the nonce spent, no receipt for well over SPENT_TICKS
+    expect(w.dst.router(DST_ROUTER).filled.has(w.orderHash.toLowerCase())).toBe(true);
+    expect(await fillOf(w)).toMatchObject({ state: 'sent' });
+    expect(await w.store.nonces.listOpen(DST, fillSigner.address.toLowerCase() as Hex)).toHaveLength(1);
+    expect(w.logger.entries.some((e) => e.message === 'delivery: the router holds the fill, its receipt is not visible yet')).toBe(true);
+    w.dst.hideReceipts = false;
+    await w.tick(2_000);
+    expect(await fillOf(w)).toMatchObject({ state: 'confirmed', txRef: sent.txHash });
+    expect(w.events.events.filter((e) => e.type === 'filled')).toHaveLength(1);
+    executor.stop();
+  });
+
+  test('F-4: the attempt claim is renewed while the approve waits: a second replica does not take it and no second fill goes out', async () => {
+    const w = await world({ allowance: 0n });
+    w.dst.minTip = 10n ** 12n; // the approve is stuck
+    const r1 = w.executor('r1', { ...TIMING, replaceAfterMs: 600_000 });
+    const delivering = r1.deliver(w.orderHash, 0);
+    await w.tick(12_000); // more than two claim TTLs (5 s)
+    const r2 = w.executor('r2');
+    expect(await r2.deliver(w.orderHash, 0)).toMatchObject({ status: 'tracking', detail: 'another replica is sending it' });
+    w.dst.minTip = 0n;
+    await w.tick(3_000);
+    expect(await delivering).toMatchObject({ status: 'sent' });
+    expect(w.fills()).toHaveLength(1);
+    r1.stop();
+  });
+});

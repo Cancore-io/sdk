@@ -43,7 +43,7 @@ import {
   type TicketIssuedEvm,
 } from '@cancore/contracts';
 import { decodeEventLog, decodeParams, encodeFunctionCall, entryOf, topicOf, type AbiEntry } from '../chain/abi';
-import { ChainReadError } from '../chain/client';
+import { ChainReadError, toQuantity } from '../chain/client';
 import { erc20Allowance } from '../chain/erc20';
 import type { ChainReaders, FillerChains } from '../chain';
 import type { EvmChainId } from '../chains';
@@ -156,6 +156,8 @@ const APPROVE = entryOf(ERC20_ABI, 'function', 'approve');
 const ZERO_HASH: Hex = `0x${'00'.repeat(32)}`;
 /** Ticks in a row a nonce may look spent without a receipt of ours before it is given up (receipts lag the nonce). */
 const SPENT_TICKS = 3;
+/** How far back a `Filled` log of an executed fill is looked for, blocks. */
+const FILLED_LOOKBACK = 5_000n;
 
 /** The address of an EVM `bytes32` asset (left-padded), or undefined. */
 const tokenOf = (asset: string): Hex | undefined => (/^0x0{24}[0-9a-fA-F]{40}$/.test(asset) ? (`0x${asset.slice(26).toLowerCase()}` as Hex) : undefined);
@@ -280,23 +282,64 @@ export class Executor {
     }
   }
 
-  /** Claims expired leases (N-34) and drives every open nonce this replica holds. */
+  /**
+   * The sweep, every lease TTL: claims expired leases (N-34), drives every open
+   * nonce this replica holds, and fills the gaps — a held nonce with nothing
+   * recorded below one that carries a transaction gets a zero-value transfer to
+   * self, so the transactions above it can be mined.
+   */
   private async claim(): Promise<void> {
-    const { store, instanceId, logger } = this.options;
     for (const chain of Object.keys(this.options.fillSigners) as EvmChainId[]) {
       const driver = this.driver(chain);
       if (!driver) continue;
       try {
-        const claimed = await store.nonces.claimExpired({ chain, address: driver.address, owner: instanceId, ttlMs: this.delivery.nonceLeaseTtlMs });
-        if (claimed.length > 0) logger.warn('delivery: took over expired nonce leases', { chain, nonces: claimed.map((r) => r.nonce.toString()).join(',') });
-        const now = await store.now();
-        for (const record of await store.nonces.listOpen(chain, driver.address)) {
-          if (record.owner === instanceId && record.expiresAtMs > now && record.transactions.length > 0) this.track(driver, record);
-        }
+        await this.claimChain(driver);
+        await this.fillGaps(driver);
       } catch (error) {
-        logger.warn('delivery: nonce sweep failed', { chain, error: reasonOf(error) });
+        this.options.logger.warn('delivery: nonce sweep failed', { chain, error: reasonOf(error) });
       }
     }
+  }
+
+  /** Claims the expired leases of `driver`'s key and drives every open nonce this replica holds with a transaction on it. */
+  private async claimChain(driver: TransactionDriver): Promise<void> {
+    const { store, instanceId, logger } = this.options;
+    const claimed = await store.nonces.claimExpired({ chain: driver.chain, address: driver.address, owner: instanceId, ttlMs: this.delivery.nonceLeaseTtlMs });
+    if (claimed.length > 0) logger.warn('delivery: took over expired nonce leases', { chain: driver.chain, nonces: claimed.map((r) => r.nonce.toString()).join(',') });
+    const now = await store.now();
+    for (const record of await store.nonces.listOpen(driver.chain, driver.address)) {
+      if (record.owner === instanceId && record.expiresAtMs > now && record.transactions.length > 0) this.track(driver, record);
+    }
+  }
+
+  /** Sends a zero-value transfer to self on every held empty nonce that lies below a nonce with a transaction. */
+  private async fillGaps(driver: TransactionDriver): Promise<void> {
+    const { store, instanceId, logger, clock } = this.options;
+    const open = await store.nonces.listOpen(driver.chain, driver.address);
+    const highest = open.filter((r) => r.transactions.length > 0).reduce<bigint>((max, r) => (r.nonce > max ? r.nonce : max), -1n);
+    const now = await store.now();
+    for (const record of open) {
+      if (record.nonce >= highest || record.transactions.length > 0 || record.owner !== instanceId || record.expiresAtMs <= now) continue;
+      const lease = await driver.renew(record);
+      if (!lease) continue;
+      try {
+        const tx = await driver.send(lease, { to: driver.address, data: '0x', value: 0n }, TRANSFER_GAS, await driver.marketFees(), { kind: 'cancel' }, clock.now());
+        logger.warn('delivery: filled a nonce gap with a transfer to self', { chain: driver.chain, nonce: lease.nonce.toString(), txHash: tx.hash });
+        this.track(driver, lease);
+      } catch (error) {
+        logger.warn('delivery: a nonce gap could not be filled yet', { chain: driver.chain, nonce: lease.nonce.toString(), error: reasonOf(error) });
+      }
+    }
+  }
+
+  /**
+   * A nonce to send on: expired leases are claimed first, so an abandoned empty
+   * nonce — a send that failed after its nonce was taken — is reused, never
+   * skipped (the lowest held empty nonce wins).
+   */
+  async acquire(driver: TransactionDriver): Promise<NonceLease> {
+    await this.claimChain(driver);
+    return driver.acquire();
   }
 
   // -- delivery -------------------------------------------------------------------
@@ -377,7 +420,8 @@ export class Executor {
     });
     if (!claimed) return { status: 'tracking' };
 
-    const allowance = await this.ensureAllowance(driver, readers, token, amount, guard);
+    const allowance = await this.ensureAllowance(driver, readers, token, amount, guard, () => this.holdClaim(orderHash, attempt));
+    if (allowance === 'lost') return { status: 'tracking', detail: 'another replica took the attempt over' };
     if (allowance !== true) return allowance === 'retry' ? this.retry(orderHash, attempt, validUntilMs, readers, 'allowance not ready') : this.refuse(orderHash, attempt, 'allowance', allowance, true);
 
     const call: TransactionCall = {
@@ -398,7 +442,8 @@ export class Executor {
     let lease: NonceLease;
     let tx: InFlightTransaction;
     try {
-      lease = await driver.acquire();
+      if (!(await this.holdClaim(orderHash, attempt))) return { status: 'tracking', detail: 'another replica took the attempt over' };
+      lease = await this.acquire(driver);
       const fees = await driver.marketFees();
       tx = await this.sendRecorded(driver, lease, call, gasLimit, fees, orderHash, attempt);
     } catch (error) {
@@ -449,6 +494,21 @@ export class Executor {
     return sent;
   }
 
+  /**
+   * Extends this replica's claim on a `pending` attempt; false when the claim
+   * is no longer this replica's (another one took it over after it expired).
+   */
+  private async holdClaim(orderHash: Hex, attempt: number): Promise<boolean> {
+    const { store, instanceId } = this.options;
+    return store.withOrder(orderHash, async (tx) => {
+      const fill = await tx.getFill(attempt);
+      if (fill?.state !== 'pending' || fill.owner !== instanceId) return false;
+      const now = await store.now();
+      await tx.putFill({ ...fill, leaseUntilMs: now + this.delivery.nonceLeaseTtlMs, updatedAtMs: now });
+      return true;
+    });
+  }
+
   /** The amount to send: the hook's, or the offer's `amountOut`. */
   private async amountFor(input: Parameters<FillAmountHook>[0]): Promise<bigint> {
     const hook = this.delivery.fillAmount;
@@ -462,10 +522,12 @@ export class Executor {
   /**
    * Waits until the router may move `amount` of `token` from the delivery key,
    * approving it when it cannot. `true` when it may; `'retry'` on a read
-   * failure; otherwise why it never will before the guard.
+   * failure; `'lost'` when `hold` reports the attempt's claim gone; otherwise
+   * why it never will before the guard. The claim is renewed on every round.
    */
-  private async ensureAllowance(driver: TransactionDriver, readers: ChainReaders, token: Hex, amount: bigint, guard: () => boolean): Promise<true | 'retry' | string> {
+  private async ensureAllowance(driver: TransactionDriver, readers: ChainReaders, token: Hex, amount: bigint, guard: () => boolean, hold: () => Promise<boolean>): Promise<true | 'retry' | 'lost' | string> {
     for (;;) {
+      if (!(await hold())) return 'lost';
       let allowance: bigint;
       try {
         allowance = await erc20Allowance(readers.client, token, driver.address, readers.router.address);
@@ -535,7 +597,7 @@ export class Executor {
   }
 
   private async sendApprove(driver: TransactionDriver, call: TransactionCall, gasLimit: bigint, token: Hex, amount: bigint): Promise<void> {
-    const lease = await driver.acquire();
+    const lease = await this.acquire(driver);
     const tx = await driver.send(lease, call, gasLimit, await driver.marketFees(), { kind: 'approve' }, this.options.clock.now());
     this.stage('approve.sent', undefined, undefined, { chain: driver.chain, token, amount: amount.toString(), txHash: tx.hash, nonce: lease.nonce.toString() });
     this.track(driver, lease);
@@ -710,6 +772,11 @@ export class Executor {
     if ((await driver.transactionCount('latest')) > t.lease.nonce) {
       // Spent, with no receipt of ours: receipts may lag; past that, another transaction took the nonce.
       if (++t.spentTicks < SPENT_TICKS) return false;
+      if (fill?.orderHash && fill.attempt !== undefined) {
+        // Only this delivery key can fill the order: filled(orderHash) means one of its fills executed, whatever an endpoint's receipts say.
+        const executed = await this.executedFill(t, fill, txs);
+        if (executed !== 'not-filled') return executed;
+      }
       logger.error('delivery: the nonce was spent by a transaction this replica did not record', { chain: driver.chain, nonce: t.lease.nonce.toString() });
       if (fill?.orderHash && fill.attempt !== undefined) await this.fail(fill.orderHash, fill.attempt, 'its nonce was spent by another transaction');
       await store.nonces.complete(t.lease, ZERO_HASH);
@@ -731,6 +798,31 @@ export class Executor {
       logger.info('delivery: rebroadcast', { chain: driver.chain, nonce: t.lease.nonce.toString(), kind: last.kind, txHash: last.hash });
     }
     return false;
+  }
+
+  /**
+   * The nonce of a fill looks spent with no receipt of ours. When the router
+   * holds a fill for the order, its `Filled` log names the transaction: that
+   * receipt goes through the inclusion path; without a log or a receipt yet
+   * the nonce stays tracked (an endpoint lagging, a reorg under way) — never
+   * failed. `'not-filled'` when the router holds no fill.
+   */
+  private async executedFill(t: Tracker, fill: InFlightTransaction, txs: readonly InFlightTransaction[]): Promise<boolean | 'not-filled'> {
+    const readers = this.options.chains.get(t.driver.chain);
+    if (!readers || !(await readers.router.filled(fill.orderHash!))) return 'not-filled';
+    t.spentTicks = 0;
+    const head = await t.driver.client.head();
+    const logs = await t.driver.client.request<Array<{ transactionHash?: string }>>('eth_getLogs', [
+      { address: readers.router.address, topics: [FILLED_TOPIC, fill.orderHash], fromBlock: toQuantity(head > FILLED_LOOKBACK ? head - FILLED_LOOKBACK : 0n), toBlock: 'latest' },
+    ]);
+    const hash = logs.find((l) => typeof l.transactionHash === 'string')?.transactionHash?.toLowerCase() as Hex | undefined;
+    const receipt = hash ? await t.driver.receipt(hash) : undefined;
+    if (!hash || !receipt) {
+      this.options.logger.warn('delivery: the router holds the fill, its receipt is not visible yet', { orderHash: fill.orderHash, chain: t.driver.chain, txHash: hash });
+      return false;
+    }
+    const ours = txs.find((x) => x.hash === hash) ?? { ...fill, hash };
+    return this.included(t, ours, receipt, head - receipt.blockNumber + 1n, txs);
   }
 
   /** Replace-by-fee: the same call on the same nonce, both fees raised. */
