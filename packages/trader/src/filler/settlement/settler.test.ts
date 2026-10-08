@@ -6,6 +6,7 @@ import { FillerChains, hashFillProof, hashOrder, type ChainConfig } from '../cha
 import { Executor } from '../delivery/executor';
 import type { StageEvent } from '../events';
 import type { Delivery, FillerProtocolClient, FrameHandler } from '../protocol/client';
+import type { EvmRpcRequest } from '../rpc';
 import type { FillRecord, TicketRecord } from '../store';
 import { addressOfPublicKey } from '../signer';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, FakeChain, FakeClock, InMemoryFillerStore } from '../testing';
@@ -134,7 +135,8 @@ async function world(options: { refundAfterS?: number; proofWindowS?: bigint } =
   const events = createRecordingEventSink();
   const logger = createRecordingLogger();
   const chains = new FillerChains({ [SRC]: [src] }, { [SRC]: POLICY }, logger);
-  const executor = new Executor({ store, chains, fillSigners: { [SRC]: fillSigner }, fillerId: FILLER, receipted: async () => undefined, instanceId: 'r1', clock, logger, events, delivery: { pollIntervalMs: 1_000 } });
+  const signer = { ...fillSigner, signTransaction: jest.fn(fillSigner.signTransaction.bind(fillSigner)) };
+  const executor = new Executor({ store, chains, fillSigners: { [SRC]: signer }, fillerId: FILLER, receipted: async () => undefined, instanceId: 'r1', clock, logger, events, delivery: { pollIntervalMs: 1_000 } });
   const handlers = new Map<string, FrameHandler>();
   const ready: { next?: Delivery } = {};
   const pulls: Hex[] = [];
@@ -168,7 +170,15 @@ async function world(options: { refundAfterS?: number; proofWindowS?: bigint } =
   const stages = (stage: string) => events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === stage);
   const settlement = () => store.withOrder(orderHash, (tx) => tx.getSettlement());
   const attestation = () => store.withOrder(orderHash, (tx) => tx.getAttestations(0));
-  return { clock, src, router, store, order, orderHash, proof, digestOf, delivery, events, logger, executor, settler, handlers, ready, pulls, tick, push, settles, stages, settlement, attestation, refundAfter, repayTo };
+  const restart = (instanceId = 'r2') => {
+    settler.stop();
+    executor.stop();
+    const nextExecutor = new Executor({ store, chains, fillSigners: { [SRC]: signer }, fillerId: FILLER, receipted: async () => undefined, instanceId, clock, logger, events, delivery: { pollIntervalMs: 1_000 } });
+    const nextSettler = new Settler({ store, chains, executor: nextExecutor, protocol, fillerId: FILLER, instanceId, clock, logger, events });
+    nextSettler.register();
+    return { executor: nextExecutor, settler: nextSettler };
+  };
+  return { clock, src, router, store, order, orderHash, proof, digestOf, delivery, events, logger, executor, settler, handlers, ready, pulls, tick, push, settles, stages, settlement, attestation, refundAfter, repayTo, restart, signer };
 }
 
 const payee = (w: Awaited<ReturnType<typeof world>>) => w.src.token(INPUT).balances.get(`0x${w.repayTo.slice(26)}`) ?? 0n;
@@ -423,5 +433,177 @@ describe('review sdk#66', () => {
     expect(await w.attestation()).toMatchObject({ reason: expect.stringContaining('does not parse') });
     await w.push(w.delivery({}, 'rest'));
     expect(w.settles()).toHaveLength(1);
+  });
+});
+
+
+describe('write-ahead settlement recovery (CAN-1856 R2)', () => {
+  test.each([false, true])('broadcast throws after recording (accepted=%s): one signature/nonce, linked hash and tracker', async (accepted) => {
+    const w = await world();
+    const request = w.src.request.bind(w.src);
+    const raws: unknown[] = [];
+    let refused = false;
+    w.src.request = async <T>(r: EvmRpcRequest): Promise<T> => {
+      if (r.method === 'eth_sendRawTransaction') {
+        raws.push(r.params?.[0]);
+        if (!refused) {
+          refused = true;
+          if (accepted) await request<T>(r);
+          throw new Error('RPC timeout');
+        }
+      }
+      return request<T>(r);
+    };
+    await w.push(w.delivery());
+    const open = await w.store.nonces.listOpen(SRC, fillSigner.address);
+    expect(open).toHaveLength(1);
+    const recorded = open[0]!.transactions[0]!;
+    expect(w.signer.signTransaction).toHaveBeenCalledTimes(1);
+    expect(await w.settlement()).toMatchObject({ state: 'sent', txHash: recorded.hash });
+    await expect(w.settler.selfSettle(w.orderHash)).resolves.toEqual({ txHash: recorded.hash });
+    expect(await w.store.nonces.listOpen(SRC, fillSigner.address)).toHaveLength(1);
+    await w.tick(1_000);
+    expect(raws.every((raw) => raw === recorded.raw)).toBe(true);
+    if (!accepted) expect(raws).toHaveLength(2);
+    w.src.mine();
+    await w.tick(1_000);
+    expect(await w.settlement()).toMatchObject({ state: 'confirmed', txHash: recorded.hash });
+    expect(payee(w)).toBe(100n);
+  });
+
+  test('accepted then timeout, crash before linking, restart: claims old journal before allocation', async () => {
+    const w = await world();
+    const request = w.src.request.bind(w.src);
+    w.src.request = async <T>(r: EvmRpcRequest): Promise<T> => {
+      const result = await request<T>(r);
+      if (r.method === 'eth_sendRawTransaction') throw new Error('accepted then timed out');
+      return result;
+    };
+    const withOrder = w.store.withOrder.bind(w.store);
+    w.store.withOrder = (hash, work) => withOrder(hash, (tx) => work({ ...tx, putSettlement: async (record) => {
+      if (record.state === 'sent') throw new Error('process crashed before link');
+      return tx.putSettlement(record);
+    } }));
+    await w.push(w.delivery());
+    const [old] = await w.store.nonces.listOpen(SRC, fillSigner.address);
+    expect(old!.transactions).toHaveLength(1);
+    const recorded = old!.transactions[0]!;
+    w.store.withOrder = withOrder;
+    w.src.request = request;
+    w.clock.advance(61_000);
+    const next = w.restart();
+    await expect(next.settler.selfSettle(w.orderHash)).resolves.toEqual({ txHash: recorded.hash });
+    const open = await w.store.nonces.listOpen(SRC, fillSigner.address);
+    expect(open).toHaveLength(1);
+    expect(w.signer.signTransaction).toHaveBeenCalledTimes(1);
+    expect(open[0]).toMatchObject({ nonce: old!.nonce, owner: 'r2', transactions: [recorded] });
+    w.src.mine();
+    await w.tick(1_000);
+    expect(await w.settlement()).toMatchObject({ state: 'confirmed', txHash: recorded.hash });
+    next.executor.stop();
+  });
+
+  test('an active foreign journal lease cannot be adopted or bypassed with a new nonce', async () => {
+    const w = await world();
+    const request = w.src.request.bind(w.src);
+    w.src.request = async <T>(r: EvmRpcRequest): Promise<T> => {
+      if (r.method === 'eth_sendRawTransaction') throw new Error('refused');
+      return request<T>(r);
+    };
+    await w.push(w.delivery());
+    const [record] = await w.store.nonces.listOpen(SRC, fillSigner.address);
+    w.executor.stop();
+    w.clock.advance(61_000);
+    await w.store.nonces.claimExpired({ chain: SRC, address: fillSigner.address, owner: 'foreign', ttlMs: 120_000 });
+    await w.store.withOrder(w.orderHash, (tx) => tx.putSettlement({ orderHash: w.orderHash, attempt: 0, state: 'pending', owner: 'r1', leaseUntilMs: 0, updatedAtMs: w.clock.now() }));
+    await expect(w.settler.selfSettle(w.orderHash)).rejects.toMatchObject({ reason: 'unavailable' });
+    expect(await w.store.nonces.listOpen(SRC, fillSigner.address)).toEqual([{ ...record, owner: 'foreign', expiresAtMs: w.clock.now() + 120_000 }]);
+    expect((await w.settlement())!.txHash).toBeUndefined();
+  });
+
+  test('LeaseLost and a foreign operation on the nonce are never treated as the settle hash', async () => {
+    for (const foreign of [false, true]) {
+      const w = await world();
+      const record = w.store.nonces.recordTransaction;
+      w.store.nonces.recordTransaction = async (lease, tx) => foreign ? record(lease, { ...tx, kind: 'fill', orderHash: `0x${'ab'.repeat(32)}` }) : false;
+      const request = w.src.request.bind(w.src);
+      w.src.request = async <T>(r: EvmRpcRequest): Promise<T> => {
+        if (r.method === 'eth_sendRawTransaction') throw new Error('refused');
+        return request<T>(r);
+      };
+      await w.push(w.delivery());
+      expect(await w.settlement()).toMatchObject({ state: 'pending', leaseUntilMs: 0 });
+      expect((await w.settlement())!.txHash).toBeUndefined();
+      expect(w.stages('settle.sent')).toHaveLength(0);
+      if (!foreign) expect((await w.store.nonces.listOpen(SRC, fillSigner.address))[0]!.transactions).toHaveLength(0);
+    }
+  });
+
+  test('a nonce lease taken over while RPC throws is not adopted', async () => {
+    const w = await world();
+    const request = w.src.request.bind(w.src);
+    w.src.request = async <T>(r: EvmRpcRequest): Promise<T> => {
+      if (r.method === 'eth_sendRawTransaction') {
+        w.clock.advance(61_000);
+        await w.store.nonces.claimExpired({ chain: SRC, address: fillSigner.address, owner: 'foreign', ttlMs: 120_000 });
+        throw new Error('RPC timed out after lease takeover');
+      }
+      return request<T>(r);
+    };
+    await w.push(w.delivery());
+    expect((await w.settlement())!.txHash).toBeUndefined();
+    expect(w.stages('settle.sent')).toHaveLength(0);
+    expect((await w.store.nonces.listOpen(SRC, fillSigner.address))[0]).toMatchObject({ owner: 'foreign' });
+  });
+
+  test.each(['kind', 'attempt', 'to', 'data'] as const)('restart does not adopt a journal replacement with different %s', async (field) => {
+    const w = await world();
+    await w.push(w.delivery());
+    const [record] = await w.store.nonces.listOpen(SRC, fillSigner.address);
+    const tx = record!.transactions[0]!;
+    const change = { kind: { kind: 'fill' as const }, attempt: { attempt: 1 }, to: { to: INPUT }, data: { data: '0x' as Hex } }[field];
+    await w.store.nonces.recordTransaction(record!, { ...tx, ...change });
+    await w.store.withOrder(w.orderHash, (otx) => otx.putSettlement({ orderHash: w.orderHash, attempt: 0, state: 'pending', owner: 'r1', leaseUntilMs: 0, updatedAtMs: w.clock.now() }));
+    const next = w.restart('r1');
+    await expect(next.settler.selfSettle(w.orderHash)).rejects.toMatchObject({ reason: 'unavailable' });
+    expect((await w.settlement())!.txHash).toBeUndefined();
+    expect(await w.store.nonces.listOpen(SRC, fillSigner.address)).toHaveLength(1);
+    expect(w.settles()).toHaveLength(1);
+    next.executor.stop();
+  });
+
+  test.each(['confirmed', 'foreign'] as const)('a %s settlement written during broadcast is not overwritten', async (state) => {
+    const w = await world();
+    const request = w.src.request.bind(w.src);
+    const newerHash: Hex = `0x${'ef'.repeat(32)}`;
+    w.src.request = async <T>(r: EvmRpcRequest): Promise<T> => {
+      const result = await request<T>(r);
+      if (r.method === 'eth_sendRawTransaction') await w.store.withOrder(w.orderHash, (tx) => tx.putSettlement({
+        orderHash: w.orderHash, attempt: 0, updatedAtMs: w.clock.now(),
+        ...(state === 'confirmed' ? { state: 'confirmed', txHash: newerHash } as const : { state: 'pending', owner: 'foreign', leaseUntilMs: w.clock.now() + 60_000 } as const),
+      }));
+      return result;
+    };
+    await w.push(w.delivery());
+    if (state === 'confirmed') expect(await w.settlement()).toMatchObject({ state: 'confirmed', txHash: newerHash });
+    else expect(await w.settlement()).toMatchObject({ state: 'pending', owner: 'foreign' });
+    expect(await w.store.nonces.listOpen(SRC, fillSigner.address)).toHaveLength(1);
+  });
+
+  test('failure before the journal write releases the claim and retries the same empty nonce', async () => {
+    const w = await world();
+    const record = w.store.nonces.recordTransaction;
+    w.store.nonces.recordTransaction = async () => { throw new Error('store unavailable before write'); };
+    await w.push(w.delivery());
+    expect(await w.settlement()).toMatchObject({ state: 'pending', leaseUntilMs: 0 });
+    expect((await w.settlement())!.txHash).toBeUndefined();
+    const [empty] = await w.store.nonces.listOpen(SRC, fillSigner.address);
+    expect(empty!.transactions).toHaveLength(0);
+    w.store.nonces.recordTransaction = record;
+    await w.settler.selfSettle(w.orderHash);
+    const open = await w.store.nonces.listOpen(SRC, fillSigner.address);
+    expect(open).toHaveLength(1);
+    expect(open[0]!.nonce).toBe(empty!.nonce);
+    expect(open[0]!.transactions).toHaveLength(1);
   });
 });

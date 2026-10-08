@@ -45,11 +45,11 @@ import { ChainReadError } from '../chain/client';
 import { INTENT_STATUS, type FillerChains } from '../chain';
 import { evmChainNumber, type EvmChainId } from '../chains';
 import type { Executor } from '../delivery/executor';
-import { FeeCeilingError, type TransactionCall, type TransactionReceipt } from '../delivery/transactions';
+import { FeeCeilingError, LeaseLostError, type TransactionCall, type TransactionReceipt } from '../delivery/transactions';
 import type { EventSink, FillerEvent, FillerStage } from '../events';
 import type { Delivery, FillerProtocolClient } from '../protocol/client';
 import type { Cancel, Clock, Logger } from '../runtime';
-import type { FillRecord, FillerStore, InFlightTransaction, SettlementRecord, TicketRecord } from '../store';
+import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, SettlementRecord, TicketRecord } from '../store';
 import { chainsOf, orderOf } from '../tickets/terms';
 import { collectAttestations, fillProofOf } from './attestations';
 
@@ -391,9 +391,34 @@ export class Settler {
 
     let sent: InFlightTransaction;
     try {
-      const gasLimit = await driver.estimateGas(call);
-      const lease = await executor.acquire(driver);
-      sent = await driver.send(lease, call, gasLimit, await driver.marketFees(), { kind: 'settle', orderHash, attempt }, clock.now());
+      const recovered = await executor.recoverSettlement(driver, orderHash, attempt, call);
+      let lease: NonceLease;
+      if (recovered) {
+        lease = recovered.lease;
+        sent = recovered.tx;
+      } else {
+        const gasLimit = await driver.estimateGas(call);
+        lease = await executor.acquire(driver);
+        try {
+          sent = await driver.send(lease, call, gasLimit, await driver.marketFees(), { kind: 'settle', orderHash, attempt }, clock.now());
+        } catch (error) {
+          if (error instanceof LeaseLostError) throw error;
+          const record = await driver.record(lease);
+          const recorded = record?.transactions.at(-1);
+          if (record?.owner !== instanceId || !recorded || recorded.kind !== 'settle' || recorded.orderHash !== orderHash || recorded.attempt !== attempt || recorded.to !== call.to.toLowerCase() || recorded.data !== call.data || recorded.value !== call.value) throw error;
+          sent = recorded;
+          this.options.logger.warn('settle: broadcast refused, the tracker retries it', { orderHash, attempt, txHash: sent.hash, error: reasonOf(error) });
+        }
+      }
+      if (!(await driver.renew(lease))) throw new LeaseLostError(lease);
+      await store.withOrder(orderHash, async (tx) => {
+        const current = await tx.getSettlement();
+        // A receipt or a newer replica's claim may have arrived while the RPC was pending.
+        if (current && (isTerminal(current) || current.state === 'sent')) return;
+        const now = await store.now();
+        if (current?.state !== 'pending' || current.attempt !== attempt || current.owner !== instanceId || (current.leaseUntilMs ?? 0) <= now) throw new SettleError('unavailable', 'the settlement claim was lost');
+        await tx.putSettlement({ orderHash, attempt, state: 'sent', chain: source, txHash: sent.hash, updatedAtMs: now, ...(current.orderSettled ? { orderSettled: current.orderSettled } : {}) });
+      });
       executor.watch(driver, lease);
     } catch (error) {
       await this.release(orderHash);
@@ -401,10 +426,6 @@ export class Settler {
       if (error instanceof ChainReadError && error.reason === 'reverted') throw new SettleError('reverted', revertName(error));
       throw new SettleError('unavailable', reasonOf(error));
     }
-    await store.withOrder(orderHash, async (tx) => {
-      const current = await tx.getSettlement();
-      await tx.putSettlement({ orderHash, attempt, state: 'sent', chain: source, txHash: sent.hash, updatedAtMs: await store.now(), ...(current?.orderSettled ? { orderSettled: current.orderSettled } : {}) });
-    });
     this.stage('settle.sent', orderHash, attempt, { chain: source, txHash: sent.hash, signers: sigs.map((x) => x.signer).join(','), maxFeePerGas: sent.maxFeePerGas.toString() });
     this.options.logger.info('settle: sent', { orderHash, attempt, chain: source, txHash: sent.hash });
     return sent.hash;
