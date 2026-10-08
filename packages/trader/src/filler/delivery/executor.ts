@@ -182,6 +182,8 @@ interface Tracker {
   spentTicks: number;
   /** `validUntil` (unix s) of the fill on this nonce, once read. */
   validUntil?: bigint;
+  /** The replacement cap was reported for this nonce. */
+  capped?: boolean;
   cancel?: Cancel;
 }
 
@@ -787,10 +789,10 @@ export class Executor {
     const stale = clock.now() - last.sentAtMs >= this.delivery.replaceAfterMs;
     if (fill && last.kind !== 'cancel') {
       const validUntil = (t.validUntil ??= await this.validUntilOf(fill));
-      if (validUntil !== undefined && (await driver.chainTime()) > validUntil) return this.cancel(t, last, fill).then(() => false);
-      if (stale && validUntil !== undefined && clock.now() <= Number(validUntil) * 1000) return this.replace(t, last, fill).then(() => false);
+      if (validUntil !== undefined && (await driver.chainTime()) > validUntil) return this.cancel(t, last, fill, txs[0]!).then(() => false);
+      if (stale && validUntil !== undefined && clock.now() <= Number(validUntil) * 1000) return this.replace(t, last, fill, txs[0]!).then(() => false);
     } else if (stale) {
-      return this.replace(t, last, fill).then(() => false);
+      return this.replace(t, last, fill, txs[0]!).then(() => false);
     }
     if (!(await driver.known(last.hash))) {
       // Dropped from the mempool or reorged out: the same bytes again (T-30: resend while the ticket is live).
@@ -826,14 +828,13 @@ export class Executor {
   }
 
   /** Replace-by-fee: the same call on the same nonce, both fees raised. */
-  private async replace(t: Tracker, last: InFlightTransaction, fill: InFlightTransaction | undefined): Promise<void> {
+  private async replace(t: Tracker, last: InFlightTransaction, fill: InFlightTransaction | undefined, first: InFlightTransaction): Promise<void> {
     let fees;
     try {
-      fees = await t.driver.replacementFees(last);
+      fees = await t.driver.replacementFees(last, first);
     } catch (error) {
       if (!(error instanceof FeeCeilingError)) throw error;
-      this.options.logger.warn('delivery: replacement above the fee ceiling, not sent', { chain: t.driver.chain, nonce: t.lease.nonce.toString(), error: error.message });
-      return;
+      return this.capped(t, last, error);
     }
     const tx = await t.driver.send(t.lease, { to: last.to, data: last.data, value: last.value }, last.gasLimit, fees, { kind: last.kind, ...(last.orderHash ? { orderHash: last.orderHash } : {}), ...(last.attempt !== undefined ? { attempt: last.attempt } : {}) }, this.options.clock.now());
     if (tx.kind === 'fill' && tx.orderHash && tx.attempt !== undefined) await this.setTxRef(tx.orderHash, tx.attempt, tx.hash);
@@ -849,17 +850,27 @@ export class Executor {
   }
 
   /** The fill can no longer succeed (the chain is past `validUntil`): free its nonce with a zero-value transfer to self. */
-  private async cancel(t: Tracker, last: InFlightTransaction, fill: InFlightTransaction): Promise<void> {
+  private async cancel(t: Tracker, last: InFlightTransaction, fill: InFlightTransaction, first: InFlightTransaction): Promise<void> {
     let fees;
     try {
-      fees = await t.driver.replacementFees(last);
+      fees = await t.driver.replacementFees(last, first);
     } catch (error) {
       if (!(error instanceof FeeCeilingError)) throw error;
-      this.options.logger.warn('delivery: cancel above the fee ceiling, the expired fill stays to revert', { chain: t.driver.chain, nonce: t.lease.nonce.toString() });
-      return;
+      // The expired fill stays: mined, it reverts TicketExpired and frees the nonce.
+      return this.capped(t, last, error);
     }
     const tx = await t.driver.send(t.lease, { to: t.driver.address, data: '0x', value: 0n }, TRANSFER_GAS, fees, { kind: 'cancel' }, this.options.clock.now());
     this.options.logger.warn('delivery: validUntil passed with the fill pending, cancelling it', { orderHash: fill.orderHash, attempt: fill.attempt, chain: t.driver.chain, txHash: tx.hash });
+  }
+
+  /** The replacement cap is reached: no higher fee, only the same bytes again (F-3 of sdk#65). Reported once per nonce. */
+  private async capped(t: Tracker, last: InFlightTransaction, error: FeeCeilingError): Promise<void> {
+    if (!t.capped) {
+      t.capped = true;
+      this.options.logger.warn('delivery: replacement cap reached, rebroadcasting the last transaction', { chain: t.driver.chain, nonce: t.lease.nonce.toString(), kind: last.kind, txHash: last.hash, error: error.message });
+      this.stage('tx.capped', last.orderHash, last.attempt, { chain: t.driver.chain, kind: last.kind, nonce: t.lease.nonce.toString(), txHash: last.hash, maxFeePerGas: last.maxFeePerGas.toString() });
+    }
+    await t.driver.broadcast(last);
   }
 
   private async setTxRef(orderHash: Hex, attempt: number, txHash: Hex): Promise<void> {

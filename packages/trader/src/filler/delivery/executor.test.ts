@@ -464,3 +464,24 @@ describe('review sdk#65', () => {
     r1.stop();
   });
 });
+
+describe('review sdk#65 — F-3: replacement cap', () => {
+  test('a stuck transaction first sent at 2 gwei is replaced up to 3× (≤ 6 gwei), then only its bytes are rebroadcast', async () => {
+    const w = await world({ allowance: 0n, ttlS: 3_600 });
+    w.dst.baseFeePerGas = 500_000_000n; // maxFeePerGas = 2 × 0.5 + 1 = 2 gwei
+    w.dst.minTip = 10n ** 12n; // the approve never gets mined
+    const executor = w.executor('r1', { ...TIMING, replaceAfterMs: 1_000 });
+    void executor.deliver(w.orderHash, 0);
+    await w.tick(60_000);
+    const pending = [...w.dst.mempool.values()];
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.nonce).toBe(0n);
+    expect(pending[0]!.maxFeePerGas).toBeLessThanOrEqual(6_000_000_000n);
+    expect(pending[0]!.maxFeePerGas).toBeGreaterThan(5_000_000_000n);
+    expect(w.stages('tx.replaced').length).toBeLessThan(10);
+    expect(w.stages('tx.capped')).toHaveLength(1);
+    const rebroadcasts = w.dst.calls.filter((c) => c.method === 'eth_sendRawTransaction' && c.params![0] === pending[0]!.raw);
+    expect(rebroadcasts.length).toBeGreaterThan(5);
+    executor.stop();
+  });
+});

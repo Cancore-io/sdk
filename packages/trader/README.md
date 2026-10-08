@@ -201,8 +201,10 @@ receipted ──► pending ──► sent ──► included ──► confirme
   `TicketExpired`, an ERC-20 refusal) is named and nothing is sent.
 - **sendGuard.** Nothing goes out with less than `chains.<caip2>.sendGuardSec` left to `validUntil` (T-29).
   A fill still pending after `delivery.replaceAfterMs` (30 s) is replaced on its nonce with both fees raised
-  by `delivery.feeBumpPercent` (15 %, at least 10), while `validUntil` has not passed and never above
-  `chains.<caip2>.maxFeePerGasWei`. Once the chain's own time is past `validUntil` the fill can never succeed,
+  by `delivery.feeBumpPercent` (15 %, at least 10), while `validUntil` has not passed. No replacement — of a
+  fill, a cancel, an approve or a settle — is priced above 3× the fee the first transaction on its nonce went out
+  with, nor above `chains.<caip2>.maxFeePerGasWei` when that is lower; past the cap the same bytes are only
+  broadcast again (stage `tx.capped`). Once the chain's own time is past `validUntil` the fill can never succeed,
   and its nonce is freed by a zero-value transfer to self.
 - **Reorgs.** A fill is done `chains.<caip2>.fillConfirmations` deep (default `openConfirmations`). An
   inclusion that disappears is resent — the same bytes on the same nonce — while the ticket is live (T-30);

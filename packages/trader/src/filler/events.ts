@@ -93,6 +93,8 @@ export type FillerStage =
   /** Any other own transaction (`detail.kind`): replaced, or included. */
   | 'tx.replaced'
   | 'tx.confirmed'
+  /** No further replacement: the cap (3× the first fee on the nonce, or `maxFeePerGasWei`) is reached; the last transaction is rebroadcast. */
+  | 'tx.capped'
   | 'attestations.received'
   | 'settle.sent'
   | 'settle.confirmed';

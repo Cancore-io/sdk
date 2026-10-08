@@ -9,7 +9,8 @@
  *   it leaves the raw bytes for whoever drives the nonce next.
  * - **One nonce, many transactions.** A replacement (replace-by-fee) goes out
  *   on the same nonce with both fees raised by at least `feeBumpPercent`
- *   (nodes refuse less than +10 %), never above `maxFeePerGasWei`.
+ *   (nodes refuse less than +10 %), never above `REPLACEMENT_FEE_CAP_MULTIPLE`
+ *   times the first fee on that nonce, nor above `maxFeePerGasWei`.
  * - **No gaps.** A held nonce with nothing recorded on it is reused before a
  *   new one is allocated, so a send abandoned after the nonce was taken never
  *   strands the transactions behind it.
@@ -28,6 +29,12 @@ import type { FillerStore, InFlightKind, InFlightTransaction, NonceLease, NonceR
 
 /** Below this a node refuses a replacement (geth `txpool.pricebump`). */
 export const MIN_FEE_BUMP_PERCENT = 10;
+/**
+ * A replacement never prices `maxFeePerGas` above this multiple of the fee the
+ * first transaction on its nonce went out with; with `maxFeePerGasWei` set the
+ * lower of the two applies. Past it the same bytes are only broadcast again.
+ */
+export const REPLACEMENT_FEE_CAP_MULTIPLE = 3n;
 /** Gas of a plain transfer: the cancel transaction. */
 export const TRANSFER_GAS = 21_000n;
 
@@ -188,8 +195,13 @@ export class TransactionDriver {
     return fees;
   }
 
-  /** Fees for a replacement of `last`: the market or `last` raised by `feeBumpPercent`, whichever is higher; `FeeCeilingError` above the ceiling. */
-  async replacementFees(last: Fees): Promise<Fees> {
+  /**
+   * Fees for a replacement of `last`: the market or `last` raised by
+   * `feeBumpPercent`, whichever is higher. `FeeCeilingError` above the cap:
+   * `REPLACEMENT_FEE_CAP_MULTIPLE` × `first.maxFeePerGas` (the first
+   * transaction on the nonce), or `maxFeePerGasWei` when that is lower.
+   */
+  async replacementFees(last: Fees, first: Fees = last): Promise<Fees> {
     const bump = Math.max(this.options.fees.feeBumpPercent, MIN_FEE_BUMP_PERCENT);
     let market: Fees;
     try {
@@ -203,8 +215,10 @@ export class TransactionDriver {
       maxPriorityFeePerGas: max(market.maxPriorityFeePerGas, ceilPercent(last.maxPriorityFeePerGas, bump)),
     };
     if (fees.maxPriorityFeePerGas > fees.maxFeePerGas) fees.maxFeePerGas = fees.maxPriorityFeePerGas;
-    const ceiling = this.options.fees.maxFeePerGasWei;
-    if (ceiling !== undefined && fees.maxFeePerGas > ceiling) throw new FeeCeilingError(`${this.chain}: a replacement needs maxFeePerGas ${fees.maxFeePerGas}, above the ceiling ${ceiling}`);
+    const relative = first.maxFeePerGas * REPLACEMENT_FEE_CAP_MULTIPLE;
+    const configured = this.options.fees.maxFeePerGasWei;
+    const ceiling = configured !== undefined && configured < relative ? configured : relative;
+    if (fees.maxFeePerGas > ceiling) throw new FeeCeilingError(`${this.chain}: a replacement needs maxFeePerGas ${fees.maxFeePerGas}, above the cap ${ceiling}`);
     return fees;
   }
 
