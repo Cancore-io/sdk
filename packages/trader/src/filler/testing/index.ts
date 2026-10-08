@@ -4,8 +4,10 @@
  * in memory, the signer takes a raw test key.
  */
 export { InMemoryFillerStore } from './memoryStore';
-export { FakeChain, FakeEndpoint, FakeRouter, FakeToken, routerEventTopic } from './fakeChain';
-export type { FakeEndpointOptions, FakeIntent } from './fakeChain';
+export { errorSelector, FakeChain, FakeEndpoint, FakeRouter, FakeToken, routerEventTopic } from './fakeChain';
+export type { FakeEndpointOptions, FakeIntent, FakeMinedTransaction, FakePendingTransaction } from './fakeChain';
+export { createTestFillSigner, decodeSignedTransaction, rlpDecode, rlpEncode } from './transactions';
+export type { DecodedTransaction } from './transactions';
 export {
   createFakeFetch,
   createFakeWebSocketFactory,

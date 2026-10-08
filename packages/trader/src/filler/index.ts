@@ -104,6 +104,8 @@ export type {
   EvidenceEntry,
   FillerStore,
   FillRecord,
+  FillState,
+  InclusionProof,
   InFlightKind,
   InFlightTransaction,
   NonceAllocation,
@@ -120,6 +122,9 @@ export type {
   TicketRecord,
   TicketState,
 } from './store';
+
+export { DEFAULT_DELIVERY } from './delivery/executor';
+export type { DeliveryOptions, DeliveryResult, FillAmountHook, FillAmountInput, FillRefusal } from './delivery/executor';
 
 export { noopEventSink } from './events';
 export type {

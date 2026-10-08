@@ -11,6 +11,7 @@ import { FillerChains, type ChainConfig } from './chain';
 import { TicketVerifier, type EscrowVerification } from './tickets/checks';
 import { DEFAULT_OFFER_REPLY_MARGIN_MS, TicketDesk, type TicketOfferHook } from './tickets/desk';
 import { FillerConfigError, NotImplementedError } from './errors';
+import { Executor, type DeliveryOptions } from './delivery/executor';
 import { FillerProtocolClient, DEFAULT_REST_POLL_INTERVAL_MS } from './protocol/client';
 import { createSealer } from './protocol/envelope';
 import { GatewayRest } from './protocol/rest';
@@ -88,6 +89,8 @@ export interface FillerConfig {
   instanceId?: string;
   /** Transport tuning. The defaults suit production; tests shorten them. */
   transport?: TransportOptions;
+  /** Delivery: fees, replacement, nonce leases, router allowances, the amount sent. The defaults suit production. */
+  delivery?: DeliveryOptions;
 }
 
 export interface TicketPolicy {
@@ -297,6 +300,29 @@ function validate(config: FillerConfig): void {
     throw new FillerConfigError('instanceId', 'expected a non-empty string');
   }
   if (config.transport !== undefined) validateTransport(config.transport);
+  if (config.delivery !== undefined) validateDelivery(config.delivery);
+}
+
+function validateDelivery(delivery: DeliveryOptions): void {
+  if (!isObject(delivery as unknown)) throw new FillerConfigError('delivery', 'expected an object');
+  const positive = (field: string, value: unknown, min = 1) => {
+    if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min)) {
+      throw new FillerConfigError(`delivery.${field}`, `expected an integer ≥ ${min}`);
+    }
+  };
+  positive('pollIntervalMs', delivery.pollIntervalMs);
+  positive('replaceAfterMs', delivery.replaceAfterMs);
+  positive('feeBumpPercent', delivery.feeBumpPercent, 10);
+  positive('gasLimitMarginPercent', delivery.gasLimitMarginPercent, 0);
+  positive('nonceLeaseTtlMs', delivery.nonceLeaseTtlMs);
+  if (delivery.fillAmount !== undefined && typeof delivery.fillAmount !== 'function') throw new FillerConfigError('delivery.fillAmount', 'expected a function');
+  for (const [chain, tokens] of Object.entries(delivery.approvals ?? {})) {
+    if (!isEvmChainId(chain)) throw new FillerConfigError(`delivery.approvals.${chain}`, 'key must be an eip155 CAIP-2 chain id');
+    for (const [token, limit] of Object.entries(tokens as Record<string, unknown>)) {
+      requireAddress(`delivery.approvals.${chain}.${token}`, token);
+      if (typeof limit !== 'bigint' || limit <= 0n) throw new FillerConfigError(`delivery.approvals.${chain}.${token}`, 'expected a positive bigint (base units)');
+    }
+  }
 }
 
 function validateChains(config: FillerConfig): void {
@@ -314,6 +340,10 @@ function validateChains(config: FillerConfig): void {
     count(`chains.${chain}.requiredProofWindowSec`, entry.requiredProofWindowSec);
     count(`chains.${chain}.sendGuardSec`, entry.sendGuardSec);
     if (typeof entry.minGasWei !== 'bigint' || entry.minGasWei < 0n) throw new FillerConfigError(`chains.${chain}.minGasWei`, 'expected a non-negative bigint (wei)');
+    if (entry.fillConfirmations !== undefined) count(`chains.${chain}.fillConfirmations`, entry.fillConfirmations);
+    if (entry.maxFeePerGasWei !== undefined && (typeof entry.maxFeePerGasWei !== 'bigint' || entry.maxFeePerGasWei <= 0n)) {
+      throw new FillerConfigError(`chains.${chain}.maxFeePerGasWei`, 'expected a positive bigint (wei)');
+    }
     const endpoints = config.rpc[chain];
     if (!Array.isArray(endpoints) || endpoints.length === 0) throw new FillerConfigError(`rpc.${chain}`, 'expected at least one endpoint');
   }
@@ -467,6 +497,7 @@ export function createFiller(config: FillerConfig): Filler {
     reconcileLookbackMs: DEFAULT_RECONCILE_LOOKBACK_MS,
   }).register();
 
+  let executor: Executor | undefined;
   const tickets = new TicketDesk({
     store: config.store,
     protocol,
@@ -482,8 +513,24 @@ export function createFiller(config: FillerConfig): Filler {
     nextId,
     onTicketOffer: () => ticketHook,
     offerReplyMarginMs: config.tickets.offerReplyMarginMs ?? DEFAULT_OFFER_REPLY_MARGIN_MS,
+    onReceipted: (orderHash, attempt) => void executor?.deliver(orderHash, attempt),
   });
   tickets.register();
+
+  executor = new Executor({
+    store: config.store,
+    chains,
+    fillSigners: config.fillSigners,
+    fillerId: config.fillerId,
+    ...(config.ledger ? { cantonParty: config.ledger.party } : {}),
+    receipted: (orderHash, attempt) => tickets.receipted(orderHash, attempt),
+    instanceId,
+    clock,
+    logger,
+    events,
+    ...(config.delivery ? { delivery: config.delivery } : {}),
+  });
+  const delivery = executor;
 
   const hook = <T>(name: string, value: T): T => {
     if (typeof value !== 'function') throw new FillerConfigError(name, 'expected a function');
@@ -501,10 +548,13 @@ export function createFiller(config: FillerConfig): Filler {
       if (!reconfirmHook) throw new FillerConfigError('onReconfirm', 'register the hook before start()');
       if (!ticketHook) throw new FillerConfigError('onTicketOffer', 'register the hook before start()');
       if (!context.fetch) throw new FillerConfigError('fetch', 'no global fetch; pass an HttpFetch for the REST fallback');
+      // Delivery does not wait for filler-gateway: receipted attempts and in-flight nonces resume from the store at once.
+      void delivery.start().catch((error: unknown) => logger.error('delivery: resume failed', { error: String(error) }));
       starting ??= protocol.start();
       return starting;
     },
     async stop() {
+      delivery.stop();
       await protocol.stop();
     },
     selfSettle: async () => {

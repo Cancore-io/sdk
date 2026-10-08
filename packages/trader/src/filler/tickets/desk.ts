@@ -81,6 +81,8 @@ export interface TicketDeskOptions {
   nextId: () => string;
   onTicketOffer: () => TicketOfferHook | undefined;
   offerReplyMarginMs: number;
+  /** Called once the receipt of an attempt went out: the filler is bound to deliver it (the executor takes it from here). */
+  onReceipted?: (orderHash: Hex, attempt: number) => void;
 }
 
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
@@ -457,6 +459,7 @@ export class TicketDesk {
         this.options.logger.info('tickets: filler-gateway already holds the message', { orderHash, attempt, action: out.action });
         await this.markSent(orderHash, attempt, out, false);
         this.stage(stage, orderHash, attempt, out.action === 'decline' ? { reason: String((out.message as TicketDecline).reason) } : {});
+        if (out.action === 'receipt') this.options.onReceipted?.(orderHash, attempt);
         return;
       }
       this.options.logger.warn('tickets: not delivered to filler-gateway', { orderHash, attempt, action: out.action, error: String(error) });
@@ -465,6 +468,7 @@ export class TicketDesk {
     }
     await this.markSent(orderHash, attempt, out, false);
     this.stage(stage, orderHash, attempt, out.action === 'decline' ? { reason: String((out.message as TicketDecline).reason) } : {});
+    if (out.action === 'receipt') this.options.onReceipted?.(orderHash, attempt);
   }
 
   /**

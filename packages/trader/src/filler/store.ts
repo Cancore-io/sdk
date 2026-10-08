@@ -102,17 +102,55 @@ export interface TicketRecord {
   updatedAtMs: number;
 }
 
+/**
+ * Where an own delivery stands:
+ * - `pending` — claimed by `owner` until `leaseUntilMs` (store time); nothing broadcast yet;
+ * - `sent` — broadcast; `txRef` is the latest transaction on its nonce;
+ * - `included` — in a block (`inclusion`), not yet `fillConfirmations` deep;
+ * - `confirmed` — deep enough: the delivery is done;
+ * - `failed` — reverted, or its nonce went to another transaction (`reason`).
+ */
+export type FillState = 'pending' | 'sent' | 'included' | 'confirmed' | 'failed';
+
+/**
+ * Proof that a fill was included (fillers.md T-30, R-3): the block header and
+ * the receipt as the RPC returned them. Kept once seen, so a fill reorged out
+ * after `validUntil` stays provable — not a no-show.
+ */
+export interface InclusionProof {
+  blockNumber: DecString;
+  blockHash: Hex;
+  header: Readonly<Record<string, unknown>>;
+  receipt: Readonly<Record<string, unknown>>;
+  /** Unix ms, process clock. */
+  seenAtMs: number;
+}
+
 /** Own delivery of one attempt. */
 export interface FillRecord {
   orderHash: Hex;
   attempt: number;
   /** Destination chain. */
   chain: Caip2;
-  /** EVM transaction hash, or the Canton update id. */
+  /** EVM transaction hash (the latest on its nonce), or the Canton update id; empty while `pending`. */
   txRef: string;
-  /** Delivered amount, destination base units. */
+  /** Amount sent, destination base units. */
   amount: DecString;
-  state: 'sent' | 'confirmed';
+  /** What the recipient received, as the router measured it (`Filled.received`); below `amount` for a fee-on-transfer asset. */
+  received?: DecString;
+  state: FillState;
+  /** EVM: the delivery key's nonce the fill went out on. */
+  nonce?: DecString;
+  /** `pending`: the replica sending it (`FillerConfig.instanceId`). */
+  owner?: string;
+  /** `pending`: unix ms by store time; past it another replica may take the attempt over. */
+  leaseUntilMs?: number;
+  /** First broadcast, unix ms by the process clock (latency metrics). */
+  sentAtMs?: number;
+  /** The last inclusion seen. */
+  inclusion?: InclusionProof;
+  /** `failed`: why. */
+  reason?: string;
   updatedAtMs: number;
 }
 
@@ -219,9 +257,13 @@ export interface NonceLease {
   expiresAtMs: number;
 }
 
-export type InFlightKind = 'fill' | 'settle' | 'approve';
+/** `cancel`: a zero-value transfer to self that frees a nonce whose transaction can no longer succeed. */
+export type InFlightKind = 'fill' | 'settle' | 'approve' | 'cancel';
 
-/** A transaction broadcast on a leased nonce. Replacements (replace-by-fee) append another. */
+/**
+ * A transaction on a leased nonce, recorded before it is broadcast.
+ * Replacements (replace-by-fee) append another.
+ */
 export interface InFlightTransaction {
   hash: Hex;
   /** The raw signed transaction, so a new lease owner can rebroadcast it. */
@@ -229,6 +271,11 @@ export interface InFlightTransaction {
   kind: InFlightKind;
   orderHash?: Hex;
   attempt?: number;
+  /** The call, so a new lease owner can replace it without decoding `raw`. */
+  to: Hex;
+  data: Hex;
+  value: bigint;
+  gasLimit: bigint;
   maxFeePerGas: bigint;
   maxPriorityFeePerGas: bigint;
   sentAtMs: number;
