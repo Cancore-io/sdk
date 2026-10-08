@@ -1,7 +1,12 @@
 import { ed25519 } from '@noble/curves/ed25519';
 import { binaryStringToBytes, bytesToBinaryString, bytesToHex, hexToBytes } from './bytes';
 import { createEd25519Signer, generateEd25519KeyPair } from './ed25519';
-import { createPasskeySigningProvider, LOGIN_CHALLENGE_PREFIX, providerFromMnemonic } from './provider';
+import {
+  createPasskeySigningProvider,
+  LOGIN_CHALLENGE_PREFIX,
+  providerFromMnemonic,
+  providerFromSeed,
+} from './provider';
 import { deriveWalletKey } from './mnemonic';
 
 describe('createPasskeySigningProvider (LoopProvider-shaped { public_key, signMessage })', () => {
@@ -371,5 +376,45 @@ describe('providerFromMnemonic — a headless signer from a recovery phrase', ()
 
   it('refuses a phrase with a mistyped word instead of deriving some other, empty wallet', async () => {
     await expect(providerFromMnemonic(PHRASE.replace('winner', 'winer'))).rejects.toThrow(/BIP39/);
+  });
+});
+
+describe('providerFromSeed — a headless signer from ONE wallet key (a bot is handed this, not the phrase)', () => {
+  const PHRASE = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
+
+  it('is the same signer the phrase gives for that account: same key, same signature', async () => {
+    const key = deriveWalletKey(PHRASE, 'standard', 3);
+    const fromSeed = await providerFromSeed(key.seedHex);
+    const fromPhrase = await providerFromMnemonic(PHRASE, { account: 3 });
+
+    expect(fromSeed.public_key).toBe(key.publicKeyHex);
+    expect(fromSeed.public_key).toBe(fromPhrase.public_key);
+    // Ed25519 signatures are deterministic, so equal keys sign equal bytes equally.
+    const hashB64 = btoa(bytesToBinaryString(new Uint8Array(32).fill(9)));
+    expect(await fromSeed.signPreparedHash!(hashB64)).toBe(await fromPhrase.signPreparedHash!(hashB64));
+    const challenge = `${LOGIN_CHALLENGE_PREFIX}2026-10-08 sig:abcdef`;
+    expect(await fromSeed.signChallenge!(challenge)).toBe(await fromPhrase.signChallenge!(challenge));
+  });
+
+  it('one account\'s key is not another\'s: account 3 does not sign as account 0', async () => {
+    const bot = await providerFromSeed(deriveWalletKey(PHRASE, 'standard', 3).seedHex);
+    expect(bot.public_key).not.toBe(deriveWalletKey(PHRASE).publicKeyHex);
+  });
+
+  it('accepts the hex in either case and with a pasted newline around it', async () => {
+    const key = deriveWalletKey(PHRASE, 'standard', 1);
+    expect((await providerFromSeed(key.seedHex.toUpperCase())).public_key).toBe(key.publicKeyHex);
+    expect((await providerFromSeed(`  ${key.seedHex}\n`)).public_key).toBe(key.publicKeyHex);
+  });
+
+  it.each([
+    ['', 'empty'],
+    ['ab'.repeat(31), 'one byte short'],
+    ['ab'.repeat(33), 'one byte long'],
+    ['zz'.repeat(32), 'not hex'],
+    ['0x' + 'ab'.repeat(31), '0x-prefixed'],
+    ['legal winner thank year wave sausage worth useful legal winner thank yellow', 'a phrase'],
+  ])('refuses %j (%s) instead of signing as some other, empty account', async (input) => {
+    await expect(providerFromSeed(input)).rejects.toThrow(/64 hex/);
   });
 });
