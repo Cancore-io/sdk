@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cancore.io/schemas/filler-protocol/v1/rest.schema.json",
   "title": "Cancore filler protocol v1 — REST fallback",
-  "$comment": "protocol §3.6. Bodies are the WebSocket frames: every request body is a filler message with its envelope (id, fillerId, sentAt) and msgSig, verified before processing as on the WebSocket (S-19); every response is a freshly signed S→F message. /v1/filler/* needs `Authorization: Bearer <token>` from POST /v1/filler/auth; the token is bound to the fillerId it was issued for, and a ticket of another filler is 404 UNKNOWN_TICKET. GET /v1/filler/attestations/{orderHash} answers 404 ATTESTATIONS_NOT_READY until the gateway holds ≥ threshold verified signatures for this filler's fill, and 404 UNKNOWN_TICKET when this filler holds no ticket on the order. /v1/draws/* and /v1/gateway are public. Every non-2xx body is the `error` frame, with the HTTP status of x-error-status. x-endpoints: request/response name a $def here or in messages.schema.json.",
+  "$comment": "protocol §3.6. Bodies are the WebSocket frames: every request body is a filler message with its envelope (id, fillerId, sentAt) and msgSig, verified before processing as on the WebSocket (S-19); every response is a freshly signed S→F message. Login: GET /v1/filler/auth/challenge?fillerId= returns a signed auth.challenge addressed to that fillerId; POST /v1/filler/auth with the auth.response (FillerAuth over it) returns {token, expiresAt}. The challenge route is anonymous and its refusals are UNSIGNED (unsignedErrorBody, no sig, nothing journalled): 400 BAD_REQUEST — fillerId missing or not a fillerId; 404 UNKNOWN_REQUEST — fillerId unknown or not ACTIVE; 429 RATE_LIMITED with retryAfterMs and a Retry-After header — the login rate class of that fillerId is over its limit. The other /v1/filler/* routes need `Authorization: Bearer <token>`; the token is bound to (fillerId, message key) and stops working when it expires, when the message key is changed, or when the filler is no longer ACTIVE. The same token opens the WebSocket (asyncapi.json: offered as the subprotocol bearer.<token>). A ticket of another filler is 404 UNKNOWN_TICKET. Rate limits are per fillerId, shared by REST and every WebSocket session of it: over the limit a bearer route answers 429 with the signed error RATE_LIMITED carrying retryAfterMs and a Retry-After header (seconds, rounded up), and the request changes nothing; during the cooldown after sustained excess every bearer route answers so. GET /v1/filler/attestations/{orderHash} answers 404 ATTESTATIONS_NOT_READY until the gateway holds ≥ threshold verified signatures for this filler's fill, and 404 UNKNOWN_TICKET when this filler holds no ticket on the order. /v1/draws/* and /v1/gateway are public. Every non-2xx body is the signed `error` frame, with the HTTP status of x-error-status — except where an endpoint names its own errorBody. x-endpoints: request/query/response/errorBody name a $def here or in messages.schema.json.",
   "x-endpoints": [
-    { "method": "GET", "path": "/v1/filler/auth/challenge", "auth": "none", "response": "messages.schema.json#/$defs/auth.challenge" },
+    { "method": "GET", "path": "/v1/filler/auth/challenge", "auth": "none", "query": "#/$defs/challengeQuery", "response": "messages.schema.json#/$defs/auth.challenge", "errorBody": "#/$defs/unsignedErrorBody" },
     { "method": "POST", "path": "/v1/filler/auth", "auth": "none", "request": "messages.schema.json#/$defs/auth.response", "response": "#/$defs/authToken" },
     { "method": "GET", "path": "/v1/filler/tickets", "auth": "bearer", "query": "#/$defs/ticketListQuery", "response": "#/$defs/ticketList" },
     { "method": "POST", "path": "/v1/filler/tickets/{orderHash}/{attempt}/intent", "auth": "bearer", "request": "messages.schema.json#/$defs/ticket.intent", "response": "messages.schema.json#/$defs/ticket.intent.ack" },
@@ -26,6 +26,22 @@
   },
   "$defs": {
     "errorBody": { "$ref": "messages.schema.json#/$defs/errorS2F" },
+    "unsignedErrorBody": {
+      "type": "object",
+      "description": "A refusal of the anonymous challenge route: not signed, not addressed, nothing journalled. A filler cannot verify it and treats it as a hint only (status, retryAfterMs)",
+      "required": ["type", "code", "message"],
+      "properties": {
+        "type": { "const": "error" },
+        "code": { "$ref": "messages.schema.json#/$defs/errorCode" },
+        "message": { "type": "string" },
+        "retryAfterMs": { "$ref": "messages.schema.json#/$defs/durationMs", "type": "integer", "minimum": 1, "description": "with RATE_LIMITED (429): ms until a challenge may be asked for again" }
+      }
+    },
+    "challengeQuery": {
+      "type": "object",
+      "required": ["fillerId"],
+      "properties": { "fillerId": { "$ref": "messages.schema.json#/$defs/fillerId", "description": "the filler logging in; the challenge is addressed to it and answerable only by it" } }
+    },
     "empty": { "type": "object", "description": "no fields in v1; receivers ignore unknown ones (V-2)" },
     "authToken": {
       "type": "object",

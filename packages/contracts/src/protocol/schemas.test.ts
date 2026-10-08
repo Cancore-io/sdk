@@ -5,7 +5,7 @@ import {
   DECLINE_REASONS, DRAW_CLOSED_BY, ERROR_CODES, ERROR_HTTP_STATUS, EXEMPT_REASONS, EXPIRED_RESULTS, PENALTY_STEPS, QUOTE_ACK_STATUSES,
   QUOTE_FINAL_STATUSES, TICKET_LIST_STATUSES, TICKET_REFUSED_REASONS,
 } from './messages';
-import { MESSAGE_DIRECTIONS, messageSchemaRef, PROTOCOL_SCHEMAS, REST_ENDPOINTS, SCHEMA_VOCABULARY } from './schemas';
+import { MESSAGE_DIRECTIONS, messageSchemaRef, PROTOCOL_SCHEMAS, REST_ENDPOINTS, REST_ONLY_TYPES, SCHEMA_VOCABULARY } from './schemas';
 
 type Frame = Record<string, unknown>;
 type Defs = Record<string, Record<string, unknown>>;
@@ -81,7 +81,12 @@ describe('D-C: every S→F frame is addressed, timed and signed, heartbeats incl
     for (const field of ['id', 'sentAt', 'sig']) expect(errorsOf(type, { ...frame, [field]: undefined }, 'S2F').length).toBeGreaterThan(0);
     expect(errorsOf(type, { ...frame, sentAt: 1790000000 }, 'S2F').length).toBeGreaterThan(0); // seconds, not ms
     const unaddressed = errorsOf(type, { ...frame, fillerId: undefined }, 'S2F');
-    expect(unaddressed.length > 0).toBe(!['auth.challenge', 'error'].includes(type));
+    // only a gateway error may go unaddressed: the refusal of a login (POST /v1/filler/auth)
+    expect(unaddressed.length > 0).toBe(type !== 'error');
+  });
+  test('auth.challenge is addressed: a challenge without the fillerId it was asked for is refused', () => {
+    expect(example('auth.challenge').fillerId).toBe('acme-markets');
+    expect(errorsOf('auth.challenge', { ...example('auth.challenge'), fillerId: undefined }).length).toBeGreaterThan(0);
   });
   test.each(['ping', 'pong', 'error'])('%s: each direction checks its own signature — msgSig from the filler, sig from the gateway', (type) => {
     const f2s = f2sExample(type);
@@ -153,6 +158,13 @@ describe('variant A fields', () => {
     expect(evm(`0x${'00'.repeat(32)}`)).toBe(false);
     expect(evm('0x742d35cc6634c0532925a3b844bc454e4438f44e')).toBe(false); // unpadded
     expect(evm(padded.toUpperCase().replace('0X', '0x'))).toBe(false); // senders emit lowercase
+  });
+  test('error RATE_LIMITED carries retryAfterMs, an integer of at least 1 ms', () => {
+    const limited = examples.error!.find((e) => e.code === 'RATE_LIMITED')!;
+    expect(limited).toMatchObject({ retryAfterMs: 850, fillerId: 'acme-markets' });
+    expect(errorsOf('error', limited, 'S2F')).toEqual([]);
+    expect(errorsOf('error', { ...limited, retryAfterMs: undefined }, 'S2F')).toEqual([]); // optional
+    for (const bad of [0, 1.5, '850', -1]) expect([bad, errorsOf('error', { ...limited, retryAfterMs: bad }, 'S2F').length > 0]).toEqual([bad, true]);
   });
   test('error TICKET_REFUSED names the failed pre-ticket check', () => {
     const refused = example('error', 2);
@@ -272,13 +284,28 @@ describe('REST', () => {
     expect(REST_ENDPOINTS).toHaveLength(14);
     const base = 'https://cancore.io/schemas/filler-protocol/v1/';
     for (const e of REST_ENDPOINTS) {
-      for (const ref of [e.request, e.query, e.response].filter((x): x is string => !!x)) {
+      for (const ref of [e.request, e.query, e.response, e.errorBody].filter((x): x is string => !!x)) {
         const abs = ref.startsWith('#') ? `${base}rest.schema.json${ref}` : `${base}${ref}`;
         expect(ajv.getSchema(abs)).toBeDefined();
       }
     }
     expect(REST_ENDPOINTS.find((e) => e.path === '/v1/gateway')?.auth).toBe('none');
     expect(REST_ENDPOINTS.filter((e) => e.path.startsWith('/v1/filler/tickets')).every((e) => e.auth === 'bearer')).toBe(true);
+  });
+  test('the login is REST only: the challenge is asked for by fillerId, its refusals are unsigned', () => {
+    expect([...REST_ONLY_TYPES].sort()).toEqual(['auth.challenge', 'auth.response']);
+    const challenge = REST_ENDPOINTS.find((e) => e.path === '/v1/filler/auth/challenge')!;
+    expect(challenge).toEqual({
+      method: 'GET', path: '/v1/filler/auth/challenge', auth: 'none', query: '#/$defs/challengeQuery',
+      response: 'messages.schema.json#/$defs/auth.challenge', errorBody: '#/$defs/unsignedErrorBody',
+    });
+    expect(rest('challengeQuery', { fillerId: 'acme-markets' })).toBe(true);
+    expect(rest('challengeQuery', {})).toBe(false);
+    expect(rest('challengeQuery', { fillerId: 'Acme Markets' })).toBe(false);
+    expect(rest('unsignedErrorBody', { type: 'error', code: 'RATE_LIMITED', message: 'login rate class over its limit', retryAfterMs: 1200 })).toBe(true);
+    expect(rest('unsignedErrorBody', { type: 'error', code: 'UNKNOWN_REQUEST', message: 'unknown fillerId' })).toBe(true);
+    expect(rest('unsignedErrorBody', { type: 'error', code: 'RATE_LIMITED', message: 'x', retryAfterMs: 0 })).toBe(false);
+    expect(REST_ENDPOINTS.filter((e) => e.errorBody).map((e) => e.path)).toEqual(['/v1/filler/auth/challenge']);
   });
   test('bodies: ticket list, token, error, empty', () => {
     expect(rest('ticketList', { items: [example('ticket.offer'), example('ticket.issued')], nextCursor: null })).toBe(true);

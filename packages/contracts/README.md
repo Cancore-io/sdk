@@ -146,15 +146,15 @@ drand quicknet rounds.
 
 | File (`@cancore/contracts/spec/protocol/…`) | Holds |
 | --- | --- |
-| `messages.schema.json` | one `$def` per WebSocket frame type (23), `x-direction` S2F / F2S / both, and the primitives they share |
-| `rest.schema.json` | REST fallback bodies; `x-endpoints` (method, path, auth, request/response), `x-error-status` |
+| `messages.schema.json` | one `$def` per frame type (23), `x-direction` S2F / F2S / both, `x-rest-only` on the two login types, and the primitives they share |
+| `rest.schema.json` | REST bodies; `x-endpoints` (method, path, auth, query, request/response, `errorBody` where a refusal is not the signed `error`), `x-error-status` |
 | `records.schema.json` | the draw record, the epoch record, `GET /v1/gateway` |
-| `asyncapi.json` | AsyncAPI 3.0: channel `/v1`, the gateway's send/receive operations, examples |
+| `asyncapi.json` | AsyncAPI 3.0: channel `/v1` (the upgrade's subprotocols, its HTTP refusals `x-upgrade-refusals`, the close codes `x-close-codes`), the gateway's send/receive operations, examples |
 | `vectors/messages.json`, `vectors/records.json` | valid example frames and fixture records (hashes real, `sig` a placeholder: r = s = 0, v = 27) |
 | `vectors/settle-attestations.json` | `settle.attestations` golden vectors: EVM and Canton source, real TEST-key signatures, the pushed frame and the REST body with one payload, and schema-valid payloads a filler must refuse |
 
-The same objects are exported as `PROTOCOL_SCHEMAS`, `ASYNCAPI`, `MESSAGE_DIRECTIONS` and
-`REST_ENDPOINTS`, with TypeScript shapes of every frame (`TicketOffer`, `QuoteAck`, …) and the
+The same objects are exported as `PROTOCOL_SCHEMAS`, `ASYNCAPI`, `MESSAGE_DIRECTIONS`,
+`REST_ONLY_TYPES` and `REST_ENDPOINTS`, with TypeScript shapes of every frame (`TicketOffer`, `QuoteAck`, …) and the
 enums (`DECLINE_REASONS`, `ERROR_CODES`, …) a test holds to the schemas.
 
 ```ts
@@ -185,6 +185,28 @@ only. `ping`, `pong` and `error` go both ways: the gateway's copy carries `sig` 
 filler's `msgSig` (`pingF2S`); the second argument of `messageSchemaRef` picks one.
 `scripts/gen-protocol-docs.mjs` derives the examples, records and the AsyncAPI document from
 the schemas and the vectors.
+
+### Login and connect
+
+A filler logs in over REST and only then opens the WebSocket:
+
+1. `GET /v1/filler/auth/challenge?fillerId=<fillerId>` → a signed `auth.challenge` addressed to that
+   `fillerId`. Check its `sig` against the published gateway key and that `fillerId` is yours.
+   Refusals of this anonymous route are unsigned (`unsignedErrorBody`): 400 `BAD_REQUEST`, 404
+   `UNKNOWN_REQUEST` (unknown or not `ACTIVE`), 429 `RATE_LIMITED` with `retryAfterMs`.
+2. `POST /v1/filler/auth` with `auth.response` (`FillerAuth` by the message key, `nonce` = the
+   challenge's) → `{token, expiresAt}`, bound to `(fillerId, message key)`.
+3. Upgrade `/v1` offering `fillerWsProtocols(token)` = `['cancore-filler.v1', 'bearer.<token>']`
+   (`FILLER_WS_SUBPROTOCOL`, `FILLER_WS_BEARER_PREFIX`) as `Sec-WebSocket-Protocol`; the gateway
+   answers `cancore-filler.v1` and sends a signed `auth.ok` first. It refuses with plain HTTP
+   (`FILLER_UPGRADE_REFUSALS`: 400, 401, 403, 429 with `Retry-After`, 503) and closes a session
+   with one of `FILLER_CLOSE_CODES` (4029: rate-limit cooldown, preceded by `error RATE_LIMITED`
+   whose `retryAfterMs` is the remaining cooldown).
+
+The same token authenticates REST (`Authorization: Bearer`). `auth.challenge` and
+`auth.response` never travel on the socket (`REST_ONLY_TYPES`). Over a per-fillerId rate limit
+the gateway answers `error RATE_LIMITED` with `retryAfterMs` (on REST: 429 and `Retry-After`);
+send nothing of that rate class before it has passed.
 
 ### Attestation signatures for `settle`
 
@@ -306,6 +328,21 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.8` — connect only after login, limits per fillerId (CAN-2232). **Breaking within the
+  RC line** for a filler and for filler-gateway:
+  - The login is REST only: `GET /v1/filler/auth/challenge` takes a required `fillerId` query
+    (`challengeQuery`), and `auth.challenge` is addressed (envelope `s2fBase`, `fillerId`
+    required); its refusals are unsigned (`unsignedErrorBody`, the endpoint's `errorBody`).
+    `auth.challenge` and `auth.response` carry `x-rest-only` (a new annotation keyword in
+    `SCHEMA_VOCABULARY`; `REST_ONLY_TYPES`) and leave the AsyncAPI channel.
+  - The WebSocket upgrade offers `cancore-filler.v1` and `bearer.<token>`:
+    `FILLER_WS_SUBPROTOCOL`, `FILLER_WS_BEARER_PREFIX`, `fillerWsProtocols`; its refusals
+    `FILLER_UPGRADE_REFUSALS` and the session close codes `FILLER_CLOSE_CODES`, also in
+    `asyncapi.json` (`bindings.ws`, `x-upgrade-refusals`, `x-close-codes`).
+  - `error` gains optional `retryAfterMs` (an integer ≥ 1, with `RATE_LIMITED`);
+    `ErrorMessage.retryAfterMs`, `UnsignedErrorBody`, `ChallengeQuery`, `RestEndpoint.errorBody`.
+  - The `auth.challenge` example and its `GatewayMessage` vector carry `fillerId` (that vector's
+    digest changes); a `RATE_LIMITED` example; no other digest changes.
 - `0.2.0-rc.7` — sync the variant A `CancoreRouter` and `ICancoreRouter` ABIs from
   evm-contracts commit `c214f56f6fe5a62097833c5f1335b0cb5351b225` (CAN-2140).
   - Both the package root and `/abi`, and the shipped `spec/abi/` JSON, expose

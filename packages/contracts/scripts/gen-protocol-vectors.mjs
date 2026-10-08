@@ -215,7 +215,7 @@ const INNER_SIG = `0x${'11'.repeat(32)}${'22'.repeat(32)}1c`; // an inner typed 
 const bodies = [
   ['ticket.offer of the fixture order; `sig` is excluded from the body', { type: 'ticket.offer', id: 'g-20', fillerId: 'acme-markets', sentAt: 1790000020000, orderHash: evmOrderHash, attempt: 0, order: EVM_ORDER, amountOut: EVM_ORDER.minReceived, validFrom: fixtureTicket.validFrom, validUntil: fixtureTicket.validUntil, acceptBy: 1790000023000, sig: SIG }],
   ['quote.ack', { type: 'quote.ack', id: 'g-9', fillerId: 'acme-markets', sentAt: 1789999991001, re: 'q-1', requestId: REQ, quoteHash: FF32, receivedAt: 1789999991000, status: 'COUNTED', sig: SIG }],
-  ['auth.challenge: the one frame without fillerId', { type: 'auth.challenge', id: 'g-1', sentAt: 1789999980000, nonce: utf8Hash('cancore:test:auth-nonce:1'), expiresAt: '1790000030', sig: SIG }],
+  ['auth.challenge: the body of GET /v1/filler/auth/challenge?fillerId=, addressed to that fillerId', { type: 'auth.challenge', id: 'g-1', fillerId: 'acme-markets', sentAt: 1789999980000, nonce: utf8Hash('cancore:test:auth-nonce:1'), expiresAt: '1790000030', sig: SIG }],
 ];
 out('spec/protocol/typed-data/GatewayMessage.json', file('GatewayMessage', PROTOCOL_META, FROZEN('`bodyHash` = keccak256(utf8(JCS(message without "sig"))), JCS = RFC 8785. Each vector carries the S→F body, its canonical text and the hash.'), bodies.map(([note, body]) => {
   const { sig: _sig, ...unsigned } = body;

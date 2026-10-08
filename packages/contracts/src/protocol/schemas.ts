@@ -24,6 +24,8 @@ export interface RestEndpoint {
   request?: string;
   query?: string;
   response: string;
+  /** The non-2xx body when it is not the signed `error` frame (the anonymous challenge route: `unsignedErrorBody`). */
+  errorBody?: string;
 }
 
 export const PROTOCOL_SCHEMAS: { readonly messages: JsonSchema; readonly rest: JsonSchema; readonly records: JsonSchema } = { messages, rest, records };
@@ -31,7 +33,7 @@ export const PROTOCOL_SCHEMAS: { readonly messages: JsonSchema; readonly rest: J
 export const ASYNCAPI: JsonSchema = asyncapi;
 
 /** The annotation keywords the schemas use; a strict validator must be told they exist. */
-export const SCHEMA_VOCABULARY: readonly string[] = ['x-direction', 'x-endpoints', 'x-error-status'];
+export const SCHEMA_VOCABULARY: readonly string[] = ['x-direction', 'x-rest-only', 'x-endpoints', 'x-error-status'];
 
 /** Frame type → who sends it: S2F gateway to taker, F2S taker to gateway, both. */
 export const MESSAGE_DIRECTIONS: Readonly<Record<string, MessageDirection>> = Object.fromEntries(
@@ -39,6 +41,14 @@ export const MESSAGE_DIRECTIONS: Readonly<Record<string, MessageDirection>> = Ob
     .filter(([, def]) => def['x-direction'])
     .map(([type, def]) => [type, def['x-direction']!]),
 );
+
+/**
+ * Frame types that travel only as REST bodies — the login, `auth.challenge` and `auth.response` —
+ * never on the WebSocket, which is authenticated by the bearer token offered on the upgrade.
+ */
+export const REST_ONLY_TYPES: readonly string[] = Object.entries(messages.$defs as Record<string, { 'x-rest-only'?: boolean }>)
+  .filter(([, def]) => def['x-rest-only'] === true)
+  .map(([type]) => type);
 
 export const REST_ENDPOINTS: readonly RestEndpoint[] = rest['x-endpoints'] as RestEndpoint[];
 
