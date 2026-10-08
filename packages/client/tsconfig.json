@@ -8,10 +8,13 @@
     // before build, in CI and here.
     "paths": {
       "@cancore/wallet": ["../wallet/src/index.ts"],
-      "@cancore/wallet/operations": ["../wallet/src/operations.ts"]
+      "@cancore/wallet/operations": ["../wallet/src/operations.ts"],
+      // The examples import this package by its published name, as a partner's code does.
+      "@cancore/client": ["./src/index.ts"],
+      "@cancore/client/*": ["./src/*.ts"]
     }
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "examples/**/*.ts"],
   // The root config excludes this package (it is typechecked here instead);
   // that exclude is inherited and would swallow these inputs too.
   "exclude": []

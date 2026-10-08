@@ -228,6 +228,10 @@ bot. The account's key signs every step that needs its authority: its sign-in, i
 party, each leg of a swap, the acceptance of a delivery or a cashback payout. Only the
 signatures leave your process; the API never holds the key.
 
+**Partners:** the [partner guide](../../docs/partner-guide.md) walks through the whole setup — key
+management, registration, funding, orders, `serve()`, cashback, errors and going to mainnet — with
+full maker and taker examples.
+
 ```ts
 import { providerFromMnemonic } from '@cancore/wallet';
 import { createSelfCustody } from '@cancore/client/selfcustody';
@@ -509,9 +513,14 @@ instead, and only ever places orders:
 import { io } from 'socket.io-client';
 
 const socket = io(`${baseUrl}/presence`, {
-  // A function, so every reconnect signs in with a fresh token.
-  auth: (cb) => acct.session.token().then((token) => cb({ token })),
+  // A function, so every reconnect signs in with a fresh token. A failed sign-in still answers
+  // (without a token, so the gateway refuses it) rather than leaving an unhandled rejection.
+  auth: (cb) => void acct.session.token().then((token) => cb({ token }), () => cb({})),
   transports: ['websocket'],
+});
+// socket.io never retries a refused handshake; the poll carries on, and this tries again.
+socket.on('connect_error', () => {
+  if (!socket.active) setTimeout(() => socket.connect(), 60_000);
 });
 
 const loop = acct.serve({
