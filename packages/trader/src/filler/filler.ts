@@ -106,7 +106,7 @@ export interface TransportOptions {
   reconnect?: Partial<ReconnectPolicy>;
   /** Heartbeat intervals (`auth.ok.heartbeatIntervalMs`) without a frame before reconnecting. Default 3. */
   heartbeatMisses?: number;
-  /** Time from connect to `auth.ok` before giving up on the connection. Default 15 s. */
+  /** Time from the start of a connect (REST login included) to `auth.ok` before giving up on it. Default 15 s. */
   loginTimeoutMs?: number;
   /** `GET /v1/filler/tickets` poll interval while disconnected. Default 2 s. */
   restPollIntervalMs?: number;
@@ -184,7 +184,8 @@ export interface Filler {
   onReconfirm(hook: ReconfirmHook): void;
   onTicketOffer(hook: TicketOfferHook): void;
   /**
-   * Login by challenge, heartbeat, reconnect, REST fallback; reconciles from
+   * Login over REST, then the WebSocket with the bearer token; heartbeat,
+   * reconnect, REST fallback; reconciles from
    * the store and the chain, then quotes, takes tickets, fills and settles every
    * won fill on its own. Requires all three hooks.
    *
@@ -419,24 +420,6 @@ export function createFiller(config: FillerConfig): Filler {
     restPollIntervalMs: transport.restPollIntervalMs ?? DEFAULT_REST_POLL_INTERVAL_MS,
     seal,
   });
-  const session = new GatewaySession(
-    {
-      url: config.gatewayUrl,
-      fillerId: config.fillerId,
-      gatewaySigner: config.gatewaySigner,
-      quoteSigner: config.quoteSigner,
-      seal,
-      webSocket: config.webSocket,
-      clock,
-      logger,
-      random: transport.random ?? Math.random,
-      nextId,
-      reconnect: { ...DEFAULT_RECONNECT, ...transport.reconnect },
-      heartbeatMisses: transport.heartbeatMisses ?? DEFAULT_HEARTBEAT_MISSES,
-      loginTimeoutMs: transport.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS,
-    },
-    protocol,
-  );
   const rest = new GatewayRest({
     gatewayUrl: config.gatewayUrl,
     fillerId: config.fillerId,
@@ -451,6 +434,25 @@ export function createFiller(config: FillerConfig): Filler {
     logger,
     nextId,
   });
+  // One login serves both channels: the session offers the REST token on every upgrade.
+  const session = new GatewaySession(
+    {
+      url: config.gatewayUrl,
+      fillerId: config.fillerId,
+      gatewaySigner: config.gatewaySigner,
+      tokens: rest,
+      seal,
+      webSocket: config.webSocket,
+      clock,
+      logger,
+      random: transport.random ?? Math.random,
+      nextId,
+      reconnect: { ...DEFAULT_RECONNECT, ...transport.reconnect },
+      heartbeatMisses: transport.heartbeatMisses ?? DEFAULT_HEARTBEAT_MISSES,
+      loginTimeoutMs: transport.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS,
+    },
+    protocol,
+  );
   protocol.attach(session, rest);
 
   const verifier = new TicketVerifier({
