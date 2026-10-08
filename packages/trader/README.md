@@ -84,7 +84,9 @@ It connects only after logging in.
   and `POST /v1/filler/auth` with `auth.response` (`protocolVersion: "1"`, the challenge's `nonce`) returns
   `{token, expiresAt}`. One token serves REST and the WebSocket; one login runs at a time for both, and the
   token is renewed 30 s before `expiresAt`, so a reconnect never offers an expired one. A failed login is
-  retried with the reconnect backoff. The token never goes to the logger.
+  retried with the reconnect backoff, always from a fresh challenge (a 401 of `POST /v1/filler/auth` means
+  the challenge is gone). The login routes refuse unsigned until they have checked a signature; such a
+  refusal is only a hint for the retry. The token never goes to the logger.
 - **Connect.** Every (re)connect takes a valid token first, then calls the `WebSocketFactory` with the
   subprotocols `['cancore-filler.v1', 'bearer.<token>']`. filler-gateway authenticates the upgrade and sends
   `auth.ok` first; until it arrives the SDK sends nothing. A refused upgrade (400/401/403/429/503: an error and
@@ -108,7 +110,8 @@ It connects only after logging in.
   `[0.5, 1)`, defaults 500 ms → 30 s, reset after a login. No `auth.ok` within `transport.loginTimeoutMs`
   (15 s from the start of the connect, the REST login included) counts as a failed connection.
 - **Rate limits** (per `fillerId`, shared by REST and every session). An `error RATE_LIMITED` with
-  `retryAfterMs` — on REST a 429, with `retryAfterMs` in the body or `Retry-After` — pauses the rate class
+  `retryAfterMs` — on REST a 429 (unsigned, decided by the status), with `retryAfterMs` in the body or
+  `Retry-After` — pauses the rate class
   of the refused message (`quote`, `ticket`, `service`, `read`, `login`): until it ends the SDK sends
   nothing of that class (a quote is not sent, a ticket action and a REST call of the class are refused locally
   with `RATE_LIMITED` and the remaining `retryAfterMs`, and retried after it), so a poll or a retry timer never

@@ -135,8 +135,10 @@ export interface ErrorMessage extends S2FBase {
   retryAfterMs?: number;
 }
 /**
- * A refusal of the anonymous `GET /v1/filler/auth/challenge`: unsigned and unaddressed, so a filler
- * cannot verify it; a hint only. 400 `BAD_REQUEST`, 404 `UNKNOWN_REQUEST`, 429 `RATE_LIMITED`.
+ * An unsigned, unaddressed refusal, so a filler cannot verify it; a hint only. Every 429 (`RATE_LIMITED`,
+ * on every route), and the refusals of the login routes decided before any signature check:
+ * 400 `BAD_REQUEST`, 404 `UNKNOWN_REQUEST`, and on `POST /v1/filler/auth` 401 `UNAUTHENTICATED`
+ * (no live challenge for the fillerId: ask for a new one).
  */
 export interface UnsignedErrorBody { type: 'error'; code: ErrorCode; message: string; retryAfterMs?: number }
 /** The filler's reply to a gateway frame it cannot handle; informational. */

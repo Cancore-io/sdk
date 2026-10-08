@@ -236,6 +236,50 @@ describe('login: REST first, then the WebSocket with the token (protocol ยง3.5 ย
     expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(3);
   });
 
+  test('POST /v1/filler/auth refused unsigned 401 (no live challenge): the next attempt starts over from a fresh challenge', async () => {
+    const h = harness();
+    let refusals = 1;
+    h.http.routes['POST /v1/filler/auth'] = (request) =>
+      refusals-- > 0 ? { status: 401, body: { type: 'error', code: 'UNAUTHENTICATED', message: 'no live challenge for this fillerId' } } : h.gw.routes['POST /v1/filler/auth']!(request);
+    await expect(h.rest.validToken()).rejects.toMatchObject({ code: 'UNAUTHENTICATED', known: true, httpStatus: 401, message: expect.stringContaining('unsigned') });
+    refusals = 1;
+    void h.client.start();
+    await settle();
+    expect(h.ws.sockets).toHaveLength(0);
+    h.clock.advance(250);
+    const socket = await h.connected();
+    const nonces = h.requests('/v1/filler/auth').map((r) => (JSON.parse(r.body!) as { nonce: string }).nonce);
+    expect(new Set(nonces).size).toBe(nonces.length); // every attempt answers its own challenge
+    expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(3);
+    expect(socket.token).toBe('tok-1');
+  });
+
+  test('POST /v1/filler/auth refused unsigned 404 / 429: a typed hint; the 429 holds the login class back', async () => {
+    const h = harness();
+    h.http.routes['POST /v1/filler/auth'] = () => ({ status: 404, body: { type: 'error', code: 'UNKNOWN_REQUEST', message: 'filler not ACTIVE' } });
+    await expect(h.rest.validToken()).rejects.toMatchObject({ code: 'UNKNOWN_REQUEST', httpStatus: 404 });
+    h.http.routes['POST /v1/filler/auth'] = () => ({ status: 429, headers: { 'Retry-After': '9' }, body: { type: 'error', code: 'RATE_LIMITED', message: 'login class', retryAfterMs: 8_500 } });
+    await expect(h.rest.validToken()).rejects.toMatchObject({ code: 'RATE_LIMITED', httpStatus: 429, retryAfterMs: 8_500 });
+    expect(h.rest.limits.remainingMs('login')).toBe(8_500);
+    const challenges = h.requests('/v1/filler/auth/challenge').length;
+    await expect(h.rest.validToken()).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(challenges); // no request while paused
+  });
+
+  test('an unverified refusal of POST /v1/filler/auth is only a hint: a forged UNSUPPORTED_VERSION does not stop the filler', async () => {
+    const h = harness();
+    h.http.routes['POST /v1/filler/auth'] = () => ({ status: 400, body: h.impostor.frame({ type: 'error', code: 'UNSUPPORTED_VERSION', message: 'forged' }) });
+    const refused = h.rest.validToken();
+    await expect(refused).rejects.toMatchObject({ code: 'UNSUPPORTED_VERSION', message: expect.stringContaining('unsigned') });
+    await expect(refused).rejects.not.toBeInstanceOf(UnsupportedVersionError);
+    void h.client.start();
+    await settle();
+    h.clock.advance(250);
+    await settle();
+    expect(h.session.state).not.toBe('failed');
+    expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(3); // retried, with backoff
+  });
+
   test('UNSUPPORTED_VERSION on the socket: start() rejects with a typed error and no reconnect loop follows', async () => {
     const h = harness();
     const started = h.client.start();
@@ -444,12 +488,12 @@ describe('rate limits per fillerId (RATE_LIMITED, retryAfterMs)', () => {
     expect(h.requests(`/v1/filler/tickets/${ORDER_HASH}/1/decline`)).toHaveLength(0);
   });
 
-  test('REST 429 on a bearer route: the signed error carries retryAfterMs, the class is paused, no request goes out before it', async () => {
+  test('REST 429 on a bearer route (unsigned): retryAfterMs of the body, the class is paused, no request goes out before it', async () => {
     const h = harness();
     let limited = true;
     h.http.routes['GET /v1/filler/tickets'] = () =>
       limited
-        ? { status: 429, headers: { 'Retry-After': '5' }, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code: 'RATE_LIMITED', message: 'read class', retryAfterMs: 4_000 }) }
+        ? { status: 429, headers: { 'Retry-After': '5' }, body: { type: 'error', code: 'RATE_LIMITED', message: 'read class', retryAfterMs: 4_000 } }
         : { status: 200, body: { items: [], nextCursor: null } };
     await expect(h.rest.listTickets('OFFERED')).rejects.toMatchObject({ name: 'GatewayError', code: 'RATE_LIMITED', httpStatus: 429, retryAfterMs: 4_000 });
     expect(h.requests('/v1/filler/tickets')).toHaveLength(1);
@@ -463,11 +507,25 @@ describe('rate limits per fillerId (RATE_LIMITED, retryAfterMs)', () => {
     await expect(h.rest.listTickets('OFFERED')).resolves.toEqual([]);
   });
 
-  test('REST 429 without retryAfterMs in a verified body: Retry-After (seconds) is the wait', async () => {
+  test('REST 429 is decided by the status: without retryAfterMs in the body, Retry-After (seconds) is the wait', async () => {
     const h = harness();
     h.http.routes['GET /v1/filler/tickets'] = () => ({ status: 429, headers: { 'Retry-After': '7' }, body: 'Too Many Requests' });
-    await expect(h.rest.listTickets()).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE', httpStatus: 429, retryAfterMs: 7_000 });
+    await expect(h.rest.listTickets()).rejects.toMatchObject({ code: 'RATE_LIMITED', httpStatus: 429, retryAfterMs: 7_000 });
     expect(h.rest.limits.remainingMs('read')).toBe(7_000);
+  });
+
+  test('a signed 429 is read the same way', async () => {
+    const h = harness();
+    h.http.routes['GET /v1/filler/tickets'] = () => ({ status: 429, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code: 'RATE_LIMITED', message: 'read class', retryAfterMs: 2_500 }) });
+    await expect(h.rest.listTickets()).rejects.toMatchObject({ code: 'RATE_LIMITED', retryAfterMs: 2_500 });
+    expect(h.rest.limits.remainingMs('read')).toBe(2_500);
+  });
+
+  test('a non-429 refusal of a bearer route must be signed: an unsigned body is not trusted', async () => {
+    const h = harness();
+    h.http.routes['GET /v1/filler/tickets'] = () => ({ status: 409, body: { type: 'error', code: 'TICKET_CLOSED', message: 'unsigned' } });
+    await expect(h.rest.listTickets()).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE', httpStatus: 409 });
+    expect(h.rest.limits.remainingMs('read')).toBe(0);
   });
 
   test('the ticket poll while down does not storm a rate-limited route', async () => {
@@ -475,7 +533,7 @@ describe('rate limits per fillerId (RATE_LIMITED, retryAfterMs)', () => {
     let calls = 0;
     h.http.routes['GET /v1/filler/tickets'] = () => {
       calls++;
-      return { status: 429, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code: 'RATE_LIMITED', message: 'read class', retryAfterMs: 10_000 }) };
+      return { status: 429, headers: { 'Retry-After': '10' }, body: { type: 'error', code: 'RATE_LIMITED', message: 'read class', retryAfterMs: 10_000 } };
     };
     void h.client.start();
     const socket = await h.login();

@@ -13,11 +13,19 @@
  * runs at a time for every caller, and it is renewed once when filler-gateway
  * answers 401. The token is never logged.
  *
+ * Unsigned refusals: the login routes refuse unsigned as long as they have
+ * checked no signature (400, 404, 401 "no live challenge", 429), and every 429
+ * on every route is unsigned. Such a body is a hint only — its code and
+ * `retryAfterMs` steer the retry, nothing else; every other refusal must be
+ * the signed `error`. A 401 of `POST /v1/filler/auth` fails the login, and the
+ * next attempt (after the backoff) starts over from a fresh challenge.
+ *
  * Rate limits: a 429 pauses its rate class (`limits.ts`) for the `retryAfterMs`
- * of the error, else `Retry-After`; until then a call of that class is refused
+ * of its body, else `Retry-After`; until then a call of that class is refused
  * locally with `RATE_LIMITED` and its `retryAfterMs`, without a request.
  */
 import {
+  ERROR_CODES,
   FILLER_AUTH_TYPES,
   FILLER_PROTOCOL_DOMAIN,
   PROTOCOL_VERSION,
@@ -86,7 +94,7 @@ interface Reply {
   retryAfter: string | null;
 }
 
-const KNOWN_UNSIGNED: ReadonlySet<string> = new Set(['BAD_REQUEST', 'UNKNOWN_REQUEST', 'RATE_LIMITED']);
+const KNOWN_CODES: ReadonlySet<string> = new Set(ERROR_CODES);
 
 export class GatewayRest {
   /** The rate-limit pauses of this filler, shared with the WebSocket side (`FillerProtocolClient`). */
@@ -240,7 +248,7 @@ export class GatewayRest {
       sig,
     });
     const authPath = '/v1/filler/auth';
-    const reply = this.ok(await this.call('POST', authPath, JSON.stringify(response)), authPath, 'login');
+    const reply = this.ok(await this.call('POST', authPath, JSON.stringify(response)), authPath, 'login', true);
     const token = parseJson(reply.text, authPath);
     if (!isObject(token) || typeof token.token !== 'string' || token.token.length === 0 || typeof token.expiresAt !== 'number' || !Number.isSafeInteger(token.expiresAt)) {
       throw new GatewayError('BAD_RESPONSE', false, `${authPath}: expected {token, expiresAt}`);
@@ -259,10 +267,11 @@ export class GatewayRest {
 
   /**
    * A 2xx passes; anything else becomes the typed error of its body (verified),
-   * or a generic one. `unsigned`: the anonymous challenge route, whose refusals
-   * are unsigned by design — their code is taken as a hint, never verified. A
-   * 429 pauses `rateClass` for the error's `retryAfterMs` (the body's, else
-   * `Retry-After`, else `DEFAULT_RETRY_AFTER_MS`).
+   * or a generic one. An unsigned refusal body is taken — as a hint, never
+   * verified — on a 429 (always unsigned) and, with `unsigned`, on the login
+   * routes. A 429 is `RATE_LIMITED` whatever its body, and pauses `rateClass`
+   * for its `retryAfterMs` (the body's, else `Retry-After`, else
+   * `DEFAULT_RETRY_AFTER_MS`).
    */
   private ok(response: Reply, path: string, rateClass: RateClass, unsigned = false): Reply {
     if (response.status >= 200 && response.status < 300) return response;
@@ -278,11 +287,14 @@ export class GatewayRest {
     let error: GatewayError;
     if (check?.ok && check.verified.frame.type === 'error') {
       error = gatewayErrorOf(check.verified.frame, response.status, fallbackMs);
-    } else if (unsigned && isObject(body) && body.type === 'error' && typeof body.code === 'string' && body.code.length > 0) {
+    } else if ((unsigned || limited) && isObject(body) && body.type === 'error' && typeof body.code === 'string' && body.code.length > 0) {
       const message = typeof body.message === 'string' ? body.message : '';
-      error = new GatewayError(body.code, KNOWN_UNSIGNED.has(body.code), `${path}: HTTP ${response.status}, unsigned: ${message}`, undefined, response.status, retryAfterOf(body.retryAfterMs) ?? fallbackMs);
+      const code = limited ? 'RATE_LIMITED' : body.code;
+      error = new GatewayError(code, KNOWN_CODES.has(code), `${path}: HTTP ${response.status}, unsigned: ${message}`, undefined, response.status, retryAfterOf(body.retryAfterMs) ?? fallbackMs);
+    } else if (limited) {
+      error = new GatewayError('RATE_LIMITED', true, `${path}: HTTP 429`, undefined, response.status, fallbackMs);
     } else {
-      error = new GatewayError('UNVERIFIED_RESPONSE', false, `${path}: HTTP ${response.status} without a verified error body`, undefined, response.status, limited ? fallbackMs : undefined);
+      error = new GatewayError('UNVERIFIED_RESPONSE', false, `${path}: HTTP ${response.status} without a verified error body`, undefined, response.status);
     }
     if ((limited || error.code === 'RATE_LIMITED') && error.retryAfterMs !== undefined) {
       this.limits.pause(rateClass, error.retryAfterMs);

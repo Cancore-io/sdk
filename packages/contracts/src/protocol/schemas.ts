@@ -24,7 +24,7 @@ export interface RestEndpoint {
   request?: string;
   query?: string;
   response: string;
-  /** The non-2xx body when it is not the signed `error` frame (the anonymous challenge route: `unsignedErrorBody`). */
+  /** An unsigned refusal body (`unsignedErrorBody`) this endpoint may answer instead of the signed `error` (the login routes). Every 429 is one, on every route. */
   errorBody?: string;
 }
 

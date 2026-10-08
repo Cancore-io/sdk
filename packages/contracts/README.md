@@ -147,7 +147,7 @@ drand quicknet rounds.
 | File (`@cancore/contracts/spec/protocol/…`) | Holds |
 | --- | --- |
 | `messages.schema.json` | one `$def` per frame type (23), `x-direction` S2F / F2S / both, `x-rest-only` on the two login types, and the primitives they share |
-| `rest.schema.json` | REST bodies; `x-endpoints` (method, path, auth, query, request/response, `errorBody` where a refusal is not the signed `error`), `x-error-status` |
+| `rest.schema.json` | REST bodies; `x-endpoints` (method, path, auth, query, request/response, `errorBody` where a refusal may be unsigned), `x-error-status` |
 | `records.schema.json` | the draw record, the epoch record, `GET /v1/gateway` |
 | `asyncapi.json` | AsyncAPI 3.0: channel `/v1` (the upgrade's subprotocols, its HTTP refusals `x-upgrade-refusals`, the close codes `x-close-codes`), the gateway's send/receive operations, examples |
 | `vectors/messages.json`, `vectors/records.json` | valid example frames and fixture records (hashes real, `sig` a placeholder: r = s = 0, v = 27) |
@@ -195,7 +195,10 @@ A filler logs in over REST and only then opens the WebSocket:
    Refusals of this anonymous route are unsigned (`unsignedErrorBody`): 400 `BAD_REQUEST`, 404
    `UNKNOWN_REQUEST` (unknown or not `ACTIVE`), 429 `RATE_LIMITED` with `retryAfterMs`.
 2. `POST /v1/filler/auth` with `auth.response` (`FillerAuth` by the message key, `nonce` = the
-   challenge's) → `{token, expiresAt}`, bound to `(fillerId, message key)`.
+   challenge's) → `{token, expiresAt}`, bound to `(fillerId, message key)`. Refusals decided before
+   any signature check are unsigned too: 400 `BAD_REQUEST`, 404 `UNKNOWN_REQUEST`, 401
+   `UNAUTHENTICATED` (no live challenge for the fillerId: start again from step 1), 429; refusals after
+   the signature checks are the signed `error`.
 3. Upgrade `/v1` offering `fillerWsProtocols(token)` = `['cancore-filler.v1', 'bearer.<token>']`
    (`FILLER_WS_SUBPROTOCOL`, `FILLER_WS_BEARER_PREFIX`) as `Sec-WebSocket-Protocol`; the gateway
    answers `cancore-filler.v1` and sends a signed `auth.ok` first. It refuses with plain HTTP
@@ -205,8 +208,8 @@ A filler logs in over REST and only then opens the WebSocket:
 
 The same token authenticates REST (`Authorization: Bearer`). `auth.challenge` and
 `auth.response` never travel on the socket (`REST_ONLY_TYPES`). Over a per-fillerId rate limit
-the gateway answers `error RATE_LIMITED` with `retryAfterMs` (on REST: 429 and `Retry-After`);
-send nothing of that rate class before it has passed.
+the gateway answers `error RATE_LIMITED` with `retryAfterMs` (on REST: 429, always unsigned, with
+`retryAfterMs` and `Retry-After`); send nothing of that rate class before it has passed.
 
 ### Attestation signatures for `settle`
 
@@ -332,7 +335,8 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
   RC line** for a filler and for filler-gateway:
   - The login is REST only: `GET /v1/filler/auth/challenge` takes a required `fillerId` query
     (`challengeQuery`), and `auth.challenge` is addressed (envelope `s2fBase`, `fillerId`
-    required); its refusals are unsigned (`unsignedErrorBody`, the endpoint's `errorBody`).
+    required). The refusals of the login routes decided before a signature check, and every 429,
+    are unsigned (`unsignedErrorBody`; `errorBody` of the two login endpoints).
     `auth.challenge` and `auth.response` carry `x-rest-only` (a new annotation keyword in
     `SCHEMA_VOCABULARY`; `REST_ONLY_TYPES`) and leave the AsyncAPI channel.
   - The WebSocket upgrade offers `cancore-filler.v1` and `bearer.<token>`:

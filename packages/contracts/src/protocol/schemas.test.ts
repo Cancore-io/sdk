@@ -292,7 +292,7 @@ describe('REST', () => {
     expect(REST_ENDPOINTS.find((e) => e.path === '/v1/gateway')?.auth).toBe('none');
     expect(REST_ENDPOINTS.filter((e) => e.path.startsWith('/v1/filler/tickets')).every((e) => e.auth === 'bearer')).toBe(true);
   });
-  test('the login is REST only: the challenge is asked for by fillerId, its refusals are unsigned', () => {
+  test('the login is REST only: the challenge is asked for by fillerId; refusals before a signature check are unsigned', () => {
     expect([...REST_ONLY_TYPES].sort()).toEqual(['auth.challenge', 'auth.response']);
     const challenge = REST_ENDPOINTS.find((e) => e.path === '/v1/filler/auth/challenge')!;
     expect(challenge).toEqual({
@@ -305,7 +305,9 @@ describe('REST', () => {
     expect(rest('unsignedErrorBody', { type: 'error', code: 'RATE_LIMITED', message: 'login rate class over its limit', retryAfterMs: 1200 })).toBe(true);
     expect(rest('unsignedErrorBody', { type: 'error', code: 'UNKNOWN_REQUEST', message: 'unknown fillerId' })).toBe(true);
     expect(rest('unsignedErrorBody', { type: 'error', code: 'RATE_LIMITED', message: 'x', retryAfterMs: 0 })).toBe(false);
-    expect(REST_ENDPOINTS.filter((e) => e.errorBody).map((e) => e.path)).toEqual(['/v1/filler/auth/challenge']);
+    expect(rest('unsignedErrorBody', { type: 'error', code: 'UNAUTHENTICATED', message: 'no live challenge for this fillerId' })).toBe(true);
+    expect(REST_ENDPOINTS.filter((e) => e.errorBody).map((e) => e.path)).toEqual(['/v1/filler/auth/challenge', '/v1/filler/auth']);
+    expect(REST_ENDPOINTS.find((e) => e.path === '/v1/filler/auth')!.errorBody).toBe('#/$defs/unsignedErrorBody');
   });
   test('bodies: ticket list, token, error, empty', () => {
     expect(rest('ticketList', { items: [example('ticket.offer'), example('ticket.issued')], nextCursor: null })).toBe(true);
