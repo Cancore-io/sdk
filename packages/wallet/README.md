@@ -89,7 +89,30 @@ wordlists (a mistyped word would otherwise derive a different, empty wallet) and
 the same shape-checked signer the app uses, which `@cancore/client/selfcustody` takes as
 it is. The legacy scheme derives one key per phrase and refuses any account but 0.
 
-The signer it returns has this shape, `PasskeySigningProvider`:
+### A bot gets one key, not the phrase
+
+A program that should run ONE of those accounts — a trading bot, say — does not need the
+phrase, and should not have it: account 0 of the same phrase is the person's own wallet.
+Derive the bot's key where the phrase already lives, hand over that key alone, and build the
+signer from it:
+
+```ts
+import { deriveWalletKey, providerFromSeed } from '@cancore/wallet';
+
+// in the owner's wallet
+const { seedHex, publicKeyHex } = deriveWalletKey(mnemonic, 'standard', 3);
+
+// in the bot's process — `seedHex` is all it was given
+const signer = await providerFromSeed(seedHex);
+```
+
+Derivation is SLIP-0010 and hardened at every step, so the key of account 3 says nothing
+about the phrase or about any other account of it: a bot's key that leaks costs that bot's
+balance, and the owner can always derive the same key again to move what is left.
+`providerFromSeed` takes exactly 64 hex characters and refuses anything else — a truncated
+paste would otherwise sign in as some other, empty account.
+
+The signer either function returns has this shape, `PasskeySigningProvider`:
 
 ```ts
 {

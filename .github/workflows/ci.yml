@@ -96,6 +96,40 @@ jobs:
                 console.log(specifier, 'exports:', names.join(', '));
               }
             "
+            if [ "$name" = "@cancore/contracts" ]; then
+              node --input-type=module -e "
+                import { deepStrictEqual } from 'node:assert/strict';
+                const events = {
+                  Filled: [
+                    ['orderHash', 'bytes32', true], ['fillerId', 'bytes32', true],
+                    ['deliveryKey', 'address', false], ['repayTo', 'bytes32', false],
+                    ['received', 'uint256', false], ['recipient', 'bytes32', false],
+                    ['filledAt', 'uint64', false], ['attempt', 'uint32', false],
+                  ],
+                  Settled: [
+                    ['orderHash', 'bytes32', true], ['fillerId', 'bytes32', true],
+                    ['repayTo', 'bytes32', false], ['payout', 'uint256', false], ['fee', 'uint256', false],
+                  ],
+                };
+                const check = (abi, label) => {
+                  for (const [name, fields] of Object.entries(events)) {
+                    const matches = abi.filter((entry) => entry.type === 'event' && entry.name === name);
+                    deepStrictEqual(matches.length, 1, label + ': ' + name);
+                    deepStrictEqual(matches[0].anonymous, false, label + ': ' + name + ' anonymous');
+                    deepStrictEqual(matches[0].inputs.map(({ name, type, indexed }) => [name, type, indexed]), fields, label + ': ' + name);
+                  }
+                };
+                for (const subpath of ['', '/abi']) {
+                  const exports = await import('@cancore/contracts' + subpath);
+                  for (const name of ['CANCORE_ROUTER_ABI', 'ICANCORE_ROUTER_ABI']) check(exports[name], subpath + ':' + name);
+                }
+                for (const name of ['CancoreRouter', 'ICancoreRouter']) {
+                  const { default: abi } = await import('@cancore/contracts/spec/abi/' + name + '.json', { with: { type: 'json' } });
+                  check(abi, 'spec/abi/' + name);
+                }
+                console.log('packed contracts: variant A Filled/Settled exports and spec match');
+              "
+            fi
             # Every subpath ships its declarations — not just a root entry, which
             # a package such as @cancore/trader (subpaths only) does not have.
             node --input-type=module -e "

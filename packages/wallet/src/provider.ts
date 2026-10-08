@@ -1,5 +1,10 @@
-import { binaryStringToBytes, bytesToBinaryString, bytesToHex, type Bytes } from './bytes';
-import { createEd25519Signer, signWithEd25519Signer, type Ed25519Signer } from './ed25519';
+import { binaryStringToBytes, bytesToBinaryString, bytesToHex, hexToBytes, type Bytes } from './bytes';
+import {
+  createEd25519Signer,
+  ed25519PublicKeyFromSeed,
+  signWithEd25519Signer,
+  type Ed25519Signer,
+} from './ed25519';
 import { deriveWalletKey, isValidMnemonic, type DerivationScheme } from './mnemonic';
 
 /**
@@ -139,4 +144,31 @@ export async function providerFromMnemonic(
   }
   const key = deriveWalletKey(mnemonic, scheme, account);
   return createPasskeySigningProvider(await createEd25519Signer(key.seed), key.publicKeyHex);
+}
+
+const SEED_HEX_RE = /^[0-9a-f]{64}$/i;
+
+/**
+ * A signing provider from ONE wallet key — the 32-byte Ed25519 seed as hex,
+ * i.e. `deriveWalletKey(...).seedHex`. This is what a bot is handed: the
+ * owner's wallet derives the key of one account of its phrase and gives the
+ * bot that key and nothing else. The derivation is one-way (SLIP-0010,
+ * hardened), so a bot's key says nothing about the phrase or about the
+ * phrase's other accounts — a stolen bot key costs that bot's balance.
+ *
+ * Surrounding whitespace is dropped, since this value is pasted; anything that
+ * is then not exactly 64 hex characters is refused. A truncated or padded
+ * paste would otherwise still be a valid Ed25519 seed and sign in as some
+ * other, empty account instead of failing.
+ */
+export async function providerFromSeed(seedHex: string): Promise<PasskeySigningProvider> {
+  const hex = seedHex.trim();
+  if (!SEED_HEX_RE.test(hex)) {
+    throw new Error('providerFromSeed: expected a 32-byte wallet key as 64 hex characters');
+  }
+  const seed = hexToBytes(hex.toLowerCase());
+  return createPasskeySigningProvider(
+    await createEd25519Signer(seed),
+    bytesToHex(ed25519PublicKeyFromSeed(seed)),
+  );
 }
