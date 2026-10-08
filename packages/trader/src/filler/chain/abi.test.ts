@@ -33,6 +33,9 @@ const ORDER = {
   feeBps: 500n,
 };
 const HASH: Hex = `0x${'ab'.repeat(32)}`;
+const FILLER_ID: Hex = `0x${'f1'.repeat(32)}`;
+const DELIVERY_KEY = '0x2222222222222222222222222222222222222222';
+const REPAY_TO: Hex = `0x${'00'.repeat(12)}${'0c'.repeat(20)}`;
 
 describe('selectors and calldata match ethers for every view the filler reads', () => {
   const calls: Array<[string, unknown[]]> = [
@@ -47,7 +50,7 @@ describe('selectors and calldata match ethers for every view the filler reads', 
     ['isMember', [7, '0x2222222222222222222222222222222222222222']],
     ['sourceOrderHash', [ORDER]],
     ['hashOrder', [ORDER]],
-    ['hashTicket', [{ orderHash: HASH, filler: '0x2222222222222222222222222222222222222222', attempt: 2, validFrom: 10n, validUntil: 20n }]],
+    ['hashTicket', [{ orderHash: HASH, fillerId: FILLER_ID, deliveryKey: DELIVERY_KEY, repayTo: REPAY_TO, attempt: 2, validFrom: 10n, validUntil: 20n }]],
     ['minInput', ['0x0000000000000000000000000000000000000056']],
   ];
 
@@ -58,7 +61,7 @@ describe('selectors and calldata match ethers for every view the filler reads', 
   });
 
   test('a canonical signature expands tuples', () => {
-    expect(signatureOf(entryOf(ROUTER, 'function', 'hashTicket'))).toBe('hashTicket((bytes32,address,uint32,uint64,uint64))');
+    expect(signatureOf(entryOf(ROUTER, 'function', 'hashTicket'))).toBe('hashTicket((bytes32,bytes32,address,bytes32,uint32,uint64,uint64))');
   });
 });
 
@@ -97,19 +100,25 @@ describe('router events encode and decode as ethers does', () => {
     expect(decodeEventLog(entry, ours)).toEqual({ ...args, order: { ...ORDER, destination: ORDER.destination, outputAsset: ORDER.outputAsset } });
   });
 
-  test('Filled: indexed address in a topic', () => {
+  test('Filled: two indexed words in topics, the delivery key and repayTo in the data', () => {
     const entry = entryOf(ROUTER, 'event', 'Filled');
-    const theirs = router.encodeEventLog('Filled', [HASH, '0x2222222222222222222222222222222222222222', 99n, `0x${'00'.repeat(12)}${'0b'.repeat(20)}`, 1_790_000_100n, 0]);
-    expect(decodeEventLog(entry, { topics: theirs.topics as Hex[], data: theirs.data as Hex })).toMatchObject({
+    const recipient = `0x${'00'.repeat(12)}${'0b'.repeat(20)}`;
+    const theirs = router.encodeEventLog('Filled', [HASH, FILLER_ID, DELIVERY_KEY, REPAY_TO, 99n, recipient, 1_790_000_100n, 0]);
+    expect(theirs.topics).toHaveLength(3);
+    expect(decodeEventLog(entry, { topics: theirs.topics as Hex[], data: theirs.data as Hex })).toEqual({
       orderHash: HASH,
-      filler: '0x2222222222222222222222222222222222222222',
-      amount: 99n,
+      fillerId: FILLER_ID,
+      deliveryKey: DELIVERY_KEY,
+      repayTo: REPAY_TO,
+      received: 99n,
+      recipient,
+      filledAt: 1_790_000_100n,
       attempt: 0n,
     });
   });
 
   test('a log of another event is refused', () => {
-    const settled = router.encodeEventLog('Settled', [HASH, '0x2222222222222222222222222222222222222222', 1n, 1n]);
+    const settled = router.encodeEventLog('Settled', [HASH, FILLER_ID, REPAY_TO, 1n, 1n]);
     expect(() => decodeEventLog(entryOf(ROUTER, 'event', 'Filled'), { topics: settled.topics as Hex[], data: settled.data as Hex })).toThrow(AbiDecodeError);
   });
 });

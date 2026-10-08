@@ -5,6 +5,8 @@ import {
   CANCORE_ROUTER_ERRORS,
   CNRX_ABI,
   CNRX_ERRORS,
+  FILL_PROOF_TYPES,
+  FILL_TICKET_TYPES,
   IBURN_MINT_ERC20_ABI,
   ICANCORE_ROUTER_ABI,
   ICANCORE_ROUTER_ERRORS,
@@ -22,9 +24,10 @@ type Entry = { readonly type: string; readonly name?: string; readonly inputs?: 
 const entries = (abi: readonly Entry[], type: string) => abi.filter((e) => e.type === type).map((e) => e.name);
 
 const ROUTER_READS = [
-  'intents', 'filled', 'fillerActiveFrom', 'fillerRemovedAt', 'isFillerActive', 'wasFillerActiveAt', 'ticketSigners',
-  'proofWindow', 'attestationSetFor', 'sourceOrderHash', 'hashTicket', 'minInput',
+  'intents', 'filled', 'ticketSigners', 'proofWindow', 'attestationSetFor', 'sourceOrderHash', 'hashTicket', 'minInput',
 ];
+// Variant A (evm-contracts#97, CAN-2140): no filler registry and no filler status on the router.
+const GONE = ['setFiller', 'fillerActiveFrom', 'fillerRemovedAt', 'isFillerActive', 'wasFillerActiveAt'];
 const ROUTER_WRITES = ['fill', 'settle', 'refund', 'openFor'];
 const ROUTER_EVENTS = ['IntentOpened', 'Filled', 'Settled', 'Refunded'];
 const ATTESTOR_SET_READS = ['getAttestorSet', 'currentSetId', 'isMember', 'revokedAttestors'];
@@ -47,6 +50,23 @@ test('the vendored CNRX exports are still published', () => {
 test('CancoreRouter exposes every view RouterReader reads and every call the taker sends', () => {
   const functions = entries(CANCORE_ROUTER_ABI, 'function');
   expect(functions).toEqual(expect.arrayContaining([...ROUTER_READS, ...ROUTER_WRITES]));
+});
+
+test('CancoreRouter has no filler registry: a filler is fillerId, deliveryKey and repayTo of the ticket', () => {
+  for (const abi of [CANCORE_ROUTER_ABI, ICANCORE_ROUTER_ABI] as const) {
+    expect(entries(abi as readonly Entry[], 'function')).toEqual(expect.not.arrayContaining(GONE));
+    expect(entries(abi as readonly Entry[], 'event')).not.toContain('FillerSet');
+  }
+  const fn = (name: string) => (CANCORE_ROUTER_ABI as readonly Entry[]).find((e) => e.type === 'function' && e.name === name);
+  const event = (name: string) => (CANCORE_ROUTER_ABI as readonly Entry[]).find((e) => e.type === 'event' && e.name === name);
+  const fields = (ps?: readonly Param[]) => ps?.map((p) => `${p.type} ${p.name}`);
+  expect(fields(fn('hashTicket')?.inputs?.[0]?.components)).toEqual(FILL_TICKET_TYPES.FillTicket.map((f) => `${f.type} ${f.name}`));
+  expect(fields(fn('hashFillProof')?.inputs?.[0]?.components)).toEqual(FILL_PROOF_TYPES.FillProof.map((f) => `${f.type} ${f.name}`));
+  expect(fields(event('Filled')?.inputs)).toEqual([
+    'bytes32 orderHash', 'bytes32 fillerId', 'address deliveryKey', 'bytes32 repayTo',
+    'uint256 received', 'bytes32 recipient', 'uint64 filledAt', 'uint32 attempt',
+  ]);
+  expect(fields(event('Settled')?.inputs)).toEqual(['bytes32 orderHash', 'bytes32 fillerId', 'bytes32 repayTo', 'uint256 payout', 'uint256 fee']);
 });
 
 test('CancoreRouter emits the events the taker follows', () => {

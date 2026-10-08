@@ -51,11 +51,6 @@
   },
   {
     "inputs": [],
-    "name": "FillerRemovedForever",
-    "type": "error"
-  },
-  {
-    "inputs": [],
     "name": "IntentExists",
     "type": "error"
   },
@@ -87,11 +82,6 @@
   {
     "inputs": [],
     "name": "InvalidTicketSigner",
-    "type": "error"
-  },
-  {
-    "inputs": [],
-    "name": "NotFiller",
     "type": "error"
   },
   {
@@ -196,17 +186,17 @@
   },
   {
     "inputs": [],
+    "name": "WrongDeliveryKey",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "WrongDestination",
     "type": "error"
   },
   {
     "inputs": [],
     "name": "WrongOriginChain",
-    "type": "error"
-  },
-  {
-    "inputs": [],
-    "name": "WrongTicketFiller",
     "type": "error"
   },
   {
@@ -260,14 +250,26 @@
       },
       {
         "indexed": true,
+        "internalType": "bytes32",
+        "name": "fillerId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
         "internalType": "address",
-        "name": "filler",
+        "name": "deliveryKey",
         "type": "address"
       },
       {
         "indexed": false,
+        "internalType": "bytes32",
+        "name": "repayTo",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
         "internalType": "uint256",
-        "name": "amount",
+        "name": "received",
         "type": "uint256"
       },
       {
@@ -416,9 +418,15 @@
       },
       {
         "indexed": true,
-        "internalType": "address",
-        "name": "filler",
-        "type": "address"
+        "internalType": "bytes32",
+        "name": "fillerId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "repayTo",
+        "type": "bytes32"
       },
       {
         "indexed": false,
@@ -532,9 +540,19 @@
             "type": "bytes32"
           },
           {
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
+          },
+          {
             "internalType": "address",
-            "name": "filler",
+            "name": "deliveryKey",
             "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "repayTo",
+            "type": "bytes32"
           },
           {
             "internalType": "uint32",
@@ -612,9 +630,14 @@
             "type": "uint64"
           },
           {
-            "internalType": "address",
-            "name": "filler",
-            "type": "address"
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "repayTo",
+            "type": "bytes32"
           },
           {
             "internalType": "uint32",
@@ -729,9 +752,19 @@
             "type": "bytes32"
           },
           {
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
+          },
+          {
             "internalType": "address",
-            "name": "filler",
+            "name": "deliveryKey",
             "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "repayTo",
+            "type": "bytes32"
           },
           {
             "internalType": "uint32",
@@ -760,25 +793,6 @@
         "internalType": "bytes32",
         "name": "",
         "type": "bytes32"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "filler",
-        "type": "address"
-      }
-    ],
-    "name": "isFillerActive",
-    "outputs": [
-      {
-        "internalType": "bool",
-        "name": "",
-        "type": "bool"
       }
     ],
     "stateMutability": "view",
@@ -1080,9 +1094,14 @@
             "type": "uint64"
           },
           {
-            "internalType": "address",
-            "name": "filler",
-            "type": "address"
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "repayTo",
+            "type": "bytes32"
           },
           {
             "internalType": "uint32",
@@ -1197,30 +1216,6 @@
     "name": "sweepFees",
     "outputs": [],
     "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "filler",
-        "type": "address"
-      },
-      {
-        "internalType": "uint64",
-        "name": "at",
-        "type": "uint64"
-      }
-    ],
-    "name": "wasFillerActiveAt",
-    "outputs": [
-      {
-        "internalType": "bool",
-        "name": "",
-        "type": "bool"
-      }
-    ],
-    "stateMutability": "view",
     "type": "function"
   }
 ]

@@ -24,7 +24,12 @@ const ORDER = {
   feeBps: 500n,
 };
 
-const filled = (orderHash: Hex) => ({ orderHash, filler: FILLER, amount: 99n, recipient: RECIPIENT, filledAt: 1_790_000_100n, attempt: 0n });
+const FILLER_ID: Hex = `0x${'f1'.repeat(32)}`;
+const REPAY_TO: Hex = `0x${'00'.repeat(12)}${'0c'.repeat(20)}`;
+
+const filled = (orderHash: Hex) => ({
+  orderHash, fillerId: FILLER_ID, deliveryKey: FILLER, repayTo: REPAY_TO, received: 99n, recipient: RECIPIENT, filledAt: 1_790_000_100n, attempt: 0n,
+});
 
 function setup(confirmations = 2, retentionBlocks?: bigint) {
   const chain = new FakeChain(1n);
@@ -48,7 +53,7 @@ describe('router events are reported once confirmed, in chain order', () => {
     const { chain, watcher, seen, updates } = setup(2);
     chain.emit(ROUTER, 'IntentOpened', { orderHash: A, order: ORDER, refundAfter: 1_790_003_600n, blockNumber: 95n }, 95n);
     chain.emit(ROUTER, 'Filled', filled(A), 97n);
-    chain.emit(ROUTER, 'Settled', { orderHash: A, filler: FILLER, payout: 100n, fee: 5n }, 99n);
+    chain.emit(ROUTER, 'Settled', { orderHash: A, fillerId: FILLER_ID, repayTo: REPAY_TO, payout: 100n, fee: 5n }, 99n);
     await watcher.poll();
     expect(seen()).toEqual(['added IntentOpened 0xaa @95', 'added Filled 0xaa @97']);
     await watcher.poll();

@@ -1,7 +1,8 @@
 {
-  "$comment": "Variant A FillTicket (CAN-2139; protocol.md §3.3): seven fields, written here ahead of CancoreRouter.sol, which takes the same string before its first deployment and pins these vectors with hashTicket (CAN-2140). fillerId = keccak256(utf8(fillerId)); repayTo encoded for the source chain (§3.15). Digests by ethers TypedDataEncoder, checked in this package by the shipped encoder as well.",
+  "$comment": "EIP-712 schema of FillTicket — the dispatcher's assignment CancoreRouter.fill verifies — and its golden vectors. The contract is the source of truth: test/CancoreRouter.ts checks this file against TICKET_TYPEHASH, TICKET_DOMAIN_SEPARATOR and hashTicket. @cancore/contracts mirrors it (sdk: npm run sync) and checks the same vectors with its own encoder. The vectors are @cancore/contracts' canonical set (CAN-2139, sdk 4c6971f), byte for byte: the router computing each of them in test/CancoreRouter.ts is the cross-check between the two repositories.",
   "primaryType": "FillTicket",
   "domain": {
+    "$comment": "The PROTOCOL domain: no chainId, no verifyingContract. orderHash is already the source-router digest, so one ticket verifies identically on every router and off-chain.",
     "name": "CancoreFillTicket",
     "version": "1",
     "fields": [

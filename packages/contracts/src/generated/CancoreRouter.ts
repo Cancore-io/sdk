@@ -26,11 +26,6 @@ export const CANCORE_ROUTER_ABI = [
         "internalType": "uint8",
         "name": "minThreshold",
         "type": "uint8"
-      },
-      {
-        "internalType": "address[]",
-        "name": "initialFillers",
-        "type": "address[]"
       }
     ],
     "stateMutability": "nonpayable",
@@ -130,11 +125,6 @@ export const CANCORE_ROUTER_ABI = [
   },
   {
     "inputs": [],
-    "name": "FillerRemovedForever",
-    "type": "error"
-  },
-  {
-    "inputs": [],
     "name": "InsufficientRedundancy",
     "type": "error"
   },
@@ -196,11 +186,6 @@ export const CANCORE_ROUTER_ABI = [
   {
     "inputs": [],
     "name": "NotAttestor",
-    "type": "error"
-  },
-  {
-    "inputs": [],
-    "name": "NotFiller",
     "type": "error"
   },
   {
@@ -374,17 +359,17 @@ export const CANCORE_ROUTER_ABI = [
   },
   {
     "inputs": [],
+    "name": "WrongDeliveryKey",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "WrongDestination",
     "type": "error"
   },
   {
     "inputs": [],
     "name": "WrongOriginChain",
-    "type": "error"
-  },
-  {
-    "inputs": [],
-    "name": "WrongTicketFiller",
     "type": "error"
   },
   {
@@ -533,14 +518,26 @@ export const CANCORE_ROUTER_ABI = [
       },
       {
         "indexed": true,
+        "internalType": "bytes32",
+        "name": "fillerId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
         "internalType": "address",
-        "name": "filler",
+        "name": "deliveryKey",
         "type": "address"
       },
       {
         "indexed": false,
+        "internalType": "bytes32",
+        "name": "repayTo",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
         "internalType": "uint256",
-        "name": "amount",
+        "name": "received",
         "type": "uint256"
       },
       {
@@ -563,31 +560,6 @@ export const CANCORE_ROUTER_ABI = [
       }
     ],
     "name": "Filled",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "filler",
-        "type": "address"
-      },
-      {
-        "indexed": false,
-        "internalType": "bool",
-        "name": "allowed",
-        "type": "bool"
-      },
-      {
-        "indexed": false,
-        "internalType": "uint64",
-        "name": "effectiveAt",
-        "type": "uint64"
-      }
-    ],
-    "name": "FillerSet",
     "type": "event"
   },
   {
@@ -828,9 +800,15 @@ export const CANCORE_ROUTER_ABI = [
       },
       {
         "indexed": true,
-        "internalType": "address",
-        "name": "filler",
-        "type": "address"
+        "internalType": "bytes32",
+        "name": "fillerId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "repayTo",
+        "type": "bytes32"
       },
       {
         "indexed": false,
@@ -1299,9 +1277,19 @@ export const CANCORE_ROUTER_ABI = [
             "type": "bytes32"
           },
           {
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
+          },
+          {
             "internalType": "address",
-            "name": "filler",
+            "name": "deliveryKey",
             "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "repayTo",
+            "type": "bytes32"
           },
           {
             "internalType": "uint32",
@@ -1348,44 +1336,6 @@ export const CANCORE_ROUTER_ABI = [
         "internalType": "bool",
         "name": "",
         "type": "bool"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "name": "fillerActiveFrom",
-    "outputs": [
-      {
-        "internalType": "uint64",
-        "name": "",
-        "type": "uint64"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "name": "fillerRemovedAt",
-    "outputs": [
-      {
-        "internalType": "uint64",
-        "name": "",
-        "type": "uint64"
       }
     ],
     "stateMutability": "view",
@@ -1470,9 +1420,14 @@ export const CANCORE_ROUTER_ABI = [
             "type": "uint64"
           },
           {
-            "internalType": "address",
-            "name": "filler",
-            "type": "address"
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "repayTo",
+            "type": "bytes32"
           },
           {
             "internalType": "uint32",
@@ -1611,9 +1566,19 @@ export const CANCORE_ROUTER_ABI = [
             "type": "bytes32"
           },
           {
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
+          },
+          {
             "internalType": "address",
-            "name": "filler",
+            "name": "deliveryKey",
             "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "repayTo",
+            "type": "bytes32"
           },
           {
             "internalType": "uint32",
@@ -1685,25 +1650,6 @@ export const CANCORE_ROUTER_ABI = [
       }
     ],
     "name": "isEvmDestination",
-    "outputs": [
-      {
-        "internalType": "bool",
-        "name": "",
-        "type": "bool"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "filler",
-        "type": "address"
-      }
-    ],
-    "name": "isFillerActive",
     "outputs": [
       {
         "internalType": "bool",
@@ -2181,24 +2127,6 @@ export const CANCORE_ROUTER_ABI = [
     "inputs": [
       {
         "internalType": "address",
-        "name": "filler",
-        "type": "address"
-      },
-      {
-        "internalType": "bool",
-        "name": "allowed",
-        "type": "bool"
-      }
-    ],
-    "name": "setFiller",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
         "name": "token",
         "type": "address"
       },
@@ -2361,9 +2289,14 @@ export const CANCORE_ROUTER_ABI = [
             "type": "uint64"
           },
           {
-            "internalType": "address",
-            "name": "filler",
-            "type": "address"
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "repayTo",
+            "type": "bytes32"
           },
           {
             "internalType": "uint32",
@@ -2536,30 +2469,6 @@ export const CANCORE_ROUTER_ABI = [
     "name": "unpauseOpen",
     "outputs": [],
     "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "address",
-        "name": "filler",
-        "type": "address"
-      },
-      {
-        "internalType": "uint64",
-        "name": "at",
-        "type": "uint64"
-      }
-    ],
-    "name": "wasFillerActiveAt",
-    "outputs": [
-      {
-        "internalType": "bool",
-        "name": "",
-        "type": "bool"
-      }
-    ],
-    "stateMutability": "view",
     "type": "function"
   }
 ] as const;
