@@ -150,6 +150,9 @@ export interface ExecutorOptions {
 /** A `settle` of this replica's, `fillConfirmations` deep: success or revert (`receipt.status`). */
 export type SettleIncludedListener = (chain: EvmChainId, tx: InFlightTransaction, receipt: TransactionReceipt) => Promise<void>;
 
+/** A `settle` whose nonce was spent by a transaction this replica did not record: it will never be mined. */
+export type SettleLostListener = (chain: EvmChainId, tx: InFlightTransaction) => Promise<void>;
+
 // ---------------------------------------------------------------------------
 
 const ROUTER_ABI = CANCORE_ROUTER_ABI as unknown as readonly AbiEntry[];
@@ -200,6 +203,7 @@ export class Executor {
   private readonly approving = new Map<string, Promise<void>>();
   private sweep: Cancel | undefined;
   private settleListener: SettleIncludedListener | undefined;
+  private settleLostListener: SettleLostListener | undefined;
   private started = false;
   private stopped = false;
 
@@ -244,6 +248,11 @@ export class Executor {
   /** Where a tracked `settle` goes once it is deep enough (the settlement). */
   onSettleIncluded(listener: SettleIncludedListener): void {
     this.settleListener = listener;
+  }
+
+  /** Where a tracked `settle` goes when its nonce was spent by another transaction (the settlement retries). */
+  onSettleLost(listener: SettleLostListener): void {
+    this.settleLostListener = listener;
   }
 
   // -- lifecycle ----------------------------------------------------------------
@@ -803,6 +812,8 @@ export class Executor {
       }
       logger.error('delivery: the nonce was spent by a transaction this replica did not record', { chain: driver.chain, nonce: t.lease.nonce.toString() });
       if (fill?.orderHash && fill.attempt !== undefined) await this.fail(fill.orderHash, fill.attempt, 'its nonce was spent by another transaction');
+      const settle = txs.find((x) => x.kind === 'settle' && x.orderHash);
+      if (settle) await this.settleLostListener?.(driver.chain, settle);
       await store.nonces.complete(t.lease, ZERO_HASH);
       return true;
     }

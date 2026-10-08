@@ -356,3 +356,72 @@ describe('alerts (R-4)', () => {
     expect(w.stages('settle.alert')).toHaveLength(0);
   });
 });
+
+describe('review sdk#66', () => {
+  test('F-2: a settle mined with status 0 while the intent stays Opened — alert, not terminal: selfSettle sends anew, never the reverted hash', async () => {
+    const w = await world();
+    await w.push(w.delivery());
+    const first = w.stages('settle.sent')[0]!;
+    const [revokedNow] = String(first.detail!.signers).split(',');
+    w.router.revokedAttestors.add(revokedNow!); // revoked after eth_call, before mining: the settle reverts AttestorRevoked
+    await w.tick(1_000);
+    expect(w.src.minedTransactions.get(String(first.detail!.txHash))).toMatchObject({ status: 0, error: 'AttestorRevoked' });
+    expect(await w.settlement()).toMatchObject({ state: 'failed', reason: expect.stringContaining('reverted') });
+    expect(w.stages('settle.alert').map((s) => s.detail!.kind)).toEqual(['settle-reverted']);
+    expect(w.router.intents.get(w.orderHash.toLowerCase())!.status).toBe(1);
+
+    const again = await w.settler.selfSettle(w.orderHash);
+    expect(again.txHash).not.toBe(first.detail!.txHash);
+    expect(w.stages('settle.sent')[1]!.detail!.signers).not.toContain(revokedNow);
+    await w.tick(1_000);
+    expect(await w.settlement()).toMatchObject({ state: 'confirmed', txHash: again.txHash });
+  });
+
+  test('F-1: the sweep retries a reverted settle while the intent is open and before refundAfter, and runs the window alerts for it', async () => {
+    const w = await world({ proofWindowS: 300n, refundAfterS: 10_000 });
+    await w.push(w.delivery());
+    w.router.revokedAttestors.add(String(w.stages('settle.sent')[0]!.detail!.signers).split(',')[0]!);
+    await w.tick(1_000);
+    expect(await w.settlement()).toMatchObject({ state: 'failed' });
+    await w.settler.sweep();
+    expect(w.stages('settle.sent')).toHaveLength(2);
+    expect(w.stages('settle.alert').map((s) => s.detail!.kind)).toContain('half-window');
+    await w.tick(1_000);
+    expect(await w.settlement()).toMatchObject({ state: 'confirmed' });
+  });
+
+  test('F-1: no retry once refundAfter has come', async () => {
+    const w = await world();
+    await w.push(w.delivery());
+    w.router.revokedAttestors.add(String(w.stages('settle.sent')[0]!.detail!.signers).split(',')[0]!);
+    await w.tick(1_000);
+    w.clock.advance(3_000_000); // past refundAfter; the intent is still open (nobody refunded yet)
+    await w.settler.sweep();
+    expect(w.stages('settle.sent')).toHaveLength(1);
+  });
+
+  test('F-1: a settle whose nonce another transaction spent is not left `sent`: the executor reports it lost and the sweep settles again', async () => {
+    const w = await world();
+    await w.push(w.delivery());
+    const lost = [...w.src.mempool.values()][0]!;
+    // Another transaction of the same key takes the nonce (out of band: not recorded by this replica).
+    const raw = await fillSigner.signTransaction({ chainId: 56n, nonce: lost.nonce, to: fillSigner.address, data: '0x', value: 0n, gasLimit: 21_000n, maxFeePerGas: lost.maxFeePerGas * 2n, maxPriorityFeePerGas: lost.maxPriorityFeePerGas * 2n });
+    await w.src.request({ method: 'eth_sendRawTransaction', params: [raw] });
+    await w.tick(5_000);
+    expect(await w.settlement()).toMatchObject({ state: 'failed', reason: 'its nonce was spent by another transaction' });
+    await w.settler.sweep();
+    const [, retry] = w.stages('settle.sent');
+    expect(retry!.detail!.txHash).not.toBe(lost.hash);
+    await w.tick(1_000);
+    expect(await w.settlement()).toMatchObject({ state: 'confirmed', txHash: retry!.detail!.txHash });
+  });
+
+  test('load(): a stored frame that does not parse gets a reason, so the next frame replaces it', async () => {
+    const w = await world();
+    await w.store.withOrder(w.orderHash, (tx) => tx.putAttestations({ orderHash: w.orderHash, attempt: 0, channel: 'ws', raw: new TextEncoder().encode('{not json'), verified: false, receivedAtMs: w.clock.now() }));
+    await expect(w.settler.selfSettle(w.orderHash)).rejects.toMatchObject({ reason: 'mismatch' });
+    expect(await w.attestation()).toMatchObject({ reason: expect.stringContaining('does not parse') });
+    await w.push(w.delivery({}, 'rest'));
+    expect(w.settles()).toHaveLength(1);
+  });
+});

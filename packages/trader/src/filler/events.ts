@@ -99,7 +99,7 @@ export type FillerStage =
   | 'attestations.received'
   /** Nothing sent: `detail.reason` (`SettleRefusal`), the revert or the mismatch in `detail.error` / `detail.detail`. */
   | 'settle.refused'
-  /** Operator alert (`detail.kind`): `half-window`, `refund-near`, `refunded`, `divergent`, `insufficient-signatures`, `set-not-active`, `mismatch`. */
+  /** Operator alert (`detail.kind`): `half-window`, `refund-near`, `refunded`, `settle-reverted`, `divergent`, `insufficient-signatures`, `set-not-active`, `mismatch`. */
   | 'settle.alert'
   /** Own `settle` mined and reverted. */
   | 'settle.reverted'
