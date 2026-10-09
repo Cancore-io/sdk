@@ -67,7 +67,7 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 | `onTicketOffer(hook)` | `void` | take the ticket: `'accept'`, `'decline'` (`OTHER`) or `{ decline: reason, detail? }` | CAN-1861 |
 | `start()` | `Promise<void>` | login over REST, then the WebSocket with the token; heartbeat, reconnect, REST fallback; reconcile from the store; then quote, take tickets, fill, settle. Needs all three hooks. Resolves at the first `auth.ok` | CAN-1847 |
 | `stop()` | `Promise<void>` | closes the session; in-flight work stays in the store for any replica | CAN-1847 |
-| `selfSettle(orderHash)` | `{ txHash }` | settle one order now from its verified attestation set | CAN-1856 |
+| `selfSettle(orderHash)` | `{ txHash }` | settle one order now from its verified attestation set (pulled when none is held); `SettleError` with its `reason` when nothing was sent | CAN-1856 |
 | `verifyDraw(orderHash)` | `{ winner, recomputedWinner, match, drandRound }` | V2 only: recompute the draw | CAN-1848 |
 | `verifyEscrow(ticket)` | `{ ok, reason?, detail?, checks }` | the checks before a receipt for an issued ticket whose offer is stored; also runs before every receipt | CAN-1854 |
 | `bindStake(stakingSigner, { chain })` | `StakeBindingRequest` | sign a `StakeBinding` with the staking key | CAN-1857 |
@@ -243,6 +243,31 @@ receipted ──► pending ──► sent ──► included ──► confirme
   gas limit, fees), `fill.replaced`, `fill.included`, `fill.reorged`, `fill.reverted`, `fill.cancelled`,
   `fill.confirmed` (`gasUsed`, `effectiveGasPrice`, `latencyMs`, `replacements`), `fill.refused`,
   `approve.sent`, `approve.confirmed`.
+
+## Settlement
+
+The filler settles its own fills; Cancore does not (fillers.md §4.7, T-33, T-34).
+
+- **Signatures only from filler-gateway**, on both channels the SDK owns: `settle.attestations` pushed on the
+  session, and `GET /v1/filler/attestations/{orderHash}` pulled for every confirmed fill without a settlement —
+  at once after the fill, after every login and every `settlement.pullIntervalMs` (15 s), until `refundAfter`.
+  The first set kept per `(orderHash, attempt)` wins; the node never polls attestors.
+- **Verified before anything is sent.** The proof must be the filler's own: its fill (`fillRef`,
+  `amountDelivered`, `filledAt`, `recipient`, `outputAsset`, `attempt`), its `fillerId`, its ticket's `repayTo`,
+  and `setId = attestationSetFor(orderHash)` on the source router — never `currentSetId`. Signatures that do not
+  recover to a non-revoked member of that set over that one digest are dropped (one bad extra would revert the
+  whole `settle`); the lowest `threshold` signers go, strictly ascending. A proof other than the filler's own is a
+  divergence: alert, nothing sent. So is a set that no longer verifies.
+- **`eth_call` first**, then `settle(order, proof, sigs)` from the fill key of the source chain, on a leased nonce
+  (the same machinery as `fill`); `IntentNotOpen` on an intent someone already settled is a success, a refund that
+  won the race (R-5) is an alert.
+- **Alerts** (stage `settle.alert`, `detail.kind`): `half-window` — unsettled at half the proof window since the
+  fill (R-4); `refund-near` — unsettled `settlement.alertBeforeRefundMs` (1 h) before `refundAfter`; `refunded`,
+  `divergent`, `insufficient-signatures`, `set-not-active`, `mismatch`.
+- **Events.** `attested` once a set passes; stages `attestations.received`, `settle.sent`, `settle.confirmed`,
+  `settle.reverted`, `settle.refused`; `settled` from `order.settled`.
+- **For a relayer**: `verifyAttestations` and `collectAttestations` are pure functions over a proof, its
+  signatures and the set read from the router — no session, no store.
 
 ## Checks before the receipt
 

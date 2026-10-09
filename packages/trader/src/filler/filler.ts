@@ -12,6 +12,7 @@ import { TicketVerifier, type EscrowVerification } from './tickets/checks';
 import { DEFAULT_OFFER_REPLY_MARGIN_MS, TicketDesk, type TicketOfferHook } from './tickets/desk';
 import { FillerConfigError, NotImplementedError } from './errors';
 import { Executor, type DeliveryOptions } from './delivery/executor';
+import { Settler, type SettlementOptions } from './settlement/settler';
 import { FillerProtocolClient, DEFAULT_REST_POLL_INTERVAL_MS } from './protocol/client';
 import { createSealer } from './protocol/envelope';
 import { GatewayRest } from './protocol/rest';
@@ -91,6 +92,8 @@ export interface FillerConfig {
   transport?: TransportOptions;
   /** Delivery: fees, replacement, nonce leases, router allowances, the amount sent. The defaults suit production. */
   delivery?: DeliveryOptions;
+  /** Settlement: the attestation pull cadence and the alert margin before `refundAfter`. The defaults suit production. */
+  settlement?: SettlementOptions;
 }
 
 export interface TicketPolicy {
@@ -197,7 +200,11 @@ export interface Filler {
   start(): Promise<void>;
   /** Closes the session. In-flight work stays in the store for any replica to resume. */
   stop(): Promise<void>;
-  /** Settles one order now from the attestation set held for it, or pulled from filler-gateway. */
+  /**
+   * Settles one order now from the attestation set held for it, or pulled from
+   * filler-gateway: verified, `eth_call` first, then sent from the source
+   * chain's fill key. Rejects with `SettleError` naming why nothing was sent.
+   */
   selfSettle(orderHash: Hex): Promise<SelfSettleResult>;
   /** V2. */
   verifyDraw(orderHash: Hex): Promise<DrawVerification>;
@@ -302,6 +309,13 @@ function validate(config: FillerConfig): void {
   }
   if (config.transport !== undefined) validateTransport(config.transport);
   if (config.delivery !== undefined) validateDelivery(config.delivery);
+  if (config.settlement !== undefined) {
+    if (!isObject(config.settlement as unknown)) throw new FillerConfigError('settlement', 'expected an object');
+    for (const field of ['pullIntervalMs', 'alertBeforeRefundMs'] as const) {
+      const value = config.settlement[field];
+      if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)) throw new FillerConfigError(`settlement.${field}`, 'expected a positive integer (ms)');
+    }
+  }
 }
 
 function validateDelivery(delivery: DeliveryOptions): void {
@@ -531,8 +545,22 @@ export function createFiller(config: FillerConfig): Filler {
     logger,
     events,
     ...(config.delivery ? { delivery: config.delivery } : {}),
+    onFilled: (orderHash) => settler.onFilled(orderHash),
   });
   const delivery = executor;
+  const settler = new Settler({
+    store: config.store,
+    chains,
+    executor,
+    protocol,
+    fillerId: config.fillerId,
+    instanceId,
+    clock,
+    logger,
+    events,
+    ...(config.settlement ? { settlement: config.settlement } : {}),
+  });
+  settler.register();
 
   const hook = <T>(name: string, value: T): T => {
     if (typeof value !== 'function') throw new FillerConfigError(name, 'expected a function');
@@ -552,16 +580,16 @@ export function createFiller(config: FillerConfig): Filler {
       if (!context.fetch) throw new FillerConfigError('fetch', 'no global fetch; pass an HttpFetch for the REST fallback');
       // Delivery does not wait for filler-gateway: receipted attempts and in-flight nonces resume from the store at once.
       void delivery.start().catch((error: unknown) => logger.error('delivery: resume failed', { error: String(error) }));
+      settler.start();
       starting ??= protocol.start();
       return starting;
     },
     async stop() {
+      settler.stop();
       delivery.stop();
       await protocol.stop();
     },
-    selfSettle: async () => {
-      throw new NotImplementedError('selfSettle', 'CAN-1856');
-    },
+    selfSettle: (orderHash) => settler.selfSettle(orderHash),
     verifyDraw: async () => {
       throw new NotImplementedError('verifyDraw', 'CAN-1848');
     },

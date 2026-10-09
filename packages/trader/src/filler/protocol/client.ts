@@ -167,6 +167,18 @@ export class FillerProtocolClient implements SessionListener {
     return 'rest';
   }
 
+  /**
+   * Pulls `GET /v1/filler/attestations/{orderHash}` and hands the frame to the
+   * same path as a pushed `settle.attestations` (journal, then the handler).
+   * Resolves false while filler-gateway does not hold enough signatures yet.
+   */
+  async pullAttestations(orderHash: Hex): Promise<boolean> {
+    const frame = await this.requireRest().getAttestations(orderHash);
+    if (!frame) return false;
+    await this.ingest(frame, 'rest');
+    return true;
+  }
+
   /** Pulls `GET /v1/filler/tickets` (both statuses) and handles every item. One pull at a time. */
   syncTickets(): Promise<void> {
     this.syncing ??= (async () => {

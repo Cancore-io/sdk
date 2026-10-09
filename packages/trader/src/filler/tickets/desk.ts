@@ -2,7 +2,7 @@
  * The ticket flow of one filler (fillers.md §4.4, protocol §3.5 «Tickets»):
  * `ticket.offer` → `onTicketOffer` → `ticket.intent` or `ticket.decline`;
  * `ticket.issued` → the checks before the receipt → `ticket.receipt` or
- * `ticket.decline`; then `ticket.expired`, `order.settled`, `penalty.applied`.
+ * `ticket.decline`; then `ticket.expired` and `penalty.applied` (`order.settled` is the settlement's).
  *
  * State per attempt `(orderHash, attempt)` lives in the store:
  *
@@ -36,7 +36,7 @@
  *   a signer that fails. The kill-switch declines `PAUSED` without the hook.
  * - **Restart.** After every login the open attempts are resumed from the store.
  */
-import type { DeclineReason, Hex, OrderSettled, PenaltyApplied, TicketDecline, TicketExpired, TicketIntentMessage, TicketIssued, TicketOffer, TicketReceiptMessage } from '@cancore/contracts';
+import type { DeclineReason, Hex, PenaltyApplied, TicketDecline, TicketExpired, TicketIntentMessage, TicketIssued, TicketOffer, TicketReceiptMessage } from '@cancore/contracts';
 import { EXPIRED_RESULTS } from '@cancore/contracts';
 import type { FillerChains } from '../chain';
 import type { EvmChainId } from '../chains';
@@ -114,7 +114,6 @@ export class TicketDesk {
     protocol.on('ticket.offer', (d) => this.onOffer(d));
     protocol.on('ticket.issued', (d) => this.onIssued(d));
     protocol.on('ticket.expired', (d) => this.onExpired(d));
-    protocol.on('order.settled', async (d) => this.onSettled(d));
     protocol.on('penalty.applied', async (d) => this.onPenalty(d));
     protocol.onLogin(() => {
       void this.resume().catch((error: unknown) => this.options.logger.warn('tickets: resume failed', { error: String(error) }));
@@ -193,12 +192,6 @@ export class TicketDesk {
     if (!changed) return;
     // FILLED is the delivery's own `filled` event (CAN-1855); NO_SHOW is followed by penalty.applied.
     this.stage('ticket.expired', orderHash, expired.attempt, { result, ...(expired.exemptReason ? { exemptReason: String(expired.exemptReason) } : {}) });
-  }
-
-  onSettled(delivery: Delivery): void {
-    if (!delivery.firstSeen) return;
-    const s = delivery.frame as unknown as OrderSettled;
-    this.emit({ type: 'settled', orderHash: s.orderHash, payout: s.payout, penaltyWithheld: s.penaltyWithheld, txRef: s.txRef });
   }
 
   onPenalty(delivery: Delivery): void {
