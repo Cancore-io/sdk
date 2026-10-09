@@ -93,7 +93,14 @@ export type FillerStage =
   /** Any other own transaction (`detail.kind`): replaced, or included. */
   | 'tx.replaced'
   | 'tx.confirmed'
+  /** A `settle.attestations` kept for an attempt (`detail.channel`: `ws` or `rest`). */
   | 'attestations.received'
+  /** Nothing sent: `detail.reason` (`SettleRefusal`), the revert or the mismatch in `detail.error` / `detail.detail`. */
+  | 'settle.refused'
+  /** Operator alert (`detail.kind`): `half-window`, `refund-near`, `refunded`, `settle-reverted`, `divergent`, `insufficient-signatures`, `set-not-active`, `mismatch`. */
+  | 'settle.alert'
+  /** Own `settle` mined and reverted. */
+  | 'settle.reverted'
   | 'settle.sent'
   | 'settle.confirmed';
 

@@ -143,7 +143,15 @@ export interface ExecutorOptions {
   logger: Logger;
   events: EventSink;
   delivery?: DeliveryOptions;
+  /** Called once a fill is confirmed (settlement pulls its attestations at once). */
+  onFilled?: (orderHash: Hex, attempt: number) => void;
 }
+
+/** A `settle` of this replica's, `fillConfirmations` deep: success or revert (`receipt.status`). */
+export type SettleIncludedListener = (chain: EvmChainId, tx: InFlightTransaction, receipt: TransactionReceipt) => Promise<void>;
+
+/** A `settle` whose nonce was spent by a transaction this replica did not record: it will never be mined. */
+export type SettleLostListener = (chain: EvmChainId, tx: InFlightTransaction) => Promise<void>;
 
 // ---------------------------------------------------------------------------
 
@@ -192,6 +200,8 @@ export class Executor {
   private readonly busy = new Map<string, Promise<DeliveryResult>>();
   private readonly approving = new Map<string, Promise<void>>();
   private sweep: Cancel | undefined;
+  private settleListener: SettleIncludedListener | undefined;
+  private settleLostListener: SettleLostListener | undefined;
   private started = false;
   private stopped = false;
 
@@ -231,6 +241,16 @@ export class Executor {
       this.drivers.set(chain, driver);
     }
     return driver;
+  }
+
+  /** Where a tracked `settle` goes once it is deep enough (the settlement). */
+  onSettleIncluded(listener: SettleIncludedListener): void {
+    this.settleListener = listener;
+  }
+
+  /** Where a tracked `settle` goes when its nonce was spent by another transaction (the settlement retries). */
+  onSettleLost(listener: SettleLostListener): void {
+    this.settleLostListener = listener;
   }
 
   // -- lifecycle ----------------------------------------------------------------
@@ -340,6 +360,24 @@ export class Executor {
   async acquire(driver: TransactionDriver): Promise<NonceLease> {
     await this.claimChain(driver);
     return driver.acquire();
+  }
+
+  /** Recovers an unlinked settle before a new nonce can be allocated, fenced by the current nonce lease. */
+  async recoverSettlement(driver: TransactionDriver, orderHash: Hex, attempt: number, call: TransactionCall): Promise<{ lease: NonceLease; tx: InFlightTransaction } | undefined> {
+    const { store, instanceId } = this.options;
+    await this.claimChain(driver);
+    for (const record of await store.nonces.listOpen(driver.chain, driver.address)) {
+      if (!record.transactions.some((tx) => tx.kind === 'settle' && tx.orderHash === orderHash && tx.attempt === attempt)) continue;
+      if (record.owner !== instanceId) throw new LeaseLostError(record);
+      const lease = await driver.renew(record);
+      if (!lease) throw new LeaseLostError(record);
+      const tx = record.transactions.at(-1)!;
+      if (tx.kind !== 'settle' || tx.orderHash !== orderHash || tx.attempt !== attempt || tx.to !== call.to.toLowerCase() || tx.data !== call.data || tx.value !== call.value) {
+        throw new Error('settle: the recorded transaction belongs to another operation');
+      }
+      return { lease, tx };
+    }
+    return undefined;
   }
 
   // -- delivery -------------------------------------------------------------------
@@ -606,6 +644,10 @@ export class Executor {
   // -- tracking -----------------------------------------------------------------------
 
   /** Drives the nonce of `lease` until it is done: confirmed, reverted, cancelled — or the lease is lost. */
+  watch(driver: TransactionDriver, lease: NonceLease): void {
+    this.track(driver, lease);
+  }
+
   private track(driver: TransactionDriver, lease: NonceLease): void {
     const k = `${driver.chain}:${lease.nonce}`;
     if (this.stopped || this.trackers.has(k)) return;
@@ -656,6 +698,12 @@ export class Executor {
   private async included(t: Tracker, tx: InFlightTransaction, receipt: TransactionReceipt, depth: bigint, txs: readonly InFlightTransaction[]): Promise<boolean> {
     const { store } = this.options;
     const chain = t.driver.chain;
+    if (tx.kind === 'settle') {
+      if (depth < this.confirmations(chain)) return false;
+      await this.settleListener?.(chain, tx, receipt);
+      await store.nonces.complete(t.lease, tx.hash);
+      return true;
+    }
     if (tx.kind !== 'fill' || !tx.orderHash || tx.attempt === undefined) {
       if (tx.kind === 'cancel') await this.cancelled(chain, tx, txs, receipt);
       else this.stage(tx.kind === 'approve' ? 'approve.confirmed' : 'tx.confirmed', tx.orderHash, tx.attempt, { chain, kind: tx.kind, txHash: tx.hash, status: receipt.status, gasUsed: receipt.gasUsed.toString() });
@@ -713,6 +761,7 @@ export class Executor {
         latencyMs: (confirmed.inclusion?.seenAtMs ?? this.options.clock.now()) - first.sentAtMs,
       });
       this.options.logger.info('delivery: fill confirmed', { orderHash, attempt, chain, txHash: tx.hash });
+      this.options.onFilled?.(orderHash, attempt);
     }
     await store.nonces.complete(t.lease, tx.hash);
     return true;
@@ -779,6 +828,8 @@ export class Executor {
       }
       logger.error('delivery: the nonce was spent by a transaction this replica did not record', { chain: driver.chain, nonce: t.lease.nonce.toString() });
       if (fill?.orderHash && fill.attempt !== undefined) await this.fail(fill.orderHash, fill.attempt, 'its nonce was spent by another transaction');
+      const settle = txs.find((x) => x.kind === 'settle' && x.orderHash);
+      if (settle) await this.settleLostListener?.(driver.chain, settle);
       await store.nonces.complete(t.lease, ZERO_HASH);
       return true;
     }

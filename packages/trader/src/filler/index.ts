@@ -126,6 +126,11 @@ export type {
 export { DEFAULT_DELIVERY } from './delivery/executor';
 export type { DeliveryOptions, DeliveryResult, FillAmountHook, FillAmountInput, FillRefusal } from './delivery/executor';
 
+export { DEFAULT_SETTLEMENT, SettleError } from './settlement/settler';
+export type { SettlementOptions, SettleRefusal } from './settlement/settler';
+export { collectAttestations, verifyAttestations } from './settlement/attestations';
+export type { AttestationAnswer, AttestationVerification, AttestorSetView, CollectedAttestations, RejectedReason, RejectedSignature } from './settlement/attestations';
+
 export { noopEventSink } from './events';
 export type {
   AttestedEvent,

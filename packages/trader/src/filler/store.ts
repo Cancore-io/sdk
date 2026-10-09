@@ -178,13 +178,23 @@ export interface AttestationRecord {
   receivedAtMs: number;
 }
 
-export type SettlementState = 'sent' | 'confirmed' | 'settled' | 'failed';
+/**
+ * `pending` — claimed by `owner` until `leaseUntilMs` (store time), nothing sent yet;
+ * `sent` — `settle` broadcast; `confirmed` — it is `fillConfirmations` deep;
+ * `settled` — the intent is settled (`order.settled`, or by another transaction);
+ * `failed` — reverted, or the maker refunded first (`reason`).
+ */
+export type SettlementState = 'pending' | 'sent' | 'confirmed' | 'settled' | 'failed';
 
 /** Own `settle` of an order, then `order.settled` from filler-gateway. */
 export interface SettlementRecord {
   orderHash: Hex;
   attempt: number;
   state: SettlementState;
+  /** `pending`: the replica settling it. */
+  owner?: string;
+  /** `pending`: unix ms by store time; past it another replica may settle. */
+  leaseUntilMs?: number;
   /** Source chain the `settle` went to. */
   chain?: Caip2;
   txHash?: Hex;
