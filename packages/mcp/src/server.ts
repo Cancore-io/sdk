@@ -24,7 +24,7 @@ export function registerAgentTools(server: McpServer, session: CancoreSession): 
     'cancore_connect_wallet',
     {
       description:
-        'Ask the Cancore wallet owner to authorize this server. Opens the consent page in their browser and waits; on approval the server keeps a scoped grant (queue a request, read the queue — never sign) and no token is returned to you. Call it when a cancore_* tool says there is no access, and call it again while it answers pending.',
+        'Ask the Cancore wallet owner to authorize this server. Opens the consent page in their browser and waits; on approval the server keeps a scoped grant (queue a request, read the queue, read your balances — never sign) and no token is returned to you. Call it when a cancore_* tool says there is no access, and call it again while it answers pending.',
       inputSchema: {
         appName: z.string().optional().describe('how to introduce yourself on the consent page (display only)'),
         waitSeconds: z
@@ -102,6 +102,16 @@ export function registerAgentTools(server: McpServer, session: CancoreSession): 
     'cancore_list_intents',
     { description: "Requests still awaiting the wallet owner's decision.", inputSchema: {} },
     async () => jsonResult(await session.listIntents()),
+  );
+
+  server.registerTool(
+    'cancore_get_balances',
+    {
+      description:
+        "The wallet owner's own token balances, one entry per token: balance (available), locked, total and inSwaps; unavailable: true means the balance could not be read (zeroes are unknown, not empty). Read-only.",
+      inputSchema: {},
+    },
+    async () => jsonResult(await session.getBalances()),
   );
 
   return server;

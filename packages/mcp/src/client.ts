@@ -135,6 +135,11 @@ export class AgentQueueClient {
     return out.intents ?? [];
   }
 
+  /** The grant owner's balance per catalogue token; the party comes from the credential (balances:read). */
+  getBalances(): Promise<Record<string, unknown>[]> {
+    return this.#call<Record<string, unknown>[]>('GET', '/tokens/balances');
+  }
+
   /** End the grant this client carries, and nothing else: a grant may always end itself. */
   async revokeSelf(): Promise<void> {
     await this.#call('DELETE', '/auth/sessions/current');

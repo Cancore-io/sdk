@@ -160,6 +160,13 @@ export class CancoreSession {
     return this.#call(async (client) => ({ intents: await client.listPending() }));
   }
 
+  getBalances(): Promise<ToolResult> {
+    return this.#call(async (client) => {
+      const balances = await client.getBalances();
+      return { balances, count: balances.length };
+    });
+  }
+
   /**
    * End a replaced grant on the server (CAN-2087). Overwriting the file alone
    * left it alive for up to 30 days, usable by anything that had read it.
