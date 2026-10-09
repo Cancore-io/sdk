@@ -1,7 +1,7 @@
 /**
  * The protocol client against crafted frames (sdk.md S15): a FakeSocket plays
- * filler-gateway on WebSocket, a fake fetch plays it on REST, a FakeClock
- * drives heartbeat and backoff. No server.
+ * filler-gateway on WebSocket, a fake fetch plays it on REST (the login among
+ * it), a FakeClock drives heartbeat and backoff. No server.
  */
 import {
   FILLER_AUTH_TYPES,
@@ -14,9 +14,11 @@ import {
 } from '@cancore/contracts';
 import { FillerStoppedError, GatewayError, UnsupportedVersionError } from '../errors';
 import { createFiller, createFrameIds, type FillerConfig } from '../filler';
+import type { WebSocketFactory } from '../runtime';
 import { recoverAddress, recoverTypedDataSigner, type FillSigner } from '../signer';
 import {
   createFakeFetch,
+  createFakeGatewayLogin,
   createFakeWebSocketFactory,
   createRecordingEventSink,
   createRecordingLogger,
@@ -42,12 +44,14 @@ const URL_ = 'wss://filler-gateway.example/v1';
 const HEARTBEAT_MS = 1_000;
 const ORDER_HASH: Hex = `0x${'11'.repeat(32)}`;
 
-/** Lets pending promise chains (signing, store writes) run. */
+/** Lets pending promise chains (the REST login, signing, store writes) run. */
 const settle = async () => {
   for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
 };
 
-function harness(options: { random?: () => number } = {}) {
+const pathOf = (url: string) => new URL(url).pathname;
+
+function harness(options: { random?: () => number; tokenTtlMs?: number; heartbeatIntervalMs?: number; webSocket?: WebSocketFactory } = {}) {
   const clock = new FakeClock();
   const store = new InMemoryFillerStore(clock);
   const logger = createRecordingLogger();
@@ -57,13 +61,14 @@ function harness(options: { random?: () => number } = {}) {
   const quoteSigner = createTestTypedDataSigner(QUOTE_KEY);
   const ws = createFakeWebSocketFactory();
   const tickets: { OFFERED: unknown[]; ISSUED: unknown[] } = { OFFERED: [], ISSUED: [] };
-  let challengeNonce = 0;
+  const gw = createFakeGatewayLogin(gateway, {
+    fillerId: FILLER,
+    clock,
+    heartbeatIntervalMs: options.heartbeatIntervalMs ?? HEARTBEAT_MS,
+    ...(options.tokenTtlMs !== undefined ? { tokenTtlMs: options.tokenTtlMs } : {}),
+  });
   const http = createFakeFetch({
-    'GET /v1/filler/auth/challenge': () => ({
-      status: 200,
-      body: gateway.frame({ type: 'auth.challenge', nonce: `0x${(++challengeNonce).toString(16).padStart(64, '0')}`, expiresAt: String(Math.floor(clock.now() / 1000) + 30) }),
-    }),
-    'POST /v1/filler/auth': () => ({ status: 200, body: { token: 'tok-1', expiresAt: clock.now() + 3_600_000 } }),
+    ...gw.routes,
     'GET /v1/filler/tickets': (request) => {
       const status = new URL(request.url).searchParams.get('status') as 'OFFERED' | 'ISSUED';
       return { status: 200, body: { items: tickets[status], nextCursor: null } };
@@ -72,14 +77,15 @@ function harness(options: { random?: () => number } = {}) {
   const nextId = createFrameIds('replica-1', clock.now());
   const seal = createSealer({ fillerId: FILLER, messageSigner: quoteSigner, clock });
   const client = new FillerProtocolClient({ store, clock, logger, events, restPollIntervalMs: 2_000, seal });
+  const rest = new GatewayRest({ gatewayUrl: URL_, fillerId: FILLER, gatewaySigner: gateway.address, quoteSigner, seal, fetch: http.fetch, clock, logger, nextId });
   const session = new GatewaySession(
     {
       url: URL_,
       fillerId: FILLER,
       gatewaySigner: gateway.address,
-      quoteSigner,
+      tokens: rest,
       seal,
-      webSocket: ws.factory,
+      webSocket: options.webSocket ?? ws.factory,
       clock,
       logger,
       random: options.random ?? (() => 0),
@@ -90,24 +96,21 @@ function harness(options: { random?: () => number } = {}) {
     },
     client,
   );
-  const rest = new GatewayRest({ gatewayUrl: URL_, fillerId: FILLER, gatewaySigner: gateway.address, quoteSigner, seal, fetch: http.fetch, clock, logger, nextId });
   client.attach(session, rest);
 
-  const challenge = () =>
-    gateway.frame({ type: 'auth.challenge', nonce: `0x${'ab'.repeat(32)}`, expiresAt: String(Math.floor(clock.now() / 1000) + 30) });
-  const authOk = (re?: string) => gateway.frame({ type: 'auth.ok', fillerId: FILLER, heartbeatIntervalMs: HEARTBEAT_MS, ...(re ? { re } : {}) });
-
-  /** Opens the newest socket and walks it through login. */
-  const login = async (socket: FakeSocket = ws.sockets.at(-1)!) => {
-    socket.open();
-    socket.receive(challenge());
+  /** The newest socket, once the REST login before it has run. */
+  const connected = async (): Promise<FakeSocket> => {
     await settle();
-    const response = socket.sentFrames().at(-1)!;
-    expect(response.type).toBe('auth.response');
-    socket.receive(authOk(response.id as string));
+    return ws.sockets.at(-1)!;
+  };
+  /** Lets the newest connect log in and filler-gateway accept it (auth.ok first). */
+  const login = async (): Promise<FakeSocket> => {
+    const socket = await connected();
+    expect(gw.accept(socket)).toBe(true);
     await settle();
     return socket;
   };
+  const requests = (path: string) => http.requests.filter((r) => pathOf(r.url) === path);
 
   const offer = (over: Record<string, unknown> = {}) =>
     gateway.frame({
@@ -123,7 +126,7 @@ function harness(options: { random?: () => number } = {}) {
       ...over,
     });
 
-  return { clock, store, logger, events, gateway, impostor, quoteSigner, ws, http, tickets, client, session, rest, challenge, authOk, login, offer };
+  return { clock, store, logger, events, gateway, impostor, quoteSigner, ws, http, gw, tickets, client, session, rest, connected, login, requests, offer };
 }
 
 const record = (h: ReturnType<typeof harness>, type: string) => {
@@ -132,97 +135,250 @@ const record = (h: ReturnType<typeof harness>, type: string) => {
   return seen;
 };
 
-describe('login (protocol §3.5 «Session»)', () => {
-  test('auth.challenge → auth.response signed as FillerAuth by the quote key, protocolVersion "1" → auth.ok resolves start()', async () => {
+/** A signed challenge; a field set to undefined in `over` is left out. */
+const challengeFrame = (h: ReturnType<typeof harness>, over: Record<string, unknown> = {}) => {
+  const body: Record<string, unknown> = { fillerId: FILLER, nonce: `0x${'ab'.repeat(32)}`, expiresAt: String(Math.floor(h.clock.now() / 1000) + 30), ...over };
+  for (const key of Object.keys(body)) if (body[key] === undefined) delete body[key];
+  return h.gateway.frame({ type: 'auth.challenge', ...body });
+};
+
+describe('login: REST first, then the WebSocket with the token (protocol §3.5 «Session»)', () => {
+  test('GET challenge?fillerId= → FillerAuth by the quote key → POST /v1/filler/auth; the upgrade offers cancore-filler.v1 + bearer.<token>; auth.ok resolves start()', async () => {
     const h = harness();
     const started = h.client.start();
-    const socket = h.ws.sockets[0]!;
-    expect(socket.url).toBe(URL_);
-    socket.open();
-    const challenge = h.challenge();
-    socket.receive(challenge);
-    await settle();
+    const socket = await h.connected();
 
-    const [response] = socket.sentFrames();
-    expect(response).toMatchObject({ type: 'auth.response', fillerId: FILLER, keyAddress: h.quoteSigner.address, protocolVersion: '1' });
-    expect(String(response!.id).length).toBeLessThanOrEqual(64);
+    const [challenge] = h.requests('/v1/filler/auth/challenge');
+    expect(challenge!.url).toBe('https://filler-gateway.example/v1/filler/auth/challenge?fillerId=acme-1');
+    const [auth] = h.requests('/v1/filler/auth');
+    const response = JSON.parse(auth!.body!) as Record<string, unknown>;
+    const nonce = `0x${'1'.padStart(64, '0')}`;
+    expect(response).toMatchObject({ type: 'auth.response', fillerId: FILLER, keyAddress: h.quoteSigner.address, protocolVersion: '1', nonce, sentAt: h.clock.now() });
     const signer = recoverTypedDataSigner(
-      { domain: FILLER_PROTOCOL_DOMAIN, types: FILLER_AUTH_TYPES, primaryType: 'FillerAuth', message: { fillerId: FILLER, nonce: challenge.nonce, expiresAt: challenge.expiresAt } },
-      response!.sig as Hex,
+      { domain: FILLER_PROTOCOL_DOMAIN, types: FILLER_AUTH_TYPES, primaryType: 'FillerAuth', message: { fillerId: FILLER, nonce, expiresAt: String(Math.floor(h.clock.now() / 1000) + 30) } },
+      response.sig as Hex,
     );
     expect(signer).toBe(h.quoteSigner.address);
-    // the envelope: the same key signs FillerMessage over the whole body, the inner FillerAuth sig included
-    expect(response).toMatchObject({ sentAt: h.clock.now() });
-    expect(recoverAddress(hashFillerMessage(response!), response!.msgSig as Hex)).toBe(h.quoteSigner.address);
+    expect(recoverAddress(hashFillerMessage(response), response.msgSig as Hex)).toBe(h.quoteSigner.address);
 
-    socket.receive(h.authOk(response!.id as string));
+    expect(socket.url).toBe(URL_);
+    expect(socket.protocols).toEqual(['cancore-filler.v1', 'bearer.tok-1']);
+    expect(h.gw.accept(socket)).toBe(true);
     await expect(started).resolves.toBeUndefined();
+    expect(socket.sent).toHaveLength(0); // nothing goes out on the socket for the login
     expect(h.client.connected).toBe(true);
     expect(h.events.events).toContainEqual(expect.objectContaining({ type: 'stage', stage: 'authenticated' }));
   });
 
-  test('before auth.ok the SDK sends nothing but auth.*: other frames are refused, inbound frames are dropped', async () => {
+  test('one login serves REST and the WebSocket: a REST call meanwhile shares it', async () => {
+    const h = harness();
+    void h.client.start();
+    const listed = h.rest.listTickets('OFFERED');
+    await h.login();
+    await listed;
+    expect(h.requests('/v1/filler/auth')).toHaveLength(1);
+    expect(h.requests('/v1/filler/tickets').every((r) => r.headers?.authorization === 'Bearer tok-1')).toBe(true);
+  });
+
+  test('before auth.ok the SDK sends nothing: frames are refused, inbound frames other than auth.ok and error are dropped', async () => {
     const h = harness();
     const offers = record(h, 'ticket.offer');
     void h.client.start();
-    const socket = h.ws.sockets[0]!;
+    const socket = await h.connected();
     socket.open();
     expect(h.client.send(await h.client.seal({ type: 'ping', id: 'p' }))).toBe(false);
     socket.receive(h.offer());
-    socket.receive(h.challenge());
+    socket.receive(challengeFrame(h));
     await settle();
-    expect(socket.sentFrames().map((f) => f.type)).toEqual(['auth.response']);
+    expect(socket.sent).toHaveLength(0);
     expect(offers).toHaveLength(0);
     expect(h.store.journal()).toHaveLength(0);
     expect(h.logger.entries).toContainEqual(expect.objectContaining({ message: 'filler-gateway: frame before auth.ok dropped' }));
   });
 
-  test('a challenge not signed by the pinned key gets no answer', async () => {
+  test.each([
+    ['addressed to another fillerId', { fillerId: 'someone-else' }, 'other-fillerId'],
+    ['addressed to no one', { fillerId: undefined }, 'no-fillerId'],
+  ])('a challenge %s is refused: no auth.response, no socket; the login is retried with backoff', async (_what, over, reason) => {
     const h = harness();
+    h.http.routes['GET /v1/filler/auth/challenge'] = () => ({ status: 200, body: challengeFrame(h, over) });
     void h.client.start();
-    const socket = h.ws.sockets[0]!;
-    socket.open();
-    socket.receive(h.impostor.frame({ type: 'auth.challenge', nonce: `0x${'ab'.repeat(32)}`, expiresAt: String(Math.floor(h.clock.now() / 1000) + 30) }));
     await settle();
-    expect(socket.sent).toHaveLength(0);
+    expect(h.requests('/v1/filler/auth')).toHaveLength(0);
+    expect(h.ws.sockets).toHaveLength(0);
+    expect(h.logger.entries).toContainEqual(expect.objectContaining({ message: 'filler-gateway: login failed, retrying', fields: expect.objectContaining({ error: expect.stringContaining(reason) }) }));
+    h.clock.advance(250);
+    await settle();
+    expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(2);
   });
 
-  test('UNSUPPORTED_VERSION: start() rejects with a typed error and no reconnect loop follows', async () => {
+  test('a challenge not signed by the pinned key is refused', async () => {
+    const h = harness();
+    h.http.routes['GET /v1/filler/auth/challenge'] = () => ({
+      status: 200,
+      body: h.impostor.frame({ type: 'auth.challenge', fillerId: FILLER, nonce: `0x${'ab'.repeat(32)}`, expiresAt: String(Math.floor(h.clock.now() / 1000) + 30) }),
+    });
+    void h.client.start();
+    await settle();
+    expect(h.requests('/v1/filler/auth')).toHaveLength(0);
+    expect(h.ws.sockets).toHaveLength(0);
+  });
+
+  test('an unsigned refusal of the challenge route (404) becomes a typed error and a retry with backoff', async () => {
+    const h = harness();
+    h.http.routes['GET /v1/filler/auth/challenge'] = () => ({ status: 404, body: { type: 'error', code: 'UNKNOWN_REQUEST', message: 'unknown fillerId' } });
+    await expect(h.rest.validToken()).rejects.toMatchObject({ code: 'UNKNOWN_REQUEST', known: true, httpStatus: 404, message: expect.stringContaining('unsigned') });
+    void h.client.start();
+    await settle();
+    expect(h.ws.sockets).toHaveLength(0);
+    h.clock.advance(250);
+    await settle();
+    expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(3);
+  });
+
+  test('POST /v1/filler/auth refused unsigned 401 (no live challenge): the next attempt starts over from a fresh challenge', async () => {
+    const h = harness();
+    let refusals = 1;
+    h.http.routes['POST /v1/filler/auth'] = (request) =>
+      refusals-- > 0 ? { status: 401, body: { type: 'error', code: 'UNAUTHENTICATED', message: 'no live challenge for this fillerId' } } : h.gw.routes['POST /v1/filler/auth']!(request);
+    await expect(h.rest.validToken()).rejects.toMatchObject({ code: 'UNAUTHENTICATED', known: true, httpStatus: 401, message: expect.stringContaining('unsigned') });
+    refusals = 1;
+    void h.client.start();
+    await settle();
+    expect(h.ws.sockets).toHaveLength(0);
+    h.clock.advance(250);
+    const socket = await h.connected();
+    const nonces = h.requests('/v1/filler/auth').map((r) => (JSON.parse(r.body!) as { nonce: string }).nonce);
+    expect(new Set(nonces).size).toBe(nonces.length); // every attempt answers its own challenge
+    expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(3);
+    expect(socket.token).toBe('tok-1');
+  });
+
+  test('POST /v1/filler/auth refused unsigned 404 / 429: a typed hint; the 429 holds the login class back', async () => {
+    const h = harness();
+    h.http.routes['POST /v1/filler/auth'] = () => ({ status: 404, body: { type: 'error', code: 'UNKNOWN_REQUEST', message: 'filler not ACTIVE' } });
+    await expect(h.rest.validToken()).rejects.toMatchObject({ code: 'UNKNOWN_REQUEST', httpStatus: 404 });
+    h.http.routes['POST /v1/filler/auth'] = () => ({ status: 429, headers: { 'Retry-After': '9' }, body: { type: 'error', code: 'RATE_LIMITED', message: 'login class', retryAfterMs: 8_500 } });
+    await expect(h.rest.validToken()).rejects.toMatchObject({ code: 'RATE_LIMITED', httpStatus: 429, retryAfterMs: 8_500 });
+    expect(h.rest.limits.remainingMs('login')).toBe(8_500);
+    const challenges = h.requests('/v1/filler/auth/challenge').length;
+    await expect(h.rest.validToken()).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(challenges); // no request while paused
+  });
+
+  test('an unverified refusal of POST /v1/filler/auth is only a hint: a forged UNSUPPORTED_VERSION does not stop the filler', async () => {
+    const h = harness();
+    h.http.routes['POST /v1/filler/auth'] = () => ({ status: 400, body: h.impostor.frame({ type: 'error', code: 'UNSUPPORTED_VERSION', message: 'forged' }) });
+    const refused = h.rest.validToken();
+    await expect(refused).rejects.toMatchObject({ code: 'UNSUPPORTED_VERSION', message: expect.stringContaining('unsigned') });
+    await expect(refused).rejects.not.toBeInstanceOf(UnsupportedVersionError);
+    void h.client.start();
+    await settle();
+    h.clock.advance(250);
+    await settle();
+    expect(h.session.state).not.toBe('failed');
+    expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(3); // retried, with backoff
+  });
+
+  test('UNSUPPORTED_VERSION on the socket: start() rejects with a typed error and no reconnect loop follows', async () => {
     const h = harness();
     const started = h.client.start();
-    const socket = h.ws.sockets[0]!;
+    const socket = await h.connected();
     socket.open();
-    socket.receive(h.challenge());
-    await settle();
-    socket.receive(h.gateway.frame({ type: 'error', code: 'UNSUPPORTED_VERSION', message: 'this filler-gateway speaks "2"' }));
+    socket.receive(h.gateway.frame({ type: 'error', fillerId: FILLER, code: 'UNSUPPORTED_VERSION', message: 'this filler-gateway speaks "2"' }));
     socket.drop(1008, 'UNSUPPORTED_VERSION');
     await expect(started).rejects.toBeInstanceOf(UnsupportedVersionError);
     h.clock.advance(10 * 60_000);
+    await settle();
     expect(h.ws.sockets).toHaveLength(1);
     expect(h.session.state).toBe('failed');
   });
 
-  test('a refused login (UNAUTHENTICATED) is retried with backoff', async () => {
+  test('UNSUPPORTED_VERSION from POST /v1/filler/auth: start() rejects, no socket is ever opened', async () => {
     const h = harness();
-    void h.client.start();
-    const socket = h.ws.sockets[0]!;
-    socket.open();
-    socket.receive(h.challenge());
+    h.http.routes['POST /v1/filler/auth'] = () => ({ status: 400, body: h.gateway.frame({ type: 'error', code: 'UNSUPPORTED_VERSION', message: 'protocolVersion "1" is not served' }) });
+    const started = h.client.start();
+    await expect(started).rejects.toBeInstanceOf(UnsupportedVersionError);
+    h.clock.advance(10 * 60_000);
     await settle();
-    socket.receive(h.gateway.frame({ type: 'error', code: 'UNAUTHENTICATED', message: 'challenge expired' }));
-    socket.drop(1008, 'UNAUTHENTICATED');
-    h.clock.advance(250);
-    expect(h.ws.sockets).toHaveLength(2);
+    expect(h.ws.sockets).toHaveLength(0);
+    expect(h.session.state).toBe('failed');
   });
 
-  test('no auth.ok within loginTimeoutMs: the connection is closed and retried', async () => {
+  test('a refused upgrade (401) drops the token: the next attempt logs in again and offers the new one', async () => {
     const h = harness();
     void h.client.start();
-    h.ws.sockets[0]!.open();
-    h.clock.advance(15_000);
-    expect(h.ws.sockets[0]!.closed).toBeDefined();
+    const first = await h.connected();
+    first.refuse(401);
     h.clock.advance(250);
+    const second = await h.connected();
     expect(h.ws.sockets).toHaveLength(2);
+    expect(h.requests('/v1/filler/auth')).toHaveLength(2);
+    expect(second.token).toBe('tok-2');
+    expect(h.gw.accept(second)).toBe(true);
+  });
+
+  test('a close before auth.ok drops the token; a close after it keeps it, unless the key was changed (4002)', async () => {
+    const h = harness();
+    void h.client.start();
+    (await h.connected()).drop(1006); // opened nothing, said nothing
+    h.clock.advance(250);
+    const second = await h.login();
+    expect(second.token).toBe('tok-2');
+
+    second.drop(1006);
+    h.clock.advance(250);
+    const third = await h.login();
+    expect(third.token).toBe('tok-2');
+
+    third.drop(4002, 'message key changed');
+    h.clock.advance(250);
+    expect((await h.connected()).token).toBe('tok-3');
+  });
+
+  test('the token is renewed before expiresAt: a reconnect never offers an expiring one', async () => {
+    const h = harness({ tokenTtlMs: 120_000, heartbeatIntervalMs: 600_000 });
+    void h.client.start();
+    const first = await h.login();
+    expect(first.token).toBe('tok-1');
+    h.clock.advance(60_000);
+    first.drop(1006);
+    h.clock.advance(250);
+    const second = await h.login();
+    expect(second.token).toBe('tok-1'); // 60 s left: still well inside its lifetime
+    h.clock.advance(35_000); // 25 s left: inside the renewal margin
+    second.drop(1006);
+    h.clock.advance(250);
+    const third = await h.login();
+    expect(third.token).toBe('tok-2');
+    expect(h.requests('/v1/filler/auth')).toHaveLength(2);
+  });
+
+  test('no auth.ok within loginTimeoutMs: the connection is closed and retried with a fresh login', async () => {
+    const h = harness();
+    void h.client.start();
+    const socket = await h.connected();
+    socket.open();
+    h.clock.advance(15_000);
+    expect(socket.closed).toBeDefined();
+    h.clock.advance(250);
+    expect((await h.connected()).token).toBe('tok-2');
+  });
+
+  test('a login that never answers is cut by loginTimeoutMs too', async () => {
+    const h = harness();
+    let hang = true;
+    h.http.routes['GET /v1/filler/auth/challenge'] = (request) => (hang ? new Promise(() => undefined) : h.gw.routes['GET /v1/filler/auth/challenge']!(request));
+    void h.client.start();
+    await settle();
+    expect(h.session.state).toBe('connecting');
+    h.clock.advance(15_000);
+    expect(h.session.state).toBe('waiting');
+    expect(h.ws.sockets).toHaveLength(0);
+    hang = false;
+    h.clock.advance(250);
+    expect((await h.connected()).token).toBe('tok-1'); // a new login, not the hung one
+    expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(2);
   });
 
   test('stop() before the first login rejects start() with FillerStoppedError', async () => {
@@ -231,7 +387,163 @@ describe('login (protocol §3.5 «Session»)', () => {
     await h.client.stop();
     await expect(started).rejects.toBeInstanceOf(FillerStoppedError);
     h.clock.advance(60_000);
+    await settle();
+    expect(h.ws.sockets).toHaveLength(0);
+  });
+
+  test('the token never reaches the logs, even from an adapter error that quotes the subprotocols', async () => {
+    const h = harness({
+      webSocket: (_url, _handlers, protocols) => {
+        throw new Error(`invalid subprotocol "${protocols[1]}"`);
+      },
+    });
+    void h.client.start();
+    await settle();
+    h.clock.advance(250);
+    await settle();
+    const logged = JSON.stringify(h.logger.entries);
+    expect(h.requests('/v1/filler/auth')).toHaveLength(2); // each failed connect dropped its token
+    expect(logged).toContain('<token>');
+    expect(logged).not.toMatch(/tok-\d/);
+
+    const g = harness();
+    void g.client.start();
+    (await g.connected()).refuse(401);
+    g.clock.advance(250);
+    const socket = await g.login();
+    socket.drop(4029);
+    g.clock.advance(250);
+    await settle();
+    expect(JSON.stringify(g.logger.entries)).not.toMatch(/tok-\d/);
+  });
+});
+
+describe('rate limits per fillerId (RATE_LIMITED, retryAfterMs)', () => {
+  test('a login refused 429 (unsigned, retryAfterMs) is not retried before retryAfterMs', async () => {
+    const h = harness();
+    let limited = true;
+    h.http.routes['GET /v1/filler/auth/challenge'] = (request) =>
+      limited ? { status: 429, body: { type: 'error', code: 'RATE_LIMITED', message: 'login rate class over its limit', retryAfterMs: 5_000 } } : h.gw.routes['GET /v1/filler/auth/challenge']!(request);
+    void h.client.start();
+    await settle();
+    expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(1);
+    limited = false;
+    h.clock.advance(4_999);
+    await settle();
+    expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(1);
+    expect(h.ws.sockets).toHaveLength(0);
+    h.clock.advance(1);
+    await settle();
+    expect(h.requests('/v1/filler/auth/challenge')).toHaveLength(2);
     expect(h.ws.sockets).toHaveLength(1);
+  });
+
+  test('close 4029: the reconnect waits at least the last retryAfterMs filler-gateway named', async () => {
+    const h = harness({ heartbeatIntervalMs: 600_000 });
+    void h.client.start();
+    const socket = await h.login();
+    socket.receive(h.gateway.frame({ type: 'error', fillerId: FILLER, code: 'RATE_LIMITED', message: 'cooling down', retryAfterMs: 20_000 }));
+    socket.drop(4029, 'rate limited');
+    h.clock.advance(19_999);
+    await settle();
+    expect(h.ws.sockets).toHaveLength(1);
+    h.clock.advance(1);
+    await settle();
+    expect(h.ws.sockets).toHaveLength(2);
+    expect(h.ws.sockets[1]!.token).toBe('tok-1'); // a cooldown is not a bad token
+  });
+
+  test('error RATE_LIMITED on the socket holds back the class of the refused frame until retryAfterMs, logged once', async () => {
+    const h = harness({ heartbeatIntervalMs: 600_000 });
+    void h.client.start();
+    const socket = await h.login();
+    const quote = (id: string) => h.client.seal<QuoteMessage>({ type: 'quote', id, requestId: 'rq-1', amountOut: '100', validUntil: '1790000100', nonce: '1', sig: `0x${'00'.repeat(65)}` });
+    expect(h.client.send(await quote('q-1'))).toBe(true);
+    socket.receive(h.gateway.frame({ type: 'error', fillerId: FILLER, re: 'q-1', code: 'RATE_LIMITED', message: 'quote rate class over its limit', retryAfterMs: 3_000 }));
+    await settle();
+    expect(h.client.rateLimitedMs('quote')).toBe(3_000);
+    expect(h.client.rateLimitedMs('quote.reconfirm.reply')).toBe(3_000);
+    expect(h.client.send(await quote('q-2'))).toBe(false);
+    expect(h.client.send(await quote('q-3'))).toBe(false);
+    expect(h.logger.entries.filter((e) => e.message === 'filler-gateway: rate limited, frames of this class held back')).toHaveLength(1);
+    // another class is not held back
+    expect(h.client.send(await h.client.seal({ type: 'ping', id: 'p-1' }))).toBe(true);
+    expect(socket.sentFrames().map((f) => f.id)).toEqual(['q-1', 'p-1']);
+    h.clock.advance(3_000);
+    expect(h.client.send(await quote('q-4'))).toBe(true);
+  });
+
+  test('a ticket action is refused locally with the remaining retryAfterMs while the ticket class is paused, on either channel', async () => {
+    const h = harness({ heartbeatIntervalMs: 600_000 });
+    void h.client.start();
+    const socket = await h.login();
+    const report = await h.client.seal({ type: 'fill.reported', id: 'f-1', orderHash: ORDER_HASH, attempt: 1, txRef: '0x01' });
+    expect(h.client.send(report)).toBe(true);
+    socket.receive(h.gateway.frame({ type: 'error', fillerId: FILLER, re: 'f-1', code: 'RATE_LIMITED', message: 'ticket class', retryAfterMs: 2_000 }));
+    await settle();
+    const decline = await h.client.seal<TicketDecline>({ type: 'ticket.decline', id: 'd-1', orderHash: ORDER_HASH, attempt: 1, reason: 'NO_INVENTORY' });
+    await expect(h.client.submitTicket({ action: 'decline', message: decline })).rejects.toMatchObject({ code: 'RATE_LIMITED', retryAfterMs: 2_000 });
+    socket.drop();
+    await expect(h.client.submitTicket({ action: 'decline', message: decline })).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    expect(h.requests(`/v1/filler/tickets/${ORDER_HASH}/1/decline`)).toHaveLength(0);
+  });
+
+  test('REST 429 on a bearer route (unsigned): retryAfterMs of the body, the class is paused, no request goes out before it', async () => {
+    const h = harness();
+    let limited = true;
+    h.http.routes['GET /v1/filler/tickets'] = () =>
+      limited
+        ? { status: 429, headers: { 'Retry-After': '5' }, body: { type: 'error', code: 'RATE_LIMITED', message: 'read class', retryAfterMs: 4_000 } }
+        : { status: 200, body: { items: [], nextCursor: null } };
+    await expect(h.rest.listTickets('OFFERED')).rejects.toMatchObject({ name: 'GatewayError', code: 'RATE_LIMITED', httpStatus: 429, retryAfterMs: 4_000 });
+    expect(h.requests('/v1/filler/tickets')).toHaveLength(1);
+    limited = false;
+    h.clock.advance(3_999);
+    await expect(h.rest.listTickets('OFFERED')).rejects.toMatchObject({ code: 'RATE_LIMITED', retryAfterMs: 1 });
+    expect(h.requests('/v1/filler/tickets')).toHaveLength(1);
+    // another class is not paused
+    expect(h.rest.limits.remainingMs('ticket')).toBe(0);
+    h.clock.advance(1);
+    await expect(h.rest.listTickets('OFFERED')).resolves.toEqual([]);
+  });
+
+  test('REST 429 is decided by the status: without retryAfterMs in the body, Retry-After (seconds) is the wait', async () => {
+    const h = harness();
+    h.http.routes['GET /v1/filler/tickets'] = () => ({ status: 429, headers: { 'Retry-After': '7' }, body: 'Too Many Requests' });
+    await expect(h.rest.listTickets()).rejects.toMatchObject({ code: 'RATE_LIMITED', httpStatus: 429, retryAfterMs: 7_000 });
+    expect(h.rest.limits.remainingMs('read')).toBe(7_000);
+  });
+
+  test('a signed 429 is read the same way', async () => {
+    const h = harness();
+    h.http.routes['GET /v1/filler/tickets'] = () => ({ status: 429, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code: 'RATE_LIMITED', message: 'read class', retryAfterMs: 2_500 }) });
+    await expect(h.rest.listTickets()).rejects.toMatchObject({ code: 'RATE_LIMITED', retryAfterMs: 2_500 });
+    expect(h.rest.limits.remainingMs('read')).toBe(2_500);
+  });
+
+  test('a non-429 refusal of a bearer route must be signed: an unsigned body is not trusted', async () => {
+    const h = harness();
+    h.http.routes['GET /v1/filler/tickets'] = () => ({ status: 409, body: { type: 'error', code: 'TICKET_CLOSED', message: 'unsigned' } });
+    await expect(h.rest.listTickets()).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE', httpStatus: 409 });
+    expect(h.rest.limits.remainingMs('read')).toBe(0);
+  });
+
+  test('the ticket poll while down does not storm a rate-limited route', async () => {
+    const h = harness({ heartbeatIntervalMs: 600_000 });
+    let calls = 0;
+    h.http.routes['GET /v1/filler/tickets'] = () => {
+      calls++;
+      return { status: 429, headers: { 'Retry-After': '10' }, body: { type: 'error', code: 'RATE_LIMITED', message: 'read class', retryAfterMs: 10_000 } };
+    };
+    void h.client.start();
+    const socket = await h.login();
+    const afterLogin = calls; // the pull after login
+    socket.drop(4003, 'suspended');
+    for (let i = 0; i < 4; i++) {
+      h.clock.advance(2_000);
+      await settle();
+    }
+    expect(calls).toBe(afterLogin);
   });
 });
 
@@ -262,6 +574,7 @@ describe('heartbeat and reconnect', () => {
     expect(socket.closed).toEqual({ code: CLOSE_HEARTBEAT, reason: 'heartbeat missed' });
     expect(h.events.events).toContainEqual(expect.objectContaining({ type: 'stage', stage: 'disconnected' }));
     h.clock.advance(250);
+    await settle();
     expect(h.ws.sockets).toHaveLength(2);
   });
 
@@ -284,35 +597,42 @@ describe('heartbeat and reconnect', () => {
 
     const h = harness();
     void h.client.start();
-    h.ws.sockets[0]!.drop();
+    (await h.connected()).drop();
     h.clock.advance(249);
+    await settle();
     expect(h.ws.sockets).toHaveLength(1);
     h.clock.advance(1);
+    (await h.connected()).drop();
     expect(h.ws.sockets).toHaveLength(2);
-    h.ws.sockets[1]!.drop();
     h.clock.advance(499);
+    await settle();
     expect(h.ws.sockets).toHaveLength(2);
     h.clock.advance(1);
+    const third = await h.login();
     expect(h.ws.sockets).toHaveLength(3);
-    await h.login(h.ws.sockets[2]!);
-    h.ws.sockets[2]!.drop();
+    third.drop();
     h.clock.advance(250);
+    await settle();
     expect(h.ws.sockets).toHaveLength(4);
   });
 
-  test('a socket factory that throws is retried like a dropped connection', () => {
+  test('a socket factory that throws is retried like a dropped connection', async () => {
     const h = harness();
     let calls = 0;
     const session = new GatewaySession(
       {
-        url: URL_, fillerId: FILLER, gatewaySigner: h.gateway.address, quoteSigner: h.quoteSigner, seal: h.client.seal, clock: h.clock, logger: h.logger,
+        url: URL_, fillerId: FILLER, gatewaySigner: h.gateway.address, tokens: h.rest, seal: h.client.seal, clock: h.clock, logger: h.logger,
         webSocket: () => { calls++; throw new Error('ECONNREFUSED'); },
         random: () => 0, nextId: () => 'x', reconnect: { initialDelayMs: 500, maxDelayMs: 30_000 }, heartbeatMisses: 3, loginTimeoutMs: 15_000,
       },
       h.client,
     );
     session.start();
-    h.clock.advance(250 + 500 + 1_000);
+    for (const delayMs of [250, 500, 1_000]) {
+      await settle();
+      h.clock.advance(delayMs);
+    }
+    await settle();
     expect(calls).toBe(4);
     session.stop();
   });
@@ -480,12 +800,11 @@ describe('REST fallback (protocol §3.6)', () => {
     expect(offers).toEqual([expect.objectContaining({ channel: 'rest' })]);
   });
 
-  test('the REST login signs FillerAuth over the REST challenge', async () => {
+  test('the REST login asks for a challenge by fillerId and signs FillerAuth over it', async () => {
     const h = harness();
     await h.rest.listTickets('OFFERED');
     const [challenge, auth] = h.http.requests;
-    expect(new URL(challenge!.url).pathname).toBe('/v1/filler/auth/challenge');
-    expect(challenge!.url.startsWith('https://filler-gateway.example/')).toBe(true);
+    expect(challenge!.url).toBe('https://filler-gateway.example/v1/filler/auth/challenge?fillerId=acme-1');
     const body = JSON.parse(auth!.body!) as Record<string, unknown>;
     expect(body).toMatchObject({ type: 'auth.response', fillerId: FILLER, keyAddress: h.quoteSigner.address, protocolVersion: '1', nonce: `0x${'1'.padStart(64, '0')}` });
     const signer = recoverTypedDataSigner(
@@ -585,17 +904,19 @@ describe('REST fallback (protocol §3.6)', () => {
     const h = harness();
     const rest = new GatewayRest({ gatewayUrl: 'ws://localhost:3010/v1', fillerId: FILLER, gatewaySigner: h.gateway.address, quoteSigner: h.quoteSigner, seal: h.client.seal, fetch: h.http.fetch, clock: h.clock, logger: h.logger, nextId: () => 'x' });
     await expect(rest.listTickets('OFFERED')).resolves.toEqual([]);
-    expect(h.http.requests[0]!.url).toBe('http://localhost:3010/v1/filler/auth/challenge');
+    expect(h.http.requests[0]!.url).toBe('http://localhost:3010/v1/filler/auth/challenge?fillerId=acme-1');
   });
 });
 
 describe('createFiller().start()', () => {
   const fillSigner = (key: Hex): FillSigner => ({ ...createTestTypedDataSigner(key), signTransaction: async () => '0x02' });
 
-  test('logs in over the injected factory and resolves; stop() closes the session', async () => {
+  test('logs in over REST, connects over the injected factory with the token and resolves; stop() closes the session', async () => {
     const clock = new FakeClock();
     const gateway = createTestGatewaySigner(GATEWAY_KEY, clock);
     const ws = createFakeWebSocketFactory();
+    const gw = createFakeGatewayLogin(gateway, { fillerId: FILLER, clock, heartbeatIntervalMs: HEARTBEAT_MS });
+    const http = createFakeFetch(gw.routes);
     const config: FillerConfig = {
       gatewayUrl: URL_,
       fillerId: FILLER,
@@ -608,7 +929,7 @@ describe('createFiller().start()', () => {
       tickets: { deltaIssueMs: 3_000 },
       store: new InMemoryFillerStore(clock),
       webSocket: ws.factory,
-      fetch: createFakeFetch().fetch,
+      fetch: http.fetch,
       clock,
       instanceId: 'replica-1',
       transport: { random: () => 0 },
@@ -619,14 +940,13 @@ describe('createFiller().start()', () => {
     filler.onTicketOffer(async () => 'decline');
     const started = filler.start();
     void filler.start();
+    await settle();
     expect(ws.sockets).toHaveLength(1);
     const socket = ws.sockets[0]!;
-    socket.open();
-    socket.receive(gateway.frame({ type: 'auth.challenge', nonce: `0x${'ab'.repeat(32)}`, expiresAt: String(Math.floor(clock.now() / 1000) + 30) }));
-    await settle();
-    const response = socket.sentFrames()[0]!;
+    expect(socket.protocols).toEqual(['cancore-filler.v1', 'bearer.tok-1']);
+    const response = JSON.parse(http.requests.find((r) => pathOf(r.url) === '/v1/filler/auth')!.body!) as Record<string, unknown>;
     expect(String(response.id).startsWith('replica-1:')).toBe(true);
-    socket.receive(gateway.frame({ type: 'auth.ok', fillerId: FILLER, heartbeatIntervalMs: HEARTBEAT_MS, re: response.id }));
+    expect(gw.accept(socket)).toBe(true);
     await expect(started).resolves.toBeUndefined();
     await filler.stop();
     expect(socket.closed).toEqual({ code: 1000, reason: 'filler stopping' });

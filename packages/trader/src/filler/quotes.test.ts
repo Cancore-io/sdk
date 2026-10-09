@@ -17,6 +17,7 @@ import { cantonFillerPayout, evmFillerPayout, QuoteDesk, type FillerQuoteRequest
 import { recoverAddress, recoverTypedDataSigner, type FillSigner } from './signer';
 import {
   createFakeFetch,
+  createFakeGatewayLogin,
   createFakeWebSocketFactory,
   createRecordingEventSink,
   createRecordingLogger,
@@ -478,6 +479,7 @@ describe('through createFiller and a crafted filler-gateway', () => {
     const settle = async () => {
       for (let i = 0; i < 30; i++) await new Promise((resolve) => setImmediate(resolve));
     };
+    const login = createFakeGatewayLogin(gateway, { fillerId: FILLER, clock, heartbeatIntervalMs: 10_000 });
     const filler = createFiller({
       gatewayUrl: 'wss://filler-gateway.example/v1',
       fillerId: FILLER,
@@ -493,7 +495,7 @@ describe('through createFiller and a crafted filler-gateway', () => {
       tickets: { deltaIssueMs: 3_000 },
       store,
       webSocket: ws.factory,
-      fetch: createFakeFetch().fetch,
+      fetch: createFakeFetch(login.routes).fetch,
       clock,
       instanceId: 'replica-1',
     });
@@ -505,11 +507,9 @@ describe('through createFiller and a crafted filler-gateway', () => {
     filler.onReconfirm(async () => true);
     filler.onTicketOffer(async () => 'decline');
     const started = filler.start();
-    const socket = ws.sockets[0]!;
-    socket.open();
-    socket.receive(gateway.frame({ type: 'auth.challenge', nonce: `0x${'ab'.repeat(32)}`, expiresAt: String(Math.floor(clock.now() / 1000) + 30) }));
     await settle();
-    socket.receive(gateway.frame({ type: 'auth.ok', fillerId: FILLER, heartbeatIntervalMs: 10_000, re: socket.sentFrames()[0]!.id }));
+    const socket = ws.sockets[0]!;
+    login.accept(socket);
     await started;
 
     socket.receive(gateway.frame({ ...request(clock), fillerId: FILLER }));

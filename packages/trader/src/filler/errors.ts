@@ -82,6 +82,12 @@ export class GatewayError extends Error {
     readonly re?: string,
     /** The HTTP status, when it came over REST. */
     readonly httpStatus?: number,
+    /**
+     * With `RATE_LIMITED`: how long, in ms, nothing of the refused rate class
+     * may be sent — the error's `retryAfterMs`, else the `Retry-After` header.
+     * The SDK holds that class back for this long by itself.
+     */
+    readonly retryAfterMs?: number,
   ) {
     super(`filler-gateway ${code}: ${message}`);
   }

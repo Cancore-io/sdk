@@ -65,7 +65,7 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 | `onQuoteRequest(hook)` | `void` | price for a `quote.request` (with `payout` and `fee` added): `{ amountOut, validUntil }` or `null` | CAN-1852 |
 | `onReconfirm(hook)` | `void` | stand behind `order.minReceived` for an opened order (with `payout` and `fee` added): `boolean` | CAN-1852 |
 | `onTicketOffer(hook)` | `void` | take the ticket: `'accept'`, `'decline'` (`OTHER`) or `{ decline: reason, detail? }` | CAN-1861 |
-| `start()` | `Promise<void>` | login by challenge, heartbeat, reconnect, REST fallback; reconcile from the store; then quote, take tickets, fill, settle. Needs all three hooks. Resolves at the first `auth.ok` | CAN-1847 |
+| `start()` | `Promise<void>` | login over REST, then the WebSocket with the token; heartbeat, reconnect, REST fallback; reconcile from the store; then quote, take tickets, fill, settle. Needs all three hooks. Resolves at the first `auth.ok` | CAN-1847 |
 | `stop()` | `Promise<void>` | closes the session; in-flight work stays in the store for any replica | CAN-1847 |
 | `selfSettle(orderHash)` | `{ txHash }` | settle one order now from its verified attestation set (pulled when none is held); `SettleError` with its `reason` when nothing was sent | CAN-1856 |
 | `verifyDraw(orderHash)` | `{ winner, recomputedWinner, match, drandRound }` | V2 only: recompute the draw | CAN-1848 |
@@ -76,29 +76,49 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 ## The connection to filler-gateway
 
 `start()` opens one WebSocket session per replica to `gatewayUrl` (`/v1`, protocol §3.1) and keeps it up.
+It connects only after logging in.
 
-- **Login.** On `auth.challenge` the quote key signs `FillerAuth{fillerId, nonce, expiresAt}` and the SDK
-  sends `auth.response` with `protocolVersion: "1"`. Until `auth.ok` it sends nothing else.
+- **Login (REST).** `GET /v1/filler/auth/challenge?fillerId=<fillerId>` returns a challenge signed by
+  filler-gateway; the SDK checks the signature against `gatewaySigner` and that the challenge is addressed to
+  its own `fillerId` (anything else is refused), the quote key signs `FillerAuth{fillerId, nonce, expiresAt}`,
+  and `POST /v1/filler/auth` with `auth.response` (`protocolVersion: "1"`, the challenge's `nonce`) returns
+  `{token, expiresAt}`. One token serves REST and the WebSocket; one login runs at a time for both, and the
+  token is renewed 30 s before `expiresAt`, so a reconnect never offers an expired one. A failed login is
+  retried with the reconnect backoff, always from a fresh challenge (a 401 of `POST /v1/filler/auth` means
+  the challenge is gone). The login routes refuse unsigned until they have checked a signature; such a
+  refusal is only a hint for the retry. The token never goes to the logger.
+- **Connect.** Every (re)connect takes a valid token first, then calls the `WebSocketFactory` with the
+  subprotocols `['cancore-filler.v1', 'bearer.<token>']`. filler-gateway authenticates the upgrade and sends
+  `auth.ok` first; until it arrives the SDK sends nothing. A refused upgrade (400/401/403/429/503: an error and
+  a close before the open), or any close before `auth.ok`, drops the token: the next attempt logs in again. A
+  close `4002` (message key changed) or `4003` (filler suspended) drops it too.
 - **Every filler message is signed.** Each frame and REST body the SDK sends — `auth.response`, `quote`,
   `quote.reconfirm.reply` (a decline too), `ping`, `pong` and the ticket actions — carries `fillerId`, `sentAt`
   and `msgSig`: the quote key's signature over `FillerMessage{keccak256(JCS(message without msgSig))}`
   (protocol §3.4). The quote key is the filler's message key until the signer interface is reworked (CAN-2151). `start()`
   resolves at the first `auth.ok`, rejects with `UnsupportedVersionError` when filler-gateway does not serve
-  v1 (not retried), and with `FillerStoppedError` when `stop()` comes first. Any other refusal is retried.
+  v1 (not retried; on the socket or from `POST /v1/filler/auth`), and with `FillerStoppedError` when `stop()`
+  comes first. Any other refusal is retried.
 - **Every filler-gateway frame is verified** before anything reads it: `sig` must recover, over
   `GatewayMessage{keccak256(JCS(frame without sig))}`, to `gatewaySigner` from the config (never to an
-  address a frame names), and `fillerId` must be this filler's (absent only on `auth.challenge` and a
-  pre-login `error`). A frame that fails is dropped and logged (`filler-gateway: frame dropped`, with the
+  address a frame names), and `fillerId` must be this filler's (absent only on an `error` that refuses a
+  login). A frame that fails is dropped and logged (`filler-gateway: frame dropped`, with the
   reason). The same holds for every filler-gateway message in a REST response.
 - **Heartbeat.** filler-gateway pings; the SDK answers `pong` and pings every `heartbeatIntervalMs` of
   `auth.ok`. With no frame for `transport.heartbeatMisses` (default 3) intervals the SDK closes and reconnects.
 - **Reconnect.** Exponential backoff with equal jitter: `min(maxDelayMs, initialDelayMs × 2ⁿ)` scaled into
   `[0.5, 1)`, defaults 500 ms → 30 s, reset after a login. No `auth.ok` within `transport.loginTimeoutMs`
-  (15 s) counts as a failed connection.
-- **REST fallback** (§3.6) on the same host (`wss` → `https`). The SDK logs in by
-  `GET /v1/filler/auth/challenge` + `POST /v1/filler/auth` (the `auth.response` names the challenge in its
-  optional `nonce`) and keeps the bearer token until shortly before
-  it expires (renewed once on a 401). While the session is down it polls `GET /v1/filler/tickets` every
+  (15 s from the start of the connect, the REST login included) counts as a failed connection.
+- **Rate limits** (per `fillerId`, shared by REST and every session). An `error RATE_LIMITED` with
+  `retryAfterMs` — on REST a 429 (unsigned, decided by the status), with `retryAfterMs` in the body or
+  `Retry-After` — pauses the rate class
+  of the refused message (`quote`, `ticket`, `service`, `read`, `login`): until it ends the SDK sends
+  nothing of that class (a quote is not sent, a ticket action and a REST call of the class are refused locally
+  with `RATE_LIMITED` and the remaining `retryAfterMs`, and retried after it), so a poll or a retry timer never
+  hammers the limit. After a close `4029` (sustained excess, cooldown) the reconnect waits at least the last
+  `retryAfterMs` filler-gateway named.
+- **REST fallback** (§3.6) on the same host (`wss` → `https`), with the login's bearer token (renewed once on
+  a 401). While the session is down it polls `GET /v1/filler/tickets` every
   `transport.restPollIntervalMs` (2 s), and sends ticket intents, receipts and declines as
   `POST /v1/filler/tickets/{orderHash}/{attempt}/{intent|receipt|decline}`. After every login it pulls once
   more. Frames with no REST route (`quote`, `quote.reconfirm.reply`, `fill.reported`) are not sent while down.
@@ -382,15 +402,17 @@ Records store the wire messages of `@cancore/contracts` as received (`TicketOffe
 ```ts
 type WebSocketFactory = (url: string, handlers: {
   onOpen(): void; onMessage(text: string): void; onClose(code: number, reason: string): void; onError(e: unknown): void;
-}) => { send(text: string): void; close(code?: number, reason?: string): void };
+}, protocols: readonly string[]) => { send(text: string): void; close(code?: number, reason?: string): void };
 ```
 
-With the `ws` package:
+`protocols` is `['cancore-filler.v1', 'bearer.<token>']`: offer it unchanged as the subprotocols of the
+upgrade (`Sec-WebSocket-Protocol`), and do not log it — it carries the bearer token. A refused upgrade must
+reach the SDK as `onError` and/or `onClose` without `onOpen`. With the `ws` package:
 
 ```ts
 import WebSocket from 'ws';
-const webSocket: WebSocketFactory = (url, h) => {
-  const ws = new WebSocket(url);
+const webSocket: WebSocketFactory = (url, h, protocols) => {
+  const ws = new WebSocket(url, [...protocols]);
   ws.on('open', h.onOpen);
   ws.on('message', (data, isBinary) => { if (!isBinary) h.onMessage(data.toString('utf8')); });
   ws.on('close', (code, reason) => h.onClose(code, reason.toString('utf8')));
@@ -407,8 +429,8 @@ const webSocket: WebSocketFactory = (url, h) => {
 - `EventSink` — `emit(event)`. Public events: `filled`, `attested`, `settled`, `penalty`, `declined`; plus
   `stage` events (`quote.sent`, `ticket.receipted`, `settle.sent`, …) for analytics. A throwing sink never
   stops the protocol. Defaults to a no-op.
-- `HttpFetch` — the slice of `fetch` used for the REST fallback and drand relays. Defaults to the global
-  `fetch`.
+- `HttpFetch` — the slice of `fetch` used for the login, the REST fallback and drand relays (`status`,
+  `text()`, and `headers.get` for `Retry-After`). Defaults to the global `fetch`.
 
 ## Testing — `@cancore/trader/filler/testing`
 
@@ -420,6 +442,7 @@ import {
   FakeClock,
   FakeEvmRpc,
   createFakeFetch,
+  createFakeGatewayLogin,
   createFakeWebSocketFactory,
   createTestGatewaySigner,
   createTestTypedDataSigner,
@@ -435,11 +458,16 @@ import {
   `setAvailable(false)` simulates an outage; `journal()` lists the evidence.
 - `FakeClock` moves only on `advance(ms)`. `FakeEvmRpc` answers scripted methods and records calls.
 - `createFakeWebSocketFactory()` hands out `FakeSocket`s: the test plays `filler-gateway` and feeds crafted
-  frames with `receive(frame)`.
+  frames with `receive(frame)`; `protocols` / `token` show what the SDK offered on the upgrade, `refuse(status)`
+  refuses it.
+- `createFakeGatewayLogin(gatewaySigner, { fillerId, clock })` — filler-gateway's login: `routes` for
+  `createFakeFetch` (a challenge addressed by `fillerId`, a fresh token per `POST /v1/filler/auth`) and
+  `accept(socket)`, which opens an upgrade that offers `cancore-filler.v1` and a live token and sends `auth.ok`
+  first, and refuses any other.
 - `createTestGatewaySigner(privateKey, clock?)` signs crafted filler-gateway frames the way filler-gateway
   does (`frame(body)` adds `sentAt` and `sig`); pin its `address` as `gatewaySigner`.
-- `createFakeFetch(routes)` is an `HttpFetch` answering `"METHOD /path"` routes and recording requests — the
-  REST side of filler-gateway in a test.
+- `createFakeFetch(routes)` is an `HttpFetch` answering `"METHOD /path"` routes (with optional `headers`) and
+  recording requests — the REST side of filler-gateway in a test.
 - `createTestTypedDataSigner(privateKey)` — the reference behaviour of the signer contract, for test keys.
 - `createTestFillSigner(privateKey)` — a `FillSigner` that also signs real EIP-1559 transactions;
   `decodeSignedTransaction(raw)` reads one back with its sender.

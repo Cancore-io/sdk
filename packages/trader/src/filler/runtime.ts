@@ -73,13 +73,17 @@ export interface FillerSocket {
 }
 
 /**
- * Opens a connection to `url` (`wss://<filler-gateway host>/v1`) and reports
- * on it through `handlers`. The SDK calls it on every (re)connect; one call,
- * one connection. With the `ws` package:
+ * Opens a connection to `url` (`wss://<filler-gateway host>/v1`) offering
+ * `protocols` as `Sec-WebSocket-Protocol`, and reports on it through
+ * `handlers`. The SDK calls it on every (re)connect, after logging in over
+ * REST; one call, one connection. `protocols` is `['cancore-filler.v1',
+ * 'bearer.<token>']`: pass it through unchanged, and never log it — the second
+ * entry is the bearer token. A refused upgrade (401, 429, 503, …) is reported
+ * as an error and a close before `onOpen`. With the `ws` package:
  *
  * ```ts
- * const webSocket: WebSocketFactory = (url, h) => {
- *   const ws = new WebSocket(url);
+ * const webSocket: WebSocketFactory = (url, h, protocols) => {
+ *   const ws = new WebSocket(url, [...protocols]);
  *   ws.on('open', h.onOpen);
  *   ws.on('message', (data, isBinary) => { if (!isBinary) h.onMessage(data.toString('utf8')); });
  *   ws.on('close', (code, reason) => h.onClose(code, reason.toString('utf8')));
@@ -88,7 +92,7 @@ export interface FillerSocket {
  * };
  * ```
  */
-export type WebSocketFactory = (url: string, handlers: FillerSocketHandlers) => FillerSocket;
+export type WebSocketFactory = (url: string, handlers: FillerSocketHandlers, protocols: readonly string[]) => FillerSocket;
 
 // ---------------------------------------------------------------------------
 // HTTP (REST fallback of filler-gateway, drand relays)
@@ -102,6 +106,8 @@ export interface HttpRequest {
 
 export interface HttpResponse {
   readonly status: number;
+  /** Response headers; read for `Retry-After` on a 429. The global `fetch` provides them. */
+  readonly headers?: { get(name: string): string | null };
   text(): Promise<string>;
 }
 

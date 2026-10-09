@@ -434,7 +434,8 @@ export class TicketDesk {
   /**
    * Sends the stored message of the current state and records that it went.
    * Past its deadline it is marked `unsent` and never sent; refused by
-   * filler-gateway or the network, it is tried again after `SEND_RETRY_MS`.
+   * filler-gateway or the network, it is tried again after `SEND_RETRY_MS` —
+   * or, rate limited, not before the `retryAfterMs` filler-gateway named.
    */
   private async send(orderHash: Hex, attempt: number, first: Outgoing, stage: FillerStage): Promise<void> {
     if (this.options.clock.now() > first.deadlineMs) {
@@ -456,7 +457,8 @@ export class TicketDesk {
         return;
       }
       this.options.logger.warn('tickets: not delivered to filler-gateway', { orderHash, attempt, action: out.action, error: String(error) });
-      if (this.options.clock.now() + SEND_RETRY_MS <= out.deadlineMs) this.options.clock.schedule(SEND_RETRY_MS, () => void this.work(orderHash, attempt));
+      const retryMs = Math.max(SEND_RETRY_MS, error instanceof GatewayError ? (error.retryAfterMs ?? 0) : 0);
+      if (this.options.clock.now() + retryMs <= out.deadlineMs) this.options.clock.schedule(retryMs, () => void this.work(orderHash, attempt));
       return;
     }
     await this.markSent(orderHash, attempt, out, false);

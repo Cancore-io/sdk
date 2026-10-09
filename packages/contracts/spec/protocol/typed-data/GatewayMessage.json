@@ -74,20 +74,21 @@
       "digest": "0xc9912d2414f6eb8c78a4b9327bddf42de058b9b7f41f64ee938b347cb8d9427b"
     },
     {
-      "note": "auth.challenge: the one frame without fillerId",
+      "note": "auth.challenge: the body of GET /v1/filler/auth/challenge?fillerId=, addressed to that fillerId",
       "body": {
         "type": "auth.challenge",
         "id": "g-1",
+        "fillerId": "acme-markets",
         "sentAt": 1789999980000,
         "nonce": "0x63ed6389bd2a1d23bb678583c227172bda874e82b97b1c170bfeeb4373b4b0d5",
         "expiresAt": "1790000030",
         "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b"
       },
-      "jcs": "{\"expiresAt\":\"1790000030\",\"id\":\"g-1\",\"nonce\":\"0x63ed6389bd2a1d23bb678583c227172bda874e82b97b1c170bfeeb4373b4b0d5\",\"sentAt\":1789999980000,\"type\":\"auth.challenge\"}",
+      "jcs": "{\"expiresAt\":\"1790000030\",\"fillerId\":\"acme-markets\",\"id\":\"g-1\",\"nonce\":\"0x63ed6389bd2a1d23bb678583c227172bda874e82b97b1c170bfeeb4373b4b0d5\",\"sentAt\":1789999980000,\"type\":\"auth.challenge\"}",
       "message": {
-        "bodyHash": "0x3b18b7f3fb449214fba90add5344539a1a1053a7f851f6b147b50af4e7ac33c6"
+        "bodyHash": "0x5a5366bd8912145688cfbcf7e75e102d2f333eb59c5a8d565c5a9a57d147c313"
       },
-      "digest": "0x4d8c912572367e3bdda6bceb31820513a3b45775c88f14132199a0e86e39df2e"
+      "digest": "0x531f729b903d9ab9f9d824a15a6330478f9605c09ba3d2c60b66e3681e1ff12a"
     }
   ]
 }
