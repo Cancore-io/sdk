@@ -27,8 +27,8 @@ export interface PollOutcome {
   expiresAt?: string;
 }
 
-/** Scopes this server asks for: queue a request, read the queue. Never sign. */
-export const AGENT_SCOPES = ['agent:propose', 'agent:read'] as const;
+/** Scopes this server asks for: queue a request, read the queue, read the owner's balances. Never sign. */
+export const AGENT_SCOPES = ['agent:propose', 'agent:read', 'balances:read'] as const;
 
 type Fetch = typeof globalThis.fetch;
 

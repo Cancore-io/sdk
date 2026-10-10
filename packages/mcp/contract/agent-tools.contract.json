@@ -1,7 +1,7 @@
 [
   {
     "name": "cancore_connect_wallet",
-    "description": "Ask the Cancore wallet owner to authorize this server. Opens the consent page in their browser and waits; on approval the server keeps a scoped grant (queue a request, read the queue — never sign) and no token is returned to you. Call it when a cancore_* tool says there is no access, and call it again while it answers pending.",
+    "description": "Ask the Cancore wallet owner to authorize this server. Opens the consent page in their browser and waits; on approval the server keeps a scoped grant (queue a request, read the queue, read your balances — never sign) and no token is returned to you. Call it when a cancore_* tool says there is no access, and call it again while it answers pending.",
     "required": [],
     "arguments": {
       "appName": {
@@ -17,6 +17,12 @@
         "description": "how long to wait for the owner in this call, 5–300 (default 45); the request stays live either way"
       }
     }
+  },
+  {
+    "name": "cancore_get_balances",
+    "description": "The wallet owner's own token balances, one entry per token: balance (available), locked, total and inSwaps; unavailable: true means the balance could not be read (zeroes are unknown, not empty). Read-only.",
+    "required": [],
+    "arguments": {}
   },
   {
     "name": "cancore_intent_status",
