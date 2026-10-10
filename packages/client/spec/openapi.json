@@ -320,6 +320,31 @@
         ],
         "type": "object"
       },
+      "AdminBanFillerDto": {
+        "properties": {
+          "comment": {
+            "description": "Why, in the staff member’s words; kept in the audit",
+            "maxLength": 1000,
+            "minLength": 3,
+            "type": "string"
+          },
+          "reason": {
+            "description": "KEY_INCIDENT — a stolen or lost message key (until the manual key change)",
+            "enum": [
+              "KEY_INCIDENT",
+              "OFFBOARDING",
+              "CONTRACT_DISPUTE",
+              "OTHER"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "comment"
+        ],
+        "type": "object"
+      },
       "AdminCantonIntentEventDto": {
         "properties": {
           "argument": {
@@ -424,12 +449,29 @@
             "description": "Decoded event args; uint as decimal strings",
             "type": "object"
           },
+          "attempt": {
+            "description": "Delivery attempt of this Filled event",
+            "type": "number"
+          },
           "blockNumber": {
             "type": "number"
           },
           "chainId": {
             "example": 11155111,
             "type": "number"
+          },
+          "deliveryKey": {
+            "description": "Delivery key of this Filled event, independent of identity and payee",
+            "type": "string"
+          },
+          "fillerId": {
+            "description": "Registered filler_id, including suspended fillers; null if unknown",
+            "nullable": true,
+            "type": "string"
+          },
+          "fillerIdHash": {
+            "description": "Raw bytes32 filler identity from Variant A; absent in legacy logs",
+            "type": "string"
           },
           "logIndex": {
             "type": "number"
@@ -445,6 +487,10 @@
           },
           "network": {
             "example": "sepolia",
+            "type": "string"
+          },
+          "repayTo": {
+            "description": "Exact bytes32 repayment destination from this event",
             "type": "string"
           },
           "router": {
@@ -650,6 +696,194 @@
           "error",
           "message",
           "accounts"
+        ],
+        "type": "object"
+      },
+      "AdminFillerBanAuditDto": {
+        "properties": {
+          "action": {
+            "enum": [
+              "BAN",
+              "UNBAN"
+            ],
+            "type": "string"
+          },
+          "actor": {
+            "description": "AUTO or the staff user id",
+            "type": "string"
+          },
+          "actorEmail": {
+            "nullable": true,
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "comment": {
+            "nullable": true,
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "example": "KEY_INCIDENT",
+            "type": "string"
+          },
+          "violationIds": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "action",
+          "reason",
+          "comment",
+          "violationIds",
+          "actor",
+          "actorEmail",
+          "at"
+        ],
+        "type": "object"
+      },
+      "AdminFillerDto": {
+        "properties": {
+          "banReason": {
+            "enum": [
+              "NO_SHOW_LIMIT",
+              "KEY_INCIDENT",
+              "OFFBOARDING",
+              "CONTRACT_DISPUTE",
+              "OTHER"
+            ],
+            "nullable": true,
+            "type": "string"
+          },
+          "bannedAt": {
+            "description": "Set while banned",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          },
+          "fillerId": {
+            "type": "string"
+          },
+          "missesInWindow": {
+            "description": "NO_SHOW with a receipt within the last ban window",
+            "type": "number"
+          },
+          "partnerId": {
+            "type": "string"
+          },
+          "status": {
+            "description": "ACTIVE or SUSPENDED (admission); a ban is separate",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fillerId",
+          "partnerId",
+          "status",
+          "bannedAt",
+          "banReason",
+          "missesInWindow"
+        ],
+        "type": "object"
+      },
+      "AdminFillerListDto": {
+        "properties": {
+          "banThreshold": {
+            "description": "NO_SHOWs within the window that ban (P-22)",
+            "type": "number"
+          },
+          "banWindowMs": {
+            "description": "The rolling ban window, ms",
+            "type": "number"
+          },
+          "fillers": {
+            "items": {
+              "$ref": "#/components/schemas/AdminFillerDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "fillers",
+          "banThreshold",
+          "banWindowMs"
+        ],
+        "type": "object"
+      },
+      "AdminFillerPenaltiesDto": {
+        "properties": {
+          "audit": {
+            "description": "Bans and unbans, newest first, at most 200",
+            "items": {
+              "$ref": "#/components/schemas/AdminFillerBanAuditDto"
+            },
+            "type": "array"
+          },
+          "violations": {
+            "description": "Newest first, at most 200",
+            "items": {
+              "$ref": "#/components/schemas/AdminFillerViolationDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "violations",
+          "audit"
+        ],
+        "type": "object"
+      },
+      "AdminFillerViolationDto": {
+        "properties": {
+          "attempt": {
+            "type": "number"
+          },
+          "code": {
+            "example": "NO_SHOW",
+            "type": "string"
+          },
+          "countsTowardBan": {
+            "description": "Only a NO_SHOW over the filler receipt counts",
+            "type": "boolean"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "description": "Signed frames of the attempt and the delivery check",
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "occurredAt": {
+            "description": "The ticket validUntil",
+            "format": "date-time",
+            "type": "string"
+          },
+          "orderHash": {
+            "type": "string"
+          },
+          "recordedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "orderHash",
+          "attempt",
+          "countsTowardBan",
+          "occurredAt",
+          "recordedAt",
+          "evidence"
         ],
         "type": "object"
       },
@@ -1077,6 +1311,20 @@
         ],
         "type": "object"
       },
+      "AdminUnbanFillerDto": {
+        "properties": {
+          "comment": {
+            "description": "Why the ban is lifted; kept in the audit",
+            "maxLength": 1000,
+            "minLength": 3,
+            "type": "string"
+          }
+        },
+        "required": [
+          "comment"
+        ],
+        "type": "object"
+      },
       "AdminVaultWithdrawDto": {
         "properties": {
           "amount": {
@@ -1274,6 +1522,44 @@
         },
         "required": [
           "partyId"
+        ],
+        "type": "object"
+      },
+      "BotAccountResponseDto": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "example": "grid-bot-1",
+            "type": "string"
+          },
+          "partyId": {
+            "description": "Canton party; null until the bot runs its onboarding",
+            "nullable": true,
+            "type": "string"
+          },
+          "publicKey": {
+            "description": "Hex Ed25519 public key the account signs in with",
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "example": "ACTIVE",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "publicKey",
+          "partyId",
+          "status",
+          "createdAt"
         ],
         "type": "object"
       },
@@ -2352,6 +2638,38 @@
           "appName",
           "type",
           "scopes"
+        ],
+        "type": "object"
+      },
+      "CreateBotAccountDto": {
+        "properties": {
+          "challenge": {
+            "description": "Challenge issued by POST /auth/register-challenge for this public key",
+            "minLength": 20,
+            "type": "string"
+          },
+          "name": {
+            "description": "Name of the bot account; becomes its party name",
+            "example": "grid-bot-1",
+            "type": "string"
+          },
+          "publicKey": {
+            "description": "Hex Ed25519 public key of the bot account",
+            "example": "abababababababababababababababababababababababababababababababab",
+            "minLength": 64,
+            "type": "string"
+          },
+          "signature": {
+            "description": "Hex Ed25519 signature of the challenge by the bot key",
+            "minLength": 128,
+            "type": "string"
+          }
+        },
+        "required": [
+          "publicKey",
+          "challenge",
+          "signature",
+          "name"
         ],
         "type": "object"
       },
@@ -4123,6 +4441,156 @@
           "writtenOffCc",
           "entryCount",
           "byReason"
+        ],
+        "type": "object"
+      },
+      "FillerKeyChangeDto": {
+        "properties": {
+          "activatedAt": {
+            "description": "ISO time the key became active",
+            "type": "string"
+          },
+          "address": {
+            "description": "Message key address",
+            "type": "string"
+          },
+          "fillerId": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "ONBOARDING",
+              "ROTATION"
+            ],
+            "type": "string"
+          },
+          "previousAddress": {
+            "description": "The key this one replaced; null at onboarding",
+            "nullable": true,
+            "type": "string"
+          },
+          "reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "registeredBy": {
+            "description": "Staff member (JWT subject) who registered the key",
+            "nullable": true,
+            "type": "string"
+          },
+          "registration": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/FillerKeyRegistrationDto"
+              }
+            ],
+            "description": "The signed registration (proof of possession)",
+            "nullable": true,
+            "type": "object"
+          },
+          "requestRef": {
+            "nullable": true,
+            "type": "string"
+          },
+          "retiredAt": {
+            "description": "ISO time the key was retired; null while active",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "fillerId",
+          "address",
+          "activatedAt",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "FillerKeyRecordDto": {
+        "properties": {
+          "activatedAt": {
+            "description": "ISO time the key became active",
+            "type": "string"
+          },
+          "address": {
+            "description": "Message key address",
+            "type": "string"
+          },
+          "fillerId": {
+            "type": "string"
+          },
+          "previousAddress": {
+            "description": "The key this one replaced; null at onboarding",
+            "nullable": true,
+            "type": "string"
+          },
+          "reason": {
+            "nullable": true,
+            "type": "string"
+          },
+          "registeredBy": {
+            "description": "Staff member (JWT subject) who registered the key",
+            "nullable": true,
+            "type": "string"
+          },
+          "registration": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/FillerKeyRegistrationDto"
+              }
+            ],
+            "description": "The signed registration (proof of possession)",
+            "nullable": true,
+            "type": "object"
+          },
+          "requestRef": {
+            "nullable": true,
+            "type": "string"
+          },
+          "retiredAt": {
+            "description": "ISO time the key was retired; null while active",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "fillerId",
+          "address",
+          "activatedAt"
+        ],
+        "type": "object"
+      },
+      "FillerKeyRegistrationDto": {
+        "properties": {
+          "fillerId": {
+            "description": "The fillerId Cancore issued; must equal the path fillerId",
+            "example": "acme",
+            "maxLength": 63,
+            "type": "string"
+          },
+          "issuedAt": {
+            "description": "Unix seconds, decimal string",
+            "example": "1791366307",
+            "maxLength": 20,
+            "type": "string"
+          },
+          "messageKey": {
+            "description": "Address of the message key being registered",
+            "example": "0x742d35cc6634c0532925a3b844bc454e4438f44e",
+            "maxLength": 42,
+            "type": "string"
+          },
+          "sig": {
+            "description": "EIP-712 signature by the key being registered: 65 bytes, low-s, v ∈ {27, 28}; no EIP-1271",
+            "maxLength": 132,
+            "type": "string"
+          }
+        },
+        "required": [
+          "fillerId",
+          "messageKey",
+          "issuedAt",
+          "sig"
         ],
         "type": "object"
       },
@@ -5971,6 +6439,86 @@
         ],
         "type": "object"
       },
+      "OrderPartyResponseDto": {
+        "properties": {
+          "avatar": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AvatarUrlsDto"
+              }
+            ],
+            "description": "User avatar URLs in 3 sizes (lg, md, sm)",
+            "nullable": true,
+            "type": "object"
+          },
+          "createdAt": {
+            "description": "User creation timestamp",
+            "example": "2026-01-23T10:00:00.000Z",
+            "format": "date-time",
+            "type": "string"
+          },
+          "ethAddress": {
+            "description": "Linked Ethereum wallet address. Present only when the caller is a party to this order",
+            "example": "0x1234567890abcdef1234567890abcdef12345678",
+            "nullable": true,
+            "type": "string"
+          },
+          "id": {
+            "description": "User unique identifier",
+            "example": "123e4567-e89b-12d3-a456-426614174000",
+            "type": "string"
+          },
+          "online": {
+            "description": "Whether the user is currently online (WebSocket connected)",
+            "example": true,
+            "type": "boolean"
+          },
+          "partyId": {
+            "description": "Canton party ID assigned to the user. Format: {partyName}_{fingerprint}::{key}",
+            "example": "alice_56c6cfaf::1220a14ca128063b8dc9d1ebb0bd22633be9f2168500f4dbc1ecaeb1855b14e5acf8",
+            "nullable": true,
+            "type": "string"
+          },
+          "partyName": {
+            "description": "User party name",
+            "example": "Alice",
+            "type": "string"
+          },
+          "status": {
+            "description": "User account status",
+            "enum": [
+              "PENDING",
+              "ACTIVE",
+              "FAILED"
+            ],
+            "example": "ACTIVE",
+            "type": "string"
+          },
+          "tronAddress": {
+            "description": "Linked Tron wallet address. Present only when the caller is a party to this order",
+            "example": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+            "nullable": true,
+            "type": "string"
+          },
+          "updatedAt": {
+            "description": "User last update timestamp",
+            "example": "2026-01-23T10:00:00.000Z",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "partyId",
+          "partyName",
+          "status",
+          "avatar",
+          "createdAt",
+          "updatedAt",
+          "online"
+        ],
+        "type": "object"
+      },
       "OrderResponseDto": {
         "properties": {
           "amountPrecision": {
@@ -6023,10 +6571,10 @@
           "initiator": {
             "allOf": [
               {
-                "$ref": "#/components/schemas/UserResponseDto"
+                "$ref": "#/components/schemas/OrderPartyResponseDto"
               }
             ],
-            "description": "Initiator user info",
+            "description": "Initiator user info (public card)",
             "nullable": true,
             "type": "object"
           },
@@ -6046,10 +6594,10 @@
           "opponent": {
             "allOf": [
               {
-                "$ref": "#/components/schemas/UserResponseDto"
+                "$ref": "#/components/schemas/OrderPartyResponseDto"
               }
             ],
-            "description": "Opponent user info",
+            "description": "Opponent user info (public card)",
             "nullable": true,
             "type": "object"
           },
@@ -6173,6 +6721,97 @@
           "expiresAt",
           "createdAt",
           "updatedAt"
+        ],
+        "type": "object"
+      },
+      "OrderValidationFindingDto": {
+        "properties": {
+          "flow": {
+            "enum": [
+              "htlc",
+              "dvp"
+            ],
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/OrderValidationIssueDto"
+            },
+            "type": "array"
+          },
+          "orderId": {
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "description": "Swap status when listed (e.g. dvp_settled, both_claimed)",
+            "type": "string"
+          },
+          "swapId": {
+            "type": "string"
+          },
+          "validatedAt": {
+            "description": "When the sweep validated the swap",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "swapId",
+          "flow",
+          "status",
+          "validatedAt",
+          "issues"
+        ],
+        "type": "object"
+      },
+      "OrderValidationFindingListDto": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OrderValidationFindingDto"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "type": "number"
+          },
+          "offset": {
+            "type": "number"
+          },
+          "total": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "total",
+          "limit",
+          "offset",
+          "items"
+        ],
+        "type": "object"
+      },
+      "OrderValidationIssueDto": {
+        "properties": {
+          "expected": {
+            "description": "Expected amount (decimal string), where the check compares amounts",
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "observed": {
+            "description": "Observed amount (decimal string), where the check compares amounts",
+            "type": "string"
+          },
+          "stage": {
+            "description": "Validation stage: lock, claim, refund, fee, venue_balance, data_incomplete, …",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stage",
+          "message"
         ],
         "type": "object"
       },
@@ -7312,6 +7951,36 @@
         ],
         "type": "object"
       },
+      "RegisterFillerMessageKeyDto": {
+        "properties": {
+          "reason": {
+            "description": "Why the key is registered or changed",
+            "example": "Partner rotated its node key after a host migration",
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "registration": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/FillerKeyRegistrationDto"
+              }
+            ],
+            "description": "Signed by the NEW key (proof of possession)"
+          },
+          "requestRef": {
+            "description": "The filler's request under the partner contract this change answers (at onboarding: the contract)",
+            "example": "ACME-2026-10-07-key-change",
+            "maxLength": 255,
+            "type": "string"
+          }
+        },
+        "required": [
+          "registration",
+          "reason",
+          "requestRef"
+        ],
+        "type": "object"
+      },
       "RejectProposalDto": {
         "properties": {
           "reason": {
@@ -7548,6 +8217,7 @@
           "SWAP_FEE_PENDING",
           "DVP_NOT_ALLOWED",
           "DVP_FEE_HOLDING_REQUIRED",
+          "DVP_FEE_BALANCE_INSUFFICIENT",
           "SWAP_FEE_ALREADY_PAID",
           "SWAP_FEE_LEG_ALREADY_SUBMITTED",
           "SWAP_FEE_LEG_MISMATCH",
@@ -7937,6 +8607,7 @@
               "SWAP_FEE_PENDING",
               "DVP_NOT_ALLOWED",
               "DVP_FEE_HOLDING_REQUIRED",
+              "DVP_FEE_BALANCE_INSUFFICIENT",
               "SWAP_FEE_ALREADY_PAID",
               "SWAP_FEE_LEG_ALREADY_SUBMITTED",
               "SWAP_FEE_LEG_MISMATCH",
@@ -8620,6 +9291,41 @@
         ],
         "type": "object"
       },
+      "TempleLegReturnDto": {
+        "properties": {
+          "amount": {
+            "type": "number"
+          },
+          "side": {
+            "enum": [
+              "input",
+              "output",
+              "both"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "side"
+        ],
+        "type": "object"
+      },
+      "TempleLegWithdrawDto": {
+        "properties": {
+          "amount": {
+            "type": "number"
+          },
+          "asset": {
+            "maxLength": 32,
+            "type": "string"
+          }
+        },
+        "required": [
+          "asset",
+          "amount"
+        ],
+        "type": "object"
+      },
       "ToggleApyTargetDto": {
         "properties": {
           "enabled": {
@@ -8669,7 +9375,7 @@
             "type": "number"
           },
           "unavailable": {
-            "description": "True when we cannot see this party's holdings at all, so the zeroes above mean \"unknown\", NOT \"empty\". Happens for a remote-hosted party (a Loop wallet) whose holdings live in another participant's ACS: CC can still be read off the scan aggregator, but registry instruments (CBTC/USDCx) have no such fallback. Clients must render this as unavailable rather than 0 — BUG-293.",
+            "description": "True when we cannot see this party's holdings at all, so the zeroes above mean \"unknown\", NOT \"empty\". Happens for a remote-hosted party (a Loop wallet) whose holdings live in another participant's ACS: CC can still be read off the scan aggregator, but registry instruments (CBTC/USDCx) have no such fallback. Also set on a GET /tokens/balances row whose balance read failed, so one broken instrument does not fail the whole list. Clients must render this as unavailable rather than 0 — BUG-293.",
             "example": true,
             "type": "boolean"
           }
@@ -9925,14 +10631,14 @@
       "UserResponseDto": {
         "properties": {
           "autoConsolidationConsentedAt": {
-            "description": "CAN-1451 — when the user last granted auto-consolidation consent (audit trail, own profile only)",
+            "description": "CAN-1451 — when the user last granted auto-consolidation consent (audit trail)",
             "example": "2026-09-09T12:00:00.000Z",
             "format": "date-time",
             "nullable": true,
             "type": "string"
           },
           "autoConsolidationEnabled": {
-            "description": "CAN-1451 — self-custody auto-consolidation consent (onboarding signature screen or a later wallet switcher, CAN-1131). Consent only, own profile only",
+            "description": "CAN-1451 — self-custody auto-consolidation consent (onboarding signature screen or a later wallet switcher, CAN-1131). Consent only — does not yet trigger any consolidation. Default false, own profile only",
             "example": false,
             "type": "boolean"
           },
@@ -9946,6 +10652,11 @@
             "nullable": true,
             "type": "object"
           },
+          "broadcastConsentEnabled": {
+            "description": "CAN-726 — consent to operator broadcasts (maintenance, incidents, announcements). Independent of emailNotificationsEnabled and of the per-type notification settings. Default true (opt-out)",
+            "example": true,
+            "type": "boolean"
+          },
           "createdAt": {
             "description": "User creation timestamp",
             "example": "2026-01-23T10:00:00.000Z",
@@ -9953,8 +10664,9 @@
             "type": "string"
           },
           "email": {
-            "description": "User email address. Only populated for the authenticated user's own profile (/auth/me). Omitted from public projections such as order enrichment to avoid leaking counterparties' PII.",
+            "description": "User email address",
             "example": "user@example.com",
+            "nullable": true,
             "type": "string"
           },
           "emailNotificationsEnabled": {
@@ -9989,8 +10701,8 @@
             "type": "string"
           },
           "partyId": {
-            "description": "Canton party ID assigned to the user. Format: {partyName}_{fingerprint}::{key}",
-            "example": "alice_56c6cfaf::1220a14ca128063b8dc9d1ebb0bd22633be9f2168500f4dbc1ecaeb1855b14e5acf8",
+            "description": "Canton party ID assigned to the user",
+            "example": "party::1220c9118a4b4471ca17c1a33abd3e995089c6a183e03e13e484193d99dcc9565ff2",
             "nullable": true,
             "type": "string"
           },
@@ -10018,7 +10730,12 @@
             "type": "array"
           },
           "signingMethod": {
-            "description": "CAN-375 — how the user signs Canton transactions (participant-managed | browser-extension). Swap automation is custodial-only (own profile only)",
+            "description": "CAN-375 — how the user signs Canton transactions. Swap automation is only available for custodial (participant-managed) wallets",
+            "enum": [
+              "participant-managed",
+              "browser-extension",
+              "passkey"
+            ],
             "example": "participant-managed",
             "type": "string"
           },
@@ -10033,12 +10750,12 @@
             "type": "string"
           },
           "swapAutoTradeEnabled": {
-            "description": "CAN-375 — global \"auto-trade P2P swaps\" consent from Settings → Notifications. Custodial-only, default false (own profile only)",
+            "description": "CAN-375 — global \"auto-trade P2P swaps\" consent (Settings → Notifications). Separate from swapAutomationEnabled (bot-pool auto-trade). Custodial-only, default false",
             "example": false,
             "type": "boolean"
           },
           "swapAutomationEnabled": {
-            "description": "CAN-257 — bot-pool auto-trade automation consent (own profile only)",
+            "description": "CAN-257 — auto-trading automation consent (auto-confirm custodial Canton swap actions)",
             "example": false,
             "type": "boolean"
           },
@@ -10060,7 +10777,7 @@
             "type": "string"
           },
           "walletPublicKey": {
-            "description": "BUG-178 — Ed25519 public key (hex) this account was registered with. Self-custody clients must sign with exactly this key; the frontend uses it to pick the matching wallet account on a multi-account device. Only populated for the authenticated user's own profile (/auth/me); public projections omit it. Null for custodial accounts",
+            "description": "BUG-178 — Ed25519 public key (hex) this account was registered with. Self-custody clients must sign with exactly this key; the frontend uses it to pick the matching wallet account on a multi-account device. Null for custodial accounts",
             "example": "e02f915a715e522151a29dad08cb00862191a841f1eda8cb7655544298f1f1f4",
             "nullable": true,
             "type": "string"
@@ -10068,6 +10785,7 @@
         },
         "required": [
           "id",
+          "email",
           "partyId",
           "partyName",
           "status",
@@ -10077,7 +10795,12 @@
           "roles",
           "emailVerified",
           "emailNotificationsEnabled",
+          "swapAutomationEnabled",
           "transferAutoAcceptEnabled",
+          "broadcastConsentEnabled",
+          "swapAutoTradeEnabled",
+          "autoConsolidationEnabled",
+          "signingMethod",
           "avatar",
           "createdAt",
           "updatedAt"
@@ -12738,6 +13461,311 @@
         ]
       }
     },
+    "/admin/fillers": {
+      "get": {
+        "operationId": "AdminFillersController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminFillerListDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin access required"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Fillers with their ban state and misses in the current window (CAN-2150)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/fillers/{fillerId}/ban": {
+      "post": {
+        "operationId": "AdminFillersController_ban",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fillerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminBanFillerDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminFillerBanAuditDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin access required"
+          },
+          "404": {
+            "description": "No such filler"
+          },
+          "409": {
+            "description": "Already banned"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Ban a filler by hand: no quote requests, no tickets; delivered fills are still paid (CAN-2150)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/fillers/{fillerId}/message-key": {
+      "post": {
+        "description": "Onboarding when the filler has no active key, a manual key change otherwise. The registration must be signed by the key it registers (EOA, 65 bytes, low-s, v ∈ {27, 28}) for this fillerId. A change retires the previous key and activates the new one in one transaction: filler-gateway refuses the previous key from then on and closes its sessions. A key is registered once — a retired key never comes back.",
+        "operationId": "AdminFillerKeysController_registerMessageKey",
+        "parameters": [
+          {
+            "description": "fillerId issued by Cancore, e.g. acme",
+            "in": "path",
+            "name": "fillerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterFillerMessageKeyDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FillerKeyChangeDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "description": "Malformed registration, signed for another fillerId, or dated in the future"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin access required"
+          },
+          "404": {
+            "description": "No such filler"
+          },
+          "409": {
+            "description": "The key is already active, was registered before, or the registration is older than the active key"
+          },
+          "422": {
+            "description": "The registration is not an EOA signature by the key it registers"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Register the message key of a filler, or change it (CAN-2148)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/fillers/{fillerId}/message-keys": {
+      "get": {
+        "operationId": "AdminFillerKeysController_history",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fillerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FillerKeyRecordDto"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin access required"
+          },
+          "404": {
+            "description": "No such filler"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Every message key of a filler with its audit, oldest first (CAN-2148)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/fillers/{fillerId}/penalties": {
+      "get": {
+        "operationId": "AdminFillersController_penalties",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fillerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminFillerPenaltiesDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin access required"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Recorded violations with their evidence, and the ban audit of a filler (CAN-2150)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/fillers/{fillerId}/unban": {
+      "post": {
+        "operationId": "AdminFillersController_unban",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fillerId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminUnbanFillerDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminFillerBanAuditDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin access required"
+          },
+          "404": {
+            "description": "No such filler"
+          },
+          "409": {
+            "description": "Not banned"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Lift a ban; the count of misses starts afresh (CAN-2150)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/admin/htlc-contracts": {
       "get": {
         "operationId": "AdminHtlcContractsController_listContracts",
@@ -13946,6 +14974,74 @@
           }
         ],
         "summary": "Manually trigger marker batch processing",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/admin/order-validation/findings": {
+      "get": {
+        "operationId": "AdminOrderValidationController_listFindings",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          {
+            "description": "Only swaps settled through this mechanic",
+            "in": "query",
+            "name": "flow",
+            "required": false,
+            "schema": {
+              "enum": [
+                "htlc",
+                "dvp"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrderValidationFindingListDto"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Admin access required"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Closed swaps the validator judged imbalanced, newest first (CAN-2070)",
         "tags": [
           "admin"
         ]
@@ -15273,8 +16369,10 @@
             "required": false,
             "schema": {
               "enum": [
-                "completed",
                 "pending",
+                "completed",
+                "cancelled",
+                "expired",
                 "failed"
               ],
               "type": "string"
@@ -15286,13 +16384,13 @@
             "required": false,
             "schema": {
               "enum": [
-                "user_transfer",
                 "instruction_create",
-                "instruction_accept",
+                "user_transfer",
                 "refund",
                 "dvp_allocate",
                 "dvp_settle",
-                "dvp_return"
+                "dvp_return",
+                "instruction_accept"
               ],
               "type": "string"
             }
@@ -15336,7 +16434,7 @@
             }
           },
           {
-            "description": "App user id — exact match on either side; what the delta-by-account list drills down with (CAN-611)",
+            "description": "App user id (UUID) — exact match on either side; what the delta-by-account list drills down with (CAN-611)",
             "in": "query",
             "name": "userId",
             "required": false,
@@ -15460,8 +16558,10 @@
             "required": false,
             "schema": {
               "enum": [
-                "completed",
                 "pending",
+                "completed",
+                "cancelled",
+                "expired",
                 "failed"
               ],
               "type": "string"
@@ -15473,10 +16573,13 @@
             "required": false,
             "schema": {
               "enum": [
-                "user_transfer",
                 "instruction_create",
-                "instruction_accept",
-                "refund"
+                "user_transfer",
+                "refund",
+                "dvp_allocate",
+                "dvp_settle",
+                "dvp_return",
+                "instruction_accept"
               ],
               "type": "string"
             }
@@ -15520,6 +16623,16 @@
             }
           },
           {
+            "description": "App user id (UUID) — exact match on either side; what the delta-by-account list drills down with (CAN-611)",
+            "in": "query",
+            "name": "userId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "ISO date lower bound (inclusive)",
             "in": "query",
             "name": "dateFrom",
             "required": false,
@@ -15528,6 +16641,7 @@
             }
           },
           {
+            "description": "ISO date upper bound (inclusive)",
             "in": "query",
             "name": "dateTo",
             "required": false,
@@ -15562,8 +16676,10 @@
             "required": false,
             "schema": {
               "enum": [
-                "completed",
                 "pending",
+                "completed",
+                "cancelled",
+                "expired",
                 "failed"
               ],
               "type": "string"
@@ -15575,10 +16691,13 @@
             "required": false,
             "schema": {
               "enum": [
-                "user_transfer",
                 "instruction_create",
-                "instruction_accept",
-                "refund"
+                "user_transfer",
+                "refund",
+                "dvp_allocate",
+                "dvp_settle",
+                "dvp_return",
+                "instruction_accept"
               ],
               "type": "string"
             }
@@ -15613,6 +16732,7 @@
             }
           },
           {
+            "description": "Canton party id — exact match on either side (CAN-655)",
             "in": "query",
             "name": "partyId",
             "required": false,
@@ -15621,6 +16741,7 @@
             }
           },
           {
+            "description": "ISO date lower bound (inclusive)",
             "in": "query",
             "name": "dateFrom",
             "required": false,
@@ -15629,6 +16750,7 @@
             }
           },
           {
+            "description": "ISO date upper bound (inclusive)",
             "in": "query",
             "name": "dateTo",
             "required": false,
@@ -15699,8 +16821,10 @@
             "required": false,
             "schema": {
               "enum": [
-                "completed",
                 "pending",
+                "completed",
+                "cancelled",
+                "expired",
                 "failed"
               ],
               "type": "string"
@@ -15712,13 +16836,13 @@
             "required": false,
             "schema": {
               "enum": [
-                "user_transfer",
                 "instruction_create",
-                "instruction_accept",
+                "user_transfer",
                 "refund",
                 "dvp_allocate",
                 "dvp_settle",
-                "dvp_return"
+                "dvp_return",
+                "instruction_accept"
               ],
               "type": "string"
             }
@@ -15762,6 +16886,16 @@
             }
           },
           {
+            "description": "App user id (UUID) — exact match on either side; what the delta-by-account list drills down with (CAN-611)",
+            "in": "query",
+            "name": "userId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "ISO date lower bound (inclusive)",
             "in": "query",
             "name": "dateFrom",
             "required": false,
@@ -15770,6 +16904,7 @@
             }
           },
           {
+            "description": "ISO date upper bound (inclusive)",
             "in": "query",
             "name": "dateTo",
             "required": false,
@@ -16025,8 +17160,10 @@
             "required": false,
             "schema": {
               "enum": [
-                "completed",
                 "pending",
+                "completed",
+                "cancelled",
+                "expired",
                 "failed"
               ],
               "type": "string"
@@ -16038,10 +17175,13 @@
             "required": false,
             "schema": {
               "enum": [
-                "user_transfer",
                 "instruction_create",
-                "instruction_accept",
-                "refund"
+                "user_transfer",
+                "refund",
+                "dvp_allocate",
+                "dvp_settle",
+                "dvp_return",
+                "instruction_accept"
               ],
               "type": "string"
             }
@@ -16085,6 +17225,16 @@
             }
           },
           {
+            "description": "App user id (UUID) — exact match on either side; what the delta-by-account list drills down with (CAN-611)",
+            "in": "query",
+            "name": "userId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "ISO date lower bound (inclusive)",
             "in": "query",
             "name": "dateFrom",
             "required": false,
@@ -16093,6 +17243,7 @@
             }
           },
           {
+            "description": "ISO date upper bound (inclusive)",
             "in": "query",
             "name": "dateTo",
             "required": false,
@@ -16683,12 +17834,18 @@
         ]
       },
       "post": {
-        "description": "Called by an agent. Takes { kind, params } — `transfer` or `order` — or a flat transfer body for older callers. Server-side caps (amount, pending count) apply here, not in the tool description the agent reads. Returns an intent id to poll — never a hash to sign.",
+        "description": "Called by an agent. Takes { kind, params } — `transfer`, `order` or `autotrade` — or a flat transfer body for older callers. Server-side caps (USD value per intent, pending count) apply here, not in the tool description the agent reads; an intent that cannot be priced in USD is refused. Returns an intent id to poll — never a hash to sign.",
         "operationId": "AgentIntentsController_propose",
         "parameters": [],
         "responses": {
           "201": {
             "description": "Intent queued for the user"
+          },
+          "400": {
+            "description": "Malformed, over the USD cap, unpriceable, or too many pending"
+          },
+          "503": {
+            "description": "The queue could not be written; nothing was stored"
           }
         },
         "security": [
@@ -16776,7 +17933,7 @@
     },
     "/agent/intents/{id}/settle": {
       "post": {
-        "description": "Called by the wallet UI once its own signing ceremony succeeded.",
+        "description": "Called by the wallet UI after its own signing ceremony. The call carries no proof and none is taken on its word: the intent is marked executed only if the backend holds a record of the action (a committed transfer, a placed order, an executed pool trade) by this user that matches it.",
         "operationId": "AgentIntentsController_settle",
         "parameters": [
           {
@@ -16798,6 +17955,9 @@
               }
             },
             "description": ""
+          },
+          "409": {
+            "description": "Nothing on record shows the action happened; the intent stays pending"
           }
         },
         "security": [
@@ -16805,7 +17965,7 @@
             "bearer": []
           }
         ],
-        "summary": "Mark an intent executed after the browser committed the send",
+        "summary": "Mark an intent executed once the backend can show it happened",
         "tags": [
           "agent"
         ]
@@ -17016,6 +18176,87 @@
           }
         ],
         "summary": "Activate Canton party after email verification",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/bots": {
+      "get": {
+        "operationId": "AuthAccountController_listBots",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BotAccountResponseDto"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Bot accounts"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List the bot accounts the authenticated account made, oldest first",
+        "tags": [
+          "auth"
+        ]
+      },
+      "post": {
+        "description": "A bot account is an ordinary self-custody account with its own key, linked to the account that made it. The caller derives the key in their own wallet and proves it holds it: request a challenge for the bot key from POST /auth/register-challenge, sign it with that key, and send both here. The bot then signs in by itself with POST /auth/login-signature. The owner must be a self-custody account and not a bot; the number of bot accounts one account may ever make is capped.",
+        "operationId": "AuthAccountController_createBot",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBotAccountDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotAccountResponseDto"
+                }
+              }
+            },
+            "description": "Bot account created"
+          },
+          "400": {
+            "description": "Validation error"
+          },
+          "401": {
+            "description": "Missing token, or the bot key was not proven"
+          },
+          "403": {
+            "description": "The caller is a bot account or not a self-custody account"
+          },
+          "409": {
+            "description": "Bot account cap reached, or the key is already registered"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create a bot account owned by the authenticated account",
         "tags": [
           "auth"
         ]
@@ -20654,6 +21895,166 @@
         ]
       }
     },
+    "/auto-trader/admin/rebalance/temple-legs/{id}": {
+      "get": {
+        "operationId": "AdminTempleLegsController_diagnostics",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "AdminTempleLegs"
+        ]
+      }
+    },
+    "/auto-trader/admin/rebalance/temple-legs/{id}/cancel-orders": {
+      "post": {
+        "operationId": "AdminTempleLegsController_cancelOrders",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "AdminTempleLegs"
+        ]
+      }
+    },
+    "/auto-trader/admin/rebalance/temple-legs/{id}/return-to-vault": {
+      "post": {
+        "operationId": "AdminTempleLegsController_returnToVault",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TempleLegReturnDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "AdminTempleLegs"
+        ]
+      }
+    },
+    "/auto-trader/admin/rebalance/temple-legs/{id}/withdraw": {
+      "post": {
+        "operationId": "AdminTempleLegsController_withdraw",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TempleLegWithdrawDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "tags": [
+          "AdminTempleLegs"
+        ]
+      }
+    },
     "/auto-trader/admin/rebalance/venue-status": {
       "get": {
         "operationId": "AdminLiquidityController_venueStatus",
@@ -21967,6 +23368,52 @@
           }
         ],
         "summary": "Fund BOTH bots in a pair up to their configured topup targets from the venue (fund-only). Moves real funds.",
+        "tags": [
+          "admin-bots"
+        ]
+      }
+    },
+    "/bot-admin/preapproval": {
+      "post": {
+        "operationId": "AdminBotsController_enableCc",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MigrateBotDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized"
+          },
+          "403": {
+            "description": "Forbidden"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Enable CC transfers (TransferPreapproval) for one bot",
         "tags": [
           "admin-bots"
         ]
@@ -25192,9 +26639,19 @@
     },
     "/htlc/fee-config": {
       "get": {
-        "description": "Returns the current fee rate, max fee rate (for external flow), and recipient for HTLC swaps.",
+        "description": "Returns the current fee rate, max fee rate (for external flow), and recipient for HTLC swaps. With `orderId` (JWT required, caller must be a party of the order) the config is the one of the order's venue pool (retail/partner/auto), so the fee recipient is the pool fee party the trade will actually pay.",
         "operationId": "HtlcFeeConfigController_getFeeConfig",
-        "parameters": [],
+        "parameters": [
+          {
+            "description": "Order whose pool decides the fee party; requires JWT and order membership. Default is the retail group.",
+            "in": "query",
+            "name": "orderId",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Current fee config or null"
