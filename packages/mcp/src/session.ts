@@ -218,9 +218,9 @@ export class CancoreSession {
       if (err instanceof ForbiddenError) {
         // Live grant, wrong scope. Dropping it would make the owner re-approve
         // for no reason.
-        return {
-          error: `${err.message} — this grant was not approved for that; run cancore_connect_wallet with force to ask the owner for it`,
-        };
+        // Only a scope refusal is cured by re-approving (same test as mcp-server).
+        const hint = /scope/i.test(err.message) ? '; run cancore_connect_wallet with force to ask the owner for it' : '';
+        return { error: `${err.message} — this grant was not approved for that${hint}` };
       }
       return { error: err instanceof Error ? err.message : String(err) };
     }

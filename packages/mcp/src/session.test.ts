@@ -136,6 +136,19 @@ test('a scope refusal says to reconnect with force', async () => {
   expect(loadGrant(path, API)?.token).toBe('tok');
 });
 
+// Same rule as mcp-server: only a refusal that names a scope is fixed by
+// re-approving; a surface switched off on the stand is not.
+test('a 403 that is not about a scope does not send the agent to reconnect', async () => {
+  const path = tempPath();
+  saveGrant(path, API, { token: 'tok', scopes: ['balances:read'], appName: 'Claude' });
+  const { fetchImpl } = recordingFetch({ status: 403, body: { message: 'agent surface is disabled' } });
+
+  const result = await session(path, fetchImpl).getBalances();
+
+  expect(result.error).toMatch(/not approved for that/);
+  expect(result.error).not.toMatch(/force/);
+});
+
 test('connecting when this stand is already authorized asks the owner nothing', async () => {
   const path = tempPath();
   saveGrant(path, API, { token: 'tok', scopes: ['agent:propose'], appName: 'Claude' });
