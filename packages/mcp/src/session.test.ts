@@ -109,6 +109,33 @@ test('a scope refusal keeps the grant', async () => {
   expect(loadGrant(path, API)?.token).toBe('tok');
 });
 
+test('balances are read from the credential, never from an argument (CAN-2259)', async () => {
+  const path = tempPath();
+  saveGrant(path, API, { token: 'tok', scopes: ['balances:read'], appName: 'Claude' });
+  const rows = [{ instrumentId: 'CC', balance: 1, locked: 0, total: 1, inSwaps: 0 }];
+  const { fetchImpl, calls } = recordingFetch({ status: 200, body: rows });
+
+  const result = await session(path, fetchImpl).getBalances();
+
+  expect(calls[0]?.method).toBe('GET');
+  expect(calls[0]?.url).toBe(`${API}/tokens/balances`);
+  expect(calls[0]?.headers.authorization).toBe('Bearer tok');
+  expect(result).toEqual({ balances: rows, count: 1 });
+});
+
+// A grant approved before balances:read existed: the refusal must say how to
+// get the scope, since a plain connect answers "already authorized".
+test('a scope refusal says to reconnect with force', async () => {
+  const path = tempPath();
+  saveGrant(path, API, { token: 'tok', scopes: ['agent:read'], appName: 'Claude' });
+  const { fetchImpl } = recordingFetch({ status: 403, body: { message: 'scope balances:read required' } });
+
+  const result = await session(path, fetchImpl).getBalances();
+
+  expect(result.error).toMatch(/cancore_connect_wallet with force/);
+  expect(loadGrant(path, API)?.token).toBe('tok');
+});
+
 test('connecting when this stand is already authorized asks the owner nothing', async () => {
   const path = tempPath();
   saveGrant(path, API, { token: 'tok', scopes: ['agent:propose'], appName: 'Claude' });
