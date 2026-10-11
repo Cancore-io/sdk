@@ -4,6 +4,7 @@
 // are a zero placeholder: this package holds no keys.
 import { StandardMerkleTree } from '@openzeppelin/merkle-tree';
 import { keccak256, toUtf8Bytes } from 'ethers';
+import { CANTON_DELIVERY_ORDER_CID } from './protocol-fixtures.mjs';
 
 // r = s = 0, v = 27: the shape of a signature, and no key signs it.
 export const PLACEHOLDER_SIG = `0x${'00'.repeat(64)}1b`;
@@ -98,9 +99,12 @@ export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHas
     'ticket.intent.ack': [{ type: 'ticket.intent.ack', id: 'g-11', ...S, sentAt: 1790000021001, re: 'i-1', ...t, intentHash, receivedAt: 1790000021000 }],
     'ticket.issued': [
       { type: 'ticket.issued', id: 'g-12', ...S, sentAt: 1790000024000, form: 'evm', ...t, ticket, ticketSig: PLACEHOLDER_SIG },
-      { type: 'ticket.issued', id: 'g-13', ...S, sentAt: 1790000024000, form: 'canton', ...t, attempt: 2, deliveryOrderCid: '00a1b2c3d4e5f6#fixture-delivery-order', validUntil: ticket.validUntil, repayTo: ticket.repayTo },
+      { type: 'ticket.issued', id: 'g-13', ...S, sentAt: 1790000024000, form: 'canton', ...t, attempt: 2, deliveryOrderCid: CANTON_DELIVERY_ORDER_CID, validUntil: ticket.validUntil, repayTo: ticket.repayTo },
     ],
-    'ticket.receipt': [{ type: 'ticket.receipt', ...F('rc-1', 1790000025000), ...t, ticketHash, ticketSigHash: receiptSigHash, sig: PLACEHOLDER_SIG }],
+    'ticket.receipt': [
+      { type: 'ticket.receipt', ...F('rc-1', 1790000025000), ...t, ticketHash, ticketSigHash: receiptSigHash, sig: PLACEHOLDER_SIG },
+      { type: 'ticket.receipt', ...F('rc-2', 1790000025000), form: 'canton', ...t, attempt: 2, deliveryOrderCid: CANTON_DELIVERY_ORDER_CID, validUntil: ticket.validUntil, sig: PLACEHOLDER_SIG },
+    ],
     'fill.reported': [{ type: 'fill.reported', ...F('f-1', 1790000060000), ...t, txRef: tx('cancore:test-kit:fixture-fill-tx') }],
     'ticket.expired': [
       { type: 'ticket.expired', id: 'g-14', ...S, sentAt: 1790000460000, ...t, result: 'FILLED' },

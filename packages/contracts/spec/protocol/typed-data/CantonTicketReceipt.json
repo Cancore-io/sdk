@@ -1,0 +1,77 @@
+{
+  "$comment": "Filler protocol v1, settlement design (variant A, CAN-2139; protocol.md §3.3): The receipt of a Canton-form ticket (§3.5, §10 D-O), which has no FillTicket and no ticketSig: orderHash and attempt of the ticket, deliveryOrderCidHash = keccak256(utf8(deliveryOrderCid)) over the contract id exactly as sent in ticket.issued (each vector names the string it hashes), validUntil = ticket.issued.validUntil. fillerId and repayTo are not part of it: they travel in ticket.issued. Signed by the message key (CAN-2062). Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.",
+  "primaryType": "CantonTicketReceipt",
+  "domain": {
+    "name": "CancoreFillerProtocol",
+    "version": "1",
+    "fields": [
+      "name",
+      "version"
+    ]
+  },
+  "typeString": "CantonTicketReceipt(bytes32 orderHash,uint32 attempt,bytes32 deliveryOrderCidHash,uint64 validUntil)",
+  "types": {
+    "CantonTicketReceipt": [
+      {
+        "name": "orderHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "attempt",
+        "type": "uint32"
+      },
+      {
+        "name": "deliveryOrderCidHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "validUntil",
+        "type": "uint64"
+      }
+    ]
+  },
+  "vectors": [
+    {
+      "note": "receipt of the Canton-form ticket.issued example (spec/protocol/vectors/messages.json): attempt 2 of the fixture order",
+      "deliveryOrderCid": "00a1b2c3d4e5f6#fixture-delivery-order",
+      "message": {
+        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "attempt": 2,
+        "deliveryOrderCidHash": "0x5c7b22bd40920041d2cc926c93a6020af74e1f42036bf3b0dbe784b1a7720014",
+        "validUntil": "1790000400"
+      },
+      "digest": "0x6aa7333dea8b3abb153176b4f519c5807e03215acd177ef1091bb6d072498a2c"
+    },
+    {
+      "note": "a contract id shaped as the ledger prints it, on the canton-order.json order",
+      "deliveryOrderCid": "0044b7a7e21e25380f41b3cf55244a5edcfbdb46aa8a1238226177d56ddab35f19ca1220972fef88e9043f7d83cac719bcb198718e7e134d36afcae884953a03f9bc2540",
+      "message": {
+        "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204",
+        "attempt": 0,
+        "deliveryOrderCidHash": "0xa6af2a70138ce6ea8d93b04960adb9d415c3e7b9cd669ab6f7602420483e7d42",
+        "validUntil": "1789999800"
+      },
+      "digest": "0xbdd7bf58d74f86144e9befb537ed32c9753b194a580f9e703ceda1b461c137a6"
+    },
+    {
+      "note": "every integer at its maximum, every word all ones",
+      "message": {
+        "orderHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "attempt": 4294967295,
+        "deliveryOrderCidHash": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "validUntil": "18446744073709551615"
+      },
+      "digest": "0x5fc4527dac12909840287d3d1600c1cd4c6b923cb9e6ce1b39ceccc78b7e91ca"
+    },
+    {
+      "note": "zero",
+      "message": {
+        "orderHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "attempt": 0,
+        "deliveryOrderCidHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "validUntil": "0"
+      },
+      "digest": "0x3d54c9eba500517aa119c8ce81d645ba351d556896ab36e8543f14b224d55b91"
+    }
+  ]
+}
