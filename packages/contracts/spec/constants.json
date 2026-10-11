@@ -1,0 +1,66 @@
+{
+  "$comment": "Public constants of CancoreRouter and AttestorSet, read by scripts/sync.mjs from their Solidity source at `commit` (the same checkout as the ABIs). Values are decimal strings for integers, the text for strings, the hash for keccak256 of a string literal. src/constants.test.ts holds the package's constants to this file (SDK-6). Not edited by hand.",
+  "commit": "c214f56f6fe5a62097833c5f1335b0cb5351b225",
+  "contracts": {
+    "CancoreRouter": {
+      "ORDER_TYPEHASH": {
+        "type": "bytes32",
+        "value": "0x1f93a050ad6e8cc50e77b273767fdc0bfbb439bade69b3ffc73337227024750a"
+      },
+      "WITNESS_TYPE_STRING": {
+        "type": "string",
+        "value": "Order witness)Order(address user,uint64 originChainId,address inputToken,uint256 inputAmount,bytes32 destination,bytes32 outputAsset,uint256 minReceived,bytes32 recipient,uint64 createdAt,uint64 fillDeadline,uint16 feeBps)TokenPermissions(address token,uint256 amount)"
+      },
+      "FILLPROOF_TYPEHASH": {
+        "type": "bytes32",
+        "value": "0xc37e18cdd22fbc1e707c1bcc554d9d29c2e6c5a44bb4a9a4dc38e2c28e2419ae"
+      },
+      "QUOTE_TYPEHASH": {
+        "type": "bytes32",
+        "value": "0xc76518f4d4ad76a1c01188b552131332d0907df782b6352e36e9523c3d74d249"
+      },
+      "TICKET_TYPEHASH": {
+        "type": "bytes32",
+        "value": "0x3b13cc38a5a61268c25e4816e0757e2301dc1d1fba2efe63f42f2fa30673ec82"
+      },
+      "PROOF_KIND_ATTESTATION": {
+        "type": "uint8",
+        "value": "1"
+      },
+      "BPS": {
+        "type": "uint16",
+        "value": "10000"
+      },
+      "MAX_FEE_BPS": {
+        "type": "uint16",
+        "value": "1000"
+      },
+      "MIN_FILL_TTL": {
+        "type": "uint64",
+        "value": "60"
+      }
+    },
+    "AttestorSet": {
+      "SET_DELAY": {
+        "type": "uint64",
+        "value": "259200"
+      },
+      "MAX_FILL_TTL": {
+        "type": "uint64",
+        "value": "86400"
+      },
+      "MAX_SIG_TTL": {
+        "type": "uint64",
+        "value": "86400"
+      },
+      "MAX_PROOF_WINDOW": {
+        "type": "uint64",
+        "value": "14400"
+      },
+      "GRACE": {
+        "type": "uint64",
+        "value": "100800"
+      }
+    }
+  }
+}
