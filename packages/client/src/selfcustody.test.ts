@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519';
-import { deriveWalletKey, providerFromMnemonic } from '@cancore/wallet';
+import { deriveWalletKey, LOGIN_CHALLENGE_PREFIX as WALLET_CHALLENGE_PREFIX, providerFromMnemonic } from '@cancore/wallet';
 import { allocationTree, DEV, prepared, proposalAccept, proposalCreate, selfSendLeg, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
 import type { FetchLike } from './http';
 import {
@@ -16,7 +16,7 @@ import {
   type SelfCustodyOptions,
   type ServeEvent,
 } from './selfcustody';
-import { createSession, expiresWithin, type KeySigner } from './session';
+import { createSession, expiresWithin, LOGIN_CHALLENGE_PREFIX, type KeySigner } from './session';
 import type { SettleRun } from './serve';
 
 /**
@@ -1351,6 +1351,19 @@ describe('a signer that only has signMessage is not handed a challenge that is n
 
     await expect(createSession({ baseUrl, signer, fetchImpl: answering(challenge) }).login()).rejects.toThrow(/not a Cancore login challenge/);
     expect(signer.signMessage).not.toHaveBeenCalled();
+  });
+
+  test('signing up is the same door: a register challenge that is not one is not signed either', async () => {
+    const signer = raw();
+    const fetchImpl: FetchLike = async (url) =>
+      new URL(url).pathname === '/auth/register-challenge' ? json({ challenge: 'x'.repeat(32) }) : json({ token: jwt('a'), user: {} });
+
+    await expect(createSession({ baseUrl, signer, fetchImpl }).register({ partyName: 'bot' })).rejects.toThrow(/not a Cancore login challenge/);
+    expect(signer.signMessage).not.toHaveBeenCalled();
+  });
+
+  test('the prefix is the one the wallet\'s own signChallenge holds a challenge to', () => {
+    expect(LOGIN_CHALLENGE_PREFIX).toBe(WALLET_CHALLENGE_PREFIX);
   });
 
   test('a real challenge is signed, as before', async () => {

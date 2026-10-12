@@ -175,10 +175,7 @@ function decodeLegHash(hashB64: unknown): string | null {
   }
 }
 
-/**
- * The bytes a topology leg has the key sign, or a refusal: a sha2-256 multihash
- * is `0x12` (the function), `0x20` (its 32 bytes), then the digest — 34 bytes.
- */
+/** The bytes a prepared-transaction leg has the key sign, or a refusal: 32 bytes, spelled one way. */
 function preparedHash(hashB64: unknown): string {
   const hash = decodeLegHash(hashB64);
   if (hash === null || hash.length !== PREPARED_HASH_BYTES) {
@@ -186,6 +183,11 @@ function preparedHash(hashB64: unknown): string {
   }
   return hash;
 }
+
+/**
+ * The bytes a topology leg has the key sign, or a refusal: a sha2-256 multihash
+ * is `0x12` (the function), `0x20` (its 32 bytes), then the digest — 34 bytes.
+ */
 function topologyMultihash(leg: OperationLeg): string {
   const binary = decodeLegHash(leg.hash);
   if (binary === null || binary.length !== 34 || binary.charCodeAt(0) !== 0x12 || binary.charCodeAt(1) !== 0x20) {

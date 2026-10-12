@@ -321,6 +321,8 @@ describe('@cancore/wallet/operations', () => {
 
       for (const bad of ['@@@@', b64(hex('bb'.repeat(31))), MULTIHASH, '']) {
         await expect(signLegs(signer, [leg('h1', PREPARED_HASH), leg('h2', bad)], { operation: 'tokens.send' })).rejects.toBeInstanceOf(UnexpectedLegError);
+        // Without an operation named too: that is how a caller composing the steps by hand signs.
+        await expect(signLegs(signer, [leg('h1', PREPARED_HASH), leg('h2', bad)])).rejects.toBeInstanceOf(UnexpectedLegError);
         expect(() => assertOperationLegs([leg('h1', PREPARED_HASH), { legId: 'f1', hash: bad, kind: 'fee' }], 'tokens.send')).toThrow(UnexpectedLegError);
       }
       expect(signer.signPreparedHash).not.toHaveBeenCalled();

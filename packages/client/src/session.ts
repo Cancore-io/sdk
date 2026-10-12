@@ -106,9 +106,9 @@ export interface Session {
   register(input?: RegisterInput): Promise<AccountUser>;
 }
 
-/** Renew this long before `exp`, so a request never leaves with a token that dies in flight. */
 /** The fixed start of the gateway's login challenge (`Welcome to Cancore <date> sig:<nonce>`), as `@cancore/wallet` pins it. */
-const LOGIN_CHALLENGE_PREFIX = 'Welcome to Cancore ';
+export const LOGIN_CHALLENGE_PREFIX = 'Welcome to Cancore ';
+/** Renew this long before `exp`, so a request never leaves with a token that dies in flight. */
 const RENEW_AHEAD_MS = 60_000;
 /** Sign-in attempts after a false "no account" answer, and the pause before each (times the attempt). */
 const LOGIN_RETRIES = 2;
