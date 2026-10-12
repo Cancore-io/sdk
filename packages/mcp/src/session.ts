@@ -160,6 +160,13 @@ export class CancoreSession {
     return this.#call(async (client) => ({ intents: await client.listPending() }));
   }
 
+  getBalances(): Promise<ToolResult> {
+    return this.#call(async (client) => {
+      const balances = await client.getBalances();
+      return { balances, count: balances.length };
+    });
+  }
+
   /**
    * End a replaced grant on the server (CAN-2087). Overwriting the file alone
    * left it alive for up to 30 days, usable by anything that had read it.
@@ -211,7 +218,9 @@ export class CancoreSession {
       if (err instanceof ForbiddenError) {
         // Live grant, wrong scope. Dropping it would make the owner re-approve
         // for no reason.
-        return { error: `${err.message} — this grant was not approved for that` };
+        // Only a scope refusal is cured by re-approving (same test as mcp-server).
+        const hint = /scope/i.test(err.message) ? '; run cancore_connect_wallet with force to ask the owner for it' : '';
+        return { error: `${err.message} — this grant was not approved for that${hint}` };
       }
       return { error: err instanceof Error ? err.message : String(err) };
     }

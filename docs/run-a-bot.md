@@ -267,17 +267,17 @@ How these reach your code:
 
 - A `429` or a `400` is a `CancoreApiError` (`@cancore/client`): read `err.status`, `err.message`
   and `err.body`. The SDK does not retry a `429`. Back off and try again.
-- **A `403` from `take`, `swap.create` or `swap.createForPair` arrives as a `SettleError` whose
-  message opens with a DvP refusal, whatever the real reason.** The API's own words are inside the
-  parentheses:
+- A `403` is a `CancoreApiError` too, with the API's own words in `err.message` — the self-trade
+  and the documents refusals of the table above arrive exactly so:
 
   ```text
-  SettleError: taking order <id>: allocation-DvP is not open to this account on this stand
-    (POST /orders/<id>/accept → 403: Self-trade is not allowed: the order initiator and acceptor
-    belong to the same person.); a Canton↔Canton order settles only through DvP, never through HTLC
+  CancoreApiError: POST /orders/<id>/accept → 403: Self-trade is not allowed: the order initiator
+    and acceptor belong to the same person.
   ```
 
-  `bot.swap.accept(id)` alone throws the plain `CancoreApiError` with `status` 403.
+- **One `403` is said differently:** when the stand has not opened allocation-DvP to the account,
+  `take`, `swap.create` and `swap.createForPair` throw a `SettleError` that says so and that a
+  Canton↔Canton order is never moved to HTLC instead. Only that refusal is rewritten.
 
 Everything else `make`, `take` and `send` can throw (a fee above your ceiling, a pair not enabled
 for DvP, an expired trade and how to release its funds) is in the

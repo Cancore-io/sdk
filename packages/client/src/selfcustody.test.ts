@@ -1687,6 +1687,78 @@ const takenOrder = (over: Record<string, unknown> = {}) => ({
   opponentUserId: 'me', opponent: { partyId: 'party-taker' }, swapId: null, dvp: true, ...over,
 });
 
+describe('a 403 that is not a DvP refusal reaches the caller as the API said it (CAN-2400)', () => {
+  // `take`, `swap.create` and `swap.createForPair` used to call every 403 "allocation-DvP is not open
+  // to this account", and people asked for an allowlist entry they did not need.
+  const OTHER_403: Array<[string, string, string | undefined]> = [
+    ['self-trade inside one owner\'s family', 'Self-trade is not allowed: the order initiator and acceptor belong to the same person.', undefined],
+    ['documents not accepted', 'The platform documents must be accepted before trading.', undefined],
+    // A code a newer gateway serves and this client does not know yet: read as no code at all.
+    ['a bot account its owner stopped', 'This bot account was stopped by its owner: it cannot make or take orders until the owner resumes it', 'ACCOUNT_STOPPED'],
+    ['a 403 that says nothing', 'Forbidden', undefined],
+  ];
+  const offer = {
+    sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+    targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+  };
+  const account = async (handlers: Parameters<typeof stub>[0]) => {
+    const api = stub(handlers);
+    return { api, acct: createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast }) };
+  };
+  const asTheApiSaidIt = (error: unknown, message: string) => {
+    expect(error).toMatchObject({ name: 'CancoreApiError', status: 403 });
+    expect(error).not.toBeInstanceOf(SettleError);
+    expect((error as Error).message).toContain(message);
+    expect((error as Error).message).not.toMatch(/allocation-DvP/i);
+  };
+
+  test.each(OTHER_403)('%s, at take', async (_what, message, errorCode) => {
+    const { api, acct } = await account({
+      'GET /orders/o1': () => takenOrder({ status: 'open', opponentUserId: null, opponent: null }),
+      'GET /auth/me': () => ({ id: 'me', partyId: 'party-me' }),
+      'POST /orders/o1/accept': () => refuse(403, message, errorCode),
+    });
+
+    asTheApiSaidIt(await acct.take('o1').catch((e: unknown) => e), message);
+    expect(api.signed()).toEqual([]);
+  });
+
+  test.each(OTHER_403)('%s, at placing an order', async (_what, message, errorCode) => {
+    const { api, acct } = await account({ 'POST /orders': () => refuse(403, message, errorCode) });
+
+    asTheApiSaidIt(await acct.swap.create(offer).catch((e: unknown) => e), message);
+    expect(api.signed()).toEqual([]);
+  });
+
+  test.each(OTHER_403)('%s, at placing a pair order', async (_what, message, errorCode) => {
+    const { api, acct } = await account({
+      'GET /trading-pairs/p1': () => ({ id: 'p1', baseToken: { network: 'canton' }, quoteToken: { network: 'canton' } }),
+      'POST /orders/pair': () => refuse(403, message, errorCode),
+    });
+
+    asTheApiSaidIt(await acct.swap.createForPair({ tradingPairId: 'p1', sourceAmount: '1', targetAmount: '2' }).catch((e: unknown) => e), message);
+    expect(api.signed()).toEqual([]);
+  });
+
+  test.each([
+    ['by its code', 'refused', 'DVP_NOT_ALLOWED'],
+    // A gateway that serves no codes yet names the refusal only in its message.
+    ['by its words alone', 'Allocation-DvP is not open to this account on this stand. A DvP trade needs a self-custody, staff/bot or allowlisted party on at least one side.', undefined],
+  ])('the DvP refusal itself is still said in words, %s', async (_how, message, errorCode) => {
+    const { acct } = await account({
+      'GET /orders/o1': () => takenOrder({ status: 'open', opponentUserId: null, opponent: null }),
+      'GET /auth/me': () => ({ id: 'me', partyId: 'party-me' }),
+      'POST /orders/o1/accept': () => refuse(403, message, errorCode),
+      'POST /orders': () => refuse(403, message, errorCode),
+    });
+
+    const taken = await acct.take('o1').catch((e: unknown) => e);
+    expect(taken).toBeInstanceOf(SettleError);
+    expect((taken as Error).message).toMatch(/taking order o1: allocation-DvP is not open to this account/);
+    await expect(acct.swap.create(offer)).rejects.toThrow(/placing the order: allocation-DvP is not open to this account/);
+  });
+});
+
 describe('refusals that come before anything is signed', () => {
   test.each([{ sourceNetwork: 'sepolia' }, { targetNetwork: 'sepolia' }])('an order that is not Canton on both sides: %o', async (side) => {
     const api = stub({ 'GET /orders/o1': () => takenOrder(side) });
