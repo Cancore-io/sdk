@@ -44,7 +44,7 @@ export interface FixtureLeg {
   instrumentId: { admin: string; id: string };
 }
 
-const v = {
+export const v = {
   party: (party: string): Value => ({ sum: { oneofKind: 'party', party } }),
   text: (text: string): Value => ({ sum: { oneofKind: 'text', text } }),
   numeric: (numeric: string): Value => ({ sum: { oneofKind: 'numeric', numeric } }),
@@ -422,6 +422,14 @@ export async function selfSendLeg(input: {
   });
   const built = await prepared(input.actAs ?? input.party, [root, spend('1', owned, input.party), ...outputs, ...extra], [preapproval, owned, ...(input.extraInput ? [input.extraInput] : [])]);
   return { kind: input.kind, ...built };
+}
+
+/** A prepared leg after `edit` changed its decoded transaction: encoded and hashed again, as a hostile API would hand it over. */
+export async function remade<L extends { preparedTransaction: string }>(leg: L, edit: (decoded: PreparedTransaction) => void): Promise<L & { preparedTransactionHash: string }> {
+  const decoded = PreparedTransaction.fromBinary(Buffer.from(leg.preparedTransaction, 'base64'));
+  edit(decoded);
+  const preparedTransaction = Buffer.from(PreparedTransaction.toBinary(decoded)).toString('base64');
+  return { ...leg, preparedTransaction, preparedTransactionHash: await hashPreparedTransaction(preparedTransaction, 'base64') };
 }
 
 const TRANSFER_API = '55ba4deb0ad4662c4168b39859738a0e91388d252286480c7331b3f71a517281';

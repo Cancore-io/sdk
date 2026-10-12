@@ -14,7 +14,7 @@
 export type DvpNetwork = 'devnet' | 'testnet' | 'mainnet';
 
 /** Freeze an object and everything in it: a pinned list must not be editable at runtime by a dependency. */
-function deepFreeze<T>(value: T): T {
+export function deepFreeze<T>(value: T): T {
   if (value && typeof value === 'object') {
     for (const inner of Object.values(value)) deepFreeze(inner);
     Object.freeze(value);

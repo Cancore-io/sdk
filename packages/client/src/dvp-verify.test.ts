@@ -1,7 +1,8 @@
 import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
-import { acceptTransferLeg, allocationTree, createNode, DEV, exercise, factoryContract, factoryTransferLeg, holding, OFFER_CID, preapprovalContract, preapprovalProposalLeg, prepared, proposalAccept, proposalCreate, selfSendLeg, spend, spendTransfer, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
+import type { Create, PreparedTransaction } from '@canton-network/core-ledger-proto';
+import { acceptTransferLeg, allocationTree, createNode, DEV, exercise, factoryContract, factoryTransferLeg, holding, OFFER_CID, preapprovalContract, preapprovalProposalLeg, prepared, proposalAccept, remade, proposalCreate, selfSendLeg, spend, spendTransfer, v, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
 import { DEFAULT_INSTRUMENT_ADMINS, DEFAULT_VENUES, instrumentKey, mergeLists } from './dvp-admins';
-import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyAcceptPrepared, verifyConsolidatePrepared, verifyDvpPrepared, verifyPreapprovalSetupPrepared, verifySelfSendPrepared, verifySendPrepared, type AcceptTerms, type ConsolidateTerms, type DvpTerms, type PreapprovalSetupTerms, type SelfSendTerms, type SendTerms } from './dvp-verify';
+import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyAcceptPrepared, verifyConsolidatePrepared, verifyDvpPrepared, verifyFeePrepared, verifyPreapprovalSetupPrepared, verifySelfSendPrepared, verifySendPrepared, type AcceptTerms, type ConsolidateTerms, type DvpTerms, type PreapprovalSetupTerms, type SelfSendTerms, type SendTerms } from './dvp-verify';
 
 const MAKER = 'maker::1220aa';
 const TAKER = 'taker::1220bb';
@@ -83,7 +84,7 @@ describe('the whole tree of an allocation, not just its root', () => {
     await expect(verifyDvpPrepared('dvpAllocateLeg', [await fund('leg-main')], terms(MAKER))).resolves.toBeUndefined();
   });
   test('a registry upgrade (a package id nobody listed) under the admin-signed factory is still the admin’s code, and signs', async () => {
-    const upgraded = holding('66'.repeat(34), MAKER, CBTC, '0', { packageId: 'ab'.repeat(32), lockedTo: undefined });
+    const upgraded = holding('6b'.repeat(34), MAKER, CBTC, '0', { packageId: 'ab'.repeat(32), lockedTo: undefined });
     await expect(verifyDvpPrepared('dvpAllocateLeg', [await withExtra((id) => ({ nodes: [createNode(id(0), upgraded)] }))], terms(MAKER))).resolves.toBeUndefined();
   });
   test('an extra child that moves another of the signer’s holdings to someone else', async () => {
@@ -701,12 +702,14 @@ describe('a registry-token send is signed only as the account asked for it (CAN-
   test('the command sends to another party, or another amount', async () => {
     await refused([await transfer({ command: { receiver: MALLORY } })], /leg 0 sends to mallory::1220ff, not to party-owner::1220bb, the receiver this send was asked for/);
     // The lock is of the right size; the command it runs under asks for more.
-    await refused([await transfer({ command: { amount: '1.5' }, offer: { amount: '1.5' } })], /is given 0.5 CBTC, not the 0.5 this send was asked for/);
+    await refused([await transfer({ command: { amount: '1.5' }, offer: { amount: '1.5' } })], /leg 0 transfers 1.5 and neither hands exactly that to party-owner::1220bb, the receiver this send was asked for nor locks exactly that under one offer of this transfer/);
+    // The lock, the offer and the command agree with each other — on three times what the caller asked to send.
+    await refused([await transfer({ command: { amount: '1.5' }, offer: { amount: '1.5' }, outputs: [{ owner: BOT, amount: '1.5', lockedTo: CBTC.admin }, { owner: BOT, amount: '0.5' }] })], /is given 1.5 CBTC, not the 0.5 this send was asked for/);
     await refused([await transfer({ command: { amount: '0' } })], /transfers an amount that is not a positive decimal/);
   });
 
   test('more locked than was asked for, or the change gone', async () => {
-    await refused([await transfer({ outputs: [{ owner: BOT, amount: '2', lockedTo: CBTC.admin }] })], /is given 2 CBTC, not the 0.5/);
+    await refused([await transfer({ outputs: [{ owner: BOT, amount: '2', lockedTo: CBTC.admin }] })], /leg 0 transfers 0.5 and neither hands exactly that to .* nor locks exactly that under one offer of this transfer/);
     await refused([await transfer({ outputs: [{ owner: BOT, amount: '0.5', lockedTo: CBTC.admin }] })], /the send costs this account 2 CBTC and 0 CC of fee, more than the 0.5 it sends/);
   });
 
@@ -894,3 +897,137 @@ describe('the preapproval step of onboard() is signed only as a proposal of the 
   });
 });
 
+
+describe('what a second, hostile reading of these verifiers found (CAN-2249)', () => {
+  // The security review of the verifiers themselves: each case below was signed before and is refused now.
+  const sendTerms: SendTerms = { party: BOT, admins: [DEV.dso], instrument: 'Amulet', receiver: OWNER, amount: '100', maxFee: '0.5', feeRecipients: [DEV.venue] };
+  const regTerms: SendTerms = { party: BOT, admins: [CBTC.admin], dso: [DEV.dso], instrument: 'CBTC', receiver: OWNER, amount: '0.5', maxFee: '0.5', feeRecipients: [DEV.venue] };
+  const acceptTerms: AcceptTerms = { party: BOT, instructionCid: OFFER_CID, pinnedAdmins: { CBTC: [CBTC.admin], Amulet: [DEV.dso] }, dso: [DEV.dso], maxFee: '0.5', feeRecipients: [DEV.venue] };
+  const mergeTerms: ConsolidateTerms = { party: BOT, admins: [DEV.dso], instrument: 'Amulet', maxFee: '0.5', feeRecipients: [DEV.venue] };
+  type SendOver = Partial<Parameters<typeof selfSendLeg>[0]>;
+  type FactoryOver = Partial<Parameters<typeof factoryTransferLeg>[0]>;
+  const ccTransfer = (over: SendOver = {}) => selfSendLeg({ party: BOT, kind: 'transfer', receiver: OWNER, input: '10000', ids: 'a', outputs: [{ owner: OWNER, amount: '100' }, { owner: BOT, amount: '9900' }], ...over });
+  const ccMerge = () => selfSendLeg({ party: BOT, kind: 'transfer', receiver: BOT, input: '19.54084', ids: 'a', outputs: [{ owner: BOT, amount: '19.54084' }] });
+  const acceptLeg = () => acceptTransferLeg({ party: BOT, sender: OWNER, instrument: CBTC, amount: '0.5' });
+  const offered: FactoryOver['outputs'] = [{ owner: BOT, amount: '0.5', lockedTo: CBTC.admin }, { owner: BOT, amount: '1.5' }];
+  const regTransfer = (over: FactoryOver = {}) => factoryTransferLeg({ party: BOT, receiver: OWNER, instrument: CBTC, amount: '0.5', input: '2', outputs: offered, ...over });
+  const other = (contractId: string, entityName: string, fields: Record<string, ReturnType<typeof v.party>>, signatories: string[]): Create => ({
+    lfVersion: '2.1', contractId, packageName: 'splice-amulet', templateId: { packageId: 'ab'.repeat(32), moduleName: 'Splice.Amulet', entityName },
+    argument: v.record(fields), signatories, stakeholders: [...new Set([...signatories, BOT])],
+  });
+  // A reward coupon of the account's: value that is the account's and is not a holding.
+  const coupon = (amount: string) => other('e0'.repeat(34), 'AppRewardCoupon', { dso: v.party(DEV.dso), provider: v.party(BOT), amount: v.numeric(amount) }, [DEV.dso]);
+  /** A fee leg that hands the venue `venueGets`, the difference paid out of a coupon of the account's. */
+  const feeOf = (venueGets: string, couponWorth?: string) => ccFee({
+    outputs: [{ owner: DEV.venue, amount: venueGets }, { owner: BOT, amount: '9.875' }],
+    ...(couponWorth ? { extra: (c: Create) => spend('x', c, DEV.dso), extraInput: coupon(couponWorth) } : {}),
+  });
+  const createIn = (decoded: PreparedTransaction, nodeId: string) => {
+    const versioned = decoded.transaction!.nodes.find((n) => n.nodeId === nodeId)!.versionedNode;
+    if (versioned.oneofKind !== 'v1' || versioned.v1.nodeType.oneofKind !== 'create') throw new Error(`node ${nodeId} is not a create`);
+    return versioned.v1.nodeType.create;
+  };
+  const exerciseIn = (decoded: PreparedTransaction, nodeId: string) => {
+    const versioned = decoded.transaction!.nodes.find((n) => n.nodeId === nodeId)!.versionedNode;
+    if (versioned.oneofKind !== 'v1' || versioned.v1.nodeType.oneofKind !== 'exercise') throw new Error(`node ${nodeId} is not an exercise`);
+    return versioned.v1.nodeType.exercise;
+  };
+
+  test('a fee leg costs the account what it hands over, whatever paid for it', async () => {
+    // The venue is handed 500 CC of "fee"; the account's holdings lose 0.125, the rest is a reward coupon of its own.
+    await refusedWith(verifySendPrepared([await ccTransfer(), await feeOf('500', '490.125')], sendTerms), /the send costs this account 600 Amulet, more than the 100 it sends and the fee it allows/);
+    await refusedWith(verifyAcceptPrepared([await acceptLeg(), await feeOf('500', '490.125')], acceptTerms), /the accept costs this account 500 CC of fee, more than the fee it allows/);
+    await refusedWith(verifyConsolidatePrepared([await ccMerge(), await feeOf('500', '490.125')], mergeTerms), /the merge costs this account 500 Amulet, more than the fee it allows/);
+    await refusedWith(verifyFeePrepared([await feeOf('500', '490.125')], { party: BOT, dso: [DEV.dso], maxFee: '0.5', feeRecipients: [DEV.venue] }), /the fee costs this account 500 CC, more than the fee it allows/);
+    // And with no source at all for it in the tree: what is handed over is what is counted.
+    await refusedWith(verifySendPrepared([await ccTransfer(), await feeOf('500')], sendTerms), /the send costs this account 600 Amulet/);
+    // The honest fee is unchanged.
+    await expect(verifySendPrepared([await ccTransfer(), await feeOf('0.125')], sendTerms)).resolves.toBeUndefined();
+  });
+
+  test('a gain on one leg does not pay for an overcharge on another', async () => {
+    // The transfer leg turns a 400 CC coupon into change: the account's holdings GAIN 300 on it. The fee leg then takes 300.5.
+    const gaining = await ccTransfer({ outputs: [{ owner: OWNER, amount: '100' }, { owner: BOT, amount: '10300' }], extra: (c) => spend('x', c, DEV.dso), extraInput: coupon('400') });
+    const taking = await ccFee({ input: '310', outputs: [{ owner: DEV.venue, amount: '300.5' }, { owner: BOT, amount: '9.5' }] });
+
+    await refusedWith(verifySendPrepared([gaining, taking], sendTerms), /the send costs this account 400.5 Amulet, more than the 100 it sends and the fee it allows/);
+    // The coupon folded into the change, with the honest fee, is the account's own business.
+    await expect(verifySendPrepared([gaining, await feeOf('0.125')], sendTerms)).resolves.toBeUndefined();
+  });
+
+  test('a registry send gives exactly what it transfers: handed over, or locked under one offer of this transfer', async () => {
+    // Locked, and nobody is offered it: the receiver has nothing to accept and the sender's balance is stuck.
+    await refusedWith(verifySendPrepared([await regTransfer({ offer: null })], regTerms), /leg 0 transfers 0.5 and neither hands exactly that to .* nor locks exactly that under one offer of this transfer/);
+    // Two legs, each asking for the whole amount and locking half of it.
+    const half = () => regTransfer({ outputs: [{ owner: BOT, amount: '0.25', lockedTo: CBTC.admin }, { owner: BOT, amount: '1.75' }] });
+    await refusedWith(verifySendPrepared([await half(), await half()], regTerms), /leg 0 transfers 0.5 and neither hands exactly that/);
+    // An "offer" of this transfer that the admin did not sign, and one of another instrument, are not the offer.
+    const unsigned = await remade(await regTransfer(), (decoded) => {
+      for (const n of decoded.transaction!.nodes) {
+        const type = n.versionedNode.oneofKind === 'v1' ? n.versionedNode.v1.nodeType : undefined;
+        if (type?.oneofKind === 'create' && type.create.templateId?.entityName === 'TransferOffer') type.create.signatories = [BOT];
+      }
+    });
+    await refusedWith(verifySendPrepared([unsigned], regTerms), /creates a TransferOffer signed by this account that is neither its holding nor this send/);
+    await refusedWith(verifySendPrepared([await regTransfer({ offer: { instrumentId: { id: 'HTEST', admin: CBTC.admin } } })], regTerms), /creates a TransferOffer signed by this account that is neither its holding nor this send/);
+  });
+
+  test('one contract id is one contract among those a transaction creates, too', async () => {
+    // A third holding — the venue's — under the contract id of the receiver's: the holdings rule would read one of the two.
+    const hidden = await ccTransfer({
+      outputs: [{ owner: DEV.venue, amount: '0.5' }, { owner: OWNER, amount: '100' }, { owner: BOT, amount: '9899.5' }],
+      output: (c) => (c.contractId.startsWith('a1') ? { ...c, contractId: 'a2'.repeat(34) } : c),
+    });
+    await refusedWith(verifySendPrepared([hidden], sendTerms), /leg 0 creates two contracts under one contract id/);
+    // And a create under the id of a contract the transaction discloses.
+    const shadow = other('ee'.repeat(34), 'Note', { holder: v.party(BOT) }, [DEV.dso]);
+    await refusedWith(verifySendPrepared([await ccTransfer({ extra: (c) => createNode('x', c), extraInput: shadow })], sendTerms), /leg 0 creates two contracts under one contract id/);
+  });
+
+  test('a record that names a field twice is not read at all', async () => {
+    const twice = await remade(await preapprovalProposalLeg({ party: BOT }), (decoded) => {
+      const argument = createIn(decoded, '0').argument!.sum;
+      if (argument.oneofKind !== 'record') throw new Error('the proposal is a record');
+      // Read by label, the last `provider` wins; read by position, the first does.
+      argument.record.fields.unshift({ label: 'provider', value: v.party(MALLORY) });
+    });
+    await refusedWith(verifyPreapprovalSetupPrepared([twice], { party: BOT, dso: [DEV.dso], providers: [DEV.venue, BOT], packages: DEFAULT_TRUSTED_PACKAGES.wallet }), /leg 0 carries a record that names a field twice/);
+  });
+
+  test.each(['constructor', '__proto__', 'toString', 'hasOwnProperty'])('a name the transaction supplies — %s — finds no pin and is refused as any unpinned name is', async (name) => {
+    // An instrument id and a package name are the API's words: looked up as an own entry of the pins, they are just unknown.
+    await refusedWith(verifyAcceptPrepared([await acceptTransferLeg({ party: BOT, sender: OWNER, instrument: { id: name, admin: CBTC.admin }, amount: '0.5' })], acceptTerms), /which is not an admin this SDK pins for it/);
+    await refusedWith(verifyPreapprovalSetupPrepared([await preapprovalProposalLeg({ party: BOT, packageName: name })], { party: BOT, dso: [DEV.dso], providers: [DEV.venue, BOT], packages: DEFAULT_TRUSTED_PACKAGES.wallet }), /runs code from an untrusted package/);
+  });
+
+  test('the package pins cannot be changed by whoever imports them', () => {
+    const wallet = DEFAULT_TRUSTED_PACKAGES.wallet['splice-wallet'] as string[];
+    expect(Object.isFrozen(DEFAULT_TRUSTED_PACKAGES)).toBe(true);
+    expect(() => wallet.push('ee'.repeat(32))).toThrow(TypeError);
+    expect(() => { (DEFAULT_TRUSTED_PACKAGES.swap as Record<string, string[]>).evil = ['ee'.repeat(32)]; }).toThrow(TypeError);
+  });
+
+  test('rules that held and had no test of their own', async () => {
+    // A contract the account signs that is neither its holding nor the offer of this transfer — in a send, and in an accept.
+    const paper = (contractId: string) => other(contractId, 'Paper', { holder: v.party(BOT) }, [BOT]);
+    await refusedWith(verifySendPrepared([await ccTransfer({ extra: () => createNode('x', paper('ef'.repeat(34))), extraInput: other('ee'.repeat(34), 'Note', { holder: v.party(BOT) }, [DEV.dso]) })], sendTerms),
+      /creates a Paper signed by this account that is neither its holding nor this send/);
+    const signing = await remade(await acceptLeg(), (decoded) => {
+      decoded.transaction!.nodes.push(createNode('9', paper('ef'.repeat(34))));
+      decoded.transaction!.nodeSeeds.push({ nodeId: 9, seed: new Uint8Array(32).fill(7) });
+      exerciseIn(decoded, '0').children.push('9');
+    });
+    await refusedWith(verifyAcceptPrepared([signing], acceptTerms), /creates a Paper signed by this account that is neither its holding nor this accept/);
+    // A CC send that spends a holding of another instrument along the way.
+    const cbtc = holding('d5'.repeat(34), BOT, CBTC, '0.5');
+    await refusedWith(verifySendPrepared([await ccTransfer({ extra: (c) => spend('x', c, DEV.dso), extraInput: cbtc })], sendTerms), /leg 0 spends \S+, not \S+/);
+    // A "merge" whose one command is another choice of the account's own preapproval.
+    const cancel = await remade(await ccMerge(), (decoded) => { exerciseIn(decoded, '0').choiceId = 'TransferPreapproval_Cancel'; });
+    await refusedWith(verifyConsolidatePrepared([cancel], mergeTerms), /leg 0 is not a send through a transfer preapproval/);
+    // A registry merge pays its CC fee under the DSO's pin, not the registrar's: named, it passes; left out, the fee leg is refused.
+    const regMerge = () => factoryTransferLeg({ party: BOT, receiver: BOT, instrument: CBTC, amount: '0.0003', input: '0.0003', outputs: [{ owner: BOT, amount: '0.0003' }], offer: null });
+    const regMergeTerms: ConsolidateTerms = { party: BOT, admins: [CBTC.admin], dso: [DEV.dso], instrument: 'CBTC', maxFee: '0.5', feeRecipients: [DEV.venue] };
+    await expect(verifyConsolidatePrepared([await regMerge(), await ccFee()], regMergeTerms)).resolves.toBeUndefined();
+    await refusedWith(verifyConsolidatePrepared([await regMerge(), await ccFee()], { ...regMergeTerms, dso: undefined }), /leg 1 sends through a preapproval the instrument admin did not sign/);
+  });
+});

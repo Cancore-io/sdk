@@ -22,7 +22,7 @@
  */
 import { decodePreparedTransaction, hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
 import type { DamlTransaction_Node, PreparedTransaction, Value } from '@canton-network/core-ledger-proto';
-import { instrumentKey } from './dvp-admins';
+import { deepFreeze, instrumentKey } from './dvp-admins';
 
 export type DvpOperation = 'dvpCreateProposal' | 'dvpAcceptProposal' | 'dvpAllocateLeg' | 'dvpWithdrawAllocation';
 
@@ -80,7 +80,7 @@ export interface TrustedPackages {
   wallet: Record<string, string[]>;
 }
 
-export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = {
+export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = deepFreeze({
   swap: {
     'cancore-swap': [
       '06a6e3f1f5d9dfcdc885d72248b26decdde09c7f99bc4a8af385624a30be2544', // 1.0.0
@@ -123,7 +123,7 @@ export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = {
       '916f16ea9413ba72d9ae660c9d0741f1078fc27b82b61e4b9db6a991dc47a848', // 0.1.25
     ],
   },
-};
+});
 
 /**
  * The token-standard allocation factory interface, by package id: the standard's API packages are
@@ -203,7 +203,39 @@ async function readPrepared(tx: PreparedToSign, what: string, party: string, ref
   // two under the same id it would read one while the ledger runs the other.
   const disclosed = (decoded.metadata?.inputContracts ?? []).map((c) => (c.contract.oneofKind === 'v1' ? c.contract.v1.contractId : ''));
   if (new Set(disclosed).size !== disclosed.length) refuse(`${what} discloses two contracts under one contract id`);
+  // The same of the contracts it creates: the holdings rules read them by id, and a second create
+  // under an id already taken — by a create or by a disclosed contract — would be a holding no rule sees.
+  const made = (decoded.transaction?.nodes ?? []).flatMap((n) => {
+    const type = nodeType(n);
+    return type?.oneofKind === 'create' ? [type.create.contractId] : [];
+  });
+  if (new Set([...disclosed, ...made]).size !== disclosed.length + made.length) refuse(`${what} creates two contracts under one contract id`);
+  // Records are read by label here; a label said twice would be read one way and run another.
+  const values = [
+    ...(decoded.metadata?.inputContracts ?? []).map((c) => (c.contract.oneofKind === 'v1' ? c.contract.v1.argument : undefined)),
+    ...(decoded.transaction?.nodes ?? []).flatMap((n) => {
+      const type = nodeType(n);
+      return type?.oneofKind === 'create' ? [type.create.argument] : type?.oneofKind === 'exercise' ? [type.exercise.chosenValue] : [];
+    }),
+  ];
+  if (values.some(repeatsLabel)) refuse(`${what} carries a record that names a field twice`);
   return decoded;
+}
+
+/** A record, anywhere inside a Daml value, with one label on two fields. */
+function repeatsLabel(value: Value | undefined): boolean {
+  const sum = value?.sum;
+  if (!sum) return false;
+  if (sum.oneofKind === 'record') {
+    const labels = sum.record.fields.map((f) => f.label).filter(Boolean);
+    return new Set(labels).size !== labels.length || sum.record.fields.some((f) => repeatsLabel(f.value));
+  }
+  if (sum.oneofKind === 'list') return sum.list.elements.some(repeatsLabel);
+  if (sum.oneofKind === 'optional') return repeatsLabel(sum.optional.value);
+  if (sum.oneofKind === 'variant') return repeatsLabel(sum.variant.value);
+  if (sum.oneofKind === 'textMap') return sum.textMap.entries.some((e) => repeatsLabel(e.value));
+  if (sum.oneofKind === 'genMap') return sum.genMap.entries.some((e) => repeatsLabel(e.key) || repeatsLabel(e.value));
+  return false;
 }
 
 /**
@@ -616,7 +648,11 @@ const sameId = (a: { packageId: string; moduleName: string; entityName: string }
 
 /** A node's package is trusted only by name AND id. */
 const trusted = (allowed: Record<string, string[]>, packageName: string, packageId: string | undefined) =>
-  !!packageId && (allowed[packageName] ?? []).includes(packageId);
+  !!packageId && pinnedFor(allowed, packageName).includes(packageId);
+
+/** What is pinned under a name the TRANSACTION supplied: an own entry of the map, never `constructor` or `__proto__`. */
+const pinnedFor = (pins: Record<string, readonly string[]>, name: string): readonly string[] =>
+  (Object.prototype.hasOwnProperty.call(pins, name) ? pins[name]! : []);
 
 /** Every Party value inside a Daml value. */
 function partiesIn(value: Value | undefined, found = new Set<string>()): Set<string> {
@@ -922,7 +958,7 @@ export async function verifyAcceptPrepared(legs: Leg[], terms: AcceptTerms): Pro
     const what = `leg ${index}`;
     if (leg.kind !== 'fee' && leg.kind !== 'transfer') refuse(`${what} is a ${leg.kind}, not an accept or its fee`);
     const opened = await openLeg(leg, what, terms.party, refuse);
-    if (leg.kind === 'fee') fee += preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.dso, key: AMULET, receivers: terms.feeRecipients, wanted: 'a pinned network fee recipient' }).net;
+    if (leg.kind === 'fee') fee += costOfLeg(preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.dso, key: AMULET, receivers: terms.feeRecipients, wanted: 'a pinned network fee recipient' }));
     else accepts += acceptLeg(opened, what, refuse, terms);
   }
   if (accepts !== 1) refuse(`expected one accept, the API prepared ${accepts}`);
@@ -1023,18 +1059,29 @@ async function tokenLegs(
     if (leg.kind !== 'fee' && leg.kind !== 'transfer') refuse(`${what} is a ${leg.kind}, not a transfer or its fee`);
     const opened = await openLeg(leg, what, terms.party, refuse);
     if (leg.kind === 'fee') {
-      out.fee += preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.dso, key: AMULET, receivers: terms.feeRecipients, wanted: 'a pinned network fee recipient' }).net;
+      out.fee += costOfLeg(preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.dso, key: AMULET, receivers: terms.feeRecipients, wanted: 'a pinned network fee recipient' }));
       continue;
     }
     const viaFactory = opened.root?.oneofKind === 'exercise' && opened.root.exercise.choiceId === 'TransferFactory_Transfer';
     const moved = viaFactory
       ? factoryMoved(opened, what, refuse, { party: terms.party, admins: terms.admins, key, receiver: to, wanted })
       : preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.admins, key, receivers: [to], wanted });
-    out.net += moved.net;
+    out.net += costOfLeg(moved);
     out.transfers.push(moved);
   }
   return out;
 }
+
+/**
+ * What one leg costs the account: what its holdings lost, and never less than what the leg hands to
+ * somebody else. The two differ when value enters the transfer from something that is not a holding —
+ * a reward coupon of the account's own — and "spent less change" alone would let that leave unseen,
+ * or let a gain on one leg pay for an overcharge on another.
+ */
+const costOfLeg = (moved: Moved) => {
+  const given = moved.received + moved.locked;
+  return moved.net > given ? moved.net : given;
+};
 
 /** What a ceremony cost, in words: one CC figure, or the instrument's and the CC fee beside it. */
 const costOf = (instrument: string, net: bigint, fee: bigint) =>
@@ -1104,7 +1151,19 @@ function factoryMoved(
   const isThisOffer = (contract: Create) => contract.signatories.includes(admin) && sameTransfer((readPlain(contract.argument) as { transfer?: Partial<TransferLeg> } | null)?.transfer, transfer);
   const bounds = signerBounds(nodes, inputs, created, terms.party, [admin], command.contractId, allowed, 'send', isThisOffer);
   if (bounds) refuse(`${what}: ${bounds}`);
-  return { ...movedHoldings({ nodes, inputs, created }, what, refuse, { party: terms.party, key: terms.key, receiver: terms.receiver }), factory: true, asked };
+  const moved = movedHoldings({ nodes, inputs, created }, what, refuse, { party: terms.party, key: terms.key, receiver: terms.receiver });
+  // To somebody else the leg gives exactly what it transfers, in one of the two ways the standard has:
+  // the holding handed over, or the amount locked under ONE offer of this transfer for the receiver to
+  // accept. A lock with no offer is money nobody can take; half the amount is not the transfer asked.
+  if (terms.receiver !== terms.party) {
+    const offers = [...created.values()].filter(isThisOffer).length;
+    const handedOver = offers === 0 && moved.locked === 0n && moved.received === asked;
+    const offered = offers === 1 && moved.locked === asked && moved.received === 0n;
+    if (!handedOver && !offered) {
+      refuse(`${what} transfers ${decimalOf(asked)} and neither hands exactly that to ${terms.wanted} nor locks exactly that under one offer of this transfer`);
+    }
+  }
+  return { ...moved, factory: true, asked };
 }
 
 /** Holdings of one instrument, spent and created: the account's only, but what is created for `receiver`. */
@@ -1155,7 +1214,7 @@ function acceptLeg({ nodes, root, inputs, created }: Opened, what: string, refus
   const admin = transfer?.instrumentId?.admin;
   const key = instrumentKey(String(transfer?.instrumentId?.id));
   if (!transfer || transfer.receiver !== terms.party || typeof transfer.sender !== 'string') return refuse(`${what} accepts a transfer that is not to this account`);
-  if (typeof admin !== 'string' || !(terms.pinnedAdmins[key] ?? []).includes(admin)) return refuse(`${what} accepts ${key} from ${String(admin)}, which is not an admin this SDK pins for it`);
+  if (typeof admin !== 'string' || !pinnedFor(terms.pinnedAdmins, key).includes(admin)) return refuse(`${what} accepts ${key} from ${String(admin)}, which is not an admin this SDK pins for it`);
   if (!sameTemplate(instruction, command)) refuse(`${what} runs on another template than the transfer it names`);
   if (!signedBy(instruction, command, [admin])) refuse(`${what} accepts a transfer the instrument admin did not sign`);
   const allowed = new Set([terms.party, transfer.sender, admin, ...instruction.signatories, ...instruction.stakeholders]);
