@@ -63,8 +63,9 @@ jobs:
       - name: Install the tarball as a stranger would
         run: |
           set -euo pipefail
-          # Pack everything first: a package that depends on a sibling
-          # (@cancore/trader on @cancore/contracts) installs the sibling from
+          # Pack everything first: a package that depends on a sibling — as a
+          # dependency (@cancore/trader on @cancore/contracts) or as a peer
+          # (@cancore/client on @cancore/wallet) — installs the sibling from
           # this tree, not from a registry that may not have the version yet.
           declare -A TARBALL
           for pkg in packages/*/; do
@@ -77,7 +78,7 @@ jobs:
             private=$(node -p "require('./$pkg/package.json').private === true")
             if [ "$private" = "true" ]; then echo "skip $name (private)"; continue; fi
             siblings=()
-            for dep in $(node -p "Object.keys(require('./$pkg/package.json').dependencies ?? {}).filter((d) => d.startsWith('@cancore/')).join(' ')"); do
+            for dep in $(node -p "((p) => Object.keys({ ...p.dependencies, ...p.peerDependencies }))(require('./$pkg/package.json')).filter((d) => d.startsWith('@cancore/')).join(' ')"); do
               siblings+=("${TARBALL[$dep]}")
             done
             rm -rf "$RUNNER_TEMP/consumer" && mkdir -p "$RUNNER_TEMP/consumer"
