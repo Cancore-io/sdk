@@ -6,23 +6,28 @@
 //
 //   node packages/contracts/scripts/gen-protocol-vectors.mjs
 //
-// Writes spec/protocol/typed-data/*.json (the eight protocol types),
-// spec/typed-data/{Order,Quote,FillTicket}.json (provisional copies of the
-// router's structs until evm-contracts publishes them, follow-up F-1),
-// spec/typed-data/FillProof.json (the variant A twelve-field struct, written
-// here ahead of the router: CAN-2140 copies it byte for byte into
-// evm-contracts abi/typed-data/, after which `npm run sync` owns it again) and
-// spec/protocol/vectors/{jcs,draw}.json.
+// Writes spec/protocol/typed-data/*.json (the protocol types),
+// spec/typed-data/{Order,Quote}.json (provisional copies of the router's
+// structs until evm-contracts publishes them, follow-up F-1) and
+// spec/protocol/vectors/{jcs,draw}.json. spec/typed-data/{FillTicket,FillProof}.json
+// are evm-contracts' own (abi/typed-data, brought here by `npm run sync`): this
+// script recomputes their vectors and fails if the synced files differ, and
+// never writes them.
 import { AbiCoder, concat, keccak256, toBeHex, toUtf8Bytes, TypedDataEncoder, Wallet, zeroPadValue } from 'ethers';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { EVM_ORDER, fixtureDraw, JCS_CASES, WORKED_DRAW } from './protocol-fixtures.mjs';
+import { CANTON_DELIVERY_ORDER_CID, EVM_ORDER, fixtureDraw, JCS_CASES, WORKED_DRAW } from './protocol-fixtures.mjs';
 
 const pkg = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const out = (rel, data) => {
   mkdirSync(dirname(join(pkg, rel)), { recursive: true });
   writeFileSync(join(pkg, rel), `${JSON.stringify(data, null, 2)}\n`);
+};
+/** A file `npm run sync` owns: everything but the comments must equal what this script computes. */
+const synced = (rel, data) => {
+  const strip = (v) => JSON.stringify(v, (k, x) => (k === '$comment' ? undefined : x));
+  if (strip(JSON.parse(readFileSync(join(pkg, rel), 'utf8'))) !== strip(data)) throw new Error(`${rel}: the synced file differs from the vectors computed here`);
 };
 
 const U256 = ((1n << 256n) - 1n).toString();
@@ -50,6 +55,7 @@ const TYPES = {
   FillerQuote: T([['bytes32', 'requestId'], ['string', 'fillerId'], ['uint256', 'amountOut'], ['uint64', 'validUntil'], ['uint64', 'nonce']]),
   TicketIntent: T([['bytes32', 'orderHash'], ['uint32', 'attempt'], ['uint64', 'validFrom'], ['uint64', 'validUntil'], ['string', 'fillerId'], ['address', 'deliveryKey'], ['bytes32', 'repayTo']]),
   TicketReceipt: T([['bytes32', 'ticketHash'], ['bytes32', 'ticketSigHash']]),
+  CantonTicketReceipt: T([['bytes32', 'orderHash'], ['uint32', 'attempt'], ['bytes32', 'deliveryOrderCidHash'], ['uint64', 'validUntil']]),
   StakeBinding: T([['string', 'partnerId'], ['address', 'stakingAddress'], ['uint256', 'chainId'], ['uint64', 'nonce']]),
   FillerAuth: T([['string', 'fillerId'], ['bytes32', 'nonce'], ['uint64', 'expiresAt']]),
   GatewayMessage: T([['bytes32', 'bodyHash']]),
@@ -116,7 +122,7 @@ const ticketRows = flat(TICKET, 'FillTicket')([
   { note: 'zero', message: { orderHash: Z32, fillerId: Z32, deliveryKey: Z20, repayTo: Z32, attempt: 0, validFrom: '0', validUntil: '0' } },
 ]);
 const TICKET_COMMENT = 'Variant A FillTicket (CAN-2139; protocol.md §3.3): seven fields, written here ahead of CancoreRouter.sol, which takes the same string before its first deployment and pins these vectors with hashTicket (CAN-2140). fillerId = keccak256(utf8(fillerId)); repayTo encoded for the source chain (§3.15). Digests by ethers TypedDataEncoder, checked in this package by the shipped encoder as well.';
-out('spec/typed-data/FillTicket.json', file('FillTicket', { ...TICKET, fields: ['name', 'version'] }, TICKET_COMMENT, ticketRows));
+synced('spec/typed-data/FillTicket.json', file('FillTicket', { ...TICKET, fields: ['name', 'version'] }, TICKET_COMMENT, ticketRows));
 
 // --- FillProof (variant A, twelve fields): the vector file evm-contracts and canton-contracts consume
 const coder = AbiCoder.defaultAbiCoder();
@@ -160,7 +166,7 @@ const proofRows = [
     },
   },
 ];
-out('spec/typed-data/FillProof.json', {
+synced('spec/typed-data/FillProof.json', {
   $comment: 'EIP-712 schema of the variant A FillProof (twelve fields, CAN-2139; protocol.md §3.3) — the struct attestors sign, CancoreRouter.settle verifies (paying repayTo) and Daml Intent.FillProofVerify verifies on a Canton source — and its golden vectors. Written in @cancore/contracts ahead of the router: CAN-2140 copies this file byte for byte to evm-contracts abi/typed-data/FillProof.json, where test/CancoreRouter.ts checks every vector against FILLPROOF_TYPEHASH and hashFillProof; from then on evm-contracts is the source again and `npm run sync` brings it here. canton-contracts takes the Canton-source vector (typeHash, domainSeparator, structHash, digest) into intent-test AttestationVectors (CAN-2144). Digests by ethers TypedDataEncoder; this package checks them with an encoder of its own.',
   primaryType: 'FillProof',
   domain: { $comment: 'The SOURCE router of the order: settle recomputes the digest in its own domain, so a proof never verifies on another chain or router.', ...ROUTER_META },
@@ -198,6 +204,16 @@ out('spec/protocol/typed-data/TicketReceipt.json', file('TicketReceipt', PROTOCO
   { note: 'receipt of the fixture ticket (illustrative signature 0x11…11 ‖ 0x1b)', message: { ticketHash: ticketRows[1].digest, ticketSigHash: sigHash } },
   { note: 'all ones', message: { ticketHash: FF32, ticketSigHash: FF32 } },
   { note: 'zero', message: { ticketHash: Z32, ticketSigHash: Z32 } },
+])));
+// A Canton contract id as the ledger prints it: "00", a 32-byte discriminator, then the suffix — derived from public labels.
+const LEDGER_CID = `00${utf8Hash('cancore:test:delivery-order:discriminator').slice(2)}ca1220${utf8Hash('cancore:test:delivery-order:suffix').slice(2)}`;
+const cantonReceipt = (note, deliveryOrderCid, orderHash, attempt, validUntil) =>
+  ({ note, deliveryOrderCid, message: { orderHash, attempt, deliveryOrderCidHash: utf8Hash(deliveryOrderCid), validUntil } });
+out('spec/protocol/typed-data/CantonTicketReceipt.json', file('CantonTicketReceipt', PROTOCOL_META, NEXT_RC('The receipt of a Canton-form ticket (§3.5, §10 D-O), which has no FillTicket and no ticketSig: orderHash and attempt of the ticket, deliveryOrderCidHash = keccak256(utf8(deliveryOrderCid)) over the contract id exactly as sent in ticket.issued (each vector names the string it hashes), validUntil = ticket.issued.validUntil. fillerId and repayTo are not part of it: they travel in ticket.issued. Signed by the message key (CAN-2062).'), flat(PROTOCOL, 'CantonTicketReceipt')([
+  cantonReceipt('receipt of the Canton-form ticket.issued example (spec/protocol/vectors/messages.json): attempt 2 of the fixture order', CANTON_DELIVERY_ORDER_CID, evmOrderHash, 2, fixtureTicket.validUntil),
+  cantonReceipt('a contract id shaped as the ledger prints it, on the canton-order.json order', LEDGER_CID, canton.orderHash, 0, '1789999800'),
+  { note: 'every integer at its maximum, every word all ones', message: { orderHash: FF32, attempt: U32, deliveryOrderCidHash: FF32, validUntil: U64 } },
+  { note: 'zero', message: { orderHash: Z32, attempt: 0, deliveryOrderCidHash: Z32, validUntil: '0' } },
 ])));
 out('spec/protocol/typed-data/StakeBinding.json', file('StakeBinding', PROTOCOL_META, FROZEN('`chainId` = EVM chain id of the CNRXStaking deployment; `nonce` strictly increasing per staking address.'), flat(PROTOCOL, 'StakeBinding')([
   { note: 'binding on Ethereum', message: { partnerId: 'acme-markets', stakingAddress: '0x742d35cc6634c0532925a3b844bc454e4438f44e', chainId: '1', nonce: '1' } },
