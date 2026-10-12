@@ -29,6 +29,26 @@
   that serves no codes. Every other 403 (self-trade, documents not accepted, a stopped bot account)
   reaches the caller as the `CancoreApiError` it is.
 
+## 0.8.1
+
+### Security
+
+- `splitForFee` (and `take` with `autoSplitForFee`) verified a CC send without checking that the
+  transfer preapproval it goes through is the DSO's (CAN-2249). The preapproval is what the whole
+  transaction runs on: its choice acts with this account's authority. A hostile API could disclose
+  a contract of its own under the same template name, and its "send" could have this account sign
+  a contract that only looks like its holding — one whose author, by Daml's authorization rules,
+  can then act as the account. Nothing left the account in the transaction itself, so every amount
+  check passed. Now, for each leg, the preapproval must be signed by a pinned CC admin (the DSO) —
+  as the disclosed contract says and as the command exercising it says — and be of the template the
+  command names (package name, module and entity; the package id may be a newer version). A leg
+  that fails either is an `UnverifiedTransactionError` before the key signs.
+- A transaction that discloses two contracts under one contract id is refused, for every verified
+  step (DvP steps included): the checks read a disclosed contract by its id.
+
+A send this network really prepares is unaffected: checked against ten prepared CC legs from the
+dev stand. `allowUnverified` still signs without reading, as it says.
+
 ## 0.8.0
 
 ### Added

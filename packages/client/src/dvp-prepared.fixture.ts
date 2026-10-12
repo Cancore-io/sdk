@@ -384,10 +384,10 @@ export async function prepared(actAs: string, nodes: DamlTransaction_Node[], inp
   return { preparedTransaction, preparedTransactionHash: await hashPreparedTransaction(preparedTransaction, 'base64') };
 }
 
-/** A party's CC TransferPreapproval, as a send through it discloses it: signed by the receiver and its provider. */
+/** A party's CC TransferPreapproval, as a send through it discloses it: signed by the DSO, the receiver and its provider. */
 export const preapprovalContract = (contractId: string, receiver: string, provider = DEV.venue) =>
   createOf(contractId, 'splice-amulet', PKG.amulet, 'Splice.AmuletRules', 'TransferPreapproval',
-    v.record({ dso: v.party(DEV.dso), receiver: v.party(receiver), provider: v.party(provider) }), [receiver, provider]);
+    v.record({ dso: v.party(DEV.dso), receiver: v.party(receiver), provider: v.party(provider) }), [DEV.dso, receiver, provider]);
 
 /**
  * One leg of a CC `tokens.send` as the participant prepares it: `TransferPreapproval_Send` on the
@@ -398,17 +398,24 @@ export async function selfSendLeg(input: {
   party: string; kind: 'transfer' | 'fee'; receiver: string; input: string; ids: string;
   outputs: Array<{ owner: string; amount: string; lockedTo?: string }>;
   actAs?: string; inputOwner?: string; extra?: (contract: Create) => DamlTransaction_Node; extraInput?: Create;
+  /** The preapproval the transaction discloses, in place of the honest one; and the template the command names, when not its own. */
+  preapproval?: (honest: Create) => Create; commandOn?: Pick<Create, 'packageName' | 'templateId'>; commandSignatories?: string[];
+  /** The holdings the send creates, in place of the DSO's own Amulets. */
+  output?: (honest: Create) => Create;
 }) {
   const cc = { id: 'Amulet', admin: DEV.dso };
-  const preapproval = preapprovalContract(`${input.ids}f`.repeat(34), input.receiver);
+  const honest = preapprovalContract(`${input.ids}f`.repeat(34), input.receiver);
+  const preapproval = input.preapproval?.(honest) ?? honest;
+  const on = input.commandOn ?? preapproval;
   const owned = holding(`${input.ids}0`.repeat(34), input.inputOwner ?? input.party, cc, input.input);
-  const outputs = input.outputs.map((o, i) => createNode(String(i + 2), holding(`${input.ids}${i + 1}`.repeat(34), o.owner, cc, o.amount, { lockedTo: o.lockedTo })));
+  const made = (c: Create) => input.output?.(c) ?? c;
+  const outputs = input.outputs.map((o, i) => createNode(String(i + 2), made(holding(`${input.ids}${i + 1}`.repeat(34), o.owner, cc, o.amount, { lockedTo: o.lockedTo }))));
   const extra = input.extra && input.extraInput ? [{ ...input.extra(input.extraInput), nodeId: String(outputs.length + 2) }] : [];
   const root = node('0', {
     oneofKind: 'exercise',
     exercise: {
-      lfVersion: '2.1', contractId: preapproval.contractId, packageName: preapproval.packageName, templateId: preapproval.templateId,
-      signatories: preapproval.signatories, stakeholders: preapproval.stakeholders, actingParties: [input.party],
+      lfVersion: '2.1', contractId: preapproval.contractId, packageName: on.packageName, templateId: on.templateId,
+      signatories: input.commandSignatories ?? preapproval.signatories, stakeholders: preapproval.stakeholders, actingParties: [input.party],
       choiceId: 'TransferPreapproval_Send', chosenValue: v.record({ sender: v.party(input.party), amount: v.numeric(numeric10(input.outputs[0]!.amount)) }),
       consuming: false, children: ['1', ...outputs.map((n) => n.nodeId), ...extra.map((n) => n.nodeId)], choiceObservers: [],
     },
