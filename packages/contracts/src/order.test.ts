@@ -1,0 +1,128 @@
+import { TypedDataEncoder } from 'ethers';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { CANTON_ORIGIN_ID, CANTON_SOURCE_ANCHOR } from './constants';
+import { PERMIT2_ADDRESS } from './deployments';
+import {
+  buildCantonSourceOrder, hashOrder, hashPermitWitness, isCantonOriginId, permit2Domain, PERMIT_WITNESS_TYPES, sourceOrderHash,
+  type CantonSourceIntent, type PermitWitness,
+} from './order';
+import { ORDER_TYPES, routerDomain, type Hex, type Order } from './protocol/typedData';
+
+// The router's order hashing, and the EVM-form Order of a Canton-source intent
+// (protocol.md §3.7-3.9): a port of evm-contracts test/helpers/cantonOrder.ts,
+// held to the vector the router test pins with sourceOrderHash and the Daml
+// intent-test golden (canton-contracts intent-test/tools/canton-order.golden.json).
+
+const spec = join(__dirname, '..', 'spec');
+const load = <T>(...p: string[]): T => JSON.parse(readFileSync(join(spec, ...p), 'utf8')) as T;
+type CantonVector = { input: Record<string, unknown>; order: Order; domain: { name: string; version: string; chainId: string; verifyingContract: Hex }; orderHash: Hex };
+const canton = load<{ vector: CantonVector }>('vectors', 'canton-order.json').vector;
+const input = canton.input as unknown as CantonSourceIntent;
+const evmOrder = load<{ vectors: { note: string; domain: { chainId: string; verifyingContract: Hex }; order: Order; orderHash: Hex }[] }>('vectors', 'evm-order.json');
+const permit = load<{ vectors: { note: string; chainId: string; verifyingContract: Hex; message: PermitWitness; witnessHash: Hex; digest: Hex }[] }>('vectors', 'permit-witness.json');
+const orderTypes = JSON.parse(JSON.stringify(ORDER_TYPES)) as Record<string, { name: string; type: string }[]>;
+
+describe('buildCantonSourceOrder', () => {
+  test('reproduces canton-order.json: the order, the source domain and the orderHash the router pins', () => {
+    const built = buildCantonSourceOrder(input);
+    expect(built.order).toEqual(canton.order);
+    expect(built.domain).toEqual(canton.domain);
+    expect(built.orderHash).toBe(canton.orderHash);
+    expect(built.orderHash).toBe('0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204');
+    expect(hashOrder(built.order, built.domain)).toBe(canton.orderHash);
+    expect(sourceOrderHash(built.order)).toBe(canton.orderHash);
+    expect(TypedDataEncoder.hash(built.domain, orderTypes, built.order)).toBe(canton.orderHash);
+  });
+
+  test('accepts the chain ids as bigint, string or number and the times as number or string', () => {
+    const variant = { ...input, cantonOriginId: CANTON_ORIGIN_ID.mainnet, destinationChainId: 1, createdAt: '1789999400', fillDeadline: '1790000000' };
+    expect(buildCantonSourceOrder(variant as never).orderHash).toBe(canton.orderHash);
+  });
+
+  test.each([
+    ['createdAt + 1 (the owner-signed orderCreatedAt)', { createdAt: (input.createdAt as number) + 1 }],
+    ['requestId', { requestId: `${input.requestId}x` }],
+    ['ownerPartyId', { ownerPartyId: `${input.ownerPartyId}0` }],
+    ['instrumentId', { instrumentId: 'USDC' }],
+    ['amount', { amount: '1250.5000000001' }],
+    ['minReceived', { minReceived: '1200.250001' }],
+    ['fillDeadline', { fillDeadline: (input.fillDeadline as number) + 1 }],
+    ['feeRate', { feeRate: '0.0031' }],
+    ['the Canton network', { cantonOriginId: CANTON_ORIGIN_ID.devnet }],
+  ])('a change of %s changes the orderHash', (_n, change) => {
+    expect(buildCantonSourceOrder({ ...input, ...change } as never).orderHash).not.toBe(canton.orderHash);
+  });
+
+  test.each([
+    ['fillDeadline with a fraction of a second', { fillDeadline: 1790000000.5 }],
+    ['createdAt with a fraction of a second', { createdAt: 1789999400.25 }],
+    ['minReceived finer than the token decimals', { minReceived: '1200.2500001' }],
+    ['amount finer than Daml Numeric 10', { amount: '1250.50000000001' }],
+    ['feeRate above MAX_FEE_BPS', { feeRate: '0.1001' }],
+    ['feeRate finer than a basis point', { feeRate: '0.00305' }],
+    ['a signed amount', { amount: '-1' }],
+    ['an exponent', { amount: '1e3' }],
+    ['an origin id inside the EVM chain-id range', { cantonOriginId: 1n }],
+    ['an origin id above uint64', { cantonOriginId: 2n ** 64n }],
+    ['a recipient that is not an address', { recipient: '0x1234' }],
+    ['a wantToken that is not an address', { wantToken: 'usdc' }],
+  ])('%s is refused: the order is not built', (_n, change) => {
+    expect(() => buildCantonSourceOrder({ ...input, ...change } as never)).toThrow();
+  });
+});
+
+describe('hashOrder and sourceOrderHash', () => {
+  test.each(evmOrder.vectors.map((v) => [v.note, v] as const))('evm-order.json %s: hashOrder in the source router domain', (_n, v) => {
+    expect(hashOrder(v.order, v.domain)).toBe(v.orderHash);
+    expect(hashOrder(v.order, routerDomain(v.domain.chainId, v.domain.verifyingContract))).toBe(v.orderHash);
+    expect(TypedDataEncoder.hash({ name: 'CancoreRouter', version: '1', ...v.domain }, orderTypes, v.order)).toBe(v.orderHash);
+  });
+
+  test('evm-order.json is the EVM fixture order of spec/typed-data/Order.json', () => {
+    const order = load<{ vectors: { message: Order; digest: Hex }[] }>('typed-data', 'Order.json').vectors[1]!;
+    expect(evmOrder.vectors[0]!.order).toEqual(order.message);
+    expect(evmOrder.vectors[0]!.orderHash).toBe(order.digest);
+  });
+
+  test('sourceOrderHash: a Canton origin hashes under the anchor; an EVM origin needs its registered source router', () => {
+    const v = evmOrder.vectors[0]!;
+    expect(sourceOrderHash(v.order, v.domain.verifyingContract)).toBe(v.orderHash);
+    expect(() => sourceOrderHash(v.order)).toThrow(/source router/);
+    expect(sourceOrderHash(canton.order, CANTON_SOURCE_ANCHOR)).toBe(canton.orderHash);
+    expect(sourceOrderHash({ ...canton.order, originChainId: String(CANTON_ORIGIN_ID.devnet) })).toBe(
+      hashOrder({ ...canton.order, originChainId: String(CANTON_ORIGIN_ID.devnet) }, { chainId: CANTON_ORIGIN_ID.devnet, verifyingContract: CANTON_SOURCE_ANCHOR }),
+    );
+  });
+
+  test('the same order in another domain hashes differently', () => {
+    const v = evmOrder.vectors[0]!;
+    expect(hashOrder(v.order, { ...v.domain, chainId: '1' })).not.toBe(v.orderHash);
+    expect(hashOrder(v.order, { ...v.domain, verifyingContract: CANTON_SOURCE_ANCHOR })).not.toBe(v.orderHash);
+  });
+
+  test('isCantonOriginId: the three Canton networks, nothing else', () => {
+    for (const id of Object.values(CANTON_ORIGIN_ID)) expect(isCantonOriginId(id)).toBe(true);
+    expect(isCantonOriginId(String(CANTON_ORIGIN_ID.testnet))).toBe(true);
+    for (const id of [1n, 11155111n, 2n ** 63n, 2n ** 63n + 4n]) expect(isCantonOriginId(id)).toBe(false);
+  });
+});
+
+describe('Permit2 witness: what the maker signs to open an EVM-source intent', () => {
+  test.each(permit.vectors.map((v) => [v.note, v] as const))('permit-witness.json %s: the shipped digest, ethers and the witness hash agree', (_n, v) => {
+    expect(hashPermitWitness(v.message, v.chainId, v.verifyingContract)).toBe(v.digest);
+    const types = JSON.parse(JSON.stringify(PERMIT_WITNESS_TYPES)) as Record<string, { name: string; type: string }[]>;
+    expect(TypedDataEncoder.hash(permit2Domain(v.chainId, v.verifyingContract), types, v.message)).toBe(v.digest);
+    expect(TypedDataEncoder.hashStruct('Order', orderTypes, v.message.witness)).toBe(v.witnessHash);
+  });
+
+  test('defaults to the canonical Permit2 address; every field of the witness is signed', () => {
+    const v = permit.vectors[0]!;
+    expect(v.verifyingContract).toBe(PERMIT2_ADDRESS);
+    expect(hashPermitWitness(v.message, v.chainId)).toBe(v.digest);
+    expect(permit2Domain(v.chainId)).toEqual({ name: 'Permit2', chainId: v.chainId, verifyingContract: PERMIT2_ADDRESS });
+    expect(hashPermitWitness({ ...v.message, witness: { ...v.message.witness, feeBps: '31' } }, v.chainId)).not.toBe(v.digest);
+    expect(hashPermitWitness({ ...v.message, permitted: { ...v.message.permitted, amount: '1' } }, v.chainId)).not.toBe(v.digest);
+    expect(hashPermitWitness({ ...v.message, spender: CANTON_SOURCE_ANCHOR }, v.chainId)).not.toBe(v.digest);
+  });
+});

@@ -43,7 +43,7 @@
     "prepack": "tsup --silent",
     "prepublishOnly": "npm run build",
     "sync": "node scripts/sync.mjs && node scripts/sync-typed-data.mjs",
-    "vectors": "node scripts/gen-protocol-vectors.mjs && node scripts/gen-protocol-docs.mjs"
+    "vectors": "node scripts/gen-protocol-vectors.mjs && node scripts/gen-protocol-docs.mjs && node scripts/gen-router-vectors.mjs"
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0"

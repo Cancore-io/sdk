@@ -12,11 +12,17 @@
 // and IBurnMintERC20 from cancore-token-evm — as objects whose `.abi` is the
 // array (CAN-1789). abi/ also carries two manifests that are not ABIs.
 //
+// It also reads the public constants of CancoreRouter and AttestorSet out of
+// their Solidity source into spec/constants.json, so a test holds the
+// package's constants to the contract's (SDK-6).
+//
 //   EVM_CONTRACTS_DIR=../evm-contracts npm run sync
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { keccak_256 } from '@noble/hashes/sha3';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
 import render from './render.cjs';
 
 const { renderAbiModule, renderErrors, renderIndex } = render;
@@ -113,4 +119,52 @@ writeFileSync(
     `export const BYTECODE_HASHES = ${JSON.stringify(bytecode, null, 2)} as const;\n`,
 );
 writeFileSync(join(pkg, 'src', 'generated', 'index.ts'), renderIndex(names));
+
+// The public constants, evaluated from the source text: integer literals (with `_`), time units,
+// sums of earlier constants, string literals and keccak256 of a string literal. A numeric or
+// string constant this cannot evaluate is refused; a bytes32 built any other way (a domain
+// separator from abi.encode) is left out — the type hashes are what the package can check.
+const CONSTANT_SOURCES = { CancoreRouter: 'contracts/CancoreRouter.sol', AttestorSet: 'contracts/lib/AttestorSet.sol' };
+const UNITS = { seconds: 1n, minutes: 60n, hours: 3600n, days: 86400n, weeks: 604800n };
+const LITERALS = /^(?:"[^"\\]*"\s*)+$/;
+const literal = (text) => [...text.matchAll(/"([^"\\]*)"/g)].map((m) => m[1]).join('');
+const constants = {};
+for (const [contract, path] of Object.entries(CONSTANT_SOURCES)) {
+  const source = readFileSync(join(src, path), 'utf8');
+  const out = {};
+  for (const [, type, name, raw] of source.matchAll(/\b(uint\d*|string|bytes32)\s+public\s+constant\s+(\w+)\s*=\s*([^;]+);/g)) {
+    const expr = raw.replace(/\s+/g, ' ').trim();
+    const where = `${path}: ${name}`;
+    if (type === 'string') {
+      if (!LITERALS.test(expr)) throw new Error(`${where}: not a string literal`);
+      out[name] = { type, value: literal(expr) };
+    } else if (type === 'bytes32') {
+      const hashed = /^keccak256\(\s*((?:"[^"\\]*"\s*)+)\)$/.exec(expr);
+      if (hashed) out[name] = { type, value: `0x${bytesToHex(keccak_256(utf8ToBytes(literal(hashed[1]))))}` };
+    } else {
+      const value = expr.split('+').reduce((sum, term) => {
+        const t = term.trim();
+        const number = /^(\d[\d_]*)(?: (seconds|minutes|hours|days|weeks))?$/.exec(t);
+        if (number) return sum + BigInt(number[1].replaceAll('_', '')) * (number[2] ? UNITS[number[2]] : 1n);
+        if (out[t]?.type.startsWith('uint')) return sum + BigInt(out[t].value);
+        throw new Error(`${where}: cannot evaluate ${JSON.stringify(t)}`);
+      }, 0n);
+      out[name] = { type, value: value.toString() };
+    }
+  }
+  if (Object.keys(out).length === 0) throw new Error(`${path}: no public constants found`);
+  constants[contract] = out;
+}
+writeFileSync(
+  join(pkg, 'spec', 'constants.json'),
+  `${JSON.stringify(
+    {
+      $comment: 'Public constants of CancoreRouter and AttestorSet, read by scripts/sync.mjs from their Solidity source at `commit` (the same checkout as the ABIs). Values are decimal strings for integers, the text for strings, the hash for keccak256 of a string literal. src/constants.test.ts holds the package\'s constants to this file (SDK-6). Not edited by hand.',
+      commit,
+      contracts: constants,
+    },
+    null,
+    2,
+  )}\n`,
+);
 console.log(`synced ${names.length} ABIs from ${src} (evm-contracts ${version.version})`);

@@ -63,6 +63,69 @@ the taker client relies on: those views and calls, the events `IntentOpened`, `F
 `Settled` and `Refunded`, and the 11-field `Order` tuple in the order of `ORDER_TYPES`, whose
 type hash is the router's `ORDER_TYPEHASH`. Router addresses are not in this package yet.
 
+### Orders, the Permit2 witness, the fee
+
+Hashing helpers ship from the package root (sdk.md §7, decided: helpers, not data only). They
+are what the backend, the filler node, the attestors and the web app use instead of their own
+copies:
+
+```ts
+import {
+  buildCantonSourceOrder, cantonInclusiveFeeSplit, hashOrder, hashPermitWitness, inclusiveFeeSplit,
+  MAX_FEE_BPS, MIN_FILL_TTL, sourceOrderHash,
+} from '@cancore/contracts';
+
+hashOrder(order, { chainId, verifyingContract: router }); // CancoreRouter.hashOrder: the orderHash
+sourceOrderHash(order, sourceRouter);                     // what a destination keys `filled` on; a Canton origin needs no router
+
+// the EVM-form Order of a Canton-source intent (protocol.md §3.7): refuses an inexact amount, fee or time
+const { order, domain, orderHash } = buildCantonSourceOrder({
+  ownerPartyId, requestId, instrumentAdmin, instrumentId, amount: '1250.5',
+  destinationChainId: 1, wantToken, wantDecimals: 6, minReceived: '1200.25', recipient,
+  createdAt, fillDeadline, feeRate: '0.003', cantonOriginId: CANTON_ORIGIN_ID.devnet,
+});
+
+// what the maker signs for openFor: Permit2 PermitWitnessTransferFrom, the order as witness (PERMIT_WITNESS_TYPES for the wallet)
+const digest = hashPermitWitness({ permitted: { token, amount }, spender: router, nonce, deadline, witness: order }, chainId);
+
+inclusiveFeeSplit(105n, 500);       // { payout: 100n, fee: 5n } — EVM source, CancoreRouter.settle (floor)
+cantonInclusiveFeeSplit(total, 30); // Canton source, Daml inclusiveFee (half-even at 10⁻¹⁰)
+```
+
+| Constants | Value | Held to |
+| --- | --- | --- |
+| `BPS`, `MAX_FEE_BPS`, `MIN_FILL_TTL`, `PROOF_KIND_ATTESTATION` | 10 000, 1 000, 60 s, 1 | `CancoreRouter.sol` via `spec/constants.json` |
+| `MAX_FILL_TTL`, `MAX_SIG_TTL`, `MAX_PROOF_WINDOW`, `GRACE`, `SET_DELAY` | 24 h, 24 h, 4 h, 28 h, 72 h (seconds) | `AttestorSet.sol` via `spec/constants.json` |
+| `CANTON_ORIGIN_ID`, `CANTON_SOURCE_ANCHOR`, `EIP2294_MAX_CHAIN_ID`, `OWNER_LABEL_TAG`, `INSTRUMENT_LABEL_TAG`, `DAML_NUMERIC_SCALE` | protocol.md §3.8 | `spec/vectors/canton-order.json` |
+
+**Canton destination** (protocol.md §3.13). An EVM-source order delivered on Canton, and the
+`FillProof` of the delivery, carry Canton values in EVM fields; this is the one encoder for them:
+
+```ts
+import {
+  cantonNetworkOfDestination, encodeCantonAmount, encodeCantonDestination, encodeCantonOutputAsset, encodeCantonRecipient,
+} from '@cancore/contracts';
+
+const destination = encodeCantonDestination('devnet');                  // keccak256(utf8("canton:devnet"))
+const outputAsset = encodeCantonOutputAsset({ admin, id: 'USDCX' });   // keccak256(abi.encode("cancore:instrument:v1", admin, id))
+const minReceived = encodeCantonAmount('1200.25');                      // Daml Numeric 10 × 10¹⁰, exact or refused
+const recipient = encodeCantonRecipient(partyId);                       // keccak256(utf8(partyId))
+cantonNetworkOfDestination(order.destination);                          // 'devnet' | 'testnet' | 'mainnet' | undefined
+```
+
+`spec/vectors/canton-destination.json` holds such an order (devnet) with its `orderHash` and the
+`FillProof` of its delivery with its digest; its instrument, party and amount are those of the
+Canton-destination vector of `spec/typed-data/FillProof.json` (`canton:mainnet`), which the
+router test computes with `hashFillProof`.
+
+`spec/constants.json` is written by `npm run sync` from the Solidity source of the same
+evm-contracts commit as the ABIs (`CONTRACTS_RELEASE.commit`); a test holds every exported
+constant to it, fails on a numeric constant the package does not export, and checks the router's
+type hashes and `WITNESS_TYPE_STRING` against the package's type strings. Vectors:
+`spec/vectors/evm-order.json`, `permit-witness.json` and `fee-split.json` (both rails; each EVM
+case names the router test that pins it, each Canton case carries the Daml values), generated with
+ethers by `scripts/gen-router-vectors.mjs`.
+
 ## FillProof: what attestors sign
 
 `CancoreRouter.settle(order, proof, sigs)` pays a filler out only against k attestor
@@ -98,7 +161,7 @@ breaking protocol change is `0.3`.
 
 ```ts
 import {
-  gatewayBodyHash, hashFillerMessage, hashTicketIntent, repayToFromEvm, fillerIdHash,
+  cantonTicketReceipt, gatewayBodyHash, hashCantonTicketReceipt, hashFillerMessage, hashTicketIntent, repayToFromEvm, fillerIdHash,
 } from '@cancore/contracts';
 
 // what the filler's message key signs to take an offered ticket: its delivery key and payout address
@@ -116,6 +179,9 @@ const msgDigest = hashFillerMessage(message); // bodyHash = keccak256(JCS(messag
 const bodyHash = gatewayBodyHash(frame); // keccak256(JCS(frame without sig))
 
 fillerIdHash('acme'); // the on-chain fillerId of FillTicket, Filled, FillProof, Settled
+
+// the receipt of a Canton-form ticket (no FillTicket, no ticketSig): built from ticket.issued
+const receiptDigest = hashCantonTicketReceipt(cantonTicketReceipt(issued)); // orderHash, attempt, keccak256(cid), validUntil
 ```
 
 `hashTypedData` encodes flat structs (address, bool, bytes, bytesN, string, uintN) and throws on
@@ -130,6 +196,7 @@ manual key change by Cancore staff; there is no key-rotation type or message.
 | --- | --- | --- |
 | `TicketReceipt`, `StakeBinding`, `FillerAuth`, `GatewayMessage` | `CancoreFillerProtocol` v1 | v1 RC — vectors in `spec/protocol/typed-data/` |
 | `FillerQuote` (`string fillerId`), `TicketIntent` (with `fillerId`, `deliveryKey`, `repayTo`), `FillerMessage`, `FillerKeyRegistration` | `CancoreFillerProtocol` v1 | variant A — vectors in `spec/protocol/typed-data/` |
+| `CantonTicketReceipt` (`orderHash`, `attempt`, `deliveryOrderCidHash`, `validUntil`) | `CancoreFillerProtocol` v1 | receipt of a Canton-form ticket (§10 D-O), additive — vectors in `spec/protocol/typed-data/` |
 | `Order` (11 fields, with `createdAt`), `Quote` | `CancoreRouter` v1, source router | router code; provisional copies in `spec/typed-data/` until evm-contracts publishes them |
 | `FillTicket` (`orderHash`, `fillerId`, `deliveryKey`, `repayTo`, `attempt`, `validFrom`, `validUntil`) | `CancoreFillTicket` v1 | variant A, synced from the router (CAN-2140) |
 | `FillProof` (twelve fields) | `CancoreRouter` v1, source router | variant A, synced from the router (above) |
@@ -308,7 +375,8 @@ added.
 EVM_CONTRACTS_DIR=../evm-contracts npm run sync   # then review the diff and release
 ```
 
-`npm run sync` is two scripts: `scripts/sync.mjs` (ABIs, error tables, release identity) and
+`npm run sync` is two scripts: `scripts/sync.mjs` (ABIs, error tables, release identity, the
+router and AttestorSet constants in `spec/constants.json`) and
 `scripts/sync-typed-data.mjs` (`abi/typed-data/*.json`). Until evm-contracts publishes
 `abi/typed-data/` the second one fails; run the first one alone:
 
@@ -347,6 +415,35 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
     `ErrorMessage.retryAfterMs`, `UnsignedErrorBody`, `ChallengeQuery`, `RestEndpoint.errorBody`.
   - The `auth.challenge` example and its `GatewayMessage` vector carry `fillerId` (that vector's
     digest changes); a `RATE_LIMITED` example; no other digest changes.
+- Unreleased (next RC) — router constants and order hashing helpers (CAN-1934). Additive only:
+  no existing export, type or digest changes.
+  - Constants `BPS`, `MAX_FEE_BPS`, `MIN_FILL_TTL`, `MAX_FILL_TTL`, `MAX_SIG_TTL`,
+    `MAX_PROOF_WINDOW`, `GRACE`, `SET_DELAY`, `CANTON_ORIGIN_ID`, `CANTON_SOURCE_ANCHOR`,
+    `EIP2294_MAX_CHAIN_ID`, `OWNER_LABEL_TAG`, `INSTRUMENT_LABEL_TAG`, `DAML_NUMERIC_SCALE`;
+    `spec/constants.json`, synced from the Solidity source, pins them (SDK-6).
+  - Helpers `hashOrder`, `sourceOrderHash`, `isCantonOriginId`, `buildCantonSourceOrder` (port of
+    evm-contracts `test/helpers/cantonOrder.ts`, EVM destinations), `PERMIT_WITNESS_TYPES`,
+    `PERMIT2_WITNESS_TYPE_STRING`, `permit2Domain`, `hashPermitWitness`, `inclusiveFeeSplit` (EVM
+    source) and `cantonInclusiveFeeSplit` (Canton source).
+  - Vectors `spec/vectors/evm-order.json`, `permit-witness.json`, `fee-split.json`.
+- Unreleased (next RC) — the Canton-destination encoder (protocol.md §3.13; CAN-1935). Additive only.
+  - `encodeCantonDestination(network)`, `cantonNetworkOfDestination(destination)`,
+    `encodeCantonOutputAsset({admin, id})`, `encodeCantonRecipient(partyId)`,
+    `encodeCantonAmount(amount)`, type `CantonNetwork`.
+  - Vector `spec/vectors/canton-destination.json`: an EVM-source order to Canton devnet and the
+    `FillProof` of its delivery.
+- Unreleased (next RC) — `CantonTicketReceipt`, the receipt of a Canton-form ticket (protocol.md
+  §3.3, §3.5, §10 D-O; CAN-2062). Additive only (V-2): no existing type, digest or vector changes.
+  - Type `CantonTicketReceipt(bytes32 orderHash,uint32 attempt,bytes32 deliveryOrderCidHash,uint64 validUntil)`
+    in the `CancoreFillerProtocol` domain, signed by the message key; `fillerId` and `repayTo` are
+    not part of it (they travel in `ticket.issued`). Golden vectors in
+    `spec/protocol/typed-data/CantonTicketReceipt.json`.
+  - Helpers `CANTON_TICKET_RECEIPT_TYPES`, `hashCantonTicketReceipt`, `cantonTicketReceipt` (the
+    struct from a Canton-form `ticket.issued` or `ticket.receipt`) and `deliveryOrderCidHash`.
+  - `ticket.receipt` gains the Canton form: `form: "canton"`, `deliveryOrderCid`, `validUntil`,
+    `sig`; the EVM form (`form` absent or `"evm"`) is unchanged. The same body is the REST
+    `POST /v1/filler/tickets/{orderHash}/{attempt}/receipt`; AsyncAPI carries both examples.
+    `TicketReceiptMessage` is now the union `TicketReceiptEvm | TicketReceiptCanton`.
 - `0.2.0-rc.7` — sync the variant A `CancoreRouter` and `ICancoreRouter` ABIs from
   evm-contracts commit `c214f56f6fe5a62097833c5f1335b0cb5351b225` (CAN-2140).
   - Both the package root and `/abi`, and the shipped `spec/abi/` JSON, expose

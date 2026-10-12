@@ -12,6 +12,10 @@ export * from './abi';
 export * from './networks';
 export * from './deployments';
 export * from './eip712';
+export * from './constants';
+export * from './order';
+export * from './fee';
+export * from './cantonDestination';
 export * from './protocol';
 export { BUILD_HASHES, BYTECODE_HASHES, CONTRACTS_RELEASE } from './generated/meta';
 
