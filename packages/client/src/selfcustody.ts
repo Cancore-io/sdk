@@ -603,7 +603,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         throw new CeremonyError(type, 'prepare', err, null);
       }
       if (prepared.legs.length === 0) return { meta: prepared.meta, result: null };
-      const signatures = await signLegs(signer, prepared.legs);
+      const signatures = await signLegs(signer, prepared.legs, { operation: type });
       try {
         const result = await retrying(() => http.post('/wallet/operations/submit', { operationId: prepared.operationId, signatures }));
         return { meta: prepared.meta, result };

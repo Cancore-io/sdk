@@ -262,9 +262,19 @@ Three facts that are expensive to learn from the outside:
    meta, and returning `false` raises `OperationDeclinedError` without a single signature
    being made. Omit it and `execute` behaves as it always did.
 
+4. **A leg's `kind` is the server's word, and a `topology` leg is signed raw.** So the wallet
+   holds it to what that path is for: the bytes must be a 34-byte sha2-256 multihash, a
+   topology leg comes alone, `wallet.topology` prepares that one leg and nothing else, and no
+   other operation prepares a topology leg at all. Anything else raises `UnexpectedLegError`
+   before `confirm` is asked and before a single signature is made.
+
 `signLegs(signer, legs, options?)` signs by hand when you are composing the steps yourself.
-`pauseMsBetweenLegs` exists for signers that open a UI per signature — an extension asked
-twice in the same tick can drop the second prompt — and is 0 for an unlocked local key.
+Pass `operation` — the `type` you prepared — and the legs are held to that operation exactly
+as `execute` holds them; without it only the shape of a topology leg is checked.
+`assertOperationLegs(legs, operation?)` is the same check on its own, for a screen that wants
+to refuse before it draws. `pauseMsBetweenLegs` exists for signers that open a UI per
+signature — an extension asked twice in the same tick can drop the second prompt — and is 0
+for an unlocked local key.
 
 ## `@cancore/wallet/web` — the browser entry
 

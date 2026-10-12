@@ -55,6 +55,8 @@ interface VenueOptions {
   refuseAt?: { create?: 'notAllowed'; accept?: 'notAllowed' | 'feeHolding' | 'feeHoldingUntilSplit' | 'feeHoldingOther' };
   /** `tokens.send` is refused at prepare. */
   failSend?: boolean;
+  /** What `wallet.topology` prepares instead of its one multihash leg; `leg(kind, bytes)` makes a leg the way the venue does. */
+  topologyLegs?: (leg: (kind: string, bytes?: number) => Leg) => Leg[];
   /**
    * `tokens.send` legs carry their transaction bytes: an honest self-send, one that pays a thief, a
    * fee leg taking 5 CC, or bytes for the transfer leg only.
@@ -141,6 +143,7 @@ function venue({
   timeoutAllocateOnce = false,
   coded = false,
   failSend = false,
+  topologyLegs,
   sendBytes,
   twoHoldings = false,
   accruedHoldingFee = 0,
@@ -227,7 +230,8 @@ function venue({
     let meta: Record<string, unknown> = {};
     asked.push(type);
     switch (type) {
-      case 'wallet.topology': legs = [leg('topology', 34), leg('topology', 34)]; break;
+      // One leg: the multihash of the party's topology transactions (wallet-topology.operation).
+      case 'wallet.topology': legs = topologyLegs ? topologyLegs(leg) : [leg('topology', 34)]; break;
       case 'tokens.preapproval': legs = owner.roles.includes('has-preapproval') ? [] : [leg('setup')]; meta = { alreadyExists: legs.length === 0 }; break;
       case 'tokens.consolidate': legs = []; break;
       case 'tokens.accept': legs = [leg('transfer')]; break;
@@ -1489,6 +1493,40 @@ test('expiresWithin reads exp from a JWT and leaves an unreadable one to the 401
   expect(expiresWithin(jwt('a', 1000), 60_000, 1000 * 1000 - 30_000)).toBe(true);
   expect(expiresWithin(jwt('a', 1000), 60_000, 1000 * 1000 - 120_000)).toBe(false);
   expect(expiresWithin('not-a-jwt', 60_000, 0)).toBe(false);
+});
+
+describe('what onboard() lets the key sign for the party (CAN-2399)', () => {
+  // The leg's `kind` is the venue's word, and a topology leg is signed raw. The rule is the wallet's
+  // (@cancore/wallet/operations); what is pinned here is that this client tells it which operation it asked for.
+  test.each([
+    ['a 32-byte hash called a topology leg', (leg) => [leg('topology', 32)]],
+    ['35 bytes called a topology leg', (leg) => [leg('topology', 35)]],
+    ['two topology legs', (leg) => [leg('topology', 34), leg('topology', 34)]],
+    // Only the operation says this one is wrong: a transfer is a perfectly good leg — of a send.
+    ['a transfer where the topology leg should be', (leg) => [leg('transfer')]],
+    ['a topology leg and a transfer beside it', (leg) => [leg('topology', 34), leg('transfer')]],
+  ] as Array<[string, NonNullable<VenueOptions['topologyLegs']>]>)('%s: nothing is signed and no party is made', async (_what, topologyLegs) => {
+    const api = venue({ topologyLegs });
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 50 }), fetchImpl: api.fetchImpl, ...fast });
+    await acct.session.register({ partyName: 'onboarder' });
+
+    await expect(acct.onboard()).rejects.toThrow(/nothing was signed/);
+
+    // The venue was asked, and no operation of any kind came back signed.
+    expect(api.asked).toEqual(['wallet.topology']);
+    expect(api.log).toEqual([]);
+    expect((await acct.me()).partyId ?? null).toBeNull();
+  });
+
+  test('the one multihash leg the venue really prepares is signed, and the party exists', async () => {
+    const api = venue();
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 51 }), fetchImpl: api.fetchImpl, ...fast });
+    await acct.session.register({ partyName: 'onboarder' });
+
+    await acct.onboard();
+
+    expect(api.log.map((e) => e.type)).toEqual(['wallet.topology', 'tokens.preapproval']);
+  });
 });
 
 describe('signing up with an invite code', () => {

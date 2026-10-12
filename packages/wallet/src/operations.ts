@@ -70,6 +70,23 @@ export class OperationDeclinedError extends Error {
   }
 }
 
+/**
+ * Thrown before anything is signed, when the legs a prepare answered are not
+ * ones this wallet signs for that operation (CAN-2399). A distinct type for the
+ * same reason as {@link OperationDeclinedError}: "the server asked for
+ * something it should not have" is not a network failure, and a caller must be
+ * able to say so without reading a message.
+ */
+export class UnexpectedLegError extends Error {
+  constructor(message: string) {
+    super(`${message} — nothing was signed.`);
+    this.name = 'UnexpectedLegError';
+  }
+}
+
+/** The one operation that prepares a topology leg: it brings the account's party into being. */
+export const TOPOLOGY_OPERATION = 'wallet.topology';
+
 export interface OperationCatalogueEntry {
   type: string;
   params: string;
@@ -139,6 +156,18 @@ export async function signPreparedHashBase64(
 }
 
 /**
+ * The bytes a topology leg has the key sign, or a refusal: a sha2-256 multihash
+ * is `0x12` (the function), `0x20` (its 32 bytes), then the digest — 34 bytes.
+ */
+function topologyMultihash(leg: OperationLeg): string {
+  const binary = base64ToBinaryString(leg.hash);
+  if (binary.length !== 34 || binary.charCodeAt(0) !== 0x12 || binary.charCodeAt(1) !== 0x20) {
+    throw new UnexpectedLegError('A topology leg must be a 34-byte sha2-256 multihash');
+  }
+  return binary;
+}
+
+/**
  * Topology legs are NOT prepared transactions, and this is where that costs
  * something: a topology hash is a 34-byte multihash (`0x12 0x20` + sha256),
  * while {@link HashSigner.signPreparedHash} takes strictly 32 bytes and refuses
@@ -146,11 +175,41 @@ export async function signPreparedHashBase64(
  * explicitly, chosen BY KIND — a length check would sooner or later reclassify a
  * real prepared transaction, which is the one mistake that separation exists to
  * prevent.
+ *
+ * `kind` is the server's word, though, and the raw path signs whatever bytes it
+ * is handed (CAN-2399): a leg marked `topology` used to get a signature over a
+ * login challenge, a consent text, anything. The kind picks the path and the
+ * bytes have to be what that path is for — a multihash and nothing else.
  */
 async function signLeg(signer: HashSigner, leg: OperationLeg): Promise<string> {
   if (leg.kind !== 'topology') return signPreparedHashBase64(signer, leg.hash);
-  const rawHex = await signer.signMessage(base64ToBinaryString(leg.hash));
+  const rawHex = await signer.signMessage(topologyMultihash(leg));
   return hexSignatureToBase64(rawHex);
+}
+
+/**
+ * Whether these legs are ones the wallet signs — for `operation`, when the
+ * caller says which operation prepared them (CAN-2399).
+ *
+ * A topology leg is signed raw, so it is held to the one ceremony that has
+ * one: `wallet.topology` prepares exactly one leg, a topology leg, and no
+ * other operation prepares a topology leg at all. Without this a server (or
+ * whatever answers in its place) could put a transfer in front of a user who
+ * asked to create their party, or a raw signature into a send.
+ *
+ * Throws {@link UnexpectedLegError}. No legs is always fine: an operation with
+ * nothing left to do says so in `meta`.
+ */
+export function assertOperationLegs(legs: OperationLeg[], operation?: string): void {
+  const topology = legs.filter((leg) => leg.kind === 'topology');
+  if (topology.length > 0 && legs.length !== 1) {
+    throw new UnexpectedLegError('A topology leg is signed alone, and there is only ever one');
+  }
+  topology.forEach(topologyMultihash);
+  if (operation === undefined) return;
+  if (operation === TOPOLOGY_OPERATION ? topology.length !== legs.length : topology.length > 0) {
+    throw new UnexpectedLegError(`"${operation}" prepared a transaction of a kind it does not have`);
+  }
 }
 
 export interface SignLegsOptions {
@@ -165,6 +224,12 @@ export interface SignLegsOptions {
    * it.
    */
   pauseMsBetweenLegs?: number;
+  /**
+   * The operation these legs were prepared for (`type` of the prepare). Give
+   * it whenever it is known: the legs are then also held to what that
+   * operation may prepare — see {@link assertOperationLegs}. `execute` does.
+   */
+  operation?: string;
 }
 
 /**
@@ -181,6 +246,8 @@ export async function signLegs(
   legs: OperationLeg[],
   options: SignLegsOptions = {},
 ): Promise<OperationSignature[]> {
+  // Before the first signature: a set that is refused must not be half signed.
+  assertOperationLegs(legs, options.operation);
   const signed: OperationSignature[] = [];
   for (const leg of legs) {
     if (signed.length > 0 && options.pauseMsBetweenLegs) {
@@ -289,10 +356,12 @@ export function createWalletOperations(request: WalletRequest): WalletOperations
       confirm?: OperationConfirm,
     ): Promise<TResult> {
       const prepared = await prepare(type, params);
+      // Before the screen: a user is not asked to confirm what will not be signed.
+      assertOperationLegs(prepared.legs, type);
       if (confirm && !(await confirm(prepared.legs, prepared.meta))) {
         throw new OperationDeclinedError();
       }
-      return submit<TResult>(prepared.operationId, await signLegs(signer, prepared.legs));
+      return submit<TResult>(prepared.operationId, await signLegs(signer, prepared.legs, { operation: type }));
     },
   };
 }
