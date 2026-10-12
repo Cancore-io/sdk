@@ -106,6 +106,8 @@ export interface Session {
   register(input?: RegisterInput): Promise<AccountUser>;
 }
 
+/** The fixed start of the gateway's login challenge (`Welcome to Cancore <date> sig:<nonce>`), as `@cancore/wallet` pins it. */
+export const LOGIN_CHALLENGE_PREFIX = 'Welcome to Cancore ';
 /** Renew this long before `exp`, so a request never leaves with a token that dies in flight. */
 const RENEW_AHEAD_MS = 60_000;
 /** Sign-in attempts after a false "no account" answer, and the pause before each (times the attempt). */
@@ -128,8 +130,16 @@ export function createSession({ baseUrl, signer, fetchImpl, now = Date.now, slee
   let refreshToken: string | null = null;
   let renewing: Promise<unknown> | null = null;
 
-  const signChallenge = (challenge: string) =>
-    signer.signChallenge ? signer.signChallenge(challenge) : signer.signMessage(challenge);
+  // A signer with only `signMessage` signs whatever bytes it is handed, and the challenge is the
+  // API's to choose: 32 bytes of it would be a signature over a transaction hash (CAN-2399). So the
+  // shape a provider's own `signChallenge` holds a challenge to is held here for the fallback.
+  const signChallenge = async (challenge: string) => {
+    if (signer.signChallenge) return signer.signChallenge(challenge);
+    if (typeof challenge !== 'string' || !challenge.startsWith(LOGIN_CHALLENGE_PREFIX) || !/^[\x20-\x7e]+$/.test(challenge)) {
+      throw new Error('refusing to sign: the API sent something that is not a Cancore login challenge');
+    }
+    return signer.signMessage(challenge);
+  };
 
   function adopt(auth: AuthResponse): AccountUser {
     token = auth.token;

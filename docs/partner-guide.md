@@ -3,7 +3,7 @@
 For a partner who runs a trading bot or a market maker on Canton through Cancore with a
 **self-custody** account. Your program holds the key. Cancore never sees it.
 
-Written against `@cancore/client` **0.8.0** and `@cancore/wallet` **0.2.0**. Every snippet uses
+Written against `@cancore/client` **0.9.0** and `@cancore/wallet` **0.3.0**. Every snippet uses
 the published API. The full examples in [section 11](#11-full-examples) are in this repository and
 typechecked in CI (`packages/client/examples/`).
 
@@ -471,7 +471,7 @@ knows. The codes a partner sees, and where each one arrives:
 | `ACCOUNT_NOT_FOUND` | no account for this key (the SDK already asked again twice) | `register({ inviteCode })` |
 | `DVP_NOT_ALLOWED` (403) | DvP is not open to this account on this stand. Arrives as a `SettleError` without the code: its message contains `allocation-DvP is not open to this account` | contact Cancore. Self-custody accounts are open on every stand that runs the current gateway |
 | `DVP_FEE_HOLDING_REQUIRED` (409) | the taker's target token sits in one holding. Arrives as a `SettleError` without the code: its message contains `needs a holding of its own` and says who must split | taker: `splitForFee`, or `take(id, { autoSplitForFee: true })`; maker: run `make()` again after the taker splits |
-| `DVP_FEE_BALANCE_INSUFFICIENT` (409) | the payer (`err.body.payerPartyId`) cannot cover the trade leg plus the fee | if the payer is you, top up; otherwise the counterparty must. 0.8.0 does not know this code yet: `errorCode` is `undefined`, so read `body.errorCode` of the `CancoreApiError` (for a `CeremonyError`, of its `cause`) |
+| `DVP_FEE_BALANCE_INSUFFICIENT` (409) | the payer (`err.body.payerPartyId`) cannot cover the trade leg plus the fee | if the payer is you, top up; otherwise the counterparty must. The client does not know this code yet: `errorCode` is `undefined`, so read `body.errorCode` of the `CancoreApiError` (for a `CeremonyError`, of its `cause`) |
 | `SUBMISSION_TIMEOUT_RETRYABLE` | the submit timed out | handled: the SDK resubmits the same signatures (up to twice) |
 | `PREPARED_SUBMISSION_EXPIRED` | the prepared transaction expired before the submit | handled for DvP steps: prepared and signed again, once |
 | `WALLET_TOO_FRAGMENTED` | too many small holdings; from `send`/`consolidate` it arrives on a `CeremonyError` | `consolidate()`, then retry |

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519';
-import { deriveWalletKey, providerFromMnemonic } from '@cancore/wallet';
+import { deriveWalletKey, LOGIN_CHALLENGE_PREFIX as WALLET_CHALLENGE_PREFIX, providerFromMnemonic } from '@cancore/wallet';
 import { allocationTree, DEV, prepared, proposalAccept, proposalCreate, selfSendLeg, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
 import type { FetchLike } from './http';
 import {
@@ -11,11 +11,12 @@ import {
   grossAmount,
   legalConsentMessage,
   SettleError,
+  UnexpectedLegError,
   type IncomingTransfer,
   type SelfCustodyOptions,
   type ServeEvent,
 } from './selfcustody';
-import { createSession, expiresWithin, type KeySigner } from './session';
+import { createSession, expiresWithin, LOGIN_CHALLENGE_PREFIX, type KeySigner } from './session';
 import type { SettleRun } from './serve';
 
 /**
@@ -55,6 +56,8 @@ interface VenueOptions {
   refuseAt?: { create?: 'notAllowed'; accept?: 'notAllowed' | 'feeHolding' | 'feeHoldingUntilSplit' | 'feeHoldingOther' };
   /** `tokens.send` is refused at prepare. */
   failSend?: boolean;
+  /** What `wallet.topology` prepares instead of its one multihash leg; `leg(kind, bytes)` makes a leg the way the venue does. */
+  topologyLegs?: (leg: (kind: string, bytes?: number) => Leg) => Leg[];
   /**
    * `tokens.send` legs carry their transaction bytes: an honest self-send, one that pays a thief, a
    * fee leg taking 5 CC, or bytes for the transfer leg only.
@@ -141,6 +144,7 @@ function venue({
   timeoutAllocateOnce = false,
   coded = false,
   failSend = false,
+  topologyLegs,
   sendBytes,
   twoHoldings = false,
   accruedHoldingFee = 0,
@@ -227,7 +231,8 @@ function venue({
     let meta: Record<string, unknown> = {};
     asked.push(type);
     switch (type) {
-      case 'wallet.topology': legs = [leg('topology', 34), leg('topology', 34)]; break;
+      // One leg: the multihash of the party's topology transactions (wallet-topology.operation).
+      case 'wallet.topology': legs = topologyLegs ? topologyLegs(leg) : [leg('topology', 34)]; break;
       case 'tokens.preapproval': legs = owner.roles.includes('has-preapproval') ? [] : [leg('setup')]; meta = { alreadyExists: legs.length === 0 }; break;
       case 'tokens.consolidate': legs = []; break;
       case 'tokens.accept': legs = [leg('transfer')]; break;
@@ -1326,6 +1331,57 @@ describe('submit refusals of a DvP step, by text and by errorCode alone', () => 
   });
 });
 
+describe('a signer that only has signMessage is not handed a challenge that is not one (CAN-2399)', () => {
+  // The challenge is the API's to choose, and the fallback signs it raw: 32 bytes of it would be a
+  // signature over a transaction hash, and a server can ask for a login whenever it likes (a 401).
+  const raw = () => ({ public_key: '00'.repeat(32), signMessage: jest.fn(async () => '00') });
+  const answering = (challenge: unknown): FetchLike => async (url) =>
+    new URL(url).pathname === '/auth/challenge' ? json({ challenge }) : json({ token: jwt('a'), refreshToken: 'r1', user: {} });
+
+  test.each<[string, unknown]>([
+    ['a transaction hash', String.fromCharCode(...new Array<number>(32).fill(0xbb))],
+    ['a topology multihash', `\x12\x20${'a'.repeat(32)}`],
+    ['32 printable characters', 'x'.repeat(32)],
+    ['a challenge with a line break in it', 'Welcome to Cancore 2026-09-28\nsig:1'],
+    ['the prefix without its space', 'Welcome to Cancore'],
+    ['nothing', ''],
+    ['a value that is not a string', { toString: () => 'Welcome to Cancore 2026-09-28 sig:1' }],
+  ])('%s is not signed', async (_what, challenge) => {
+    const signer = raw();
+
+    await expect(createSession({ baseUrl, signer, fetchImpl: answering(challenge) }).login()).rejects.toThrow(/not a Cancore login challenge/);
+    expect(signer.signMessage).not.toHaveBeenCalled();
+  });
+
+  test('signing up is the same door: a register challenge that is not one is not signed either', async () => {
+    const signer = raw();
+    const fetchImpl: FetchLike = async (url) =>
+      new URL(url).pathname === '/auth/register-challenge' ? json({ challenge: 'x'.repeat(32) }) : json({ token: jwt('a'), user: {} });
+
+    await expect(createSession({ baseUrl, signer, fetchImpl }).register({ partyName: 'bot' })).rejects.toThrow(/not a Cancore login challenge/);
+    expect(signer.signMessage).not.toHaveBeenCalled();
+  });
+
+  test('the prefix is the one the wallet\'s own signChallenge holds a challenge to', () => {
+    expect(LOGIN_CHALLENGE_PREFIX).toBe(WALLET_CHALLENGE_PREFIX);
+  });
+
+  test('a real challenge is signed, as before', async () => {
+    const signer = raw();
+
+    await createSession({ baseUrl, signer, fetchImpl: answering('Welcome to Cancore 2026-09-28 sig:1') }).login();
+    expect(signer.signMessage).toHaveBeenCalledWith('Welcome to Cancore 2026-09-28 sig:1');
+  });
+
+  test('a signer with its own signChallenge is asked as before: the check is its own', async () => {
+    const signer = { ...raw(), signChallenge: jest.fn(async () => '00') };
+
+    await createSession({ baseUrl, signer, fetchImpl: answering('anything') }).login();
+    expect(signer.signChallenge).toHaveBeenCalledWith('anything');
+    expect(signer.signMessage).not.toHaveBeenCalled();
+  });
+});
+
 test('the session renews an expiring token and signs in again after a 401', async () => {
   const signer = await providerFromMnemonic(PHRASE);
   const seen: string[] = [];
@@ -1489,6 +1545,84 @@ test('expiresWithin reads exp from a JWT and leaves an unreadable one to the 401
   expect(expiresWithin(jwt('a', 1000), 60_000, 1000 * 1000 - 30_000)).toBe(true);
   expect(expiresWithin(jwt('a', 1000), 60_000, 1000 * 1000 - 120_000)).toBe(false);
   expect(expiresWithin('not-a-jwt', 60_000, 0)).toBe(false);
+});
+
+describe('what onboard() lets the key sign for the party (CAN-2399)', () => {
+  // The leg's `kind` is the venue's word, and a topology leg is signed raw. The rule is the wallet's
+  // (@cancore/wallet/operations); what is pinned here is that this client tells it which operation it asked for.
+  test.each([
+    ['a 32-byte hash called a topology leg', (leg) => [leg('topology', 32)]],
+    ['35 bytes called a topology leg', (leg) => [leg('topology', 35)]],
+    ['two topology legs', (leg) => [leg('topology', 34), leg('topology', 34)]],
+    // Only the operation says this one is wrong: a transfer is a perfectly good leg — of a send.
+    ['a transfer where the topology leg should be', (leg) => [leg('transfer')]],
+    ['a topology leg and a transfer beside it', (leg) => [leg('topology', 34), leg('transfer')]],
+  ] as Array<[string, NonNullable<VenueOptions['topologyLegs']>]>)('%s: nothing is signed and no party is made', async (_what, topologyLegs) => {
+    const api = venue({ topologyLegs });
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 50 }), fetchImpl: api.fetchImpl, ...fast });
+    await acct.session.register({ partyName: 'onboarder' });
+
+    const error = await acct.onboard().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect(error).toMatchObject({ operation: 'wallet.topology', stage: 'prepare' });
+    expect((error as CeremonyError).cause).toBeInstanceOf(UnexpectedLegError);
+    expect((error as Error).message).toMatch(/nothing was signed/);
+    // The venue was asked, and no operation of any kind came back signed.
+    expect(api.asked).toEqual(['wallet.topology']);
+    expect(api.log).toEqual([]);
+    expect((await acct.me()).partyId ?? null).toBeNull();
+  });
+
+  // Every envelope ceremony names its operation, so a raw-signed leg is refused in each of them — and
+  // as a CeremonyError at `prepare`, which is what the guides tell a partner to watch for.
+  const MULTIHASH = b64(new Uint8Array([0x12, 0x20, ...new Uint8Array(32).fill(0xaa)]));
+  const hostile = () => stub({
+    'GET /auth/me': () => ({ id: 'me', partyId: 'party-me' }),
+    'GET /tokens/transfer-requests/incoming': () => [
+      { contractId: 'c1', templateId: 't', instrumentAdmin: 'admin', instrumentId: 'USDCx', executeBefore: new Date(Date.now() + 60_000).toISOString() },
+    ],
+    'POST /wallet/operations/prepare': () => ({ operationId: 'op', legs: [{ legId: 't', hash: MULTIHASH, kind: 'topology' }], meta: {} }),
+    'POST /wallet/operations/submit': () => ({ ok: true }),
+  });
+  const refusedAtPrepare = (error: unknown, operation: string) => {
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect(error).toMatchObject({ operation, stage: 'prepare' });
+    expect((error as CeremonyError).cause).toBeInstanceOf(UnexpectedLegError);
+  };
+
+  test.each([
+    ['send', 'tokens.send', (acct: ReturnType<typeof createSelfCustody>) => acct.send({ receiverPartyId: 'p::1220', amount: '1' })],
+    ['consolidate', 'tokens.consolidate', (acct: ReturnType<typeof createSelfCustody>) => acct.consolidate()],
+    ['onboard, at the preapproval', 'tokens.preapproval', (acct: ReturnType<typeof createSelfCustody>) => acct.onboard()],
+  ] as const)('%s answered with a well-formed topology leg signs nothing', async (_what, operation, call) => {
+    const api = hostile();
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 56 }), fetchImpl: api.fetchImpl, ...fast });
+
+    refusedAtPrepare(await call(acct).catch((e: unknown) => e), operation);
+    expect(api.hits).not.toContain('POST /wallet/operations/submit');
+  });
+
+  test('accepting an incoming transfer answered with a topology leg signs nothing, and says so per transfer', async () => {
+    const api = hostile();
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 57 }), fetchImpl: api.fetchImpl, ...fast });
+
+    const { accepted, failed } = await acct.acceptIncoming();
+
+    expect(accepted).toEqual([]);
+    refusedAtPrepare(failed[0]!.error, 'tokens.accept');
+    expect(api.hits).not.toContain('POST /wallet/operations/submit');
+  });
+
+  test('the one multihash leg the venue really prepares is signed, and the party exists', async () => {
+    const api = venue();
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 51 }), fetchImpl: api.fetchImpl, ...fast });
+    await acct.session.register({ partyName: 'onboarder' });
+
+    await acct.onboard();
+
+    expect(api.log.map((e) => e.type)).toEqual(['wallet.topology', 'tokens.preapproval']);
+  });
 });
 
 describe('signing up with an invite code', () => {

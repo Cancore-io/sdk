@@ -1,5 +1,34 @@
 # Changelog — `@cancore/client`
 
+## 0.9.0
+
+### Changed
+
+- **Needs `@cancore/wallet` 0.3.0 or later** (the peer range was `>=0.1.0`). An older wallet ignores
+  the operation name this client now passes to `signLegs`, and the rule below would silently not
+  apply.
+- Every envelope ceremony (`onboard`, `send`, `acceptIncoming`, `consolidate`, `splitForFee`) names
+  its operation to the wallet, and the legs the API prepared are held to that operation before
+  anything is signed (CAN-2399): a `topology` leg — the one kind signed raw — must be a 34-byte
+  sha2-256 multihash, alone, and only in `wallet.topology`; no other operation may carry one. A
+  refusal is a `CeremonyError` at `prepare` whose `cause` is `UnexpectedLegError`
+  (`@cancore/wallet/operations`, re-exported from `./selfcustody`); nothing is signed or submitted.
+  DvP steps are unaffected: they were already read before signing.
+- Every other leg's hash must be 32 bytes of canonical base64, and the whole set is read before the
+  first signature: one leg that is not a hash refuses the set, with nothing signed.
+- A signer that has only `signMessage` (no `signChallenge`) is handed a login challenge only when it
+  is one — printable ASCII starting with `Welcome to Cancore ` — the rule a `@cancore/wallet`
+  provider already holds its own `signChallenge` to. Before, such a signer signed whatever the API
+  returned as the challenge, a 32-byte transaction hash included.
+
+### Fixed
+
+- `take`, `swap.create` and `swap.createForPair` turned **any** 403 into a `SettleError` that opens
+  with "allocation-DvP is not open to this account" (CAN-2400). Only the refusal the API itself
+  names so is rewritten now — the `DVP_NOT_ALLOWED` code, or the DvP door's own words from a gateway
+  that serves no codes. Every other 403 (self-trade, documents not accepted, a stopped bot account)
+  reaches the caller as the `CancoreApiError` it is.
+
 ## 0.8.1
 
 ### Security

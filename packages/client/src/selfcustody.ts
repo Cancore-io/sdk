@@ -21,7 +21,9 @@
  * pair through DvP is a SettleError. An EVM leg is locked by an EVM key, which
  * is not this signer.
  */
-import { signLegs, type OperationLeg } from '@cancore/wallet/operations';
+import { assertOperationLegs, signLegs, type OperationLeg } from '@cancore/wallet/operations';
+
+export { UnexpectedLegError } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
 import { DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
@@ -597,13 +599,15 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       let prepared: { operationId: string; legs: PreparedLeg[]; meta: TMeta | null };
       try {
         prepared = await http.post('/wallet/operations/prepare', { type, ...(params ? { params } : {}) });
+        // The legs are what this operation may have, before anything else looks at them (CAN-2399).
+        assertOperationLegs(prepared.legs, type);
         // No legs is a success: the thing is already done, and `meta` says so.
         if (prepared.legs.length > 0) await check?.(prepared.legs, prepared.meta);
       } catch (err) {
         throw new CeremonyError(type, 'prepare', err, null);
       }
       if (prepared.legs.length === 0) return { meta: prepared.meta, result: null };
-      const signatures = await signLegs(signer, prepared.legs);
+      const signatures = await signLegs(signer, prepared.legs, { operation: type });
       try {
         const result = await retrying(() => http.post('/wallet/operations/submit', { operationId: prepared.operationId, signatures }));
         return { meta: prepared.meta, result };
