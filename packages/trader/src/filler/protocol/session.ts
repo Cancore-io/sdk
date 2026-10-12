@@ -1,17 +1,23 @@
 /**
  * One logical WebSocket session to filler-gateway `/v1` (protocol §3.1, §3.5
- * «Session»): connect, log in by challenge, keep the heartbeat, reconnect with
+ * «Session»): connect only after login, keep the heartbeat, reconnect with
  * exponential backoff and jitter. Every frame is verified (`frames.ts`) before
- * anything reads it; `auth.*`, `ping` and `pong` stay here, everything else
+ * anything reads it; `auth.ok`, `ping` and `pong` stay here, everything else
  * goes to the listener.
  *
- * Before `auth.ok` the session sends nothing but `auth.response`, and `send`
- * refuses every frame (the caller falls back to REST or drops it).
+ * Each connect first takes a valid bearer token from the REST login (shared
+ * with the REST side, renewed before it expires) and offers it on the upgrade
+ * as the subprotocols `cancore-filler.v1` + `bearer.<token>`; a failed login
+ * is retried with backoff. filler-gateway authenticates the upgrade itself and
+ * sends `auth.ok` first. Until `auth.ok` the session sends nothing and `send`
+ * refuses every frame (the caller falls back to REST or drops it). A close
+ * before `auth.ok` — a refused upgrade shows up as an error and a close before
+ * the open — drops the token, so the next attempt logs in again. The token is
+ * never logged.
  */
-import { FILLER_AUTH_TYPES, FILLER_PROTOCOL_DOMAIN, PROTOCOL_VERSION, type AuthResponse, type F2SMessage, type Hex } from '@cancore/contracts';
+import { FILLER_CLOSE_CODES, fillerWsProtocols, type AuthToken, type F2SMessage, type Hex } from '@cancore/contracts';
 import { GatewayError, UnsupportedVersionError } from '../errors';
 import type { Cancel, Clock, FillerSocket, Logger, WebSocketFactory } from '../runtime';
-import { signTypedDataChecked, type QuoteSigner } from '../signer';
 import type { Sealer, Unsealed } from './envelope';
 import { gatewayErrorOf, verifyGatewayText, type VerifiedFrame } from './frames';
 
@@ -45,7 +51,21 @@ export function backoffDelay(attempt: number, policy: ReconnectPolicy, random: (
   return Math.floor(cap * (0.5 + 0.5 * Math.min(Math.max(random(), 0), 0.999_999)));
 }
 
+/**
+ * `connecting`: logging in over REST and opening the socket; `authenticating`:
+ * open, waiting for `auth.ok`; `waiting`: a reconnect is scheduled.
+ */
 export type SessionState = 'idle' | 'connecting' | 'authenticating' | 'ready' | 'waiting' | 'stopped' | 'failed';
+
+/** Where the session takes its bearer token from: the REST login (`GatewayRest`). */
+export interface TokenSource {
+  /** A token valid for at least the renewal margin; logs in (once for every caller) when there is none. */
+  validToken(): Promise<AuthToken>;
+  /** Forgets `token` when it is the one held; the next `validToken()` logs in again. */
+  dropToken(token: string): void;
+  /** Stops sharing a login that hangs, so the next `validToken()` starts a new one. */
+  abandonLogin(): void;
+}
 
 export interface SessionListener {
   /** `auth.ok` arrived: the session is ready to send. */
@@ -54,7 +74,7 @@ export interface SessionListener {
   onDisconnected(info: { code: number; reason: string }): void;
   /** Every verified frame after `auth.ok` other than `auth.*`, `ping` and `pong` — `error` included. */
   onFrame(verified: VerifiedFrame): void;
-  /** The session stopped for good (`UNSUPPORTED_VERSION`); no reconnect follows. */
+  /** The session stopped for good (`UNSUPPORTED_VERSION`, on the socket or from the login); no reconnect follows. */
   onFatal(error: GatewayError): void;
 }
 
@@ -63,8 +83,9 @@ export interface SessionOptions {
   url: string;
   fillerId: string;
   gatewaySigner: Hex;
-  quoteSigner: QuoteSigner;
-  /** Seals every frame the session sends itself (`auth.response`, `ping`, `pong`) with the message key. */
+  /** The bearer token of every connect. */
+  tokens: TokenSource;
+  /** Seals every frame the session sends itself (`ping`, `pong`) with the message key. */
   seal: Sealer;
   webSocket: WebSocketFactory;
   clock: Clock;
@@ -76,11 +97,16 @@ export interface SessionOptions {
   reconnect: ReconnectPolicy;
   /** Missed heartbeat intervals before the session is closed and reopened. Default 3. */
   heartbeatMisses: number;
-  /** How long a connection may take to reach `auth.ok`. Default 15 s. */
+  /** How long a connect — the REST login and the socket — may take to reach `auth.ok`. Default 15 s. */
   loginTimeoutMs: number;
 }
 
-const PRE_AUTH_TYPES: ReadonlySet<string> = new Set(['auth.challenge', 'auth.ok', 'error']);
+/** What may arrive before `auth.ok`: `auth.ok` itself, and an `error` before filler-gateway closes. */
+const PRE_AUTH_TYPES: ReadonlySet<string> = new Set(['auth.ok', 'error']);
+/** Closes after which the token no longer works: a new login follows. */
+const TOKEN_DEAD_CLOSES: ReadonlySet<number> = new Set([FILLER_CLOSE_CODES.KEY_CHANGED, FILLER_CLOSE_CODES.NOT_ACTIVE]);
+/** Sent frame ids remembered to name the frame a `RATE_LIMITED` refuses (`re`). */
+const SENT_TYPES_KEPT = 256;
 
 export class GatewaySession {
   private current: SessionState = 'idle';
@@ -91,6 +117,11 @@ export class GatewaySession {
   private lastInboundMs = 0;
   private heartbeatIntervalMs = 0;
   private timers: Cancel[] = [];
+  /** The token offered on the current connection; dropped when it closes before `auth.ok`. */
+  private offeredToken: string | undefined;
+  /** End of the last rate-limit wait filler-gateway named (`error RATE_LIMITED.retryAfterMs`), unix ms. */
+  private rateLimitedUntilMs = 0;
+  private readonly sentTypes = new Map<string, string>();
 
   constructor(
     private readonly options: SessionOptions,
@@ -126,41 +157,82 @@ export class GatewaySession {
     if (this.current !== 'ready' || !this.socket) return false;
     try {
       this.socket.send(JSON.stringify(frame));
-      return true;
     } catch (error) {
-      this.options.logger.warn('filler-gateway: send failed', { type: frame.type, error: String(error) });
+      this.options.logger.warn('filler-gateway: send failed', { type: frame.type, error: this.redact(error) });
       return false;
     }
+    this.sentTypes.set(frame.id, frame.type);
+    if (this.sentTypes.size > SENT_TYPES_KEPT) this.sentTypes.delete(this.sentTypes.keys().next().value!);
+    return true;
+  }
+
+  /** The type of a recently sent frame by its `id` (what an `error.re` names), if it is remembered. */
+  sentType(id: string): string | undefined {
+    return this.sentTypes.get(id);
   }
 
   // -------------------------------------------------------------------------
 
+  /** Takes a valid token from the REST login, then opens the socket with it. */
   private connect(): void {
     const generation = ++this.generation;
     this.current = 'connecting';
     this.clearTimers();
-    const live = () => generation === this.generation;
-    try {
-      this.socket = this.options.webSocket(this.options.url, {
-        onOpen: () => live() && this.onOpen(),
-        onMessage: (text) => live() && this.onMessage(text, generation),
-        onClose: (code, reason) => live() && this.onClose(code, reason),
-        onError: (error) => live() && this.onError(error),
-      });
-    } catch (error) {
-      this.options.logger.warn('filler-gateway: connect failed', { error: String(error) });
-      this.socket = undefined;
-      this.scheduleReconnect();
-      return;
-    }
+    this.offeredToken = undefined;
+    const connecting = () => generation === this.generation && this.current === 'connecting';
     this.timers.push(
       this.options.clock.schedule(this.options.loginTimeoutMs, () => {
-        if (live() && this.current !== 'ready') {
-          this.options.logger.warn('filler-gateway: no auth.ok in time, reconnecting', { timeoutMs: this.options.loginTimeoutMs });
-          this.closeSocket(CLOSE_LOGIN_TIMEOUT, 'login timeout');
+        if (generation !== this.generation || this.current === 'ready') return;
+        this.options.logger.warn('filler-gateway: no auth.ok in time, reconnecting', { timeoutMs: this.options.loginTimeoutMs });
+        if (this.socket) this.closeSocket(CLOSE_LOGIN_TIMEOUT, 'login timeout');
+        else if (this.current === 'connecting') {
+          // The REST login hangs: the next connect must not wait on it again.
+          this.options.tokens.abandonLogin();
+          this.scheduleReconnect();
         }
       }),
     );
+    this.options.tokens.validToken().then(
+      (token) => {
+        if (connecting()) this.open(token, generation);
+      },
+      (error: unknown) => {
+        if (connecting()) this.loginFailed(error);
+      },
+    );
+  }
+
+  private loginFailed(error: unknown): void {
+    if (error instanceof UnsupportedVersionError) {
+      this.fail(error);
+      return;
+    }
+    const retryAfterMs = error instanceof GatewayError ? error.retryAfterMs : undefined;
+    this.options.logger.warn('filler-gateway: login failed, retrying', { error: this.redact(error), retryAfterMs });
+    this.scheduleReconnect(retryAfterMs);
+  }
+
+  private open(token: AuthToken, generation: number): void {
+    const live = () => generation === this.generation;
+    this.offeredToken = token.token;
+    try {
+      this.socket = this.options.webSocket(
+        this.options.url,
+        {
+          onOpen: () => live() && this.onOpen(),
+          onMessage: (text) => live() && this.onMessage(text),
+          onClose: (code, reason) => live() && this.onClose(code, reason),
+          onError: (error) => live() && this.onError(error),
+        },
+        fillerWsProtocols(token.token),
+      );
+    } catch (error) {
+      // Possibly the token itself (a browser refuses a subprotocol it cannot send): log in afresh next time.
+      this.options.logger.warn('filler-gateway: connect failed', { error: this.redact(error) });
+      this.socket = undefined;
+      this.forgetOfferedToken();
+      this.scheduleReconnect();
+    }
   }
 
   private onOpen(): void {
@@ -168,7 +240,7 @@ export class GatewaySession {
     this.lastInboundMs = this.options.clock.now();
   }
 
-  private onMessage(text: string, generation: number): void {
+  private onMessage(text: string): void {
     const check = verifyGatewayText(text, { gatewaySigner: this.options.gatewaySigner, fillerId: this.options.fillerId });
     if (!check.ok) {
       this.options.logger.warn('filler-gateway: frame dropped', { reason: check.reason, type: check.type });
@@ -182,8 +254,7 @@ export class GatewaySession {
         this.options.logger.warn('filler-gateway: frame before auth.ok dropped', { type: frame.type });
         return;
       }
-      if (frame.type === 'auth.challenge') void this.answerChallenge(frame, generation);
-      else if (frame.type === 'auth.ok') this.onAuthOk(frame);
+      if (frame.type === 'auth.ok') this.onAuthOk(frame);
       else this.handleGatewayError(check.verified, 'login');
       return;
     }
@@ -193,8 +264,9 @@ export class GatewaySession {
         if (typeof frame.id === 'string') void this.sealAndSend({ type: 'pong', id: this.options.nextId(), re: frame.id });
         return;
       case 'pong':
-      case 'auth.challenge':
       case 'auth.ok':
+      // never sent on the socket (the login is REST only); not evidence of anything
+      case 'auth.challenge':
         return;
       case 'error':
         if (this.handleGatewayError(check.verified, 'session')) return;
@@ -209,58 +281,26 @@ export class GatewaySession {
   private handleGatewayError(verified: VerifiedFrame, phase: 'login' | 'session'): boolean {
     const error = gatewayErrorOf(verified.frame);
     if (error instanceof UnsupportedVersionError) {
-      this.options.logger.error('filler-gateway: protocol version not served; not reconnecting', { code: error.code, message: error.message });
-      this.current = 'failed';
-      this.closeSocket(CLOSE_UNSUPPORTED_VERSION, 'UNSUPPORTED_VERSION');
-      this.listener.onFatal(error);
+      this.fail(error);
       return true;
     }
+    if (error.code === 'RATE_LIMITED' && error.retryAfterMs !== undefined) {
+      // Kept for a 4029 close that may follow: the reconnect waits at least this long.
+      this.rateLimitedUntilMs = Math.max(this.rateLimitedUntilMs, this.options.clock.now() + error.retryAfterMs);
+    }
     if (phase === 'login') {
-      // filler-gateway closes the socket after a failed login; the close schedules the retry.
-      this.options.logger.error('filler-gateway: login refused', { code: error.code, message: error.message });
+      // filler-gateway closes the socket next; the close schedules the retry.
+      this.options.logger.error('filler-gateway: refused before auth.ok', { code: error.code, message: error.message });
     }
     return false;
   }
 
-  private async answerChallenge(frame: VerifiedFrame['frame'], generation: number): Promise<void> {
-    const { nonce, expiresAt } = frame;
-    if (typeof nonce !== 'string' || typeof expiresAt !== 'string' || !/^(0|[1-9][0-9]*)$/.test(expiresAt)) {
-      this.options.logger.warn('filler-gateway: malformed auth.challenge dropped');
-      return;
-    }
-    if (Number(expiresAt) * 1000 <= this.options.clock.now()) {
-      this.options.logger.warn('filler-gateway: auth.challenge already expired; waiting for the login timeout', { expiresAt });
-      return;
-    }
-    let sig: Hex;
-    try {
-      sig = await signTypedDataChecked(this.options.quoteSigner, {
-        domain: FILLER_PROTOCOL_DOMAIN,
-        types: FILLER_AUTH_TYPES,
-        primaryType: 'FillerAuth',
-        message: { fillerId: this.options.fillerId, nonce, expiresAt },
-      });
-    } catch (error) {
-      this.options.logger.error('filler-gateway: quote signer failed on FillerAuth', { error: String(error) });
-      if (generation === this.generation) this.closeSocket(CLOSE_NORMAL, 'signer failed');
-      return;
-    }
-    let response: AuthResponse;
-    try {
-      response = await this.options.seal<AuthResponse>({
-        type: 'auth.response',
-        id: this.options.nextId(),
-        keyAddress: this.options.quoteSigner.address.toLowerCase() as Hex,
-        protocolVersion: PROTOCOL_VERSION,
-        sig,
-      });
-    } catch (error) {
-      this.options.logger.error('filler-gateway: message key failed on the auth.response envelope', { error: String(error) });
-      if (generation === this.generation) this.closeSocket(CLOSE_NORMAL, 'signer failed');
-      return;
-    }
-    if (generation !== this.generation || this.current !== 'authenticating') return;
-    this.socket?.send(JSON.stringify(response));
+  /** `UNSUPPORTED_VERSION`: no reconnect can help until the SDK is upgraded. */
+  private fail(error: GatewayError): void {
+    this.options.logger.error('filler-gateway: protocol version not served; not reconnecting', { code: error.code, message: error.message });
+    this.current = 'failed';
+    this.closeSocket(CLOSE_UNSUPPORTED_VERSION, 'UNSUPPORTED_VERSION');
+    this.listener.onFatal(error);
   }
 
   /** Seals a frame of the session's own (`ping`, `pong`) and sends it if the session is still ready. */
@@ -318,20 +358,41 @@ export class GatewaySession {
     this.clearTimers();
     if (this.current === 'stopped' || this.current === 'failed') return;
     this.options.logger.info('filler-gateway: connection closed', { code, reason });
+    // Refused upgrade, or no auth.ok: the token may be what failed. A key change or a suspension kills it for sure.
+    if (!wasReady || TOKEN_DEAD_CLOSES.has(code)) this.forgetOfferedToken();
+    this.offeredToken = undefined;
     if (wasReady) this.listener.onDisconnected({ code, reason });
-    this.scheduleReconnect();
+    let floorMs = 0;
+    if (code === FILLER_CLOSE_CODES.RATE_LIMITED) {
+      floorMs = Math.max(0, this.rateLimitedUntilMs - this.options.clock.now());
+      this.options.logger.warn('filler-gateway: closed for sustained rate-limit excess; reconnecting after the cooldown', { retryAfterMs: floorMs });
+    }
+    this.scheduleReconnect(floorMs);
   }
 
   private onError(error: unknown): void {
     // The adapter reports the close next; closing here covers an adapter that does not.
-    this.options.logger.warn('filler-gateway: socket error', { error: String(error) });
+    this.options.logger.warn('filler-gateway: socket error', { error: this.redact(error) });
     this.closeSocket(1006, 'socket error');
   }
 
-  private scheduleReconnect(): void {
+  private forgetOfferedToken(): void {
+    if (this.offeredToken !== undefined) this.options.tokens.dropToken(this.offeredToken);
+    this.offeredToken = undefined;
+  }
+
+  /** An error as text for the log, with the bearer token cut out should an adapter have put it in. */
+  private redact(error: unknown): string {
+    const text = String(error);
+    const token = this.offeredToken;
+    return token ? text.split(token).join('<token>') : text;
+  }
+
+  /** Reconnects after the backoff delay, and never before `floorMs` (a rate-limit wait). */
+  private scheduleReconnect(floorMs = 0): void {
     if (this.current === 'stopped' || this.current === 'failed') return;
     this.current = 'waiting';
-    const delayMs = backoffDelay(this.attempt++, this.options.reconnect, this.options.random);
+    const delayMs = Math.max(backoffDelay(this.attempt++, this.options.reconnect, this.options.random), floorMs);
     const generation = ++this.generation;
     this.timers.push(
       this.options.clock.schedule(delayMs, () => {

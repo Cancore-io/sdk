@@ -5,6 +5,7 @@
       {
         "type": "auth.challenge",
         "id": "g-1",
+        "fillerId": "acme-markets",
         "sentAt": 1789999980000,
         "nonce": "0x63ed6389bd2a1d23bb678583c227172bda874e82b97b1c170bfeeb4373b4b0d5",
         "expiresAt": "1790000030",
@@ -93,11 +94,11 @@
       {
         "type": "error",
         "id": "g-5",
-        "sentAt": 1789999980100,
+        "sentAt": 1789999980150,
         "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
-        "re": "q-0",
+        "re": "a-2",
         "code": "UNAUTHENTICATED",
-        "message": "quote before auth.ok"
+        "message": "no live challenge of this fillerId with this nonce"
       },
       {
         "type": "error",
@@ -119,6 +120,17 @@
         "re": "g-77",
         "code": "UNKNOWN_TICKET",
         "message": "no ticket for this orderHash"
+      },
+      {
+        "type": "error",
+        "id": "g-18",
+        "fillerId": "acme-markets",
+        "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "sentAt": 1789999991500,
+        "re": "q-2",
+        "code": "RATE_LIMITED",
+        "message": "quote rate class over its limit",
+        "retryAfterMs": 850
       }
     ],
     "epoch.weights": [

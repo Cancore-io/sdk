@@ -1,5 +1,6 @@
 import Ajv2020 from 'ajv/dist/2020';
-import { ASYNCAPI, MESSAGE_DIRECTIONS, PROTOCOL_SCHEMAS, SCHEMA_VOCABULARY } from './schemas';
+import { FILLER_CLOSE_CODES, FILLER_UPGRADE_REFUSALS, FILLER_WS_BEARER_PREFIX, FILLER_WS_SUBPROTOCOL, fillerWsProtocols } from './gateway';
+import { ASYNCAPI, MESSAGE_DIRECTIONS, PROTOCOL_SCHEMAS, REST_ONLY_TYPES, SCHEMA_VOCABULARY } from './schemas';
 
 // Structural checks instead of an AsyncAPI parser dependency: the document is
 // generated from the schemas, so what can drift is the wiring between them.
@@ -7,7 +8,13 @@ type Op = { action: string; channel: { $ref: string }; messages: { $ref: string 
 type Msg = { name: string; payload: { schemaFormat: string; schema: { $ref: string } }; examples: { payload: unknown }[] };
 const doc = ASYNCAPI as unknown as {
   asyncapi: string;
-  channels: Record<string, { address: string; messages: Record<string, { $ref: string }> }>;
+  channels: Record<string, {
+    address: string;
+    messages: Record<string, { $ref: string }>;
+    bindings: { ws: { headers: { required: string[]; properties: Record<string, { pattern: string }> } } };
+    'x-close-codes': Record<string, string>;
+    'x-upgrade-refusals': Record<string, string>;
+  }>;
   operations: Record<string, Op>;
   components: { messages: Record<string, Msg> };
 };
@@ -16,8 +23,8 @@ const doc = ASYNCAPI as unknown as {
 const resolve = (ref: string): unknown =>
   ref.slice(2).split('/').reduce<unknown>((node, key) => (node as Record<string, unknown> | undefined)?.[key.replace(/~1/g, '/').replace(/~0/g, '~')], doc);
 
-/** A message key is the frame type, or `<type>S2F` / `<type>F2S` for the two copies of a heartbeat. */
-const MESSAGE_KEYS = Object.entries(MESSAGE_DIRECTIONS).flatMap(([t, d]) => (d === 'both' ? [`${t}S2F`, `${t}F2S`] : [t])).sort();
+/** A message key is the frame type, or `<type>S2F` / `<type>F2S` for the two copies of a heartbeat. The login is REST only. */
+const MESSAGE_KEYS = Object.entries(MESSAGE_DIRECTIONS).filter(([t]) => !REST_ONLY_TYPES.includes(t)).flatMap(([t, d]) => (d === 'both' ? [`${t}S2F`, `${t}F2S`] : [t])).sort();
 const wireType = (key: string) => (MESSAGE_DIRECTIONS[key] ? key : key.slice(0, -3));
 const directionOf = (key: string) => (MESSAGE_DIRECTIONS[key] ?? key.slice(-3)) as 'S2F' | 'F2S';
 
@@ -27,6 +34,28 @@ test('AsyncAPI 3.0, one channel on /v1 carrying every frame type, heartbeats onc
   expect(MESSAGE_KEYS).toEqual(expect.arrayContaining(['pingS2F', 'pingF2S', 'pongS2F', 'pongF2S']));
   expect(Object.keys(doc.channels.filler!.messages).sort()).toEqual(MESSAGE_KEYS);
   expect(Object.keys(doc.components.messages).sort()).toEqual(MESSAGE_KEYS);
+});
+
+test('the login never travels on the channel; auth.ok does, first', () => {
+  const keys = Object.keys(doc.channels.filler!.messages);
+  expect(keys).not.toContain('auth.challenge');
+  expect(keys).not.toContain('auth.response');
+  expect(keys).toContain('auth.ok');
+  expect(Object.keys(doc.components.messages)).not.toContain('auth.response');
+});
+
+test('connect: cancore-filler.v1 plus bearer.<token> on the upgrade; the refusals and close codes are the exported ones', () => {
+  const channel = doc.channels.filler!;
+  const header = new RegExp(channel.bindings.ws.headers.properties['Sec-WebSocket-Protocol']!.pattern);
+  expect(channel.bindings.ws.headers.required).toEqual(['Sec-WebSocket-Protocol']);
+  expect(fillerWsProtocols('dG9rZW4tMQ')).toEqual([FILLER_WS_SUBPROTOCOL, `${FILLER_WS_BEARER_PREFIX}dG9rZW4tMQ`]);
+  expect(header.test(fillerWsProtocols('dG9rZW4tMQ').join(', '))).toBe(true);
+  expect(header.test([...fillerWsProtocols('dG9rZW4tMQ')].reverse().join(','))).toBe(true);
+  expect(header.test('cancore-filler.v1')).toBe(false);
+  expect(header.test('bearer.a, bearer.b')).toBe(false);
+  expect(header.test('cancore-filler.v1, bearer.a b')).toBe(false);
+  expect(Object.keys(channel['x-close-codes']).map(Number).sort()).toEqual(Object.values(FILLER_CLOSE_CODES).sort());
+  expect(Object.keys(channel['x-upgrade-refusals']).map(Number)).toEqual(Object.keys(FILLER_UPGRADE_REFUSALS).map(Number));
 });
 
 test('operations are the gateway\'s: it sends S2F frames (a signed ping and pong among them) and receives F2S frames', () => {

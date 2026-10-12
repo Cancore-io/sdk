@@ -59,11 +59,13 @@ describe('verifyGatewayText — every filler-gateway → filler frame (protocol 
     expect(verifyGatewayText(JSON.stringify(other), expect_)).toMatchObject({ ok: false, reason: 'other-fillerId' });
   });
 
-  test('fillerId may be absent only on auth.challenge and on a pre-auth error', () => {
+  test('fillerId may be absent only on an error (a refused login); auth.challenge is addressed', () => {
     const { fillerId: _f, ...unaddressed } = offer();
     expect(verifyGatewayText(JSON.stringify(gateway.sign(unaddressed)), expect_)).toMatchObject({ ok: false, reason: 'no-fillerId' });
-    const challenge = gateway.frame({ type: 'auth.challenge', nonce: `0x${'ab'.repeat(32)}`, expiresAt: '1790000030' });
-    expect(verifyGatewayText(JSON.stringify(challenge), expect_)).toMatchObject({ ok: true });
+    const challenge = { type: 'auth.challenge', nonce: `0x${'ab'.repeat(32)}`, expiresAt: '1790000030' };
+    expect(verifyGatewayText(JSON.stringify(gateway.frame(challenge)), expect_)).toMatchObject({ ok: false, reason: 'no-fillerId' });
+    expect(verifyGatewayText(JSON.stringify(gateway.frame({ ...challenge, fillerId: 'someone-else' })), expect_)).toMatchObject({ ok: false, reason: 'other-fillerId' });
+    expect(verifyGatewayText(JSON.stringify(gateway.frame({ ...challenge, fillerId: expect_.fillerId })), expect_)).toMatchObject({ ok: true });
     const error = gateway.frame({ type: 'error', code: 'UNAUTHENTICATED', message: 'no' });
     expect(verifyGatewayText(JSON.stringify(error), expect_)).toMatchObject({ ok: true });
   });

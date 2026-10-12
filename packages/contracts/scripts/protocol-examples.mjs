@@ -59,7 +59,7 @@ export function drawRecord(draw) {
 export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHash, intentHash, receiptSigHash, offerBody, epoch }) {
   const t = { orderHash, attempt: 0 };
   return {
-    'auth.challenge': [{ type: 'auth.challenge', id: 'g-1', sentAt: 1789999980000, nonce: tx('cancore:test:auth-nonce:1'), expiresAt: '1790000030', sig: PLACEHOLDER_SIG }],
+    'auth.challenge': [{ type: 'auth.challenge', id: 'g-1', fillerId: 'acme-markets', sentAt: 1789999980000, nonce: tx('cancore:test:auth-nonce:1'), expiresAt: '1790000030', sig: PLACEHOLDER_SIG }],
     'auth.response': [
       { type: 'auth.response', ...F('a-1', 1789999980100), keyAddress: MESSAGE_KEY, protocolVersion: '1', sig: PLACEHOLDER_SIG },
       { type: 'auth.response', ...F('a-2', 1789999980100), keyAddress: MESSAGE_KEY, protocolVersion: '1', nonce: tx('cancore:test:auth-nonce:1'), sig: PLACEHOLDER_SIG },
@@ -69,9 +69,10 @@ export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHas
     pong: [{ type: 'pong', ...F('po-1', 1789999995100), re: 'gp-1' }, { type: 'pong', id: 'g-3', ...S, sentAt: 1789999994100, re: 'p-1' }],
     error: [
       { type: 'error', id: 'g-4', ...S, sentAt: 1790000023500, re: 'i-2', code: 'TICKET_CLOSED', message: 'ticket.intent after acceptBy' },
-      { type: 'error', id: 'g-5', sentAt: 1789999980100, sig: PLACEHOLDER_SIG, re: 'q-0', code: 'UNAUTHENTICATED', message: 'quote before auth.ok' },
+      { type: 'error', id: 'g-5', sentAt: 1789999980150, sig: PLACEHOLDER_SIG, re: 'a-2', code: 'UNAUTHENTICATED', message: 'no live challenge of this fillerId with this nonce' },
       { type: 'error', id: 'g-6', ...S, sentAt: 1790000021500, re: 'i-3', code: 'TICKET_REFUSED', reason: 'REPAY_TO_BLOCKLISTED', message: 'repayTo is blocklisted by the input token' },
       { type: 'error', ...F('e-1', 1790000030000), re: 'g-77', code: 'UNKNOWN_TICKET', message: 'no ticket for this orderHash' },
+      { type: 'error', id: 'g-18', ...S, sentAt: 1789999991500, re: 'q-2', code: 'RATE_LIMITED', message: 'quote rate class over its limit', retryAfterMs: 850 },
     ],
     'epoch.weights': [{ type: 'epoch.weights', id: 'g-7', ...S, sentAt: 1789999980300, epochId: epoch.epochId, startsAt: epoch.startsAt, endsAt: epoch.endsAt, weightsRoot: epoch.weightsRoot }],
     'quote.request': [

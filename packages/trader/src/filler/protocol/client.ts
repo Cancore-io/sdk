@@ -16,15 +16,21 @@
  *   `GET /v1/filler/tickets` and feeds the items through the same path, and
  *   ticket actions go out as `POST /v1/filler/tickets/…`. After every login it
  *   pulls once more, for whatever was sent while it was away.
+ * - **Rate limits.** An `error RATE_LIMITED` with `retryAfterMs` pauses the
+ *   rate class of the frame it refuses (`re`; every WebSocket class when it
+ *   names none of ours), shared with the REST side's pauses: until it ends
+ *   `send` returns false and `submitTicket` rejects with `RATE_LIMITED` and the
+ *   remaining `retryAfterMs`, so no component resends into the limit.
  */
 import type { F2SMessage, Hex, QuoteAck, TicketIntentAck } from '@cancore/contracts';
-import { FillerStoppedError, type GatewayError } from '../errors';
+import { FillerStoppedError, GatewayError } from '../errors';
 import type { EventSink, FillerStage } from '../events';
 import type { Clock, Logger } from '../runtime';
 import type { EvidenceEntry, FillerStore } from '../store';
 import { gatewayErrorOf, type VerifiedFrame } from './frames';
 import type { GatewayRest, QuoteListItem, TicketAction } from './rest';
 import type { Sealer } from './envelope';
+import { rateClassOfFrame, WS_RATE_CLASSES, type RateClass, type RateLimits } from './limits';
 import type { GatewaySession, SessionListener } from './session';
 
 /** Which channel delivered a frame. */
@@ -65,6 +71,8 @@ export class FillerProtocolClient implements SessionListener {
   private stopped = false;
   private pollTimer: (() => void) | undefined;
   private syncing: Promise<void> | undefined;
+  /** The pause end already logged per class: a held-back frame is logged once per pause. */
+  private readonly pauseLogged = new Map<RateClass, number>();
 
   constructor(private readonly options: ClientOptions) {}
 
@@ -96,6 +104,11 @@ export class FillerProtocolClient implements SessionListener {
 
   get connected(): boolean {
     return this.session?.ready ?? false;
+  }
+
+  /** Ms until a frame of `type` may be sent again after a `RATE_LIMITED` (0: it may now). */
+  rateLimitedMs(type: string): number {
+    return this.rest?.limits.remainingMs(rateClassOfFrame(type)) ?? 0;
   }
 
   /**
@@ -132,6 +145,7 @@ export class FillerProtocolClient implements SessionListener {
    * session is not ready: the frame is dropped, and the caller decides.
    */
   send(frame: F2SMessage): boolean {
+    if (this.heldBack(frame.type)) return false;
     const sent = this.session?.send(frame) ?? false;
     if (!sent) this.options.logger.warn('filler-gateway: session not ready, frame not sent', { type: frame.type });
     return sent;
@@ -146,6 +160,7 @@ export class FillerProtocolClient implements SessionListener {
    * and answers a repeated consent or receipt with the same ack (§6).
    */
   async submitTicket(request: TicketAction): Promise<FrameChannel> {
+    this.requireRest().limits.check(rateClassOfFrame(request.message.type), `ticket.${request.action}`);
     if (this.session?.send(request.message)) return 'ws';
     const ack = await this.requireRest().postTicket(request);
     if (ack) await this.ingest(ack, 'rest');
@@ -216,7 +231,8 @@ export class FillerProtocolClient implements SessionListener {
       const firstSeen = await this.journal(verified);
       if (frame.type === 'error') {
         const error = gatewayErrorOf(frame);
-        this.options.logger.warn('filler-gateway: error', { code: error.code, re: error.re, message: error.message });
+        this.options.logger.warn('filler-gateway: error', { code: error.code, re: error.re, message: error.message, retryAfterMs: error.retryAfterMs });
+        if (channel === 'ws' && error.code === 'RATE_LIMITED' && error.retryAfterMs !== undefined) this.pauseFor(error, error.retryAfterMs);
         for (const listener of this.errorListeners) this.safely(() => listener(error));
       }
       const handler = this.handlers.get(frame.type);
@@ -280,6 +296,26 @@ export class FillerProtocolClient implements SessionListener {
       }
       return fresh;
     });
+  }
+
+  /** Pauses the class of the frame a `RATE_LIMITED` refuses; one it cannot name pauses every WebSocket class. */
+  private pauseFor(error: GatewayError, retryAfterMs: number): void {
+    const type = error.re !== undefined ? this.session?.sentType(error.re) : undefined;
+    this.rest?.limits.pause(type !== undefined ? rateClassOfFrame(type) : WS_RATE_CLASSES, retryAfterMs);
+  }
+
+  /** True — logged once per pause — while the rate class of `type` is paused. */
+  private heldBack(type: string): boolean {
+    const limits = this.rest?.limits;
+    if (!limits) return false;
+    const rateClass = rateClassOfFrame(type);
+    const until = limits.pausedUntil(rateClass);
+    if (until === 0) return false;
+    if (this.pauseLogged.get(rateClass) !== until) {
+      this.pauseLogged.set(rateClass, until);
+      this.options.logger.warn('filler-gateway: rate limited, frames of this class held back', { type, rateClass, retryAfterMs: until - this.options.clock.now() });
+    }
+    return true;
   }
 
   private schedulePoll(delayMs: number): void {

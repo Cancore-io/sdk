@@ -78,7 +78,7 @@ export interface OrderJson {
 export interface S2FBase {
   type: string;
   id: string;
-  /** The addressee. Absent only on `auth.challenge` and on pre-auth `error`. */
+  /** The addressee. Absent only on an `error` that refuses a login (`POST /v1/filler/auth`). */
   fillerId?: string;
   sentAt: TimeMs;
   sig: Hex;
@@ -102,13 +102,18 @@ export interface F2SBase extends F2SEnvelope {
   type: string;
 }
 
-export interface AuthChallenge extends S2FBase { type: 'auth.challenge'; nonce: Hex; expiresAt: DecString }
+/**
+ * The login challenge: the body of `GET /v1/filler/auth/challenge?fillerId=`, addressed to that
+ * `fillerId`. REST only — never on the WebSocket.
+ */
+export interface AuthChallenge extends S2FBase { type: 'auth.challenge'; fillerId: string; nonce: Hex; expiresAt: DecString }
+/** The body of `POST /v1/filler/auth` (→ `AuthToken`). REST only — never on the WebSocket. */
 export interface AuthResponse extends F2SBase {
   type: 'auth.response';
   fillerId: string;
   keyAddress: Hex;
   protocolVersion: '1';
-  /** Optional: the `auth.challenge` nonce this answers, so the REST login finds its challenge directly. */
+  /** The `auth.challenge` nonce this answers (optional; senders should send it), so the login finds its challenge directly. */
   nonce?: Hex;
   sig: Hex;
 }
@@ -121,7 +126,21 @@ export interface PingS2F extends S2FBase { type: 'ping'; fillerId: string }
 export interface PongS2F extends S2FBase { type: 'pong'; fillerId: string; re: string }
 export type Ping = PingF2S | PingS2F;
 export type Pong = PongF2S | PongS2F;
-export interface ErrorMessage extends S2FBase { type: 'error'; code: ErrorCode; message: string; reason?: TicketRefusedReason }
+export interface ErrorMessage extends S2FBase {
+  type: 'error';
+  code: ErrorCode;
+  message: string;
+  reason?: TicketRefusedReason;
+  /** With `RATE_LIMITED`: ms (≥ 1) until the refused rate class may be used again, or until the cooldown ends. */
+  retryAfterMs?: number;
+}
+/**
+ * An unsigned, unaddressed refusal, so a filler cannot verify it; a hint only. Every 429 (`RATE_LIMITED`,
+ * on every route), and the refusals of the login routes decided before any signature check:
+ * 400 `BAD_REQUEST`, 404 `UNKNOWN_REQUEST`, and on `POST /v1/filler/auth` 401 `UNAUTHENTICATED`
+ * (no live challenge for the fillerId: ask for a new one).
+ */
+export interface UnsignedErrorBody { type: 'error'; code: ErrorCode; message: string; retryAfterMs?: number }
 /** The filler's reply to a gateway frame it cannot handle; informational. */
 export interface ErrorF2S extends F2SBase { type: 'error'; re: string; code: ErrorCode; message: string }
 export interface EpochWeights extends S2FBase { type: 'epoch.weights'; epochId: DecString; startsAt: DecString; endsAt: DecString; weightsRoot: Hex }
@@ -189,7 +208,10 @@ export type F2SMessage =
 
 // --- REST (protocol §3.6); an error body is the `error` message itself.
 
+/** `POST /v1/filler/auth`: the bearer token of REST and of the WebSocket upgrade, bound to (fillerId, message key). */
 export interface AuthToken { token: string; expiresAt: TimeMs }
+/** `GET /v1/filler/auth/challenge` query. */
+export interface ChallengeQuery { fillerId: string }
 export interface Page<T> { items: T[]; nextCursor: string | null }
 export type TicketList = Page<TicketOffer | TicketIssued>;
 export interface QuoteRecord { quote: QuoteMessage; ack: QuoteAck; status: QuoteFinalStatus }

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cancore.io/schemas/filler-protocol/v1/messages.schema.json",
   "title": "Cancore filler protocol v1 — WebSocket frames",
-  "$comment": "One $def per frame type, validated by name ($defs/<type>). The schemas encode the SENDER rule (protocol §3.1): lowercase hex, uint64 and wider as canonical decimal strings, uint8/16/32 as JSON integers, gateway times in milliseconds. No object is closed (V-2): receivers ignore unknown fields, takers ignore unknown S→F types, and treat an unknown reason/result/code as OTHER/generic. Every enum is open: anyOf [known values, futureEnumValue]. x-direction: S2F = gateway to filler, F2S = filler to gateway, both = either way (ping, pong, error; <type>S2F is the gateway's copy, <type>F2S the filler's). Every frame in both directions carries id, sentAt and fillerId (absent only on auth.challenge, optional on a pre-auth gateway error) and is signed (protocol §3.4): `sig` = the gateway key over GatewayMessage{bodyHash} on S2F, `msgSig` = the filler's message key over FillerMessage{bodyHash} on F2S, bodyHash = keccak256(JCS(frame without that field)). No exceptions: ticket.decline, a declining quote.reconfirm.reply, fill.reported, pong and error from the filler are signed too.",
+  "$comment": "One $def per frame type, validated by name ($defs/<type>). The schemas encode the SENDER rule (protocol §3.1): lowercase hex, uint64 and wider as canonical decimal strings, uint8/16/32 as JSON integers, gateway times in milliseconds. No object is closed (V-2): receivers ignore unknown fields, takers ignore unknown S→F types, and treat an unknown reason/result/code as OTHER/generic. Every enum is open: anyOf [known values, futureEnumValue]. x-direction: S2F = gateway to filler, F2S = filler to gateway, both = either way (ping, pong, error; <type>S2F is the gateway's copy, <type>F2S the filler's). x-rest-only: the type travels only as a REST body (auth.challenge, auth.response: the login of protocol §3.6), never on the WebSocket. Every frame in both directions carries id, sentAt and fillerId (optional only on a gateway error that refuses a login, POST /v1/filler/auth) and is signed (protocol §3.4): `sig` = the gateway key over GatewayMessage{bodyHash} on S2F, `msgSig` = the filler's message key over FillerMessage{bodyHash} on F2S, bodyHash = keccak256(JCS(frame without that field)). No exceptions: ticket.decline, a declining quote.reconfirm.reply, fill.reported, pong and error from the filler are signed too.",
   "$defs": {
     "uintDec64": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20, "description": "uint64 as a decimal string: digits only, no sign, no exponent, no leading zero" },
     "uintDec256": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 78, "description": "uint256 as a decimal string" },
@@ -125,16 +125,18 @@
     },
     "auth.challenge": {
       "x-direction": "S2F",
+      "x-rest-only": true,
       "type": "object",
-      "description": "First frame after connect; the addressee is not known yet, so no fillerId",
-      "allOf": [{ "$ref": "#/$defs/s2fEnvelope" }],
+      "description": "The login challenge, addressed to the fillerId it was asked for: the 200 body of GET /v1/filler/auth/challenge?fillerId=. Never sent on the WebSocket. The filler checks the gateway sig and that fillerId is its own before it signs FillerAuth{fillerId, nonce, expiresAt}",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
       "required": ["type", "nonce", "expiresAt"],
       "properties": { "type": { "const": "auth.challenge" }, "nonce": { "$ref": "#/$defs/bytes32" }, "expiresAt": { "$ref": "#/$defs/timeS" } }
     },
     "auth.response": {
       "x-direction": "F2S",
       "type": "object",
-      "description": "sig = FillerAuth{fillerId, nonce, expiresAt} by the registered message key of fillerId (keyAddress = its address); msgSig by the same key",
+      "x-rest-only": true,
+      "description": "The body of POST /v1/filler/auth, answered with {token, expiresAt}. sig = FillerAuth{fillerId, nonce, expiresAt} by the registered message key of fillerId (keyAddress = its address); msgSig by the same key. Never sent on the WebSocket: a WebSocket connection is authenticated by the bearer token offered on the upgrade",
       "allOf": [{ "$ref": "#/$defs/f2sBase" }],
       "required": ["type", "fillerId", "keyAddress", "protocolVersion", "sig"],
       "properties": {
@@ -142,7 +144,7 @@
         "fillerId": { "$ref": "#/$defs/fillerId" },
         "keyAddress": { "$ref": "#/$defs/address" },
         "protocolVersion": { "type": "string", "description": "the gateway answers UNSUPPORTED_VERSION to anything it does not serve; v1 senders send \"1\"" },
-        "nonce": { "$ref": "#/$defs/bytes32", "description": "optional: the auth.challenge nonce this response answers, so the REST login (POST /v1/filler/auth) finds its challenge without trying every live one; on WebSocket the challenge is the connection's own" },
+        "nonce": { "$ref": "#/$defs/bytes32", "description": "the auth.challenge nonce this response answers (optional; senders SHOULD send it), so POST /v1/filler/auth finds the live challenge of this fillerId without trying every one" },
         "sig": { "$ref": "#/$defs/sig65" }
       }
     },
@@ -194,10 +196,16 @@
     },
     "errorS2F": {
       "type": "object",
-      "description": "Reply to the F→S frame `re`; also the REST error body. fillerId is absent before authentication. reason names the failed pre-ticket check with TICKET_REFUSED",
+      "description": "Reply to the F→S frame `re`; also the REST error body. fillerId may be absent on a refusal of POST /v1/filler/auth, which is not authenticated yet. reason names the failed pre-ticket check with TICKET_REFUSED. retryAfterMs comes with RATE_LIMITED only",
       "allOf": [{ "$ref": "#/$defs/s2fEnvelope" }],
       "required": ["type", "code", "message"],
-      "properties": { "type": { "const": "error" }, "code": { "$ref": "#/$defs/errorCode" }, "message": { "type": "string" }, "reason": { "$ref": "#/$defs/ticketRefusedReason" } },
+      "properties": {
+        "type": { "const": "error" },
+        "code": { "$ref": "#/$defs/errorCode" },
+        "message": { "type": "string" },
+        "reason": { "$ref": "#/$defs/ticketRefusedReason" },
+        "retryAfterMs": { "$ref": "#/$defs/durationMs", "type": "integer", "minimum": 1, "description": "with RATE_LIMITED: ms (≥ 1) until the rate class of the refused message holds a token again, or until the cooldown of the fillerId ends; the filler sends nothing of that class before it" }
+      },
       "if": { "type": "object", "properties": { "code": { "const": "TICKET_REFUSED" } }, "required": ["code"] },
       "then": { "type": "object", "required": ["reason"], "properties": { "reason": true } }
     },

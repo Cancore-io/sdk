@@ -126,9 +126,9 @@ const until = async (what: string, condition: () => Promise<boolean>, timeoutMs 
   throw new Error(`timed out: ${what}`);
 };
 
-const globalWebSocket: WebSocketFactory = (url, h) => {
-  const Ws = (globalThis as unknown as { WebSocket: new (url: string) => { onopen: () => void; onmessage: (e: { data: unknown }) => void; onclose: (e: { code: number; reason: string }) => void; onerror: (e: unknown) => void; send(t: string): void; close(c?: number, r?: string): void } }).WebSocket;
-  const ws = new Ws(url);
+const globalWebSocket: WebSocketFactory = (url, h, protocols) => {
+  const Ws = (globalThis as unknown as { WebSocket: new (url: string, protocols: string[]) => { onopen: () => void; onmessage: (e: { data: unknown }) => void; onclose: (e: { code: number; reason: string }) => void; onerror: (e: unknown) => void; send(t: string): void; close(c?: number, r?: string): void } }).WebSocket;
+  const ws = new Ws(url, [...protocols]);
   ws.onopen = () => h.onOpen();
   ws.onmessage = (e) => typeof e.data === 'string' && h.onMessage(e.data);
   ws.onclose = (e) => h.onClose(e.code, e.reason);

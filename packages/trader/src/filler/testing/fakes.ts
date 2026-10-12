@@ -5,7 +5,7 @@
  * by feeding frames, with no test server), a signer over a test key, and
  * sinks that record what the SDK logged and emitted.
  */
-import { hashTypedData, type Hex, type TypedDataInput } from '@cancore/contracts';
+import { FILLER_WS_BEARER_PREFIX, FILLER_WS_SUBPROTOCOL, hashTypedData, type Hex, type TypedDataInput } from '@cancore/contracts';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import type { FillerEvent, EventSink } from '../events';
@@ -98,7 +98,10 @@ export class FakeEvmRpc implements EvmRpc {
 // WebSocket
 // ---------------------------------------------------------------------------
 
-/** One fake connection. The test plays filler-gateway: `open()`, then `receive(frame)`. */
+/**
+ * One fake connection. The test plays filler-gateway: `open()` (or `refuse()`
+ * the upgrade), then `receive(frame)` — `auth.ok` first, as filler-gateway does.
+ */
 export class FakeSocket implements FillerSocket {
   /** Frames the SDK sent, as text. */
   readonly sent: string[] = [];
@@ -107,7 +110,23 @@ export class FakeSocket implements FillerSocket {
   constructor(
     readonly url: string,
     private readonly handlers: FillerSocketHandlers,
+    /** The subprotocols the SDK offered on the upgrade. */
+    readonly protocols: readonly string[] = [],
   ) {}
+
+  /** The bearer token offered on the upgrade (`bearer.<token>`), when exactly one was offered next to `cancore-filler.v1`. */
+  get token(): string | undefined {
+    const bearers = this.protocols.filter((p) => p.startsWith(FILLER_WS_BEARER_PREFIX));
+    if (!this.protocols.includes(FILLER_WS_SUBPROTOCOL) || bearers.length !== 1) return undefined;
+    return bearers[0]!.slice(FILLER_WS_BEARER_PREFIX.length);
+  }
+
+  /** filler-gateway refuses the upgrade with a plain HTTP `status`: an error, then a close, and never an open. */
+  refuse(status: number): void {
+    if (this.closed) throw new Error('FakeSocket: refuse after close');
+    this.handlers.onError(new Error(`Unexpected server response: ${status}`));
+    this.close(1006, '');
+  }
 
   send(text: string): void {
     if (this.closed) throw new Error('FakeSocket: send after close');
@@ -148,8 +167,8 @@ export class FakeSocket implements FillerSocket {
 /** A `WebSocketFactory` that hands out `FakeSocket`s; `sockets` lists every connection in order. */
 export function createFakeWebSocketFactory(): { factory: WebSocketFactory; sockets: FakeSocket[] } {
   const sockets: FakeSocket[] = [];
-  const factory: WebSocketFactory = (url, handlers) => {
-    const socket = new FakeSocket(url, handlers);
+  const factory: WebSocketFactory = (url, handlers, protocols) => {
+    const socket = new FakeSocket(url, handlers, [...protocols]);
     sockets.push(socket);
     return socket;
   };
@@ -248,7 +267,14 @@ export interface RecordedRequest extends HttpRequest {
   url: string;
 }
 
-export type FakeRoute = (request: RecordedRequest) => { status: number; body: unknown } | Promise<{ status: number; body: unknown }>;
+/** A route's answer; `headers` are served lower-cased (`Retry-After` → `retry-after`). */
+export interface FakeAnswer {
+  status: number;
+  body: unknown;
+  headers?: Readonly<Record<string, string>>;
+}
+
+export type FakeRoute = (request: RecordedRequest) => FakeAnswer | Promise<FakeAnswer>;
 
 /**
  * An `HttpFetch` answering from routes keyed `"METHOD /path"` (query string
@@ -263,9 +289,83 @@ export function createFakeFetch(routes: Record<string, FakeRoute> = {}): { fetch
     requests.push(recorded);
     const { pathname } = new URL(url);
     const route = routes[`${request.method} ${pathname}`];
-    const answer = route ? await route(recorded) : { status: 404, body: { type: 'error', code: 'NOT_FOUND', message: `no route ${pathname}` } };
+    const answer: FakeAnswer = route ? await route(recorded) : { status: 404, body: { type: 'error', code: 'NOT_FOUND', message: `no route ${pathname}` } };
     const text = typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body);
-    return { status: answer.status, text: async () => text };
+    const headers = new Map(Object.entries(answer.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
+    return { status: answer.status, headers: { get: (name: string) => headers.get(name.toLowerCase()) ?? null }, text: async () => text };
   };
   return { fetch, requests, routes };
+}
+
+// ---------------------------------------------------------------------------
+// filler-gateway login
+// ---------------------------------------------------------------------------
+
+export interface FakeGatewayLoginOptions {
+  fillerId: string;
+  clock: Clock;
+  /** Lifetime of an issued token. Default one hour. */
+  tokenTtlMs?: number;
+  /** `heartbeatIntervalMs` of the `auth.ok` that `accept` sends. Default 60 s. */
+  heartbeatIntervalMs?: number;
+}
+
+/**
+ * filler-gateway's login, for a test: the REST routes `GET
+ * /v1/filler/auth/challenge?fillerId=` (a signed challenge addressed to that
+ * fillerId; 400 unsigned without one) and `POST /v1/filler/auth` (a fresh token
+ * per login, `tok-1`, `tok-2`, …), and `accept(socket)`, which holds an upgrade
+ * to the rules — `cancore-filler.v1` plus exactly one `bearer.<token>` of a
+ * live issued token — then opens it and sends the signed `auth.ok` first; any
+ * other upgrade is refused (400 or 401). Spread `routes` into
+ * `createFakeFetch`. It checks no signature of the filler: the SDK's login is
+ * tested on its own.
+ */
+export function createFakeGatewayLogin(gateway: TestGatewaySigner, options: FakeGatewayLoginOptions) {
+  const ttlMs = options.tokenTtlMs ?? 3_600_000;
+  /** Every token issued, with its expiry; `revoke` deletes one. */
+  const tokens = new Map<string, number>();
+  let challenges = 0;
+  const routes: Record<string, FakeRoute> = {
+    'GET /v1/filler/auth/challenge': (request) => {
+      const fillerId = new URL(request.url).searchParams.get('fillerId');
+      if (!fillerId) return { status: 400, body: { type: 'error', code: 'BAD_REQUEST', message: 'fillerId is required' } };
+      challenges++;
+      return {
+        status: 200,
+        body: gateway.frame({ type: 'auth.challenge', id: `g-challenge-${challenges}`, fillerId, nonce: `0x${challenges.toString(16).padStart(64, '0')}`, expiresAt: String(Math.floor(options.clock.now() / 1000) + 30) }),
+      };
+    },
+    'POST /v1/filler/auth': () => {
+      const token = `tok-${tokens.size + 1}`;
+      const expiresAt = options.clock.now() + ttlMs;
+      tokens.set(token, expiresAt);
+      return { status: 200, body: { token, expiresAt } };
+    },
+  };
+  const accept = (socket: FakeSocket): boolean => {
+    const token = socket.token;
+    if (token === undefined) {
+      socket.refuse(400);
+      return false;
+    }
+    const expiresAt = tokens.get(token);
+    if (expiresAt === undefined || expiresAt <= options.clock.now()) {
+      socket.refuse(401);
+      return false;
+    }
+    socket.open();
+    socket.receive(gateway.frame({ type: 'auth.ok', id: `g-ok-${token}`, fillerId: options.fillerId, heartbeatIntervalMs: options.heartbeatIntervalMs ?? 60_000 }));
+    return true;
+  };
+  return {
+    routes,
+    accept,
+    /** Tokens issued so far, in order. */
+    issued: (): string[] => [...tokens.keys()],
+    /** Challenges handed out so far. */
+    challenges: (): number => challenges,
+    /** filler-gateway forgets a token (expired early, key changed): the next upgrade with it is refused 401. */
+    revoke: (token: string): void => void tokens.set(token, 0),
+  };
 }

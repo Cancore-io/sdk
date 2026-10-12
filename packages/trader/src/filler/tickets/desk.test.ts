@@ -26,6 +26,7 @@ import type { TicketVerifier } from './checks';
 import { TicketDesk } from './desk';
 import {
   createFakeFetch,
+  createFakeGatewayLogin,
   createFakeWebSocketFactory,
   createRecordingEventSink,
   createRecordingLogger,
@@ -101,6 +102,7 @@ async function harness(options: Options = {}) {
   const gateway = createTestGatewaySigner(GATEWAY_KEY, clock);
   const impostor = createTestGatewaySigner(IMPOSTOR_KEY, clock);
   const ws = createFakeWebSocketFactory();
+  const login = createFakeGatewayLogin(gateway, { fillerId: FILLER, clock, heartbeatIntervalMs: 60_000 });
   const events = createRecordingEventSink();
   const logger = createRecordingLogger();
   const hookCalls: TicketOffer[] = [];
@@ -116,7 +118,7 @@ async function harness(options: Options = {}) {
     tickets: { deltaIssueMs: 3_000 },
     store,
     webSocket: ws.factory,
-    fetch: createFakeFetch().fetch,
+    fetch: createFakeFetch(login.routes).fetch,
     clock,
     events,
     logger,
@@ -129,11 +131,9 @@ async function harness(options: Options = {}) {
     return options.hook ? options.hook(offer) : 'accept';
   });
   const started = filler.start();
-  const socket: FakeSocket = ws.sockets[0]!;
-  socket.open();
-  socket.receive(gateway.frame({ type: 'auth.challenge', nonce: `0x${'ab'.repeat(32)}`, expiresAt: String(Math.floor(clock.now() / 1000) + 30) }));
   await settle();
-  socket.receive(gateway.frame({ type: 'auth.ok', fillerId: FILLER, heartbeatIntervalMs: 60_000, re: socket.sentFrames()[0]!.id }));
+  const socket: FakeSocket = ws.sockets[0]!;
+  login.accept(socket);
   await started;
   await settle();
 
@@ -225,6 +225,25 @@ describe('the full path: offer → intent → ack → issued → checks → rece
     expect(stored!.sentAtMs).toBeDefined();
     expect(h.stages()).toEqual(expect.arrayContaining(['ticket.offered', 'ticket.intent.sent', 'ticket.issued', 'ticket.checked', 'ticket.receipted']));
     await h.filler.stop();
+  });
+
+  test('RATE_LIMITED on the ticket class: the receipt is held back for retryAfterMs, then goes out once', async () => {
+    const h = await harness();
+    const { offer, intent } = await consent(h);
+    h.socket.receive(h.gateway.frame({ type: 'error', fillerId: FILLER, re: intent!.id, code: 'RATE_LIMITED', message: 'ticket rate class over its limit', retryAfterMs: 4_000 }));
+    await settle();
+    h.socket.receive(h.gateway.frame(await h.issuedFrame(offer)));
+    await settle();
+    expect(h.sent('ticket.receipt')).toHaveLength(0);
+    h.clock.advance(3_999);
+    await settle();
+    expect(h.sent('ticket.receipt')).toHaveLength(0);
+    h.clock.advance(1);
+    await settle();
+    expect(h.sent('ticket.receipt')).toHaveLength(1);
+    expect(await h.record()).toMatchObject({ state: 'receipted', sentAtMs: expect.any(Number) });
+    // one refusal, one wait: not a retry every SEND_RETRY_MS into the pause
+    expect(h.logger.entries.filter((e) => e.message === 'tickets: not delivered to filler-gateway')).toHaveLength(1);
   });
 
   test('ticket.issued before the ack is still checked and receipted', async () => {
