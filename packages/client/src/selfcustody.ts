@@ -372,13 +372,13 @@ export class SettleError extends Error {
 
 /**
  * The party the API names for this account is not the party of the account's key (CAN-2249): its id is
- * not `<hint>::<fingerprint of this key>`, so this key does not control it. `when` says where it showed:
+ * not `<hint>::<fingerprint of this key>`. `when` says where it showed:
  *  - `'proposes'` — in a `wallet.topology` the API prepared. Nothing was signed; it arrives as the
  *    `cause` of a {@link CeremonyError} (`stage: 'prepare'`), from `onboard()` and `execute()` alike.
  *  - `'records'` — as the party the account HAS, on any call of `onboard()`, whoever made that party
  *    and whenever. Thrown as it is, before the preapproval. Do not fund it for a program that holds
- *    only this key: a party made for another key (an account still in custody, or one the API
- *    answered wrongly) is not one this key can move funds out of.
+ *    only this key: an account still in custody, or one mid-migration to its own key, is run from
+ *    the wallet until its party is the key's.
  */
 export class ForeignPartyError extends Error {
   constructor(
@@ -392,7 +392,7 @@ export class ForeignPartyError extends Error {
       : `a value of type ${typeof partyId}`;
     super(when === 'proposes'
       ? `the API proposes a party that is not the party of this account's key (${shown}); nothing was signed`
-      : `this account's party is not the party of its key (${shown}): the key does not control it; do not fund it for a program that holds only this key`);
+      : `this account's party is not the party of its key (${shown}); do not fund it for a program that holds only this key`);
     this.name = 'ForeignPartyError';
   }
 }
