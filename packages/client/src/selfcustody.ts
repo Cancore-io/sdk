@@ -28,9 +28,13 @@ export { UnexpectedLegError } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
 import { DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
-import { DEFAULT_TRUSTED_PACKAGES, units, verifyDvpPrepared, verifySelfSendPrepared, type DvpOperation, type DvpTerms, type Instrument, type TrustedPackages } from './dvp-verify';
+import {
+  DEFAULT_TRUSTED_PACKAGES, units, UnverifiedTransactionError, verifyAcceptPrepared, verifyConsolidatePrepared, verifyDvpPrepared, verifyFeePrepared,
+  verifyPreapprovalSetupPrepared, verifySelfSendPrepared, verifySendPrepared,
+  type DvpOperation, type DvpTerms, type Instrument, type PreparedToSign, type TokenOperation, type TrustedPackages,
+} from './dvp-verify';
 
-export { DEFAULT_TRUSTED_PACKAGES, type TrustedPackages } from './dvp-verify';
+export { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, type TokenOperation, type TrustedPackages } from './dvp-verify';
 export { API_NETWORKS, DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, type DvpNetwork } from './dvp-admins';
 import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
@@ -335,6 +339,26 @@ export interface SelfCustodyOptions extends SessionOptions {
    * this (1% of the fee, at least 0.1 CC and at most 1 CC). Default `'2'`.
    */
   maxSplitCost?: string;
+  /**
+   * The most CC one `send`, `accept` or `consolidate` may cost this account in network fee — its fee
+   * leg, a fee debt the API collects on that leg, an old CC input's accrued holding fee. A ceremony
+   * prepared above it is refused before the key signs; a call's own `maxFee` overrides it for that
+   * call. Default: `maxSplitCost`, else `'2'`. A stand that charges more per transfer (the dev stand
+   * does) needs it raised.
+   */
+  maxFee?: string;
+}
+
+/** How one token ceremony — a send, an accept, a merge — is held before the key signs it. */
+export interface TokenCallOptions {
+  /** The most CC this ceremony may cost in network fee. Default: the account's `maxFee`. */
+  maxFee?: string;
+  /**
+   * Sign what the API prepared without reading it, as every one of these calls did before 0.9.0.
+   * Default false: the transactions are read from their bytes first, and a ceremony that cannot be
+   * read or does not hold is refused (`CeremonyError` at `prepare`, cause `UnverifiedTransactionError`).
+   */
+  allowUnverified?: boolean;
 }
 
 /** This SDK's default ceiling on the platform fee rate (1.5%): a policy of the SDK, not of the platform. */
@@ -423,9 +447,10 @@ export interface SelfCustodyAccount {
   /**
    * Create the account's Canton party (a topology transaction only its key can
    * sign) and enable CC receipts (a venue-paid TransferPreapproval). Safe to run
-   * again: each step that is already done is skipped.
+   * again: each step that is already done is skipped. The preapproval step is read before it is
+   * signed: one proposal, for this account, to the venue or itself, under the pinned DSO.
    */
-  onboard(): Promise<AccountUser>;
+  onboard(options?: Pick<TokenCallOptions, 'allowUnverified'>): Promise<AccountUser>;
   legalStatus(): Promise<LegalStatus>;
   /**
    * Accept the platform documents, signed with the account key. Orders are
@@ -472,19 +497,29 @@ export interface SelfCustodyAccount {
   withdrawAllocation(swapId: string): Promise<Withdrawal>;
   /** Transfers waiting for this account's acceptance. */
   incoming(): Promise<IncomingTransfer[]>;
-  /** Accept one incoming transfer with this account's signature. */
-  accept(transfer: IncomingTransfer): Promise<void>;
+  /**
+   * Accept one incoming transfer with this account's signature. Read before signing: the accept of
+   * exactly this transfer, in which the account spends nothing but, at most, `maxFee` CC of network fee.
+   */
+  accept(transfer: IncomingTransfer, options?: TokenCallOptions): Promise<void>;
   /**
    * Accept every incoming transfer still acceptable — swap deliveries and
    * cashback payouts alike, or the ones `filter` keeps. One refusal does not
    * stop the rest; it is reported in `failed`.
    */
-  acceptIncoming(filter?: (transfer: IncomingTransfer) => boolean): Promise<{
+  acceptIncoming(filter?: (transfer: IncomingTransfer) => boolean, options?: TokenCallOptions): Promise<{
     accepted: IncomingTransfer[];
     failed: Array<{ transfer: IncomingTransfer; error: unknown }>;
   }>;
-  /** Send from this account. `tokenId` omitted sends CC. */
-  send(input: { receiverPartyId: string; amount: string; tokenId?: string; description?: string }): Promise<unknown>;
+  /**
+   * Send from this account. `tokenId` omitted sends CC. Read before signing: `receiverPartyId` is
+   * given exactly `amount`, nobody else anything but the network fee, and the account is poorer by
+   * at most `amount` plus `maxFee` CC. When the API could not put the network fee on the send
+   * itself, it is paid right after by a second ceremony, read the same way; the answer then carries
+   * `deferredFee: 'paid'`, or `'owed'` with `feeError` when that payment did not go through — the
+   * send itself has committed either way, and the fee stays the account's debt.
+   */
+  send(input: { receiverPartyId: string; amount: string; tokenId?: string; description?: string } & TokenCallOptions): Promise<unknown>;
   /**
    * Give the platform fee a holding of its own: a DvP taker must fund the fee from a holding
    * separate from its trade leg. Always self-sends `feeAmount` (the change stays a second holding),
@@ -495,8 +530,12 @@ export interface SelfCustodyAccount {
    * registry-token send to oneself.
    */
   splitForFee(tokenId: string, feeAmount: string, options?: { allowUnverified?: boolean }): Promise<{ verified: boolean }>;
-  /** Merge small holdings into few, one signed batch per call. Returns how many merged; 0 means compact. */
-  consolidate(tokenId?: string): Promise<number>;
+  /**
+   * Merge small holdings into few, one signed batch per call. Returns how many merged; 0 means
+   * compact. Read before signing: a send to the account itself that leaves nothing locked and loses
+   * nothing beyond `maxFee` CC.
+   */
+  consolidate(tokenId?: string, options?: TokenCallOptions): Promise<number>;
   /** `GET /tokens/balance/{partyId}/{instrumentId}` */
   balance(instrumentId: string): Promise<{ balance: string; holdingsCount?: number }>;
   /** Test CC from the dev stand's faucet (`POST /faucet/request`), with the faucet terms signed by this key. */
@@ -660,6 +699,32 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   const execute = <TMeta = Record<string, unknown>>(type: string, params?: Record<string, unknown>) =>
     run<TMeta>(type, params, false);
 
+  /** The CC admins and network-fee recipients this account pins: what every token ceremony's fee leg is held to. */
+  function ccPins(): { dso: string[]; feeRecipients: string[] } {
+    const dso = admins[instrumentKey('Amulet')] ?? [];
+    if (dso.length === 0) throw new Error(`no pinned CC admin for ${network ?? 'this network'} to verify against: pass network or instrumentAdmins`);
+    return { dso, feeRecipients: [...(network ? DEFAULT_NETWORK_FEE_RECIPIENTS[network] : []), ...(options.networkFeeRecipients ?? [])] };
+  }
+  const feeCeiling = (given?: string) => given ?? options.maxFee ?? options.maxSplitCost ?? DEFAULT_MAX_SPLIT_COST;
+  /** The on-ledger instrument a token id of the API names, and the admins pinned for it. */
+  const instrumentOf = (tokenId?: string) => (tokenId && !isCc(tokenId) ? tokenId : 'Amulet');
+  const tokenAdmins = (instrument: string) => admins[instrumentKey(instrument)] ?? [];
+
+  /**
+   * The check a token ceremony passes before the key signs it (CAN-2249): every leg came with its
+   * bytes and `verify` holds — or the caller said `allowUnverified`, and then nothing is read.
+   */
+  const reading = (
+    operation: TokenOperation, call: TokenCallOptions | undefined,
+    verify: (legs: Array<PreparedToSign & { kind: string }>, pins: ReturnType<typeof ccPins>, party: string) => Promise<void>,
+  ) => async (legs: PreparedLeg[]): Promise<void> => {
+    if (call?.allowUnverified) return;
+    if (legs.some((l) => !l.preparedTransaction)) {
+      throw new UnverifiedTransactionError(operation, 'the API returned it without its transaction bytes, so it cannot be read (allowUnverified signs it anyway)');
+    }
+    await verify(legs.map((l) => ({ kind: l.kind, preparedTransactionHash: l.hash, preparedTransaction: l.preparedTransaction })), ccPins(), await ownParty());
+  };
+
   /**
    * One DvP step on this account's key: `POST /canton-wallet/htlc/prepare-command`
    * → sign every prepared transaction → `POST /canton-wallet/htlc/submit-signed`.
@@ -718,13 +783,40 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
   }
 
-  async function accept(transfer: IncomingTransfer): Promise<void> {
+  async function accept(transfer: IncomingTransfer, call?: TokenCallOptions): Promise<void> {
     await run('tokens.accept', {
       instructionCid: transfer.contractId,
       templateId: transfer.templateId,
       adminPartyId: transfer.instrumentAdmin,
       executeBefore: transfer.executeBefore,
-    }, false);
+      // The accept's network fee rides on the accept itself (CAN-2423), not into a debt paid later.
+      withFeeLeg: true,
+    }, false, reading('tokens.accept', call, (legs, pins, party) => verifyAcceptPrepared(legs, {
+      party, instructionCid: transfer.contractId, pinnedAdmins: admins, dso: pins.dso, maxFee: feeCeiling(call?.maxFee), feeRecipients: pins.feeRecipients,
+    })));
+  }
+
+  async function send(input: { receiverPartyId: string; amount: string; tokenId?: string; description?: string } & TokenCallOptions): Promise<unknown> {
+    const { receiverPartyId, amount, tokenId, description } = input;
+    const [instrument, maxFee] = [instrumentOf(tokenId), feeCeiling(input.maxFee)];
+    const { meta, result } = await run<{ feeDeferred?: unknown }>(
+      'tokens.send', { receiverPartyId, amount, ...(tokenId ? { tokenId } : {}), ...(description ? { description } : {}) }, false,
+      reading('tokens.send', input, (legs, pins, party) => (receiverPartyId === party
+        ? verifySelfSendPrepared(legs, { party, admins: pins.dso, instrument, amount, maxCost: maxFee, feeRecipients: pins.feeRecipients })
+        : verifySendPrepared(legs, { party, admins: tokenAdmins(instrument), dso: pins.dso, instrument, receiver: receiverPartyId, amount, maxFee, feeRecipients: pins.feeRecipients }))),
+    );
+    const updateId = (result as { updateId?: unknown } | null)?.updateId;
+    if (!meta?.feeDeferred || typeof updateId !== 'string') return result;
+    // The send could not carry its network fee (it spent the one holding there was), so the API left
+    // the fee to a second ceremony (CAN-2423). The send has committed: whatever happens to the fee, it
+    // is not an error of the send — unpaid, it stays the account's debt and rides on a later fee leg.
+    try {
+      await run('tokens.send-fee', { sourceUpdateId: updateId }, false, reading('tokens.send-fee', input, (legs, pins, party) =>
+        verifyFeePrepared(legs, { party, dso: pins.dso, maxFee, feeRecipients: pins.feeRecipients })));
+      return { ...(result as object), deferredFee: 'paid' };
+    } catch (feeError) {
+      return { ...(result as object), deferredFee: 'owed', feeError };
+    }
   }
 
   /**
@@ -778,9 +870,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
           ? 'the API returned the send without its transaction bytes, so it cannot be verified (allowUnverified signs it anyway)'
           : `the API returned bytes for ${read} of the send's ${legs.length} legs; a partly readable send is never signed`);
       }
-      const dso = admins[instrumentKey('Amulet')] ?? [];
-      const recipients = [...(network ? DEFAULT_NETWORK_FEE_RECIPIENTS[network] : []), ...(options.networkFeeRecipients ?? [])];
-      if (dso.length === 0) throw new Error(`no pinned CC admin for ${network ?? 'this network'} to verify the send against: pass instrumentAdmins`);
+      const { dso, feeRecipients: recipients } = ccPins();
       await verifySelfSendPrepared(legs.map((l) => ({ kind: l.kind, preparedTransactionHash: l.hash, preparedTransaction: l.preparedTransaction })), {
         party,
         admins: dso,
@@ -794,8 +884,12 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     return { verified };
   }
 
-  async function consolidate(tokenId?: string): Promise<number> {
-    const { meta } = await run<{ mergedCount?: number }>('tokens.consolidate', tokenId ? { tokenId } : {}, false);
+  async function consolidate(tokenId?: string, call?: TokenCallOptions): Promise<number> {
+    const instrument = instrumentOf(tokenId);
+    const { meta } = await run<{ mergedCount?: number }>('tokens.consolidate', tokenId ? { tokenId } : {}, false,
+      reading('tokens.consolidate', call, (legs, pins, party) => verifyConsolidatePrepared(legs, {
+        party, admins: tokenAdmins(instrument), dso: pins.dso, instrument, maxFee: feeCeiling(call?.maxFee), feeRecipients: pins.feeRecipients,
+      })));
     return Number(meta?.mergedCount ?? 0);
   }
 
@@ -1254,14 +1348,14 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     return result;
   }
 
-  async function acceptIncoming(filter: (transfer: IncomingTransfer) => boolean = () => true) {
+  async function acceptIncoming(filter: (transfer: IncomingTransfer) => boolean = () => true, call?: TokenCallOptions) {
     const accepted: IncomingTransfer[] = [];
     const failed: Array<{ transfer: IncomingTransfer; error: unknown }> = [];
     for (const transfer of await incoming()) {
       // Past executeBefore the ledger refuses the accept; the sender reclaims it.
       if (Date.parse(transfer.executeBefore) <= now() || !filter(transfer)) continue;
       try {
-        await accept(transfer);
+        await accept(transfer, call);
         accepted.push(transfer);
       } catch (error) {
         failed.push({ transfer, error });
@@ -1270,7 +1364,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     return { accepted, failed };
   }
 
-  async function onboard(): Promise<AccountUser> {
+  async function onboard(call?: Pick<TokenCallOptions, 'allowUnverified'>): Promise<AccountUser> {
     let user = await me();
     if (!user.partyId) {
       await run('wallet.topology', { publicKey: session.publicKey }, false);
@@ -1281,7 +1375,10 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     // Held to the key on every call — a party made just now, earlier, or by another client — and
     // before the preapproval: nothing is set up for a party that is not this key's.
     if (!isPartyOfKey(session.publicKey, user.partyId)) throw new ForeignPartyError(user.partyId, 'records');
-    await run('tokens.preapproval', undefined, false);
+    const venue = options.venuePartyId ?? (network ? DEFAULT_VENUES[network] : undefined);
+    await run('tokens.preapproval', undefined, false, reading('tokens.preapproval', call, (legs, pins, party) => verifyPreapprovalSetupPrepared(legs, {
+      party, dso: pins.dso, providers: [...(venue ? [venue] : []), party], packages: trustedPackages.wallet,
+    })));
     return user;
   }
 
@@ -1361,8 +1458,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     incoming,
     accept,
     acceptIncoming,
-    send: ({ receiverPartyId, amount, tokenId, description }) =>
-      run('tokens.send', { receiverPartyId, amount, ...(tokenId ? { tokenId } : {}), ...(description ? { description } : {}) }, false).then((r) => r.result),
+    send,
     splitForFee: (tokenId, feeAmount, splitOptions) => splitFee(tokenId, feeAmount, undefined, splitOptions?.allowUnverified ?? false),
     consolidate,
     balance,

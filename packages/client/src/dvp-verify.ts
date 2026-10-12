@@ -118,7 +118,7 @@ export interface PreparedToSign {
 }
 
 /** The wallet operations outside a trade whose transactions are read before the key signs them. */
-export type TokenOperation = 'tokens.send' | 'tokens.consolidate' | 'tokens.accept' | 'tokens.preapproval';
+export type TokenOperation = 'tokens.send' | 'tokens.send-fee' | 'tokens.consolidate' | 'tokens.accept' | 'tokens.preapproval';
 
 /** A prepared transaction the account refuses to sign, with the reason. */
 export class UnverifiedTransactionError extends Error {
@@ -845,6 +845,20 @@ export async function verifyConsolidatePrepared(legs: Leg[], terms: ConsolidateT
   if (transfers.length === 0) refuse('the merge has no transfer in it');
   if (transfers.some((t) => t.locked > 0n)) refuse('the merge leaves a holding locked');
   if (!withinCost(terms.instrument, net, fee, 0n, maxFee)) refuse(`the merge costs this account ${costOf(terms.instrument, net, fee)}, more than the fee it allows`);
+}
+
+/**
+ * Verify a ceremony that is a network fee and nothing else (`tokens.send-fee`, the fee of a send that
+ * could not carry one): CC sends to a pinned fee recipient, through a preapproval the DSO signed,
+ * costing the account at most `maxFee`.
+ */
+export async function verifyFeePrepared(legs: Leg[], terms: { party: string; dso: string[]; maxFee: string; feeRecipients: string[] }): Promise<void> {
+  const refuse = refuser('tokens.send-fee');
+  const maxFee = units(terms.maxFee);
+  if (maxFee < 0n) refuse('the fee bound is not a decimal of at most ten places');
+  const { fee, transfers } = await tokenLegs(legs, refuse, { ...terms, admins: terms.dso, instrument: 'Amulet' }, terms.party, 'this account');
+  if (transfers.length > 0) refuse('a fee ceremony carries a transfer');
+  if (fee > maxFee) refuse(`the fee costs this account ${decimalOf(fee)} CC, more than the fee it allows`);
 }
 
 /** An incoming transfer the account was asked to accept. */

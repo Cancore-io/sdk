@@ -35,6 +35,28 @@
   This checks the party's name. What else a topology says the key still cannot read (the API sends
   its hash): see the wallet README. The predicate is `isPartyOfKey` in `@cancore/wallet` 0.3.0.
 
+- **`send`, `acceptIncoming` / `accept`, `consolidate` and the preapproval step of `onboard` are read
+  before the key signs them** (CAN-2249), as DvP steps and `splitForFee` already were. The
+  transactions are decoded from their bytes and held to the call: a send gives the receiver named
+  exactly the amount (CC through its preapproval, a registry token as an offer on the admin's own
+  factory) and nobody else anything but the network fee; an accept is the accept of the transfer
+  chosen and spends nothing of the account; a merge pays nobody; the preapproval is one proposal for
+  this account, to the pinned venue or itself, under the pinned DSO, from a pinned `splice-wallet`
+  package. A ceremony that does not hold, or came without bytes, is a `CeremonyError` at `prepare`
+  whose `cause` is `UnverifiedTransactionError` (now exported from `./selfcustody`); nothing is signed.
+  - **Breaking for:** an account on a network the SDK has no pins for (pass `network` or
+    `instrumentAdmins`); a registry token whose admin is not pinned; a gateway that returns no
+    transaction bytes; testnet and mainnet until their `splice-wallet` package id is pinned
+    (`trustedPackages.wallet`) — only the dev id ships. Each call takes `allowUnverified: true`,
+    which signs unread as 0.8 did.
+  - New options: `maxFee` on the account and per call (`TokenCallOptions`) — the most CC one of
+    these ceremonies may cost in network fee, default `maxSplitCost`, else `'2'`.
+- **The network fee is paid** (CAN-2423). `send` used to ignore a fee the API deferred (a send from
+  a single holding) and `accept` never asked for its fee leg, so each left a fee debt. `send` now
+  runs the deferred fee's own ceremony right after, read like any fee leg; its answer carries
+  `deferredFee: 'paid'`, or `'owed'` with `feeError` when that did not go through — the send itself
+  has committed either way and is not an error. `accept` asks for the fee leg (`withFeeLeg`).
+
 ### Fixed
 
 - `take`, `swap.create` and `swap.createForPair` turned **any** 403 into a `SettleError` that opens

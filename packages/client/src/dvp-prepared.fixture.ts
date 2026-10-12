@@ -485,10 +485,12 @@ export async function acceptTransferLeg(input: {
   interfaceEntity?: string; choice?: string; receiver?: string;
   /** A holding the tree consumes besides the sender's lock: what a hostile accept would take along. */
   alsoSpend?: Create; actAs?: string;
+  /** The contract id of the offer: the transfer the caller was shown. Default `OFFER_CID`. */
+  offerCid?: string;
 }) {
   const admin = input.instrument.admin;
   const leg: FixtureLeg = { sender: input.sender, receiver: input.receiver ?? input.party, amount: input.amount, instrumentId: input.instrument };
-  const honest = transferOffer(OFFER_CID, leg);
+  const honest = transferOffer(input.offerCid ?? OFFER_CID, leg);
   const offer = input.offer?.(honest) ?? honest;
   const on = input.commandOn ?? offer;
   const locked = holding('c0'.repeat(34), input.sender, input.instrument, input.amount, { lockedTo: admin });
