@@ -480,6 +480,8 @@ export interface SelfCustodyAccount {
    */
   execute<TMeta = Record<string, unknown>>(type: string, params?: Record<string, unknown>): Promise<Executed<TMeta>>;
   swapState(swapId: string): Promise<HtlcSwap>;
+  /** Claim the counter HTLC of a swap with its preimage (`POST /htlc/:id/claim-counter`). See {@link postClaimCounter}. */
+  claimCounter(swapId: string, preimage: string): Promise<HtlcSwap>;
   /**
    * One page of this account's swaps (`GET /htlc/swaps`), newest first, finished ones included. The API
    * answers a bare list with no total: a page shorter than `pageSize` is the last one.
@@ -659,6 +661,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
 
   const me = () => http.get<AccountUser>('/auth/me');
   const swapState = (swapId: string) => http.get<HtlcSwap>(`/htlc/${encodeURIComponent(swapId)}`);
+  const claimCounter = (swapId: string, preimage: string) => postClaimCounter(http, swapId, preimage);
   const listSwaps = (query?: ListSwapsQuery) => http.get<HtlcSwap[]>('/htlc/swaps', query);
   const swapInfo = (swapId: string) => http.get<SwapInfo>(`/htlc/swaps/${encodeURIComponent(swapId)}/full`);
   const incoming = () => http.get<IncomingTransfer[]>('/tokens/transfer-requests/incoming');
@@ -1522,6 +1525,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     acceptTerms,
     execute,
     swapState,
+    claimCounter,
     listSwaps,
     make,
     take,
@@ -1605,4 +1609,25 @@ function randomHex(bytes: number): string {
 export async function sha256Hex(text: string): Promise<string> {
   const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
   return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * A fresh HTLC preimage: 32 random bytes as hex text, and its hash lock, the SHA-256 of that text. The SDK
+ * keeps no copy of the preimage, so the caller must store it before the swap is made: a lost preimage means
+ * the counter leg can never be claimed, and the swap ends in a refund.
+ */
+export async function newPreimage(): Promise<{ preimage: string; hashLock: string }> {
+  const preimage = randomHex(32);
+  return { preimage, hashLock: await sha256Hex(preimage) };
+}
+
+/**
+ * Claim the counter HTLC of a swap with its preimage (`POST /htlc/:id/claim-counter`). The venue executes
+ * the claim, so this call signs nothing, and it never logs or stores the preimage. The venue receives the
+ * preimage, so this call trusts the venue not to use it on the other HTLC of the swap and not to leak it.
+ * An empty preimage is refused before any request is made.
+ */
+export function postClaimCounter(http: Pick<Http, 'post'>, swapId: string, preimage: string): Promise<HtlcSwap> {
+  if (preimage.length === 0) return Promise.reject(new Error('preimage must not be empty'));
+  return http.post<HtlcSwap>(`/htlc/${encodeURIComponent(swapId)}/claim-counter`, { preimage });
 }
