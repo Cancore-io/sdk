@@ -349,9 +349,10 @@ for DvP, an expired trade and how to release its funds) is in the
   withdraw the rest.
 - **Leaked, or in doubt: empty the bot at once** ([section 9](#9-withdraw-to-the-owner)), then
   stop using it. The key cannot be replaced or revoked, and no owner route moves a bot's funds.
-  Stopping the bot in the wallet ends its trading, not its sends: whoever holds the key can still
-  move what is on it. The wallet shows the same key again under **Show key** if you need it to
-  withdraw.
+  Stopping the bot in the wallet ends its order trading, not its sends — and not yet a direct HTLC
+  proposal without an order ([CAN-2450](https://linear.app/cancore/issue/CAN-2450)): whoever holds
+  the key can still move what is on it. The wallet shows the same key again under **Show key** if
+  you need it to withdraw.
 - **The key depends only on the phrase and the bot's number.** If you use one recovery phrase on
   two stands, the bot at index N has the same key on both: treat a key exposed on dev as exposed
   on mainnet.
