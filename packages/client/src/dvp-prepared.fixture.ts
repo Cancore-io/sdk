@@ -399,7 +399,7 @@ export async function selfSendLeg(input: {
   outputs: Array<{ owner: string; amount: string; lockedTo?: string }>;
   actAs?: string; inputOwner?: string; extra?: (contract: Create) => DamlTransaction_Node; extraInput?: Create;
   /** The preapproval the transaction discloses, in place of the honest one; and the template the command names, when not its own. */
-  preapproval?: (honest: Create) => Create; commandOn?: Pick<Create, 'packageName' | 'templateId'>;
+  preapproval?: (honest: Create) => Create; commandOn?: Pick<Create, 'packageName' | 'templateId'>; commandSignatories?: string[];
   /** The holdings the send creates, in place of the DSO's own Amulets. */
   output?: (honest: Create) => Create;
 }) {
@@ -415,7 +415,7 @@ export async function selfSendLeg(input: {
     oneofKind: 'exercise',
     exercise: {
       lfVersion: '2.1', contractId: preapproval.contractId, packageName: on.packageName, templateId: on.templateId,
-      signatories: preapproval.signatories, stakeholders: preapproval.stakeholders, actingParties: [input.party],
+      signatories: input.commandSignatories ?? preapproval.signatories, stakeholders: preapproval.stakeholders, actingParties: [input.party],
       choiceId: 'TransferPreapproval_Send', chosenValue: v.record({ sender: v.party(input.party), amount: v.numeric(numeric10(input.outputs[0]!.amount)) }),
       consuming: false, children: ['1', ...outputs.map((n) => n.nodeId), ...extra.map((n) => n.nodeId)], choiceObservers: [],
     },

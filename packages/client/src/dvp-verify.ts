@@ -155,6 +155,10 @@ async function readPrepared(tx: PreparedToSign, what: string, party: string, ref
   if (recomputed !== tx.preparedTransactionHash) refuse(`${what} does not hash to the hash it came with`);
   const actAs = decoded.metadata?.submitterInfo?.actAs ?? [];
   if (actAs.length !== 1 || actAs[0] !== party) refuse(`${what} acts as ${actAs.join(', ') || 'nobody'}, not as this account`);
+  // One contract id, one contract: every check below reads a disclosed contract by its id, and with
+  // two under the same id it would read one while the ledger runs the other.
+  const disclosed = (decoded.metadata?.inputContracts ?? []).map((c) => (c.contract.oneofKind === 'v1' ? c.contract.v1.contractId : ''));
+  if (new Set(disclosed).size !== disclosed.length) refuse(`${what} discloses two contracts under one contract id`);
   return decoded;
 }
 
@@ -773,8 +777,13 @@ export async function verifySelfSendPrepared(legs: Array<PreparedToSign & { kind
     // a choice body acts with this account's authority, so it must be the DSO's code and nobody else's.
     // A contract the DSO signed is one only the DSO could create, of the template the command runs (the
     // package id may be a newer version; its name, module and entity may not differ).
-    if (!sameTemplate(preapproval!, (root as Extract<typeof root, { oneofKind: 'exercise' }>).exercise)) refuse(`${what} runs on another template than the preapproval it names`);
-    if (!preapproval!.signatories.some((p) => terms.admins.includes(p))) refuse(`${what} sends through a preapproval the instrument admin did not sign`);
+    const command = (root as Extract<typeof root, { oneofKind: 'exercise' }>).exercise;
+    if (!sameTemplate(preapproval!, command)) refuse(`${what} runs on another template than the preapproval it names`);
+    // Who signed it is said twice — by the contract disclosed and by the command exercising it — and
+    // both must say the admin: the command's word is the one the ledger holds the transaction to.
+    if (![preapproval!.signatories, command.signatories].every((signed) => signed.some((p) => terms.admins.includes(p)))) {
+      refuse(`${what} sends through a preapproval the instrument admin did not sign`);
+    }
     const receiver = partyOf(fieldsOf(preapproval!.argument)?.get('receiver'));
     if (!receiver || !(fee ? terms.feeRecipients : [terms.party]).includes(receiver)) {
       refuse(`${what} sends to ${receiver ?? 'an unreadable receiver'}, not to ${fee ? 'a pinned network fee recipient' : 'this account'}`);

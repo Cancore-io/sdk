@@ -426,9 +426,9 @@ describe('a fee split (a CC send to oneself) is signed only as the account asked
     });
 
     test('a forged preapproval whose "send" makes this account sign a contract that only looks like its holding', async () => {
-      // Nothing is spent and nothing leaves: the tree only creates a contract named Amulet, owned by this
-      // account, signed by it and by its author. Whoever controls that contract's choices then acts as
-      // this account whenever they like — the whole balance, later, without another signature.
+      // Nothing leaves the account: what it spends comes back in full, as contracts named Amulet and
+      // owned by it — and signed by it and by their author, in the author's package. Whoever controls
+      // such a contract's choices acts with this account's authority from then on.
       const proxy = (c: Create): Create => ({ ...c, packageName: EVIL.packageName, templateId: { ...c.templateId!, packageId: EVIL.packageId }, signatories: [MALLORY, ME], stakeholders: [MALLORY, ME] });
       const leg = await transfer({ preapproval: forged, output: proxy });
       await refused([leg], /leg 0 sends through a preapproval the instrument admin did not sign/);
@@ -441,8 +441,34 @@ describe('a fee split (a CC send to oneself) is signed only as the account asked
 
     test('a command that names another template than the preapproval it runs on', async () => {
       const honest = preapprovalContract('00'.repeat(34), ME);
-      await refused([await transfer({ commandOn: { packageName: 'evil-amulet', templateId: honest.templateId } })], /leg 0 runs on another template than the preapproval it names/);
-      await refused([await transfer({ commandOn: { packageName: honest.packageName, templateId: { ...honest.templateId!, moduleName: 'Evil.Rules' } } })], /leg 0 runs on another template than the preapproval it names/);
+      const other = (over: Partial<NonNullable<Create['templateId']>>, packageName = honest.packageName) => ({ packageName, templateId: { ...honest.templateId!, ...over } });
+      const wrong = /runs on another template than the preapproval it names/;
+      await refused([await transfer({ commandOn: other({}, 'evil-amulet') })], wrong);
+      await refused([await transfer({ commandOn: other({ moduleName: 'Evil.Rules' }) })], wrong);
+      await refused([await transfer({ commandOn: other({ entityName: 'TransferPreapprovalProxy' }) })], wrong);
+      // The fee leg is held to it like the transfer.
+      await refused([await transfer(), await feeLeg({ commandOn: other({ moduleName: 'Evil.Rules' }) })], /leg 1 runs on another template/);
+    });
+
+    test('a command that names other signatories than the contract it discloses', async () => {
+      // The contract says the DSO signed it; the command exercising it — the ledger's own word — does not.
+      await refused([await transfer({ commandSignatories: [ME, DEV.venue] })], /leg 0 sends through a preapproval the instrument admin did not sign/);
+      // And the other way round: the command claims the DSO for a contract that does not carry its signature.
+      await refused([await transfer({ preapproval: (c) => ({ ...c, signatories: [ME, DEV.venue] }), commandSignatories: [DEV.dso, ME, DEV.venue] })],
+        /leg 0 sends through a preapproval the instrument admin did not sign/);
+    });
+
+    test('no pinned admin at all is a refusal, not a pass', async () => {
+      await refused([await transfer(), await feeLeg()], /the instrument admin did not sign/, { ...terms, admins: [] });
+    });
+
+    test('two contracts disclosed under one contract id', async () => {
+      // The honest preapproval and a decoy with the same id: a reader that keeps the last one sees the
+      // DSO's signature on a contract the ledger is not running.
+      const honest = await transfer();
+      const leg = await transfer({ extraInput: preapprovalContract('af'.repeat(34), ME) });
+      expect(leg.preparedTransactionHash).not.toBe(honest.preparedTransactionHash);
+      await refused([leg], /leg 0 discloses two contracts under one contract id/);
     });
 
     test('a newer version of the DSO\'s package is the same template: the DSO upgrades on its own schedule', async () => {
