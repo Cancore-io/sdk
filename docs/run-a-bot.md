@@ -356,7 +356,7 @@ for DvP, an expired trade and how to release its funds) is in the
   step of `onboard`. What it cannot read: the party's topology in `onboard` (the API sends a hash;
   the party's name is checked — [section 5](#5-onboard)), and anything you run through
   `execute()` yourself. `allowUnverified: true` on a call switches the reading off for that call —
-  the key then signs what the API prepared, unread. Leave it off unless you know why a ceremony
+  the key then signs what the API prepared, unread, and no `maxFee` — ceiling or budget — holds it. Leave it off unless you know why a ceremony
   cannot be read (an older gateway that sends no bytes; a token whose registry the SDK does not pin
   — add its admin with `instrumentAdmins` instead).
 - **One process per bot**, and leave the SDK's checks on. The rest of the

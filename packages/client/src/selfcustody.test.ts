@@ -2175,6 +2175,8 @@ describe('the network fee: one ceiling for a send, one budget for an inbox (CAN-
     await expect(acct.consolidate('CC', { maxFee: '2' })).resolves.toBe(3);
     // A ceiling of nothing on the call is a ceiling, not the lack of one: the account's is not used in its place.
     await expect(acct.consolidate('CC', { maxFee: '0' })).rejects.toThrow(/the merge costs this account 2 Amulet/);
+    // Nor is an empty one: a call that names a ceiling it cannot read is refused on that, not handed the account's.
+    await expect(acct.consolidate('CC', { maxFee: '' })).rejects.toThrow(/the fee bound is not a decimal of at most ten places/);
     expect(submitted).toBe(1);
   });
 
