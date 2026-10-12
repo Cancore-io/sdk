@@ -35,10 +35,11 @@ A partner running a market maker with an invite code starts with the
   phrase never leaves the wallet. The bot's process gets its own key and nothing else.
 - **Role `user`.** No partner role, no cashback, no fee privileges: a bot pays the platform fee
   and the CC network fee like any other account.
-- **Yours for limits, not for control.** The API counts a bot and its owner as one person
-  ([section 10](#10-limits-and-refusals)). That link gives the owner no way in: there is no owner
-  route that cancels a bot's orders or moves its balance. Everything a bot does is signed with the
-  bot's key.
+- **Yours to stop, not to spend.** The API counts a bot and its owner as one person
+  ([section 10](#10-limits-and-refusals)). From the wallet the owner can stop and resume a bot,
+  see its balances, orders and trades, and cancel its open orders — with the owner's own session,
+  no bot key needed. What no owner route does is move a bot's funds: every transfer and every trade
+  of a bot is signed with the bot's key.
 
 ## 2. Get the key from the wallet
 
@@ -314,6 +315,7 @@ The API counts an owner and their bots as one person.
 | **Order caps count the family together.** Where a stand caps orders placed per hour, or orders accepted per 24 hours, the owner and all their bots share one allowance. | `429`, `Rate limit: max N orders per hour per user` or `Rate limit: max N accepted orders per 24 hours per user` |
 | **The ordinary order guards** apply to a bot as to anyone: a minimum and a maximum order value, and a price too far from the market. | `400` when placing; the message names the guard. |
 | **Terms.** No orders until the account has accepted the stand's documents. | `403`, `The platform documents must be accepted before trading.` |
+| **Stopped by its owner.** The owner stopped the bot in the wallet. Its open orders were cancelled; a trade already under way runs to its end; `send` still works, so the bot can be emptied. | Placing or taking an order is refused with `403`, `errorCode: ACCOUNT_STOPPED`, until the owner resumes the bot. |
 
 How these reach your code:
 
@@ -346,8 +348,11 @@ for DvP, an expired trade and how to release its funds) is in the
 - **What a stolen key costs is that bot's balance.** Keep on a bot what it needs to trade, and
   withdraw the rest.
 - **Leaked, or in doubt: empty the bot at once** ([section 9](#9-withdraw-to-the-owner)), then
-  stop using it. The key cannot be replaced or revoked, and there is no owner override. The wallet
-  shows the same key again under **Show key** if you need it to withdraw.
+  stop using it. The key cannot be replaced or revoked, and no owner route moves a bot's funds.
+  Stopping the bot in the wallet ends its order trading, not its sends — and not yet a direct HTLC
+  proposal without an order ([CAN-2450](https://linear.app/cancore/issue/CAN-2450)): whoever holds
+  the key can still move what is on it. The wallet shows the same key again under **Show key** if
+  you need it to withdraw.
 - **The key depends only on the phrase and the bot's number.** If you use one recovery phrase on
   two stands, the bot at index N has the same key on both: treat a key exposed on dev as exposed
   on mainnet.
