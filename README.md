@@ -16,6 +16,9 @@ The packages a third-party dApp, an AI agent, or a wallet build installs from np
 **Partners** running a trading bot or market maker on Canton with their own key: start with the
 [partner guide](docs/partner-guide.md).
 
+**Your own bot**, on a bot account made in the Cancore wallet ("My bots"):
+[Run a bot](docs/run-a-bot.md) goes from the key the wallet shows to the first trade.
+
 The five answer five different questions. A dApp that wants a signature from
 somebody else's wallet takes the **connector**. An agent that wants to propose a
 trade its owner will approve takes **mcp**. A program that trades or bridges
