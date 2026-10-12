@@ -20,6 +20,13 @@
   is one — printable ASCII starting with `Welcome to Cancore ` — the rule a `@cancore/wallet`
   provider already holds its own `signChallenge` to. Before, such a signer signed whatever the API
   returned as the challenge, a 32-byte transaction hash included.
+- `onboard()` makes a party only for its own key (CAN-2249). The party `wallet.topology` proposes
+  must be `<hint>::<fingerprint of this account's key>`, whole, or nothing is signed — a
+  `CeremonyError` at `prepare` whose `cause` is the new `ForeignPartyError` (`when: 'proposes'`).
+  And the party the account shows afterwards must be that key's too, or `onboard()` throws
+  `ForeignPartyError` (`when: 'records'`) and stops before the preapproval: that party is the
+  address its owner is about to fund. An account that already has a party is not judged by this
+  call. The predicate is `isPartyOfKey` in `@cancore/wallet` 0.3.0.
 
 ## 0.8.0
 

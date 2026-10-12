@@ -444,9 +444,11 @@ while `hasPendingClaim` is true.
 | `CancoreApiError` (`@cancore/client`) | any call | a non-2xx answer: `status`, `method`, `path`, `body`, and `errorCode` when the gateway names the refusal |
 | `SettleError` (`./selfcustody`) | `make`, `take`, order placement, `splitForFee`, `withdrawAllocation` | the trade cannot go on: `swapId`, `last` (the last swap/order seen), `withdrawable`, `withdrawal`. **No `errorCode`, no `cause`**: only the `message` says why |
 | `CeremonyError` (`./selfcustody`) | any signing step | `operation`, `stage` (`'prepare'`: nothing was signed; `'submit'`: signed, the submit failed), `cause` (often a `CancoreApiError`), `meta`, and `errorCode` copied from `cause` when it is a `CancoreApiError` with a code |
+| `ForeignPartyError` (`./selfcustody`) | `onboard` | the party the API names for the account is not `<hint>::<fingerprint of this key>`. As the `cause` of a `CeremonyError` at `prepare` (`when: 'proposes'`): the API proposed such a party and nothing was signed. On its own (`when: 'records'`): the account shows such a party after the topology went through — do not fund `partyId` |
+| `UnexpectedLegError` (`@cancore/wallet/operations`) | any signing step | the API prepared a transaction of a kind the operation does not have (a raw-signed `topology` leg anywhere but alone in `wallet.topology`, or one that is not a 34-byte multihash); nothing was signed |
 | `TrackTimeoutError` | `swap.track` | still not terminal after `timeoutMs`; carries `last` |
 
-The three are separate classes: a `CeremonyError` is **not** a `CancoreApiError`, and `isSdkError`
+These are separate classes: a `CeremonyError` is **not** a `CancoreApiError`, and `isSdkError`
 matches only a `CancoreApiError`. Check each one its own way:
 
 ```ts

@@ -119,6 +119,11 @@ Setting a bot up is two steps:
 2. **CC receipts.** A transfer preapproval, paid by the venue, so that CC sent to the bot lands
    directly instead of waiting as an offer.
 
+The party's topology is the one thing the key signs without being able to read it, so the SDK
+holds the API to what it can check: the party must be `<name>::<fingerprint of this key>` and
+nothing else, or `onboard()` signs nothing; and the party the account then shows must be that
+key's too, or `onboard()` throws a `ForeignPartyError` — an address like that is not one to fund.
+
 The wallet normally does both when it makes the bot. `onboard()` then finds nothing missing and
 asks for no signature. Make it the first call of every bot process all the same: it is safe to
 repeat, it does only what is missing, and so it completes a bot whose setup did not finish, or one

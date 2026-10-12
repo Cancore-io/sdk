@@ -42,6 +42,24 @@ export function keyOwnsParty(publicKeyHex: string, partyId: string): boolean {
   return cantonFingerprint(publicKeyHex) === namespace;
 }
 
+/** A key-namespace party as this platform writes one: `<hint>::<fingerprint>`, and nothing after it. */
+const KEY_PARTY = /^[A-Za-z0-9_-]{1,255}::[0-9a-f]+$/;
+
+/**
+ * Whether `partyId` is the party of `publicKeyHex`, whole: one hint, one
+ * namespace, and that namespace the key's fingerprint.
+ *
+ * Stricter than {@link keyOwnsParty}, which reads what follows the FIRST `::`
+ * and so says yes to `x::<fingerprint>::<anything>`. This is the one to ask
+ * when a device decides, on a server's word, which party a key is about to
+ * bring into being or which address its owner is about to fund: a party id is
+ * taken as a value of unknown type and is either exactly the key's or not.
+ */
+export function isPartyOfKey(publicKeyHex: string, partyId: unknown): partyId is string {
+  if (typeof partyId !== 'string' || !KEY_PARTY.test(partyId)) return false;
+  return partyId.slice(partyId.indexOf('::') + 2) === cantonFingerprint(publicKeyHex);
+}
+
 function bytesToHexLower(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }

@@ -22,6 +22,7 @@
  * is not this signer.
  */
 import { assertOperationLegs, signLegs, type OperationLeg } from '@cancore/wallet/operations';
+import { isPartyOfKey } from '@cancore/wallet';
 
 export { UnexpectedLegError } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
@@ -366,6 +367,27 @@ export class SettleError extends Error {
   ) {
     super(message);
     this.name = 'SettleError';
+  }
+}
+
+/**
+ * The party the API names for this account is not the party of the account's key (CAN-2249): its id is
+ * not `<hint>::<fingerprint of this key>`. Thrown by `onboard()` — wrapped in a {@link CeremonyError}
+ * (`stage: 'prepare'`) when the API PROPOSES such a party, and then nothing was signed; thrown as it is
+ * when the API RECORDS one after the topology went through. Either way: do not fund `partyId`.
+ */
+export class ForeignPartyError extends Error {
+  constructor(
+    readonly partyId: unknown,
+    readonly when: 'proposes' | 'records',
+  ) {
+    // The id is the API's text: quoted and cut, so it cannot add lines of its own to a log.
+    const shown = typeof partyId === 'string' ? JSON.stringify(partyId.slice(0, 120)) : `a value of type ${typeof partyId}`;
+    super(
+      `the API ${when} a party that is not the party of this account's key (${shown}); ` +
+        (when === 'proposes' ? 'nothing was signed' : 'do not send funds to it'),
+    );
+    this.name = 'ForeignPartyError';
   }
 }
 
@@ -1229,9 +1251,16 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   async function onboard(): Promise<AccountUser> {
     let user = await me();
     if (!user.partyId) {
-      await run('wallet.topology', { publicKey: session.publicKey }, false);
+      // The key decides whose party it brings into being, not the API (CAN-2249). What it signs here is a
+      // multihash it cannot read, so the one thing it can hold the API to is the party's name: the party
+      // the API proposes must be this key's, whole — or nothing is signed.
+      await run<{ partyId?: unknown }>('wallet.topology', { publicKey: session.publicKey }, false, async (_legs, meta) => {
+        if (!isPartyOfKey(session.publicKey, meta?.partyId)) throw new ForeignPartyError(meta?.partyId, 'proposes');
+      });
       user = await me();
       if (!user.partyId) throw new Error('the party topology was submitted but the account has no party yet');
+      // And the party the account ends up with is the address its owner is about to fund.
+      if (!isPartyOfKey(session.publicKey, user.partyId)) throw new ForeignPartyError(user.partyId, 'records');
     }
     await run('tokens.preapproval', undefined, false);
     return user;
