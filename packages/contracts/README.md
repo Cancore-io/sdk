@@ -98,6 +98,26 @@ cantonInclusiveFeeSplit(total, 30); // Canton source, Daml inclusiveFee (half-ev
 | `MAX_FILL_TTL`, `MAX_SIG_TTL`, `MAX_PROOF_WINDOW`, `GRACE`, `SET_DELAY` | 24 h, 24 h, 4 h, 28 h, 72 h (seconds) | `AttestorSet.sol` via `spec/constants.json` |
 | `CANTON_ORIGIN_ID`, `CANTON_SOURCE_ANCHOR`, `EIP2294_MAX_CHAIN_ID`, `OWNER_LABEL_TAG`, `INSTRUMENT_LABEL_TAG`, `DAML_NUMERIC_SCALE` | protocol.md §3.8 | `spec/vectors/canton-order.json` |
 
+**Canton destination** (protocol.md §3.13). An EVM-source order delivered on Canton, and the
+`FillProof` of the delivery, carry Canton values in EVM fields; this is the one encoder for them:
+
+```ts
+import {
+  cantonNetworkOfDestination, encodeCantonAmount, encodeCantonDestination, encodeCantonOutputAsset, encodeCantonRecipient,
+} from '@cancore/contracts';
+
+const destination = encodeCantonDestination('devnet');                  // keccak256(utf8("canton:devnet"))
+const outputAsset = encodeCantonOutputAsset({ admin, id: 'USDCX' });   // keccak256(abi.encode("cancore:instrument:v1", admin, id))
+const minReceived = encodeCantonAmount('1200.25');                      // Daml Numeric 10 × 10¹⁰, exact or refused
+const recipient = encodeCantonRecipient(partyId);                       // keccak256(utf8(partyId))
+cantonNetworkOfDestination(order.destination);                          // 'devnet' | 'testnet' | 'mainnet' | undefined
+```
+
+`spec/vectors/canton-destination.json` holds such an order (devnet) with its `orderHash` and the
+`FillProof` of its delivery with its digest; its instrument, party and amount are those of the
+Canton-destination vector of `spec/typed-data/FillProof.json` (`canton:mainnet`), which the
+router test computes with `hashFillProof`.
+
 `spec/constants.json` is written by `npm run sync` from the Solidity source of the same
 evm-contracts commit as the ABIs (`CONTRACTS_RELEASE.commit`); a test holds every exported
 constant to it, fails on a numeric constant the package does not export, and checks the router's
@@ -361,6 +381,12 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
     `PERMIT2_WITNESS_TYPE_STRING`, `permit2Domain`, `hashPermitWitness`, `inclusiveFeeSplit` (EVM
     source) and `cantonInclusiveFeeSplit` (Canton source).
   - Vectors `spec/vectors/evm-order.json`, `permit-witness.json`, `fee-split.json`.
+- Unreleased (next RC) — the Canton-destination encoder (protocol.md §3.13; CAN-1935). Additive only.
+  - `encodeCantonDestination(network)`, `cantonNetworkOfDestination(destination)`,
+    `encodeCantonOutputAsset({admin, id})`, `encodeCantonRecipient(partyId)`,
+    `encodeCantonAmount(amount)`, type `CantonNetwork`.
+  - Vector `spec/vectors/canton-destination.json`: an EVM-source order to Canton devnet and the
+    `FillProof` of its delivery.
 - `0.2.0-rc.7` — sync the variant A `CancoreRouter` and `ICancoreRouter` ABIs from
   evm-contracts commit `c214f56f6fe5a62097833c5f1335b0cb5351b225` (CAN-2140).
   - Both the package root and `/abi`, and the shipped `spec/abi/` JSON, expose
