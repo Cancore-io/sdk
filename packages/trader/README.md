@@ -444,6 +444,7 @@ Fixtures for this package's tests and for filler nodes built on it. Not for prod
 ```ts
 import {
   InMemoryFillerStore,
+  fillerStoreConformance,
   FakeClock,
   FakeEvmRpc,
   createFakeFetch,
@@ -461,6 +462,9 @@ import {
 - `InMemoryFillerStore(clock?)` keeps the store contract (serialised per-order transactions with rollback,
   idempotent writes, leases by store time); two fillers on one instance model two replicas on one database.
   `setAvailable(false)` simulates an outage; `journal()` lists the evidence.
+- `fillerStoreConformance` contains runner-independent `{ name, run }` cases for a store adapter.
+  Give each case a fresh store and call `run(store, deepEqual)` with your runner's deep equality assertion.
+  The cases cover recovery records, unsent messages, rollback, reconfirmed quotes, evidence and nonce fencing.
 - `FakeClock` moves only on `advance(ms)`. `FakeEvmRpc` answers scripted methods and records calls.
 - `createFakeWebSocketFactory()` hands out `FakeSocket`s: the test plays `filler-gateway` and feeds crafted
   frames with `receive(frame)`; `protocols` / `token` show what the SDK offered on the upgrade, `refuse(status)`

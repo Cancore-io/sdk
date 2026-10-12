@@ -562,7 +562,10 @@ describe('write-ahead settlement recovery (CAN-1856 R2)', () => {
     const [record] = await w.store.nonces.listOpen(SRC, fillSigner.address);
     const tx = record!.transactions[0]!;
     const change = { kind: { kind: 'fill' as const }, attempt: { attempt: 1 }, to: { to: INPUT }, data: { data: '0x' as Hex } }[field];
-    await w.store.nonces.recordTransaction(record!, { ...tx, ...change });
+    const maxFeePerGas = tx.maxFeePerGas + 1n;
+    const raw = await fillSigner.signTransaction({ chainId: 56n, nonce: record!.nonce, to: tx.to, data: tx.data, value: tx.value, gasLimit: tx.gasLimit, maxFeePerGas, maxPriorityFeePerGas: tx.maxPriorityFeePerGas, ...change });
+    const hash: Hex = `0x${bytesToHex(keccak_256(hexToBytes(raw.slice(2))))}`;
+    await w.store.nonces.recordTransaction(record!, { ...tx, maxFeePerGas, raw, hash, ...change });
     await w.store.withOrder(w.orderHash, (otx) => otx.putSettlement({ orderHash: w.orderHash, attempt: 0, state: 'pending', owner: 'r1', leaseUntilMs: 0, updatedAtMs: w.clock.now() }));
     const next = w.restart('r1');
     await expect(next.settler.selfSettle(w.orderHash)).rejects.toMatchObject({ reason: 'unavailable' });
