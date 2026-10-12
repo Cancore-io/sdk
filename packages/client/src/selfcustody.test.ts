@@ -1,13 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519';
-import { deriveWalletKey, LOGIN_CHALLENGE_PREFIX as WALLET_CHALLENGE_PREFIX, providerFromMnemonic } from '@cancore/wallet';
+import { cantonFingerprint, deriveWalletKey, LOGIN_CHALLENGE_PREFIX as WALLET_CHALLENGE_PREFIX, providerFromMnemonic } from '@cancore/wallet';
 import { allocationTree, DEV, prepared, proposalAccept, proposalCreate, selfSendLeg, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
 import type { FetchLike } from './http';
 import {
   CeremonyError,
   createSelfCustody,
   DEFAULT_FEE_RECIPIENTS,
+  ForeignPartyError,
   grossAmount,
   legalConsentMessage,
   SettleError,
@@ -58,6 +59,10 @@ interface VenueOptions {
   failSend?: boolean;
   /** What `wallet.topology` prepares instead of its one multihash leg; `leg(kind, bytes)` makes a leg the way the venue does. */
   topologyLegs?: (leg: (kind: string, bytes?: number) => Leg) => Leg[];
+  /** The party `wallet.topology` proposes in its meta, instead of the key's own (`honest`). */
+  topologyParty?: (honest: string) => unknown;
+  /** The party the venue records for the account once the topology is submitted, instead of the key's own. */
+  recordedParty?: (honest: string) => string;
   /**
    * `tokens.send` legs carry their transaction bytes: an honest self-send, one that pays a thief, a
    * fee leg taking 5 CC, or bytes for the transfer leg only.
@@ -145,6 +150,8 @@ function venue({
   coded = false,
   failSend = false,
   topologyLegs,
+  topologyParty,
+  recordedParty,
   sendBytes,
   twoHoldings = false,
   accruedHoldingFee = 0,
@@ -208,6 +215,8 @@ function venue({
     return { legId: `leg-${++seq}`, hash: b64(raw), kind };
   };
   const forbidden = () => refuse(403, 'Allocation-DvP is not open to this account on this stand.');
+  /** The party of a key as the API names one: `<hint>::<fingerprint of the key>`. */
+  const partyOf = (owner: Account) => `party-${owner.id}::${cantonFingerprint(owner.publicKey)}`;
   const parties = (): string[] => [...new Set(legs.flatMap((l) => [l.sender, l.receiver]))];
 
   /** A CC self-send as the participant prepares it: the transfer (the split and its change) and the network-fee leg to the dev participant party. */
@@ -232,7 +241,10 @@ function venue({
     asked.push(type);
     switch (type) {
       // One leg: the multihash of the party's topology transactions (wallet-topology.operation).
-      case 'wallet.topology': legs = topologyLegs ? topologyLegs(leg) : [leg('topology', 34)]; break;
+      case 'wallet.topology':
+        legs = topologyLegs ? topologyLegs(leg) : [leg('topology', 34)];
+        meta = { partyId: topologyParty ? topologyParty(partyOf(owner)) : partyOf(owner) };
+        break;
       case 'tokens.preapproval': legs = owner.roles.includes('has-preapproval') ? [] : [leg('setup')]; meta = { alreadyExists: legs.length === 0 }; break;
       case 'tokens.consolidate': legs = []; break;
       case 'tokens.accept': legs = [leg('transfer')]; break;
@@ -258,7 +270,7 @@ function venue({
     pending.delete(operationId);
     log.push({ type: op.type, params: op.params });
     switch (op.type) {
-      case 'wallet.topology': caller.partyId = `party-${caller.id}`; break;
+      case 'wallet.topology': caller.partyId = recordedParty ? recordedParty(partyOf(caller)) : partyOf(caller); break;
       case 'tokens.preapproval': caller.roles.push('has-preapproval'); break;
       case 'tokens.accept': incoming.splice(incoming.findIndex((t) => t.contractId === op.params.instructionCid), 1); break;
     }
@@ -511,7 +523,7 @@ function venue({
     const selfSent = (party: string | null) => log.some((e) => e.type === 'tokens.send' && e.params.receiverPartyId === party);
     if (route === 'GET /tokens/transfer/estimate-fee') return json({ networkFee, networkFeeToken: 'CC' });
     if (route === 'GET /tokens/fee-debt') return json({ outstandingCc: feeDebt, entries: [] });
-    if (route === `GET /tokens/balance/${caller.partyId}/CC`) {
+    if (route === `GET /tokens/balance/${encodeURIComponent(caller.partyId ?? '')}/CC`) {
       return json({ partyId: caller.partyId, instrumentId: 'CC', balance, holdingsCount: selfSent(caller.partyId) ? 2 : 1 });
     }
     const feeRefusal = refuseAt.accept === 'feeHolding' || (refuseAt.accept === 'feeHoldingUntilSplit' && !selfSent(caller.partyId)) || refuseAt.accept === 'feeHoldingOther';
@@ -577,7 +589,9 @@ function venue({
     order.swapId = 's1';
   }
 
-  return { fetchImpl, switchInstrumentsOff: () => { instrumentsOff = true; }, takeFeeConfigDown: () => { feeConfigDown = true; }, setFeeConfig: (next: Record<string, unknown>) => { currentFeeConfig = next; }, log, asked, proposals, routes, feeAsked, order, incoming, byKey, signUps, htlcOpenedEarlier, legs: () => legs, takes: () => takes };
+  /** The party of the account that signed up under this name (`maker`, `taker`, …). */
+  const party = (id: string): string => [...byKey.values()].find((a) => a.id === id)?.partyId ?? `no party for ${id}`;
+  return { party, fetchImpl, switchInstrumentsOff: () => { instrumentsOff = true; }, takeFeeConfigDown: () => { feeConfigDown = true; }, setFeeConfig: (next: Record<string, unknown>) => { currentFeeConfig = next; }, log, asked, proposals, routes, feeAsked, order, incoming, byKey, signUps, htlcOpenedEarlier, legs: () => legs, takes: () => takes };
 }
 
 // The dev API host: its network (devnet) chooses the pinned instrument admins.
@@ -618,7 +632,7 @@ test('two self-custody accounts from one phrase register, onboard and settle a C
   expect(taken).toMatchObject({ swap: { id: 's1', status: 'dvp_settled' }, delivery: 'direct', flow: 'dvp' });
   // The maker recorded the trade once, asking for DvP, with a request the proposal DTO accepts.
   expect(api.proposals).toEqual([expect.objectContaining({
-    orderId: 'o1', dvp: true, tokenId: 'CBTC', amount: 0.01, receiver: 'party-taker', timeoutHours: 1,
+    orderId: 'o1', dvp: true, tokenId: 'CBTC', amount: 0.01, receiver: api.party('taker'), timeoutHours: 1,
   })]);
   // Every step signed by the side that owes it, in the order the trade needs: the maker's proposal,
   // the taker's approval, the taker's funding (its leg and the fee carved out of it, two signatures
@@ -732,7 +746,7 @@ describe('the paths where a mistake costs money', () => {
     await taker.swap.accept('o1');
     const error = await maker.make('o1').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SettleError);
-    expect((error as Error).message).toMatch(/platform fee \(24.8756218905\) needs a holding of its own, and party-taker \(the taker\) keeps its CC in a single holding.*splits that balance/);
+    expect((error as Error).message).toMatch(new RegExp(`platform fee \\(24.8756218905\\) needs a holding of its own, and ${api.party('taker')} \\(the taker\\) keeps its CC in a single holding.*splits that balance`));
     expect(dvpSteps(api)).toEqual([]);
   });
 
@@ -839,7 +853,7 @@ describe('the paths where a mistake costs money', () => {
     await taker.swap.accept('o1');
     const error = await maker.make('o1').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(CeremonyError);
-    expect((error as Error).message).toMatch(new RegExp(`a leg from party-taker to ${FEE_PARTY} is not part of this trade`));
+    expect((error as Error).message).toMatch(new RegExp(`a leg from ${api.party('taker')} to ${FEE_PARTY} is not part of this trade`));
     expect(dvpSteps(api)).toEqual([]);
   });
 
@@ -878,8 +892,8 @@ describe('the paths where a mistake costs money', () => {
     expect(made.swap.status).toBe('dvp_settled');
     expect(taken.swap.status).toBe('dvp_settled');
     // Exactly the fee, to itself, CC by omission, signed by the taker's key (the venue verifies every leg).
-    expect(selfSends(api)).toEqual([{ type: 'tokens.send', params: { receiverPartyId: 'party-taker', amount: '24.8756218905' } }]);
-    expect(api.order.opponent).toEqual({ partyId: 'party-taker' });
+    expect(selfSends(api)).toEqual([{ type: 'tokens.send', params: { receiverPartyId: api.party('taker'), amount: '24.8756218905' } }]);
+    expect(api.order.opponent).toEqual({ partyId: api.party('taker') });
   });
 
   test('a self-send whose bytes pay anyone else is refused before the key signs it', async () => {
@@ -1197,7 +1211,7 @@ describe('withdrawing an allocation the venue could not release (BUG-1291)', () 
       ['taker', ['leg-counter']],
       ['taker', ['leg-fee']],
     ]);
-    expect(api.legs().filter((l) => l.sender === 'party-taker').map((l) => l.status)).toEqual(['cancelled', 'cancelled']);
+    expect(api.legs().filter((l) => l.sender === api.party('taker')).map((l) => l.status)).toEqual(['cancelled', 'cancelled']);
     // Nothing is left locked, so a second call signs nothing.
     expect(await taker.withdrawAllocation('s1')).toEqual({ swapId: 's1', withdrawn: [], gone: [], failed: [] });
     expect(api.log.filter((e) => e.type === 'dvp:dvpWithdrawAllocation')).toHaveLength(2);
@@ -1577,8 +1591,8 @@ describe('what onboard() lets the key sign for the party (CAN-2399)', () => {
   // Every envelope ceremony names its operation, so a raw-signed leg is refused in each of them — and
   // as a CeremonyError at `prepare`, which is what the guides tell a partner to watch for.
   const MULTIHASH = b64(new Uint8Array([0x12, 0x20, ...new Uint8Array(32).fill(0xaa)]));
-  const hostile = () => stub({
-    'GET /auth/me': () => ({ id: 'me', partyId: 'party-me' }),
+  const hostile = (partyId = 'party-me') => stub({
+    'GET /auth/me': () => ({ id: 'me', partyId }),
     'GET /tokens/transfer-requests/incoming': () => [
       { contractId: 'c1', templateId: 't', instrumentAdmin: 'admin', instrumentId: 'USDCx', executeBefore: new Date(Date.now() + 60_000).toISOString() },
     ],
@@ -1596,8 +1610,10 @@ describe('what onboard() lets the key sign for the party (CAN-2399)', () => {
     ['consolidate', 'tokens.consolidate', (acct: ReturnType<typeof createSelfCustody>) => acct.consolidate()],
     ['onboard, at the preapproval', 'tokens.preapproval', (acct: ReturnType<typeof createSelfCustody>) => acct.onboard()],
   ] as const)('%s answered with a well-formed topology leg signs nothing', async (_what, operation, call) => {
-    const api = hostile();
-    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 56 }), fetchImpl: api.fetchImpl, ...fast });
+    const signer = await providerFromMnemonic(PHRASE, { account: 56 });
+    // The account's party is its key's: onboard() gets as far as the preapproval only then.
+    const api = hostile(`party-me::${cantonFingerprint(signer.public_key)}`);
+    const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
 
     refusedAtPrepare(await call(acct).catch((e: unknown) => e), operation);
     expect(api.hits).not.toContain('POST /wallet/operations/submit');
@@ -1622,6 +1638,134 @@ describe('what onboard() lets the key sign for the party (CAN-2399)', () => {
     await acct.onboard();
 
     expect(api.log.map((e) => e.type)).toEqual(['wallet.topology', 'tokens.preapproval']);
+  });
+});
+
+describe('whose party onboard() brings into being (CAN-2249)', () => {
+  // A topology is a multihash the key cannot read. What it can hold the API to is the party's name: the
+  // party is `<hint>::<fingerprint of this key>`, whole, or the key signs nothing — and the party the
+  // account ends up with is the address its owner is about to fund.
+  const OTHER = `1220${'cd'.repeat(32)}`;
+  const onboarder = async (options: VenueOptions, account: number) => {
+    const api = venue(options);
+    const signer = await providerFromMnemonic(PHRASE, { account });
+    const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
+    await acct.session.register({ partyName: 'onboarder' });
+    return { api, acct, own: `party-onboarder::${cantonFingerprint(signer.public_key)}` };
+  };
+
+  test.each([
+    ["another key's party", () => `party-onboarder::${OTHER}`],
+    // What a check of the first namespace alone lets through.
+    ['its own namespace with something after it', (honest: string) => `${honest}::${OTHER}`],
+    ['its own namespace in upper case', (honest: string) => honest.replace(/::.*/, (ns) => ns.toUpperCase())],
+    ['a hint that carries a line of its own', (honest: string) => `x\nparty:mallory::${honest.split('::')[1]}`],
+    ['no party at all', () => undefined],
+    ['a party that is not a string', (honest: string) => ({ toString: () => honest })],
+  ] as Array<[string, NonNullable<VenueOptions['topologyParty']>]>)('the API proposes %s: nothing is signed', async (_what, topologyParty) => {
+    const { api, acct } = await onboarder({ topologyParty }, 52);
+
+    const error = await acct.onboard().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect(error).toMatchObject({ operation: 'wallet.topology', stage: 'prepare' });
+    expect((error as CeremonyError).cause).toBeInstanceOf(ForeignPartyError);
+    expect((error as CeremonyError).cause).toMatchObject({ when: 'proposes' });
+    expect((error as Error).message).toMatch(/not the party of this account's key.*nothing was signed/);
+    // Whatever the API put in the id, the message is one line.
+    expect((error as Error).message).not.toMatch(/[\r\n]/);
+    // Asked, refused, and no operation came back signed: the account still has no party.
+    expect(api.asked).toEqual(['wallet.topology']);
+    expect(api.log).toEqual([]);
+  });
+
+  test.each([
+    ["another key's party", () => `party-onboarder::${OTHER}`],
+    // What a check of the first namespace alone lets through.
+    ['its own namespace with something after it', (honest: string) => `${honest}::${OTHER}`],
+  ] as Array<[string, NonNullable<VenueOptions['recordedParty']>]>)('the API proposes the key\'s party and then records %s: the caller is told not to fund it', async (_what, recordedParty) => {
+    const { api, acct, own } = await onboarder({ recordedParty }, 53);
+
+    const error = await acct.onboard().catch((e: unknown) => e);
+
+    // The topology it signed was for its own party; what the account now shows is not that.
+    expect(error).toBeInstanceOf(ForeignPartyError);
+    expect(error).toMatchObject({ name: 'ForeignPartyError', when: 'records', partyId: recordedParty(own) });
+    expect((error as Error).message).toMatch(/not the party of its key.*do not fund it for a program that holds only this key/);
+    // And it stops there: no preapproval is set up for a party that is not the key's.
+    expect(api.asked).toEqual(['wallet.topology']);
+
+    // Asked again, it says so again: the party is there now, and it is still not this key's.
+    await expect(acct.onboard()).rejects.toBeInstanceOf(ForeignPartyError);
+    expect(api.asked).toEqual(['wallet.topology']);
+  });
+
+  test('an account that already has a party is held to the key too: the usual case is a bot made in the wallet', async () => {
+    // Nothing to sign and nothing to propose — the party is simply there. It is the address onboard()
+    // hands back to be funded, so it is read on every call, not only when this call made it.
+    const signer = await providerFromMnemonic(PHRASE, { account: 58 });
+    const api = stub({ 'GET /auth/me': () => ({ id: 'me', partyId: `party-me::${OTHER}` }) });
+    const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
+
+    const error = await acct.onboard().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ForeignPartyError);
+    expect(error).toMatchObject({ when: 'records', partyId: `party-me::${OTHER}` });
+    expect(api.signed()).toEqual([]);
+  });
+
+  test('execute() is the same door: a topology asked for by name is held to the key as well', async () => {
+    const signer = await providerFromMnemonic(PHRASE, { account: 59 });
+    const own = `party-me::${cantonFingerprint(signer.public_key)}`;
+    const MULTIHASH = Buffer.from(`1220${'aa'.repeat(32)}`, 'hex').toString('base64');
+    for (const meta of [{ partyId: `party-me::${OTHER}` }, {}, null]) {
+      const api = stub({
+        'GET /auth/me': () => ({ id: 'me', partyId: null }),
+        'POST /wallet/operations/prepare': () => ({ operationId: 'op', legs: [{ legId: 't', hash: MULTIHASH, kind: 'topology' }], meta }),
+        'POST /wallet/operations/submit': () => ({ ok: true }),
+      });
+      const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
+
+      const error = await acct.execute('wallet.topology', { publicKey: signer.public_key }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(CeremonyError);
+      expect((error as CeremonyError).cause).toMatchObject({ name: 'ForeignPartyError', when: 'proposes' });
+      expect(api.hits).not.toContain('POST /wallet/operations/submit');
+    }
+    // And the key's own party goes through, as before.
+    const api = stub({
+      'POST /wallet/operations/prepare': () => ({ operationId: 'op', legs: [{ legId: 't', hash: MULTIHASH, kind: 'topology' }], meta: { partyId: own } }),
+      'POST /wallet/operations/submit': () => ({ ok: true }),
+    });
+    await createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast }).execute('wallet.topology', { publicKey: signer.public_key });
+    expect(api.hits).toContain('POST /wallet/operations/submit');
+  });
+
+  test('what the error shows of the API\'s text: one line, cut, and nothing outside printable ASCII', () => {
+    const shown = (partyId: unknown) => new ForeignPartyError(partyId, 'records').message;
+
+    // A line or paragraph separator, a bidi override: escaped, so the line stays one line and reads as written.
+    expect(shown('a\u2028b\u202ec\u0085d\ne::1220')).toContain('"a\\u2028b\\u202ec\\u0085d\\ne::1220"');
+    expect(shown('a\u2028b\u202ec\u0085d\ne::1220')).toMatch(/^[\x20-\x7e]+$/);
+    // Cut: the API cannot fill a log with it.
+    expect(shown('x'.repeat(5000))).toContain(`"${'x'.repeat(120)}"`);
+    expect(shown('x'.repeat(5000)).length).toBeLessThan(400);
+    // Not a string: its type is said, its contents are not asked for.
+    expect(shown({ toString: () => 'party::1220' })).toContain('a value of type object');
+    expect(shown(undefined)).toContain('a value of type undefined');
+  });
+
+  test('the key\'s own party is made, and it is what onboard() answers', async () => {
+    const { api, acct, own } = await onboarder({}, 54);
+
+    const user = await acct.onboard();
+
+    expect(user.partyId).toBe(own);
+    expect(api.log.map((e) => e.type)).toEqual(['wallet.topology', 'tokens.preapproval']);
+
+    // Called again — every process does, as its first line — the party is there, and it is the key's.
+    await expect(acct.onboard()).resolves.toMatchObject({ partyId: own });
+    expect(api.asked).toEqual(['wallet.topology', 'tokens.preapproval', 'tokens.preapproval']);
   });
 });
 
@@ -2099,7 +2243,7 @@ describe('serve(): the maker runs nothing but serve()', () => {
     ]);
     expect(events.filter((e) => e.type === 'error')).toEqual([]);
     expect(api.log.filter((e) => e.type === 'dvp:dvpWithdrawAllocation').map((e) => e.params.legIds)).toEqual([['leg-counter'], ['leg-fee']]);
-    expect(api.legs().filter((l) => l.sender === 'party-taker').map((l) => l.status)).toEqual(['cancelled', 'cancelled']);
+    expect(api.legs().filter((l) => l.sender === api.party('taker')).map((l) => l.status)).toEqual(['cancelled', 'cancelled']);
   });
 
   test('one poll over an expired swap still locked reads /auth/me once: look and locked check share it', async () => {
@@ -2231,7 +2375,7 @@ describe('stopping a settle: an abort signs nothing new and ends every wait', ()
       autoWithdraw: true,
       signal: controller.signal,
       gate: (run) => {
-        if (api.legs().some((l) => l.sender === 'party-taker' && l.lockRef)) controller.abort();
+        if (api.legs().some((l) => l.sender === api.party('taker') && l.lockRef)) controller.abort();
         return run();
       },
     };

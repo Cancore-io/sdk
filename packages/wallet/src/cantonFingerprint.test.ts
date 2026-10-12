@@ -1,4 +1,4 @@
-import { cantonFingerprint, keyOwnsParty } from './cantonFingerprint';
+import { cantonFingerprint, isPartyOfKey, keyOwnsParty } from './cantonFingerprint';
 
 // Real testnet pairs (key registered for the party, party id as Canton issued
 // it) — the formula is only useful if it reproduces these exactly.
@@ -27,5 +27,56 @@ describe('cantonFingerprint', () => {
 
   it('rejects a party id with no namespace half', () => {
     expect(keyOwnsParty(VADIM.publicKey, 'malformed-party')).toBe(false);
+  });
+});
+
+describe('isPartyOfKey — the party of a key, whole (CAN-2249)', () => {
+  const FP = VADIM.partyId.split('::')[1]!;
+
+  it('says yes to the real party of the key, and to another hint in the same namespace', () => {
+    expect(isPartyOfKey(VADIM.publicKey, VADIM.partyId)).toBe(true);
+    // The hint is the account's name; the namespace is what the key decides.
+    expect(isPartyOfKey(VADIM.publicKey, `grid-bot_1::${FP}`)).toBe(true);
+    expect(isPartyOfKey(VADIM.publicKey.toUpperCase(), VADIM.partyId)).toBe(true);
+    // A hint is letters of either case, digits, `_` and `-`.
+    expect(isPartyOfKey(VADIM.publicKey, `Grid-Bot_1::${FP}`)).toBe(true);
+  });
+
+  it.each([
+    ["another account's party", CANCORE_A.partyId],
+    // What keyOwnsParty lets through: the right namespace with something after it.
+    ['the right namespace with a third part', `vadim::${FP}::1220${'ab'.repeat(32)}`],
+    ['the right namespace with a trailing separator', `vadim::${FP}::`],
+    ['the namespace in upper case', `vadim::${FP.toUpperCase()}`],
+    ['a line break in the hint', `vadim\nparty:mallory::${FP}`],
+    ['a space in the hint', `vadim su::${FP}`],
+    ['an empty hint', `::${FP}`],
+    ['a hint longer than a party hint is', `${'a'.repeat(256)}::${FP}`],
+    ['the namespace alone', FP],
+    ['a single colon', `vadim:${FP}`],
+    ['a longer namespace that starts with the fingerprint', `vadim::${FP}00`],
+    ['a longer namespace that ends with the fingerprint', `vadim::00${FP}`],
+    ['a dot in the hint', `va.dim::${FP}`],
+    ['a colon in the hint', `va:dim::${FP}`],
+    ['nothing', ''],
+  ])('says no to %s', (_what, partyId) => {
+    expect(isPartyOfKey(VADIM.publicKey, partyId)).toBe(false);
+  });
+
+  it.each([undefined, null, 42, {}, [VADIM.partyId], { toString: () => VADIM.partyId }])(
+    'says no to a value that is not a string (%p): a server answer is not trusted to be one',
+    (value) => {
+      expect(isPartyOfKey(VADIM.publicKey, value)).toBe(false);
+    },
+  );
+
+  it.each(['zz', 'abc', ''])('says no for a key that cannot be read (%p), and does not throw', (key) => {
+    expect(isPartyOfKey(key, VADIM.partyId)).toBe(false);
+  });
+
+  it('is stricter than keyOwnsParty exactly where that one is loose', () => {
+    const loose = `x::${FP}::anything`;
+    expect(keyOwnsParty(VADIM.publicKey, loose)).toBe(true);
+    expect(isPartyOfKey(VADIM.publicKey, loose)).toBe(false);
   });
 });

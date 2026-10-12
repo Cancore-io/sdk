@@ -274,7 +274,7 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `session.request` | the authenticated transport: renews the JWT before it expires, signs in again on a 401 |
 | `session.token()` | a JWT good for at least another minute, for a credential the transport does not carry (the realtime socket's handshake) |
 | `me()` | `GET /auth/me` |
-| `onboard()` | `wallet.topology` (the party, signed by the key) then `tokens.preapproval` (CC receipts, venue-paid); skips what exists |
+| `onboard()` | `wallet.topology` (the party, signed by the key) then `tokens.preapproval` (CC receipts, venue-paid); skips what exists. The account's party — new or already there — must be `<hint>::<fingerprint of this key>`, or it throws `ForeignPartyError` and goes no further (no preapproval) |
 | `legalStatus()` / `acceptTerms(version, documents)` | `GET` / signed `POST /legal/consent` |
 | `make(orderId, options?)` | maker: wait for the taker, record the DvP trade and sign its proposal, fund its leg after the taker, wait for the atomic settle |
 | `take(orderId, options?)` | taker: accept the order, sign the approval, fund its legs (the platform fee among them), wait for the atomic settle |
