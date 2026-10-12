@@ -213,15 +213,15 @@ drand quicknet rounds.
 
 | File (`@cancore/contracts/spec/protocol/…`) | Holds |
 | --- | --- |
-| `messages.schema.json` | one `$def` per WebSocket frame type (23), `x-direction` S2F / F2S / both, and the primitives they share |
-| `rest.schema.json` | REST fallback bodies; `x-endpoints` (method, path, auth, request/response), `x-error-status` |
+| `messages.schema.json` | one `$def` per frame type (23), `x-direction` S2F / F2S / both, `x-rest-only` on the two login types, and the primitives they share |
+| `rest.schema.json` | REST bodies; `x-endpoints` (method, path, auth, query, request/response, `errorBody` where a refusal may be unsigned), `x-error-status` |
 | `records.schema.json` | the draw record, the epoch record, `GET /v1/gateway` |
-| `asyncapi.json` | AsyncAPI 3.0: channel `/v1`, the gateway's send/receive operations, examples |
+| `asyncapi.json` | AsyncAPI 3.0: channel `/v1` (the upgrade's subprotocols, its HTTP refusals `x-upgrade-refusals`, the close codes `x-close-codes`), the gateway's send/receive operations, examples |
 | `vectors/messages.json`, `vectors/records.json` | valid example frames and fixture records (hashes real, `sig` a placeholder: r = s = 0, v = 27) |
 | `vectors/settle-attestations.json` | `settle.attestations` golden vectors: EVM and Canton source, real TEST-key signatures, the pushed frame and the REST body with one payload, and schema-valid payloads a filler must refuse |
 
-The same objects are exported as `PROTOCOL_SCHEMAS`, `ASYNCAPI`, `MESSAGE_DIRECTIONS` and
-`REST_ENDPOINTS`, with TypeScript shapes of every frame (`TicketOffer`, `QuoteAck`, …) and the
+The same objects are exported as `PROTOCOL_SCHEMAS`, `ASYNCAPI`, `MESSAGE_DIRECTIONS`,
+`REST_ONLY_TYPES` and `REST_ENDPOINTS`, with TypeScript shapes of every frame (`TicketOffer`, `QuoteAck`, …) and the
 enums (`DECLINE_REASONS`, `ERROR_CODES`, …) a test holds to the schemas.
 
 ```ts
@@ -252,6 +252,31 @@ only. `ping`, `pong` and `error` go both ways: the gateway's copy carries `sig` 
 filler's `msgSig` (`pingF2S`); the second argument of `messageSchemaRef` picks one.
 `scripts/gen-protocol-docs.mjs` derives the examples, records and the AsyncAPI document from
 the schemas and the vectors.
+
+### Login and connect
+
+A filler logs in over REST and only then opens the WebSocket:
+
+1. `GET /v1/filler/auth/challenge?fillerId=<fillerId>` → a signed `auth.challenge` addressed to that
+   `fillerId`. Check its `sig` against the published gateway key and that `fillerId` is yours.
+   Refusals of this anonymous route are unsigned (`unsignedErrorBody`): 400 `BAD_REQUEST`, 404
+   `UNKNOWN_REQUEST` (unknown or not `ACTIVE`), 429 `RATE_LIMITED` with `retryAfterMs`.
+2. `POST /v1/filler/auth` with `auth.response` (`FillerAuth` by the message key, `nonce` = the
+   challenge's) → `{token, expiresAt}`, bound to `(fillerId, message key)`. Refusals decided before
+   any signature check are unsigned too: 400 `BAD_REQUEST`, 404 `UNKNOWN_REQUEST`, 401
+   `UNAUTHENTICATED` (no live challenge for the fillerId: start again from step 1), 429; refusals after
+   the signature checks are the signed `error`.
+3. Upgrade `/v1` offering `fillerWsProtocols(token)` = `['cancore-filler.v1', 'bearer.<token>']`
+   (`FILLER_WS_SUBPROTOCOL`, `FILLER_WS_BEARER_PREFIX`) as `Sec-WebSocket-Protocol`; the gateway
+   answers `cancore-filler.v1` and sends a signed `auth.ok` first. It refuses with plain HTTP
+   (`FILLER_UPGRADE_REFUSALS`: 400, 401, 403, 429 with `Retry-After`, 503) and closes a session
+   with one of `FILLER_CLOSE_CODES` (4029: rate-limit cooldown, preceded by `error RATE_LIMITED`
+   whose `retryAfterMs` is the remaining cooldown).
+
+The same token authenticates REST (`Authorization: Bearer`). `auth.challenge` and
+`auth.response` never travel on the socket (`REST_ONLY_TYPES`). Over a per-fillerId rate limit
+the gateway answers `error RATE_LIMITED` with `retryAfterMs` (on REST: 429, always unsigned, with
+`retryAfterMs` and `Retry-After`); send nothing of that rate class before it has passed.
 
 ### Attestation signatures for `settle`
 
@@ -374,7 +399,23 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
-- Unreleased (next RC) — router constants and order hashing helpers (CAN-1934). Additive only:
+- Unreleased (`0.2.0-rc.9`) — connect only after login, limits per fillerId (CAN-2232). **Breaking within the
+  RC line** for a filler and for filler-gateway:
+  - The login is REST only: `GET /v1/filler/auth/challenge` takes a required `fillerId` query
+    (`challengeQuery`), and `auth.challenge` is addressed (envelope `s2fBase`, `fillerId`
+    required). The refusals of the login routes decided before a signature check, and every 429,
+    are unsigned (`unsignedErrorBody`; `errorBody` of the two login endpoints).
+    `auth.challenge` and `auth.response` carry `x-rest-only` (a new annotation keyword in
+    `SCHEMA_VOCABULARY`; `REST_ONLY_TYPES`) and leave the AsyncAPI channel.
+  - The WebSocket upgrade offers `cancore-filler.v1` and `bearer.<token>`:
+    `FILLER_WS_SUBPROTOCOL`, `FILLER_WS_BEARER_PREFIX`, `fillerWsProtocols`; its refusals
+    `FILLER_UPGRADE_REFUSALS` and the session close codes `FILLER_CLOSE_CODES`, also in
+    `asyncapi.json` (`bindings.ws`, `x-upgrade-refusals`, `x-close-codes`).
+  - `error` gains optional `retryAfterMs` (an integer ≥ 1, with `RATE_LIMITED`);
+    `ErrorMessage.retryAfterMs`, `UnsignedErrorBody`, `ChallengeQuery`, `RestEndpoint.errorBody`.
+  - The `auth.challenge` example and its `GatewayMessage` vector carry `fillerId` (that vector's
+    digest changes); a `RATE_LIMITED` example; no other digest changes.
+- Unreleased (`0.2.0-rc.9`) — router constants and order hashing helpers (CAN-1934). Additive only:
   no existing export, type or digest changes.
   - Constants `BPS`, `MAX_FEE_BPS`, `MIN_FILL_TTL`, `MAX_FILL_TTL`, `MAX_SIG_TTL`,
     `MAX_PROOF_WINDOW`, `GRACE`, `SET_DELAY`, `CANTON_ORIGIN_ID`, `CANTON_SOURCE_ANCHOR`,
@@ -385,13 +426,13 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
     `PERMIT2_WITNESS_TYPE_STRING`, `permit2Domain`, `hashPermitWitness`, `inclusiveFeeSplit` (EVM
     source) and `cantonInclusiveFeeSplit` (Canton source).
   - Vectors `spec/vectors/evm-order.json`, `permit-witness.json`, `fee-split.json`.
-- Unreleased (next RC) — the Canton-destination encoder (protocol.md §3.13; CAN-1935). Additive only.
+- Unreleased (`0.2.0-rc.9`) — the Canton-destination encoder (protocol.md §3.13; CAN-1935). Additive only.
   - `encodeCantonDestination(network)`, `cantonNetworkOfDestination(destination)`,
     `encodeCantonOutputAsset({admin, id})`, `encodeCantonRecipient(partyId)`,
     `encodeCantonAmount(amount)`, type `CantonNetwork`.
   - Vector `spec/vectors/canton-destination.json`: an EVM-source order to Canton devnet and the
     `FillProof` of its delivery.
-- Unreleased (next RC) — `CantonTicketReceipt`, the receipt of a Canton-form ticket (protocol.md
+- Unreleased (`0.2.0-rc.9`) — `CantonTicketReceipt`, the receipt of a Canton-form ticket (protocol.md
   §3.3, §3.5, §10 D-O; CAN-2062). Additive only (V-2): no existing type, digest or vector changes.
   - Type `CantonTicketReceipt(bytes32 orderHash,uint32 attempt,bytes32 deliveryOrderCidHash,uint64 validUntil)`
     in the `CancoreFillerProtocol` domain, signed by the message key; `fillerId` and `repayTo` are

@@ -10,6 +10,7 @@ export { createTestFillSigner, decodeSignedTransaction, rlpDecode, rlpEncode } f
 export type { DecodedTransaction } from './transactions';
 export {
   createFakeFetch,
+  createFakeGatewayLogin,
   createFakeWebSocketFactory,
   createTestGatewaySigner,
   createRecordingEventSink,
@@ -19,4 +20,4 @@ export {
   FakeEvmRpc,
   FakeSocket,
 } from './fakes';
-export type { FakeRoute, FrameBody, LogEntry, RecordedRequest, RpcHandler, TestGatewaySigner } from './fakes';
+export type { FakeAnswer, FakeGatewayLoginOptions, FakeRoute, FrameBody, LogEntry, RecordedRequest, RpcHandler, TestGatewaySigner } from './fakes';

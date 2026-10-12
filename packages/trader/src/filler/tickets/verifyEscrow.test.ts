@@ -2,7 +2,7 @@ import { FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, fillerIdHash, repayToFromEvm, ty
 import { hashOrder } from '../chain';
 import { createFiller } from '../filler';
 import type { FillSigner } from '../signer';
-import { createFakeFetch, createFakeWebSocketFactory, createTestGatewaySigner, createTestTypedDataSigner, FakeChain, FakeClock, InMemoryFillerStore } from '../testing';
+import { createFakeFetch, createFakeGatewayLogin, createFakeWebSocketFactory, createTestGatewaySigner, createTestTypedDataSigner, FakeChain, FakeClock, InMemoryFillerStore } from '../testing';
 
 // filler.verifyEscrow() through createFiller: V-T4 measures when ticket.issued ARRIVED (recorded by the protocol
 // client in the frame's own store transaction), not when the check runs.
@@ -50,6 +50,7 @@ async function setup() {
 
   const store = new InMemoryFillerStore(clock);
   const ws = createFakeWebSocketFactory();
+  const login = createFakeGatewayLogin(gateway, { fillerId: FILLER, clock, heartbeatIntervalMs: 600_000 });
   const filler = createFiller({
     gatewayUrl: 'wss://filler-gateway.example/v1',
     fillerId: FILLER,
@@ -62,7 +63,7 @@ async function setup() {
     tickets: { deltaIssueMs: 3_000 },
     store,
     webSocket: ws.factory,
-    fetch: createFakeFetch().fetch,
+    fetch: createFakeFetch(login.routes).fetch,
     clock,
     instanceId: 'replica-1',
   });
@@ -70,11 +71,9 @@ async function setup() {
   filler.onReconfirm(async () => false);
   filler.onTicketOffer(async () => 'decline');
   const started = filler.start();
-  const socket = ws.sockets[0]!;
-  socket.open();
-  socket.receive(gateway.frame({ type: 'auth.challenge', nonce: `0x${'ab'.repeat(32)}`, expiresAt: String(Math.floor(clock.now() / 1000) + 30) }));
   await settle();
-  socket.receive(gateway.frame({ type: 'auth.ok', fillerId: FILLER, heartbeatIntervalMs: 600_000, re: socket.sentFrames()[0]!.id }));
+  const socket = ws.sockets[0]!;
+  login.accept(socket);
   await started;
 
   const offer = {

@@ -7,8 +7,9 @@
  * 3. `sig` recovers, over `GatewayMessage{bodyHash}` in the protocol domain,
  *    to the pinned filler-gateway address from the config — never to an
  *    address a frame or `GET /v1/gateway` names.
- * 4. `fillerId` is this filler's id. It may be absent only on
- *    `auth.challenge` and on an `error` before login (§3.1, §10 D-C).
+ * 4. `fillerId` is this filler's id. It may be absent only on an `error`
+ *    that refuses a login (`POST /v1/filler/auth`, §3.6); `auth.challenge`
+ *    is addressed to the fillerId it was asked for (§3.1, §10 D-C).
  *
  * A frame that fails any check is dropped and logged; nothing else happens.
  * Unknown fields and unknown types pass these checks untouched (V-2): what to
@@ -61,8 +62,8 @@ export interface FrameExpectations {
   fillerId: string;
 }
 
-/** Types that may arrive without `fillerId`: the addressee is not known yet. */
-const UNADDRESSED_TYPES: ReadonlySet<string> = new Set(['auth.challenge', 'error']);
+/** Types that may arrive without `fillerId`: the refusal of a login, whose sender is not authenticated yet. */
+const UNADDRESSED_TYPES: ReadonlySet<string> = new Set(['error']);
 
 const encoder = new TextEncoder();
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -126,11 +127,20 @@ export const utf8 = (text: string): Uint8Array => encoder.encode(text);
 
 const KNOWN_CODES: ReadonlySet<string> = new Set(ERROR_CODES);
 
-/** The typed error an `error` frame or REST error body carries; an unknown code stays generic (V-2). */
-export function gatewayErrorOf(body: Readonly<Record<string, unknown>>, httpStatus?: number): GatewayError {
+/** A usable `retryAfterMs`: a positive safe integer, or undefined. */
+export const retryAfterOf = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+
+/**
+ * The typed error an `error` frame or REST error body carries; an unknown code
+ * stays generic (V-2). `retryAfterMs` is the body's, else `fallbackRetryAfterMs`
+ * (a REST `Retry-After` header).
+ */
+export function gatewayErrorOf(body: Readonly<Record<string, unknown>>, httpStatus?: number, fallbackRetryAfterMs?: number): GatewayError {
   const code = typeof body.code === 'string' && body.code.length > 0 ? body.code : 'UNKNOWN';
   const message = typeof body.message === 'string' ? body.message : '';
   const re = typeof body.re === 'string' ? body.re : undefined;
-  if (code === 'UNSUPPORTED_VERSION') return new UnsupportedVersionError(code, true, message, re, httpStatus);
-  return new GatewayError(code, KNOWN_CODES.has(code), message, re, httpStatus);
+  const retryAfterMs = retryAfterOf(body.retryAfterMs) ?? fallbackRetryAfterMs;
+  if (code === 'UNSUPPORTED_VERSION') return new UnsupportedVersionError(code, true, message, re, httpStatus, retryAfterMs);
+  return new GatewayError(code, KNOWN_CODES.has(code), message, re, httpStatus, retryAfterMs);
 }
