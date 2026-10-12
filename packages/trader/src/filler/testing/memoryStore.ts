@@ -223,6 +223,7 @@ export class InMemoryFillerStore implements FillerStore {
       this.check();
       const record = this.held(lease);
       if (!record) return false;
+      if (record.transactions.some((t) => t.hash.toLowerCase() === tx.hash.toLowerCase())) return true;
       record.transactions = [...record.transactions, copy(tx)];
       return true;
     },
