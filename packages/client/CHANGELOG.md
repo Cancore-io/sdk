@@ -21,6 +21,14 @@
   provider already holds its own `signChallenge` to. Before, such a signer signed whatever the API
   returned as the challenge, a 32-byte transaction hash included.
 
+### Fixed
+
+- `take`, `swap.create` and `swap.createForPair` turned **any** 403 into a `SettleError` that opens
+  with "allocation-DvP is not open to this account" (CAN-2400). Only the refusal the API itself
+  names so is rewritten now — the `DVP_NOT_ALLOWED` code, or the DvP door's own words from a gateway
+  that serves no codes. Every other 403 (self-trade, documents not accepted, a stopped bot account)
+  reaches the caller as the `CancoreApiError` it is.
+
 ## 0.8.0
 
 ### Added
