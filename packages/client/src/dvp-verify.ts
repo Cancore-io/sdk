@@ -891,7 +891,8 @@ export async function sendCost(legs: Leg[], terms: SendTerms): Promise<bigint> {
     refuse(`${terms.receiver} is given ${decimalOf(given)} ${terms.instrument}, not the ${terms.amount} this send was asked for`);
   }
   if (!withinCost(terms.instrument, net, fee, amount, maxFee)) {
-    refuse(`the send costs this account ${costOf(terms.instrument, net, fee)}, more than the ${terms.amount} it sends and the fee it allows (an old input's accrued holding fee counts: consolidate() it first)`);
+    refuse(`the send costs this account ${costOf(terms.instrument, net, fee)}, more than the ${terms.amount} it sends and the fee it allows ` +
+      "(a fee debt the API collects on the fee leg counts, and so does an old input's accrued holding fee: consolidate() it first)");
   }
   return isAmulet(terms.instrument) ? net + fee - amount : fee;
 }

@@ -526,7 +526,9 @@ export interface SelfCustodyAccount {
    * cashback payouts alike, or the ones `filter` keeps. One refusal does not
    * stop the rest; it is reported in `failed`. The list is the API's, so the
    * network fee is paid only out of `options.maxFee`, the budget of the whole
-   * call: whatever the list holds, the call signs no more fee than that.
+   * call: whatever the list holds and whatever the API answers, a call that
+   * reads what it signs signs no more fee than that. Each call is a new
+   * budget; `allowUnverified` reads nothing and so puts nothing under one.
    */
   acceptIncoming(filter?: (transfer: IncomingTransfer) => boolean, options?: TokenCallOptions): Promise<{
     accepted: IncomingTransfer[];
@@ -829,9 +831,12 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * supplies, so the account's own `maxFee` is never spent on it. Without a ceiling no fee leg is
    * asked for, and one prepared anyway is refused.
    */
-  async function acceptOne(transfer: IncomingTransfer, call?: TokenCallOptions): Promise<bigint> {
-    const pays = call?.maxFee !== undefined;
-    let fee = 0n;
+  async function acceptOne(transfer: IncomingTransfer, call?: TokenCallOptions, spent: (fee: bigint) => void = () => undefined): Promise<void> {
+    const ceiling = call?.maxFee === undefined ? 0n : units(call.maxFee);
+    if (ceiling < 0n) throw new RangeError(`maxFee must be a decimal of at most ten places, got ${String(call?.maxFee)}`);
+    const pays = ceiling > 0n;
+    // Unread, what the fee leg takes is unknown: the whole ceiling counts as spent, before anything is signed.
+    if (pays && call?.allowUnverified === true) spent(ceiling);
     await run('tokens.accept', {
       instructionCid: transfer.contractId,
       templateId: transfer.templateId,
@@ -839,17 +844,15 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       executeBefore: transfer.executeBefore,
       ...(pays ? { withFeeLeg: true } : {}),
     }, false, reading('tokens.accept', call, async (legs, pins, party) => {
-      fee = await acceptCost(legs, {
-        party, instructionCid: transfer.contractId, pinnedAdmins: admins, dso: pins.dso, maxFee: call?.maxFee ?? '0', feeRecipients: pins.feeRecipients,
-      });
+      // The fee counts from the moment it is found fit to sign: the signatures leave with the submit, and
+      // an API that then answers with an error has them all the same.
+      spent(await acceptCost(legs, {
+        party, instructionCid: transfer.contractId, pinnedAdmins: admins, dso: pins.dso, maxFee: fromUnits(ceiling), feeRecipients: pins.feeRecipients,
+      }));
     }));
-    // Unread, what the fee leg took is unknown: the whole ceiling counts as spent.
-    return pays && call?.allowUnverified === true ? (units(call.maxFee) > 0n ? units(call.maxFee) : 0n) : fee;
   }
 
-  async function accept(transfer: IncomingTransfer, call?: TokenCallOptions): Promise<void> {
-    await acceptOne(transfer, call);
-  }
+  const accept = (transfer: IncomingTransfer, call?: TokenCallOptions): Promise<void> => acceptOne(transfer, call);
 
   async function send(input: { receiverPartyId: string; amount: string; tokenId?: string; description?: string } & TokenCallOptions): Promise<unknown> {
     const { receiverPartyId, amount, tokenId, description } = input;
@@ -1417,12 +1420,13 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     // The list is the API's. Whatever it holds, the fee this call signs is one budget — `call.maxFee` —
     // and with none given no accept asks for a fee leg at all: a made-up offer costs the account nothing.
     let left = call?.maxFee === undefined ? 0n : units(call.maxFee);
-    if (left < 0n) throw new RangeError(`maxFee must be a decimal of at most ten places, got ${call?.maxFee}`);
+    if (left < 0n) throw new RangeError(`maxFee must be a decimal of at most ten places, got ${String(call?.maxFee)}`);
     for (const transfer of await incoming()) {
-      // Past executeBefore the ledger refuses the accept; the sender reclaims it.
-      if (Date.parse(transfer.executeBefore) <= now() || !filter(transfer)) continue;
       try {
-        left -= await acceptOne(transfer, { ...call, maxFee: left > 0n ? fromUnits(left) : undefined });
+        // Past executeBefore the ledger refuses the accept; the sender reclaims it. A filter that throws
+        // on what the API listed fails that one transfer, not the call.
+        if (Date.parse(transfer.executeBefore) <= now() || !filter(transfer)) continue;
+        await acceptOne(transfer, { ...call, maxFee: left > 0n ? fromUnits(left) : undefined }, (fee) => { left -= fee; });
         accepted.push(transfer);
       } catch (error) {
         failed.push({ transfer, error });

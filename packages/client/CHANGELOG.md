@@ -56,7 +56,8 @@
   - **An accept pays a network fee only out of a budget its own call names.** What is accepted is a
     list the API supplies, so the account's `maxFee` is never spent on it. `accept(transfer, { maxFee })`
     asks for the fee leg and pays at most that; `acceptIncoming(filter, { maxFee })` treats it as the
-    budget of the whole call, however long the list. Without it — and in `serve({ acceptIncoming })`
+    budget of the whole call, however long the list and whatever the API answers: a fee counts as
+    spent when it is found fit to sign. Each call is a new budget. Without it — and in `serve({ acceptIncoming })`
     and `cashback.collect`, which pass none — no fee leg is asked for or signed, and the accept's fee
     stays the account's debt, as in 0.8.
   - **Also breaking for:** an account on a network the SDK has no pins for (pass `network` or

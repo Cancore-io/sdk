@@ -2134,6 +2134,50 @@ describe('the network fee: one ceiling for a send, one budget for an inbox (CAN-
     expect(await lowered.acct.send({ receiverPartyId: OWNER, amount: '100', maxFee: '1' })).toMatchObject({ deferredFee: 'owed' });
   });
 
+  test('the one ceiling counts everything the send cost: a burn on the transfer itself, and a send to oneself', async () => {
+    /** A send whose transfer leg alone costs `burn` beyond the amount (an old input's holding fee), then a deferred fee of `second`. */
+    const burning = async (account: number, toSelf: boolean, burn: string, second: string) => {
+      const { signer, me } = await who(account);
+      const [receiver, amount] = toSelf ? [me, '25'] : [OWNER, '100'];
+      const change = (10000 - Number(amount) - Number(burn)).toFixed(10);
+      const api = stub({
+        'GET /auth/me': () => ({ id: 'me', partyId: me }),
+        'POST /wallet/operations/prepare': async (body) => (body.type === 'tokens.send'
+          ? { operationId: 'send', legs: [L(await selfSendLeg({ party: me, kind: 'transfer', receiver, input: '10000', ids: 'a', outputs: [{ owner: receiver, amount }, { owner: me, amount: change }] }))], meta: { feeDeferred: { amount: 1 } } }
+          : { operationId: 'fee', legs: [await feeLegOf(me, second)], meta: {} }),
+        'POST /wallet/operations/submit': (body) => (body.operationId === 'send' ? { updateId: 'u1', outcome: 'committed' } : { outcome: 'committed' }),
+      });
+      return (createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, maxFee: '2' }).send({ receiverPartyId: receiver, amount }) as Promise<Sent>).then((out) => out.deferredFee, (e: Error) => e.message);
+    };
+    // 0.5 burnt on the way leaves 1.5 of a ceiling of 2 — to another party, and to oneself.
+    expect(await burning(650, false, '0.5', '1.5')).toBe('paid');
+    expect(await burning(651, false, '0.5', '1.6')).toBe('owed');
+    expect(await burning(652, true, '0.5', '1.5')).toBe('paid');
+    expect(await burning(653, true, '0.5', '1.6')).toBe('owed');
+    // And a send to oneself that costs more than the ceiling by itself is not signed at all.
+    expect(await burning(654, true, '2.5', '0')).toMatch(/the send costs this account more than 2 Amulet/);
+  });
+
+  test('a merge is held to its call\'s ceiling when the call names one', async () => {
+    const { signer, me } = await who(655);
+    let submitted = 0;
+    const api = stub({
+      'GET /auth/me': () => ({ id: 'me', partyId: me }),
+      'POST /wallet/operations/prepare': async () => ({
+        operationId: 'merge', meta: { mergedCount: 3 },
+        legs: [L(await selfSendLeg({ party: me, kind: 'transfer', receiver: me, input: '19.5', ids: 'a', outputs: [{ owner: me, amount: '19.5' }] })), await feeLegOf(me, '2')],
+      }),
+      'POST /wallet/operations/submit': () => { submitted++; return { outcome: 'committed' }; },
+    });
+    const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, maxFee: '1' });
+
+    await expect(acct.consolidate()).rejects.toThrow(/the merge costs this account 2 Amulet, more than the fee it allows/);
+    await expect(acct.consolidate('CC', { maxFee: '2' })).resolves.toBe(3);
+    // A ceiling of nothing on the call is a ceiling, not the lack of one: the account's is not used in its place.
+    await expect(acct.consolidate('CC', { maxFee: '0' })).rejects.toThrow(/the merge costs this account 2 Amulet/);
+    expect(submitted).toBe(1);
+  });
+
   test('what `deferredFee` says is what happened: nothing asked, nothing named to pay for, a submit nobody saw land', async () => {
     // The API deferred a fee and then asks for nothing: nothing was signed, so nothing was "paid".
     const nothing = await twice(605, null, null);
@@ -2162,7 +2206,7 @@ describe('the network fee: one ceiling for a send, one budget for an inbox (CAN-
   });
 
   /** An inbox of `count` transfers nobody sent: the API makes them up, and prepares a 2 CC fee leg whenever it is asked for one — or always. */
-  const madeUp = async (account: number, count: number, uninvited = false, over: Partial<SelfCustodyOptions> = {}) => {
+  const madeUp = async (account: number, count: number, uninvited = false, over: Partial<SelfCustodyOptions> = {}, submitFails = false) => {
     const { signer, me } = await who(account);
     const asked: Array<Record<string, unknown>> = [];
     let feeLegsSigned = 0;
@@ -2175,10 +2219,53 @@ describe('the network fee: one ceiling for a send, one budget for an inbox (CAN-
         asked.push(params);
         return { operationId: params.instructionCid, legs: [...await acceptLegs(me, params.instructionCid), ...(params.withFeeLeg || uninvited ? [await feeLegOf(me, '2')] : [])], meta: null };
       },
-      'POST /wallet/operations/submit': (body) => { feeLegsSigned += (body.signatures as unknown[]).length - 1; return { outcome: 'committed' }; },
+      'POST /wallet/operations/submit': (body) => {
+        feeLegsSigned += (body.signatures as unknown[]).length - 1;
+        return submitFails ? refuse(400, 'the ledger did not answer') : { outcome: 'committed' };
+      },
     });
     return { asked, fees: () => feeLegsSigned, acct: createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, ...over }) };
   };
+
+  test('a fee is spent when the key signs it, not when the API says so: an inbox whose every submit fails gets one budget too', async () => {
+    // The signatures leave with the submit. An API that takes them and answers with an error has the fee leg all the same.
+    const lying = await madeUp(640, 10, false, {}, true);
+
+    const { accepted, failed } = await lying.acct.acceptIncoming(undefined, { maxFee: '2' });
+
+    expect([accepted.length, failed.length]).toEqual([0, 10]);
+    expect(lying.fees()).toBe(1);
+    expect(lying.asked.map((params) => params.withFeeLeg ?? false)).toEqual([true, ...Array.from({ length: 9 }, () => false)]);
+  });
+
+  test('a filter that throws on what the API listed fails that transfer, and keeps what was accepted', async () => {
+    const inbox = await madeUp(641, 3);
+
+    const { accepted, failed } = await inbox.acct.acceptIncoming((t) => { if (t.contractId === 'ti-1') throw new Error('not a transfer I know'); return true; });
+
+    expect(accepted.map((t) => t.contractId)).toEqual(['ti-0', 'ti-2']);
+    expect(failed.map((f) => [f.transfer.contractId, String(f.error)])).toEqual([['ti-1', 'Error: not a transfer I know']]);
+  });
+
+  test('a budget of nothing asks for no fee leg, in one accept as in an inbox; a budget that is not a number is refused outright', async () => {
+    const none = await madeUp(642, 1);
+    const [transfer] = await none.acct.incoming();
+    await none.acct.accept(transfer!, { maxFee: '0' });
+    expect(none.asked[0]).not.toHaveProperty('withFeeLeg');
+
+    for (const maxFee of ['', '-1', '1e3', 'lots']) {
+      await expect(none.acct.accept(transfer!, { maxFee })).rejects.toThrow(RangeError);
+      await expect(none.acct.acceptIncoming(undefined, { maxFee })).rejects.toThrow(RangeError);
+    }
+    expect(none.asked).toHaveLength(1);
+  });
+
+  test('unread, a budget is spent whole by the first accept — and nothing after it is under any budget', async () => {
+    const blind = await madeUp(643, 3);
+    await blind.acct.acceptIncoming(undefined, { maxFee: '2', allowUnverified: true });
+    // What the fee leg took was not read, so the whole budget counts as gone: the rest ask for none.
+    expect(blind.asked.map((params) => params.withFeeLeg ?? false)).toEqual([true, false, false]);
+  });
 
   test('an inbox the API fills pays no fee unless the call brings a budget — and then that budget, whatever the list holds', async () => {
     // Twenty made-up transfers, and an account with a generous ceiling of its own: no fee leg is asked for, none is signed.

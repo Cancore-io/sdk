@@ -174,9 +174,11 @@ Keep some CC on the bot whatever it trades: it pays the CC network fee on its ow
 - **What an accept costs is yours to cap, for the whole call.** `acceptIncoming` works through a
   list the API supplies, and each accept can carry a network fee. The SDK pays those fees only out
   of the `maxFee` you give that call, in total: with a budget of 12 CC and a fee of about 10, one
-  accept pays its fee and the next is refused and listed in `failed` (raise the budget, or call
-  again). With no `maxFee` on the call, no fee leg is asked for or signed, and each accept's fee
-  stays the bot's debt, collected with a later send. The account's own `maxFee` is never spent here.
+  accept pays its fee and the next is refused and listed in `failed`. Raise the budget, or call
+  again — each call is a new budget, so how often you call is part of what you allow. With no
+  `maxFee` on the call, no fee leg is asked for or signed, and each accept's fee stays the bot's
+  debt: the API collects it on the fee leg of a later send, where it counts toward that send's
+  `maxFee`. The account's own `maxFee` is never spent here.
 - **Accept what you expect.** Anyone can send the bot a transfer. Pass a filter —
   `acceptIncoming((t) => t.instrumentId === 'CBTC')` — when the bot should take only some.
 
