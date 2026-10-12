@@ -226,11 +226,20 @@ const { balance, holdingsCount } = await acct.balance('CC'); // or 'CBTC', 'USDC
 const pending = await acct.incoming();
 const { accepted, failed } = await acct.acceptIncoming(); // or acceptIncoming((t) => t.instrumentId === 'CBTC')
 
-await acct.send({ receiverPartyId: 'other::1220…', amount: '25' }); // CC
-await acct.send({ receiverPartyId: 'other::1220…', amount: '0.01', tokenId: 'CBTC' });
+// maxFee: the most CC of network fee the call may cost. Set it once in createSelfCustody, or per call.
+await acct.send({ receiverPartyId: 'other::1220…', amount: '25', maxFee: '12' }); // CC
+await acct.send({ receiverPartyId: 'other::1220…', amount: '0.01', tokenId: 'CBTC', maxFee: '12' });
 
-const merged = await acct.consolidate('CC'); // merges small holdings; 0 means already compact
+const merged = await acct.consolidate('CC', { maxFee: '12' }); // merges small holdings; 0 means already compact
 ```
+
+**The network fee has no default ceiling.** Each stand sets its transfer fee by its own rule, so the
+SDK ships no number: a `send` or a `consolidate` with no `maxFee` — on the account or on the call —
+is refused before anything is asked of the API (`GET /tokens/transfer/estimate-fee` quotes the fee;
+`'12'` above is what fit the dev stand on 2026-10-12). An accept is different: what `acceptIncoming`
+accepts is a list the API supplies, so it pays a network fee only out of a budget given to that
+call — `acceptIncoming(filter, { maxFee })`, for all its accepts together — and with none it signs
+no fee leg at all, leaving each accept's fee as the account's debt.
 
 CC is delivered straight into the account through the preapproval `onboard()` set up. Registry
 tokens (CBTC, USDCx, …) arrive as transfers that your key must accept. Accept them with
@@ -444,7 +453,7 @@ while `hasPendingClaim` is true.
 | `CancoreApiError` (`@cancore/client`) | any call | a non-2xx answer: `status`, `method`, `path`, `body`, and `errorCode` when the gateway names the refusal |
 | `SettleError` (`./selfcustody`) | `make`, `take`, order placement, `splitForFee`, `withdrawAllocation` | the trade cannot go on: `swapId`, `last` (the last swap/order seen), `withdrawable`, `withdrawal`. **No `errorCode`, no `cause`**: only the `message` says why |
 | `CeremonyError` (`./selfcustody`) | any signing step | `operation`, `stage` (`'prepare'`: nothing was signed; `'submit'`: signed, the submit failed), `cause` (often a `CancoreApiError`), `meta`, and `errorCode` copied from `cause` when it is a `CancoreApiError` with a code |
-| `CeremonyError` at `prepare`, `cause` `UnverifiedTransactionError` (`./selfcustody`) | `send`, `accept` / `acceptIncoming`, `consolidate`, `onboard` (its preapproval step), `splitForFee` | the transactions the API prepared were read from their bytes and are not what the call asked for — another receiver or amount, a payee added, a fee above `maxFee`, a contract the instrument admin did not sign — or they came without bytes, or no ceiling was set on the network fee (`maxFee` — the SDK has none of its own), or the SDK has no pins to read them against (`network`, `instrumentAdmins`, `trustedPackages.wallet`). Nothing was signed. The message says which rule; `allowUnverified: true` on the call signs unread |
+| `CeremonyError` at `prepare`, `cause` `UnverifiedTransactionError` (`./selfcustody`) | `send`, `accept` / `acceptIncoming`, `consolidate`, `onboard` (its preapproval step), `splitForFee` | the transactions the API prepared were read from their bytes and are not what the call asked for — another receiver or amount, a payee added, a fee above `maxFee`, a contract the instrument admin did not sign — or they came without bytes, or no ceiling was set on the network fee of a send or a merge (`maxFee` — the SDK has none of its own; then nothing was asked of the API either), or the SDK has no pins to read them against (`network`, `instrumentAdmins`, `trustedPackages.wallet`). Nothing was signed. The message says which rule; `allowUnverified: true` on the call signs unread |
 | `ForeignPartyError` (`./selfcustody`) | `onboard`, `execute('wallet.topology')` | the party the API names for the account is not `<hint>::<fingerprint of this key>`. As the `cause` of a `CeremonyError` at `prepare` (`when: 'proposes'`): the API proposed such a party and nothing was signed. On its own (`when: 'records'`), from `onboard()`: the account HAS such a party — made just now or long ago — and `onboard()` stops before the preapproval; do not fund `partyId` for a program that holds only this key (an account still in custody is run from the wallet instead) |
 | `UnexpectedLegError` (`@cancore/wallet/operations`) | any signing step | the API prepared a transaction of a kind the operation does not have (a raw-signed `topology` leg anywhere but alone in `wallet.topology`, or one that is not a 34-byte multihash); nothing was signed |
 | `TrackTimeoutError` | `swap.track` | still not terminal after `timeoutMs`; carries `last` |

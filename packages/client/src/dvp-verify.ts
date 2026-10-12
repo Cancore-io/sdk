@@ -830,6 +830,11 @@ const PREAPPROVAL_SEND = /^TransferPreapproval_Send(V2)?$/;
  *  - what the account ends up poorer, the fee leg's payment included, is at most `maxCost`.
  */
 export async function verifySelfSendPrepared(legs: Leg[], terms: SelfSendTerms): Promise<void> {
+  await selfSendCost(legs, terms);
+}
+
+/** {@link verifySelfSendPrepared}, resolving to what the ceremony costs the account, in 1e-10 CC units. */
+export async function selfSendCost(legs: Leg[], terms: SelfSendTerms): Promise<bigint> {
   const refuse = refuser('tokens.send');
   if (units(terms.amount) <= 0n || units(terms.maxCost) < 0n) refuse('the amount or the cost bound is not a decimal of at most ten places');
   const { net, fee, transfers } = await tokenLegs(legs, refuse, { ...terms, dso: terms.admins }, terms.party, 'this account');
@@ -837,6 +842,7 @@ export async function verifySelfSendPrepared(legs: Leg[], terms: SelfSendTerms):
   if (net + fee > units(terms.maxCost)) {
     refuse(`the send costs this account more than ${decimalOf(units(terms.maxCost))} ${terms.instrument} (an old input's accrued holding fee counts: consolidate() it first)`);
   }
+  return net + fee;
 }
 
 /** A send the account asked for, to another party. Amounts are decimal strings. */
@@ -869,6 +875,11 @@ export interface SendTerms {
  * anything is signed.
  */
 export async function verifySendPrepared(legs: Leg[], terms: SendTerms): Promise<void> {
+  await sendCost(legs, terms);
+}
+
+/** {@link verifySendPrepared}, resolving to the CC the ceremony costs the account beyond `amount`, in 1e-10 units. */
+export async function sendCost(legs: Leg[], terms: SendTerms): Promise<bigint> {
   const refuse = refuser('tokens.send');
   const [amount, maxFee] = [units(terms.amount), units(terms.maxFee)];
   if (amount <= 0n || maxFee < 0n) refuse('the amount or the fee bound is not a decimal of at most ten places');
@@ -882,6 +893,7 @@ export async function verifySendPrepared(legs: Leg[], terms: SendTerms): Promise
   if (!withinCost(terms.instrument, net, fee, amount, maxFee)) {
     refuse(`the send costs this account ${costOf(terms.instrument, net, fee)}, more than the ${terms.amount} it sends and the fee it allows (an old input's accrued holding fee counts: consolidate() it first)`);
   }
+  return isAmulet(terms.instrument) ? net + fee - amount : fee;
 }
 
 /** A merge of the account's own holdings of one instrument. Amounts are decimal strings. */
@@ -919,12 +931,18 @@ export async function verifyConsolidatePrepared(legs: Leg[], terms: ConsolidateT
  * costing the account at most `maxFee`.
  */
 export async function verifyFeePrepared(legs: Leg[], terms: { party: string; dso: string[]; maxFee: string; feeRecipients: string[] }): Promise<void> {
+  await feeCost(legs, terms);
+}
+
+/** {@link verifyFeePrepared}, resolving to the fee the ceremony pays, in 1e-10 CC units. */
+export async function feeCost(legs: Leg[], terms: { party: string; dso: string[]; maxFee: string; feeRecipients: string[] }): Promise<bigint> {
   const refuse = refuser('tokens.send-fee');
   const maxFee = units(terms.maxFee);
   if (maxFee < 0n) refuse('the fee bound is not a decimal of at most ten places');
   const { fee, transfers } = await tokenLegs(legs, refuse, { ...terms, admins: terms.dso, instrument: 'Amulet' }, terms.party, 'this account');
   if (transfers.length > 0) refuse('a fee ceremony carries a transfer');
   if (fee > maxFee) refuse(`the fee costs this account ${decimalOf(fee)} CC, more than the fee it allows`);
+  return fee;
 }
 
 /** An incoming transfer the account was asked to accept. */
@@ -949,6 +967,11 @@ export interface AcceptTerms {
  * to a pinned fee recipient, within `maxFee`.
  */
 export async function verifyAcceptPrepared(legs: Leg[], terms: AcceptTerms): Promise<void> {
+  await acceptCost(legs, terms);
+}
+
+/** {@link verifyAcceptPrepared}, resolving to the fee the accept pays, in 1e-10 CC units. */
+export async function acceptCost(legs: Leg[], terms: AcceptTerms): Promise<bigint> {
   const refuse = refuser('tokens.accept');
   const maxFee = units(terms.maxFee);
   if (maxFee < 0n) refuse('the fee bound is not a decimal of at most ten places');
@@ -963,6 +986,7 @@ export async function verifyAcceptPrepared(legs: Leg[], terms: AcceptTerms): Pro
   }
   if (accepts !== 1) refuse(`expected one accept, the API prepared ${accepts}`);
   if (fee > maxFee) refuse(`the accept costs this account ${decimalOf(fee)} CC of fee, more than the fee it allows`);
+  return fee;
 }
 
 /** The step of `onboard()` that lets CC reach the account directly. */
@@ -992,13 +1016,16 @@ export async function verifyPreapprovalSetupPrepared(legs: Leg[], terms: Preappr
   // A create has no admin-signed contract under it: the package id is all that says whose code this is.
   if (!trusted(terms.packages, packageName, templateId?.packageId)) {
     refuse(`it runs code from an untrusted package (${packageName || 'unnamed'} ${templateId?.packageId ?? ''}): ` +
-      'if that is a splice-wallet release newer than this SDK lists, add its id with trustedPackages.wallet');
+      "if a splice-wallet release newer than this SDK lists is live, take its id from Splice's own daml/dars.lock or from Cancore — " +
+      "never from this message, the API wrote the id in it — and add it with trustedPackages: { wallet: { 'splice-wallet': [id] } }");
   }
   if (signatories.length !== 1 || signatories[0] !== terms.party) refuse('the proposal is not signed by this account alone');
   const proposal = readPlain(argument) as { receiver?: unknown; provider?: unknown; expectedDso?: unknown } | null;
   if (!proposal || Object.keys(proposal).sort().join() !== 'expectedDso,provider,receiver') return refuse('the proposal is not of the shape this SDK knows');
   if (proposal.receiver !== terms.party) refuse('the proposal is for another receiver');
-  if (!terms.providers.includes(proposal.provider as string)) refuse(`the proposal names ${String(proposal.provider)} as provider, which is neither this account nor a pinned venue`);
+  if (!terms.providers.includes(proposal.provider as string)) {
+    refuse(`the proposal names ${String(proposal.provider)} as provider, which is neither this account nor a pinned venue (the venue comes from network, or from venuePartyId)`);
+  }
   if (!terms.dso.includes(proposal.expectedDso as string)) refuse(`the proposal expects ${String(proposal.expectedDso)} as the DSO, which is not a pinned CC admin`);
 }
 

@@ -29,8 +29,8 @@ import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
 import { DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
 import {
-  DEFAULT_TRUSTED_PACKAGES, units, UnverifiedTransactionError, verifyAcceptPrepared, verifyConsolidatePrepared, verifyDvpPrepared, verifyFeePrepared,
-  verifyPreapprovalSetupPrepared, verifySelfSendPrepared, verifySendPrepared,
+  acceptCost, DEFAULT_TRUSTED_PACKAGES, feeCost, selfSendCost, sendCost, units, UnverifiedTransactionError, verifyConsolidatePrepared, verifyDvpPrepared,
+  verifyPreapprovalSetupPrepared, verifySelfSendPrepared,
   type DvpOperation, type DvpTerms, type Instrument, type PreparedToSign, type TokenOperation, type TrustedPackages,
 } from './dvp-verify';
 
@@ -312,8 +312,10 @@ export interface SelfCustodyOptions extends SessionOptions {
    */
   maxSettlementWindowMs?: number;
   /**
-   * More package ids for the proposal steps' package (`cancore-swap`), by package name. Added to
-   * `DEFAULT_TRUSTED_PACKAGES`, never replacing it.
+   * More package ids, by package name: `swap` for the proposal steps' package (`cancore-swap`), `wallet`
+   * for the preapproval proposal `onboard()` signs (`splice-wallet`). Added to `DEFAULT_TRUSTED_PACKAGES`,
+   * never replacing it. An id belongs here only when it was checked where the API cannot write — Splice's
+   * `daml/dars.lock`, or Cancore — never because a refusal quoted it.
    */
   trustedPackages?: Partial<TrustedPackages>;
   /**
@@ -328,8 +330,8 @@ export interface SelfCustodyOptions extends SessionOptions {
    */
   instrumentAdmins?: Record<string, string[]>;
   /**
-   * More parties a fee split's network-fee leg may pay on this account's network. Added to
-   * `DEFAULT_NETWORK_FEE_RECIPIENTS`; a verified split paying anyone else is refused.
+   * More parties a network-fee leg may pay on this account's network — of a send, an accept, a merge
+   * or a fee split. Added to `DEFAULT_NETWORK_FEE_RECIPIENTS`; a ceremony read to pay anyone else is refused.
    */
   networkFeeRecipients?: string[];
   /**
@@ -340,24 +342,35 @@ export interface SelfCustodyOptions extends SessionOptions {
    */
   maxSplitCost?: string;
   /**
-   * The most CC one `send`, `accept` or `consolidate` may cost this account in network fee — its fee
-   * leg, a fee debt the API collects on that leg, an old CC input's accrued holding fee. A ceremony
-   * prepared above it is refused before the key signs; a call's own `maxFee` overrides it for that
-   * call. Default: `maxSplitCost` when that is set — otherwise there is none, and a ceremony that is
-   * given no ceiling is refused: the fee is each stand's own (an admin's rule, fixed or priced from
-   * cost), so the SDK ships no number for it. `GET /tokens/transfer/estimate-fee` quotes it.
+   * The most CC one `send` or `consolidate` may cost this account in network fee — its fee leg, the
+   * fee the API deferred to a second ceremony, a fee debt collected on that leg, an old CC input's
+   * accrued holding fee: all of it together. A ceremony prepared above it is refused before the key
+   * signs; a call's own `maxFee` overrides it for that call. Default: `maxSplitCost` when that is
+   * set — otherwise there is none, and a send or a merge given no ceiling is refused before anything
+   * is asked of the API: the fee is each stand's own (an admin's rule, fixed or priced from cost), so
+   * the SDK ships no number for it. `GET /tokens/transfer/estimate-fee` quotes it.
+   *
+   * It is NOT the ceiling of an accept. What is accepted is a list the API supplies, so an accept
+   * pays a network fee only out of a budget the caller hands to that very call (`TokenCallOptions`).
    */
   maxFee?: string;
 }
 
 /** How one token ceremony — a send, an accept, a merge — is held before the key signs it. */
 export interface TokenCallOptions {
-  /** The most CC this ceremony may cost in network fee. Default: the account's `maxFee`; with neither, the ceremony is refused. */
+  /**
+   * The most CC of network fee this call may cost. For `send` and `consolidate`: the ceiling of the
+   * call, default the account's `maxFee`; with neither, the call is refused. For `accept`: the most
+   * its fee leg may pay, and without it the accept asks for no fee leg and signs none (the fee stays
+   * the account's debt, collected on a later fee leg). For `acceptIncoming`: the budget of the WHOLE
+   * call — every accept's fee together; once it is spent, the rest are accepted without a fee leg.
+   */
   maxFee?: string;
   /**
-   * Sign what the API prepared without reading it, as every one of these calls did before 0.9.0.
-   * Default false: the transactions are read from their bytes first, and a ceremony that cannot be
-   * read or does not hold is refused (`CeremonyError` at `prepare`, cause `UnverifiedTransactionError`).
+   * Sign what the API prepared without reading it. Default false: the transactions are read from
+   * their bytes first, and a ceremony that cannot be read or does not hold is refused (`CeremonyError`
+   * at `prepare`, cause `UnverifiedTransactionError`). Only `true` switches the reading off. On a
+   * `send` it also covers the ceremony that pays a fee the API deferred, which is then signed unread too.
    */
   allowUnverified?: boolean;
 }
@@ -460,7 +473,11 @@ export interface SelfCustodyAccount {
    * on their behalf.
    */
   acceptTerms(version: string, documents: ConsentedDocument[]): Promise<void>;
-  /** Any wallet operation (`GET /wallet/operations`): prepare, sign every leg, submit. */
+  /**
+   * Any wallet operation (`GET /wallet/operations`): prepare, sign every leg, submit. Signed as the
+   * API prepared it, UNREAD — none of the reading `send`, `accept`, `consolidate` and `onboard` do
+   * reaches a ceremony run through here (only a topology is held to this key's party).
+   */
   execute<TMeta = Record<string, unknown>>(type: string, params?: Record<string, unknown>): Promise<Executed<TMeta>>;
   swapState(swapId: string): Promise<HtlcSwap>;
   /**
@@ -500,13 +517,16 @@ export interface SelfCustodyAccount {
   incoming(): Promise<IncomingTransfer[]>;
   /**
    * Accept one incoming transfer with this account's signature. Read before signing: the accept of
-   * exactly this transfer, in which the account spends nothing but, at most, `maxFee` CC of network fee.
+   * exactly this transfer, in which the account spends nothing. With `options.maxFee` the accept also
+   * asks for its network fee leg and pays at most that; without it no fee leg is asked for or signed.
    */
   accept(transfer: IncomingTransfer, options?: TokenCallOptions): Promise<void>;
   /**
    * Accept every incoming transfer still acceptable — swap deliveries and
    * cashback payouts alike, or the ones `filter` keeps. One refusal does not
-   * stop the rest; it is reported in `failed`.
+   * stop the rest; it is reported in `failed`. The list is the API's, so the
+   * network fee is paid only out of `options.maxFee`, the budget of the whole
+   * call: whatever the list holds, the call signs no more fee than that.
    */
   acceptIncoming(filter?: (transfer: IncomingTransfer) => boolean, options?: TokenCallOptions): Promise<{
     accepted: IncomingTransfer[];
@@ -516,9 +536,10 @@ export interface SelfCustodyAccount {
    * Send from this account. `tokenId` omitted sends CC. Read before signing: `receiverPartyId` is
    * given exactly `amount`, nobody else anything but the network fee, and the account is poorer by
    * at most `amount` plus `maxFee` CC. When the API could not put the network fee on the send
-   * itself, it is paid right after by a second ceremony, read the same way; the answer then carries
-   * `deferredFee: 'paid'`, or `'owed'` with `feeError` when that payment did not go through — the
-   * send itself has committed either way, and the fee stays the account's debt.
+   * itself, it is paid right after by a second ceremony, read the same way and held to what is left
+   * of the same `maxFee`; the answer then carries `deferredFee`: `'paid'`, `'waived'` (the API asked
+   * for nothing), or `'owed'` with `feeError` — the SDK could not see the fee paid: it was refused, or
+   * its submit failed and may yet have gone through. The send itself has committed in every case.
    */
   send(input: { receiverPartyId: string; amount: string; tokenId?: string; description?: string } & TokenCallOptions): Promise<unknown>;
   /**
@@ -711,14 +732,15 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * admin's rule (a fixed amount or cost-plus pricing), so any default here would be a snapshot of
    * one stand on one day. A ceremony nobody put a ceiling on is refused, and the refusal says so.
    */
-  const feeCeiling = (operation: TokenOperation, given?: string) => {
-    const ceiling = given ?? options.maxFee ?? options.maxSplitCost;
-    if (ceiling === undefined) {
-      throw new UnverifiedTransactionError(operation, 'no ceiling was set on its network fee, and the SDK has none of its own: ' +
+  const feeCeiling = (operation: TokenOperation, call?: TokenCallOptions): string => {
+    const ceiling = call?.maxFee ?? options.maxFee ?? options.maxSplitCost;
+    // Unread, nothing is held to a ceiling; read, the lack of one is known before the API is asked for anything.
+    if (ceiling === undefined && call?.allowUnverified !== true) {
+      throw new CeremonyError(operation, 'prepare', new UnverifiedTransactionError(operation, 'no ceiling was set on its network fee, and the SDK has none of its own: ' +
         'the stand decides that fee. Pass maxFee — to createSelfCustody, or to this call — as the most CC it may cost ' +
-        '(GET /tokens/transfer/estimate-fee quotes the fee; allowUnverified signs without reading)');
+        '(GET /tokens/transfer/estimate-fee quotes the fee; allowUnverified signs without reading)'), null);
     }
-    return ceiling;
+    return ceiling ?? '0';
   };
   /** The on-ledger instrument a token id of the API names, and the admins pinned for it. */
   const instrumentOf = (tokenId?: string) => (tokenId && !isCc(tokenId) ? tokenId : 'Amulet');
@@ -732,11 +754,15 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     operation: TokenOperation, call: TokenCallOptions | undefined,
     verify: (legs: Array<PreparedToSign & { kind: string }>, pins: ReturnType<typeof ccPins>, party: string) => Promise<void>,
   ) => async (legs: PreparedLeg[]): Promise<void> => {
-    if (call?.allowUnverified) return;
+    // Only the boolean switches the reading off: a truthy string from a config file is not a decision.
+    if (call?.allowUnverified === true) return;
     if (legs.some((l) => !l.preparedTransaction)) {
       throw new UnverifiedTransactionError(operation, 'the API returned it without its transaction bytes, so it cannot be read (allowUnverified signs it anyway)');
     }
-    await verify(legs.map((l) => ({ kind: l.kind, preparedTransactionHash: l.hash, preparedTransaction: l.preparedTransaction })), ccPins(), await ownParty());
+    // The party the legs are held to is the API's answer; the key signs only for its own, so it is held to the key first.
+    const party = await ownParty();
+    if (!isPartyOfKey(session.publicKey, party)) throw new ForeignPartyError(party, 'records');
+    await verify(legs.map((l) => ({ kind: l.kind, preparedTransactionHash: l.hash, preparedTransaction: l.preparedTransaction })), ccPins(), party);
   };
 
   /**
@@ -797,40 +823,60 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
   }
 
-  async function accept(transfer: IncomingTransfer, call?: TokenCallOptions): Promise<void> {
+  /**
+   * One accept; resolves to the network fee it signed, in 1e-10 CC units. The fee leg is asked for only
+   * when the caller gave this accept a ceiling (CAN-2423): what is accepted comes from a list the API
+   * supplies, so the account's own `maxFee` is never spent on it. Without a ceiling no fee leg is
+   * asked for, and one prepared anyway is refused.
+   */
+  async function acceptOne(transfer: IncomingTransfer, call?: TokenCallOptions): Promise<bigint> {
+    const pays = call?.maxFee !== undefined;
+    let fee = 0n;
     await run('tokens.accept', {
       instructionCid: transfer.contractId,
       templateId: transfer.templateId,
       adminPartyId: transfer.instrumentAdmin,
       executeBefore: transfer.executeBefore,
-      // The accept's network fee rides on the accept itself (CAN-2423), not into a debt paid later.
-      withFeeLeg: true,
-    }, false, reading('tokens.accept', call, (legs, pins, party) => verifyAcceptPrepared(legs, {
-      party, instructionCid: transfer.contractId, pinnedAdmins: admins, dso: pins.dso, maxFee: feeCeiling('tokens.accept', call?.maxFee), feeRecipients: pins.feeRecipients,
-    })));
+      ...(pays ? { withFeeLeg: true } : {}),
+    }, false, reading('tokens.accept', call, async (legs, pins, party) => {
+      fee = await acceptCost(legs, {
+        party, instructionCid: transfer.contractId, pinnedAdmins: admins, dso: pins.dso, maxFee: call?.maxFee ?? '0', feeRecipients: pins.feeRecipients,
+      });
+    }));
+    // Unread, what the fee leg took is unknown: the whole ceiling counts as spent.
+    return pays && call?.allowUnverified === true ? (units(call.maxFee) > 0n ? units(call.maxFee) : 0n) : fee;
+  }
+
+  async function accept(transfer: IncomingTransfer, call?: TokenCallOptions): Promise<void> {
+    await acceptOne(transfer, call);
   }
 
   async function send(input: { receiverPartyId: string; amount: string; tokenId?: string; description?: string } & TokenCallOptions): Promise<unknown> {
     const { receiverPartyId, amount, tokenId, description } = input;
-    const instrument = instrumentOf(tokenId);
+    const [instrument, maxFee] = [instrumentOf(tokenId), feeCeiling('tokens.send', input)];
+    let spent = 0n;
     const { meta, result } = await run<{ feeDeferred?: unknown }>(
       'tokens.send', { receiverPartyId, amount, ...(tokenId ? { tokenId } : {}), ...(description ? { description } : {}) }, false,
-      reading('tokens.send', input, (legs, pins, party) => {
-        const maxFee = feeCeiling('tokens.send', input.maxFee);
-        return receiverPartyId === party
-          ? verifySelfSendPrepared(legs, { party, admins: pins.dso, instrument, amount, maxCost: maxFee, feeRecipients: pins.feeRecipients })
-          : verifySendPrepared(legs, { party, admins: tokenAdmins(instrument), dso: pins.dso, instrument, receiver: receiverPartyId, amount, maxFee, feeRecipients: pins.feeRecipients });
+      reading('tokens.send', input, async (legs, pins, party) => {
+        spent = receiverPartyId === party
+          ? await selfSendCost(legs, { party, admins: pins.dso, instrument, amount, maxCost: maxFee, feeRecipients: pins.feeRecipients })
+          : await sendCost(legs, { party, admins: tokenAdmins(instrument), dso: pins.dso, instrument, receiver: receiverPartyId, amount, maxFee, feeRecipients: pins.feeRecipients });
       }),
     );
-    const updateId = (result as { updateId?: unknown } | null)?.updateId;
-    if (!meta?.feeDeferred || typeof updateId !== 'string') return result;
+    if (!meta?.feeDeferred) return result;
     // The send could not carry its network fee (it spent the one holding there was), so the API left
     // the fee to a second ceremony (CAN-2423). The send has committed: whatever happens to the fee, it
     // is not an error of the send — unpaid, it stays the account's debt and rides on a later fee leg.
     try {
-      await run('tokens.send-fee', { sourceUpdateId: updateId }, false, reading('tokens.send-fee', input, (legs, pins, party) =>
-        verifyFeePrepared(legs, { party, dso: pins.dso, maxFee: feeCeiling('tokens.send-fee', input.maxFee), feeRecipients: pins.feeRecipients })));
-      return { ...(result as object), deferredFee: 'paid' };
+      const updateId = (result as { updateId?: unknown } | null)?.updateId;
+      if (typeof updateId !== 'string') throw new Error('the API deferred the network fee and named no update of the send to pay it for');
+      // One ceiling for the whole send: the fee ceremony may take what the send itself left of it.
+      const left = units(maxFee) - spent;
+      const paid = await run('tokens.send-fee', { sourceUpdateId: updateId }, false, reading('tokens.send-fee', input, async (legs, pins, party) => {
+        await feeCost(legs, { party, dso: pins.dso, maxFee: fromUnits(left > 0n ? left : 0n), feeRecipients: pins.feeRecipients });
+      }));
+      // No legs: the API asked for nothing, and nothing was signed.
+      return { ...(result as object), deferredFee: paid.result === null ? 'waived' : 'paid' };
     } catch (feeError) {
       return { ...(result as object), deferredFee: 'owed', feeError };
     }
@@ -902,10 +948,10 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   }
 
   async function consolidate(tokenId?: string, call?: TokenCallOptions): Promise<number> {
-    const instrument = instrumentOf(tokenId);
+    const [instrument, maxFee] = [instrumentOf(tokenId), feeCeiling('tokens.consolidate', call)];
     const { meta } = await run<{ mergedCount?: number }>('tokens.consolidate', tokenId ? { tokenId } : {}, false,
       reading('tokens.consolidate', call, (legs, pins, party) => verifyConsolidatePrepared(legs, {
-        party, admins: tokenAdmins(instrument), dso: pins.dso, instrument, maxFee: feeCeiling('tokens.consolidate', call?.maxFee), feeRecipients: pins.feeRecipients,
+        party, admins: tokenAdmins(instrument), dso: pins.dso, instrument, maxFee, feeRecipients: pins.feeRecipients,
       })));
     return Number(meta?.mergedCount ?? 0);
   }
@@ -1368,11 +1414,15 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   async function acceptIncoming(filter: (transfer: IncomingTransfer) => boolean = () => true, call?: TokenCallOptions) {
     const accepted: IncomingTransfer[] = [];
     const failed: Array<{ transfer: IncomingTransfer; error: unknown }> = [];
+    // The list is the API's. Whatever it holds, the fee this call signs is one budget — `call.maxFee` —
+    // and with none given no accept asks for a fee leg at all: a made-up offer costs the account nothing.
+    let left = call?.maxFee === undefined ? 0n : units(call.maxFee);
+    if (left < 0n) throw new RangeError(`maxFee must be a decimal of at most ten places, got ${call?.maxFee}`);
     for (const transfer of await incoming()) {
       // Past executeBefore the ledger refuses the accept; the sender reclaims it.
       if (Date.parse(transfer.executeBefore) <= now() || !filter(transfer)) continue;
       try {
-        await accept(transfer, call);
+        left -= await acceptOne(transfer, { ...call, maxFee: left > 0n ? fromUnits(left) : undefined });
         accepted.push(transfer);
       } catch (error) {
         failed.push({ transfer, error });

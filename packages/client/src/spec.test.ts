@@ -75,7 +75,7 @@ async function routesTheClientCalls(): Promise<string[]> {
   // run on swap state, so they are driven by the settled-swap test in
   // selfcustody.test.ts, which checks every route they touch the same way.
   const signer = { public_key: KEY, signMessage: async () => '00', signChallenge: async () => '00' };
-  const acct = createSelfCustody({ baseUrl: 'https://api.example', signer, fetchImpl: request });
+  const acct = createSelfCustody({ baseUrl: 'https://api.example', signer, fetchImpl: request, maxFee: '1' });
   const doc = { key: 'terms-of-use', version: 'v', url: '/legal/terms-of-use' };
   await acct.session.login();
   await acct.session.register({ inviteCode: 'ABCD-EFGH-JKMN' });

@@ -859,7 +859,7 @@ describe('the preapproval step of onboard() is signed only as a proposal of the 
   });
 
   test('a create has no admin-signed contract under it: its package is pinned by id', async () => {
-    await refused([await proposal({ packageId: 'ee'.repeat(32) })], /runs code from an untrusted package \(splice-wallet e{64}\): if that is a splice-wallet release newer than this SDK lists, add its id with trustedPackages\.wallet/);
+    await refused([await proposal({ packageId: 'ee'.repeat(32) })], /runs code from an untrusted package \(splice-wallet e{64}\): .* take its id from Splice's own daml\/dars\.lock or from Cancore — never from this message.* trustedPackages: \{ wallet: \{ 'splice-wallet': \[id\] \} \}/);
     await refused([await proposal({ packageName: 'evil-wallet' })], /untrusted package \(evil-wallet/);
     await refused([await proposal()], /untrusted package/, { ...terms, packages: {} });
     await refused([await proposal({ entityName: 'TransferPreapprovalProxy' })], /is not a transfer preapproval proposal/);

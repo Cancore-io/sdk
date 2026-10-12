@@ -44,27 +44,39 @@
   this account, to the pinned venue or itself, under the pinned DSO, from a pinned `splice-wallet`
   package. A ceremony that does not hold, or came without bytes, is a `CeremonyError` at `prepare`
   whose `cause` is `UnverifiedTransactionError` (now exported from `./selfcustody`); nothing is signed.
-  - **Breaking for every caller of `send`, `accept` / `acceptIncoming`, `consolidate` and
-    `cashback.collect`: set `maxFee`** — on the account (`createSelfCustody({ ..., maxFee })`) or
-    per call (`TokenCallOptions`). It is the most CC one of these ceremonies may cost in network fee,
-    and the SDK ships no default: a stand sets that fee by an admin's rule (fixed, or priced from
-    cost), so any number here would be one stand on one day — on 2026-10-12 the dev stand charged
-    about 9.4 CC a transfer. A ceremony with no ceiling is refused with a message that says so
-    (`maxSplitCost`, when you set it, serves as the ceiling); `GET /tokens/transfer/estimate-fee`
-    quotes the fee. The ceiling is what bounds the fee leg: its recipient is pinned, its amount is
-    not.
+  - **Breaking for every caller of `send` and `consolidate`: set `maxFee`** — on the account
+    (`createSelfCustody({ ..., maxFee })`) or per call (`TokenCallOptions`). It is the most CC the
+    call may cost in network fee, the fee the API defers to a second ceremony included, and the SDK
+    ships no default: a stand sets that fee by an admin's rule (fixed, or priced from cost), so any
+    number here would be one stand on one day — on 2026-10-12 the dev stand charged about 9.4 CC a
+    transfer. A call with no ceiling is refused before the API is asked for anything, with a message
+    that says so (`maxSplitCost`, when you set it, serves as the ceiling);
+    `GET /tokens/transfer/estimate-fee` quotes the fee. The ceiling is what bounds the fee leg: its
+    recipient is pinned, its amount is not.
+  - **An accept pays a network fee only out of a budget its own call names.** What is accepted is a
+    list the API supplies, so the account's `maxFee` is never spent on it. `accept(transfer, { maxFee })`
+    asks for the fee leg and pays at most that; `acceptIncoming(filter, { maxFee })` treats it as the
+    budget of the whole call, however long the list. Without it — and in `serve({ acceptIncoming })`
+    and `cashback.collect`, which pass none — no fee leg is asked for or signed, and the accept's fee
+    stays the account's debt, as in 0.8.
   - **Also breaking for:** an account on a network the SDK has no pins for (pass `network` or
     `instrumentAdmins`); a registry token whose admin is not pinned; a gateway that returns no
     transaction bytes; a network whose `splice-wallet` is a release after 0.1.25 (pass its package
-    id in `trustedPackages.wallet`). Every released `splice-wallet` up to 0.1.25 is pinned, from
-    Splice's `daml/dars.lock`; the dev stand ran 0.1.24 on 2026-10-12, and which release testnet and
-    mainnet run was not measured. Each call takes `allowUnverified: true`, which signs unread as 0.8
-    did.
+    id in `trustedPackages.wallet` — taken from Splice's `daml/dars.lock` or from Cancore, never from
+    the refusal, which quotes what the API sent). Every released `splice-wallet` up to 0.1.25 is
+    pinned, from that file; the dev stand ran 0.1.24 on 2026-10-12, and which release testnet and
+    mainnet run was not measured. `send`, `accept`, `acceptIncoming`, `consolidate` and `onboard` take
+    `allowUnverified: true`, which signs unread; on a `send` that covers the deferred fee's ceremony
+    too. `cashback.collect` and `serve` take no such option.
+  - Whatever party `GET /auth/me` names, a ceremony is read — and signed — only for the party of
+    this key (`ForeignPartyError` otherwise).
 - **The network fee is paid** (CAN-2423). `send` used to ignore a fee the API deferred (a send from
   a single holding) and `accept` never asked for its fee leg, so each left a fee debt. `send` now
-  runs the deferred fee's own ceremony right after, read like any fee leg; its answer carries
-  `deferredFee: 'paid'`, or `'owed'` with `feeError` when that did not go through — the send itself
-  has committed either way and is not an error. `accept` asks for the fee leg (`withFeeLeg`).
+  runs the deferred fee's own ceremony right after, read like any fee leg and held to what the send
+  left of its `maxFee`; its answer carries `deferredFee`: `'paid'`, `'waived'` (the API asked for
+  nothing) or `'owed'` with `feeError` (refused, or a submit that failed and may yet have landed) —
+  the send itself has committed in every case and is not an error. `accept` asks for the fee leg
+  (`withFeeLeg`) when its call names a budget for it.
 
 ### Fixed
 

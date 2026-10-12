@@ -262,7 +262,8 @@ const order = await acct.swap.createForPair({ tradingPairId, sourceAmount: '100'
 const { swap, flow } = await acct.make(order.id);   // swap.status 'dvp_settled', flow 'dvp'
 // …elsewhere: await other.take(order.id);
 
-// Registry-token deliveries and cashback payouts wait for this account's signature.
+// Registry-token deliveries and cashback payouts wait for this account's signature. An accept's
+// network fee is paid only out of a budget you give the call: acceptIncoming(undefined, { maxFee: '12' }).
 await acct.acceptIncoming();
 await acct.cashback.collect();   // claim, then accept this claim's payouts as they arrive
 ```
@@ -282,8 +283,8 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `listSwaps(query?)` | `GET /htlc/swaps`: one page (`page`, `pageSize` ≤ 100, `status`) of the account's swaps, newest first; a bare list with no total — a page shorter than `pageSize` is the last |
 | `withdrawAllocation(swapId)` | release this account's own allocation(s) of a trade that ended `dvp_expired` while the venue's recovery could not: one prepare → verify → sign → submit per locked leg; resolves `{ swapId, withdrawn, gone, failed }`, per leg (all `[]` when nothing is locked): a leg already off the ledger is `gone`, one that cannot be withdrawn is in `failed` and the rest are still attempted |
 | `swap.create(input)` / `swap.createForPair(input)` | `POST /orders` / `POST /orders/pair`; a Canton↔Canton order is always sent with `dvp: true` (for a pair, read from `GET /trading-pairs/{id}`) |
-| `incoming()` / `accept(transfer, options?)` / `acceptIncoming(filter?, options?)` | transfers waiting for this account's signature. An accept is read before the key signs: the accept of exactly that transfer, in which the account spends nothing but its network fee |
-| `send(input)` / `consolidate(tokenId?, options?)` / `balance(instrumentId)` | move, merge and read this account's tokens. A send and a merge are read from their bytes before the key signs (the receiver and amount asked for, nobody else paid, at most `maxFee` CC of network fee — a ceiling you set, on the account or the call: the SDK has none of its own and refuses a ceremony without one); `allowUnverified: true` signs unread. A send whose fee the API deferred pays it right after (`deferredFee` in the answer) |
+| `incoming()` / `accept(transfer, options?)` / `acceptIncoming(filter?, options?)` | transfers waiting for this account's signature. An accept is read before the key signs: the accept of exactly that transfer, in which the account spends nothing. Its network fee is paid only when the call names a budget — `{ maxFee }`, for `acceptIncoming` the budget of the whole call, since the list is the API's; without one no fee leg is asked for or signed |
+| `send(input)` / `consolidate(tokenId?, options?)` / `balance(instrumentId)` | move, merge and read this account's tokens. A send and a merge are read from their bytes before the key signs (the receiver and amount asked for, nobody else paid, at most `maxFee` CC of network fee in all — a ceiling you set, on the account or the call: the SDK has none of its own and refuses a send or a merge without one); `allowUnverified: true` signs unread. A send whose fee the API deferred pays it right after, out of what is left of the same ceiling (`deferredFee` in the answer: `'paid'`, `'waived'` or `'owed'`) |
 | `splitForFee(tokenId, feeAmount, { allowUnverified? })` | give the DvP platform fee a holding of its own (a self-send, verified from its bytes; CC only) |
 | `faucet()` | test CC from the dev stand's faucet, see [Test funds on dev](#test-funds-on-dev) |
 | `cashback.summary()` / `claims()` / `claim()` / `collect(options?)` | partner cashback (role `partner-bot`) |
