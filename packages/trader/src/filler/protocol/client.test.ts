@@ -5,6 +5,7 @@
  */
 import {
   FILLER_AUTH_TYPES,
+  FILLER_CLOSE_CODES,
   FILLER_PROTOCOL_DOMAIN,
   hashFillerMessage,
   type Hex,
@@ -33,7 +34,7 @@ import { FillerProtocolClient, type Delivery } from './client';
 import { createSealer } from './envelope';
 import { keccakHex } from './frames';
 import { GatewayRest } from './rest';
-import { backoffDelay, CLOSE_HEARTBEAT, GatewaySession } from './session';
+import { backoffDelay, CLOSE_HEARTBEAT, CLOSE_LOGIN_TIMEOUT, CLOSE_UNSUPPORTED_VERSION, GatewaySession } from './session';
 
 const GATEWAY_KEY: Hex = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
 const OTHER_KEY: Hex = '0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6';
@@ -548,6 +549,33 @@ describe('rate limits per fillerId (RATE_LIMITED, retryAfterMs)', () => {
 });
 
 describe('heartbeat and reconnect', () => {
+  test('SDK close codes cannot be read as gateway supersession or key revocation', () => {
+    for (const code of [CLOSE_HEARTBEAT, CLOSE_LOGIN_TIMEOUT, CLOSE_UNSUPPORTED_VERSION]) expect(Object.values(FILLER_CLOSE_CODES)).not.toContain(code);
+  });
+
+  test.each([0, 0.999_999])('superseded sessions warn and wait at least 30 seconds before reconnect, even after auth.ok resets backoff (jitter %s)', async (random) => {
+    const h = harness({ random: () => random, heartbeatIntervalMs: 600_000 });
+    void h.client.start();
+    const socket = await h.login();
+    socket.drop(FILLER_CLOSE_CODES.SUPERSEDED, 'superseded by a newer session');
+    expect(h.logger.entries).toContainEqual({ level: 'warn', message: 'filler-gateway: session superseded; another instance is using this fillerId', fields: { fillerId: FILLER, retryAfterMs: 30_000 } });
+    const logins = h.requests('/v1/filler/auth').length;
+    h.clock.advance(29_999);
+    await settle();
+    expect(h.ws.sockets).toHaveLength(1);
+    expect(h.requests('/v1/filler/auth')).toHaveLength(logins);
+    h.clock.advance(1);
+    const second = await h.login();
+    expect(h.ws.sockets).toHaveLength(2);
+    second.drop(FILLER_CLOSE_CODES.SUPERSEDED, 'superseded again');
+    h.clock.advance(29_999);
+    await settle();
+    expect(h.ws.sockets).toHaveLength(2);
+    h.clock.advance(1);
+    await h.connected();
+    expect(h.ws.sockets).toHaveLength(3);
+    h.client.stop();
+  });
   test('a filler-gateway ping is answered with pong re = ping.id; the SDK pings every interval', async () => {
     const h = harness();
     void h.client.start();
@@ -564,7 +592,7 @@ describe('heartbeat and reconnect', () => {
     expect(recoverAddress(hashFillerMessage(ping), ping.msgSig as Hex)).toBe(h.quoteSigner.address);
   });
 
-  test('three silent intervals: the socket is closed (4000) and reopened after backoff', async () => {
+  test('three silent intervals: the socket is closed (4500) and reopened after backoff', async () => {
     const h = harness();
     void h.client.start();
     const socket = await h.login();

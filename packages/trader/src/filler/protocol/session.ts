@@ -21,14 +21,14 @@ import type { Cancel, Clock, FillerSocket, Logger, WebSocketFactory } from '../r
 import type { Sealer, Unsealed } from './envelope';
 import { gatewayErrorOf, verifyGatewayText, type VerifiedFrame } from './frames';
 
-/** WebSocket close codes the SDK uses. */
+/** SDK-local close codes, distinct from gateway close semantics. */
 export const CLOSE_NORMAL = 1000;
 /** The peer went silent for `heartbeatMisses` intervals. */
-export const CLOSE_HEARTBEAT = 4000;
+export const CLOSE_HEARTBEAT = 4500;
 /** No `auth.ok` within `loginTimeoutMs`. */
-export const CLOSE_LOGIN_TIMEOUT = 4001;
+export const CLOSE_LOGIN_TIMEOUT = 4501;
 /** The protocol version is not served; not retried. */
-export const CLOSE_UNSUPPORTED_VERSION = 4002;
+export const CLOSE_UNSUPPORTED_VERSION = 4502;
 
 export interface ReconnectPolicy {
   /** First retry delay before jitter. Default 500 ms. */
@@ -363,7 +363,10 @@ export class GatewaySession {
     this.offeredToken = undefined;
     if (wasReady) this.listener.onDisconnected({ code, reason });
     let floorMs = 0;
-    if (code === FILLER_CLOSE_CODES.RATE_LIMITED) {
+    if (code === FILLER_CLOSE_CODES.SUPERSEDED) {
+      floorMs = 30_000;
+      this.options.logger.warn('filler-gateway: session superseded; another instance is using this fillerId', { fillerId: this.options.fillerId, retryAfterMs: floorMs });
+    } else if (code === FILLER_CLOSE_CODES.RATE_LIMITED) {
       floorMs = Math.max(0, this.rateLimitedUntilMs - this.options.clock.now());
       this.options.logger.warn('filler-gateway: closed for sustained rate-limit excess; reconnecting after the cooldown', { retryAfterMs: floorMs });
     }

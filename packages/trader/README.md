@@ -109,6 +109,11 @@ It connects only after logging in.
 - **Reconnect.** Exponential backoff with equal jitter: `min(maxDelayMs, initialDelayMs × 2ⁿ)` scaled into
   `[0.5, 1)`, defaults 500 ms → 30 s, reset after a login. No `auth.ok` within `transport.loginTimeoutMs`
   (15 s from the start of the connect, the REST login included) counts as a failed connection.
+  Gateway close `4001` (`SUPERSEDED`) warns that another instance is using this fillerId and waits at
+  least 30 s before reconnecting, without jitter shortening that wait, even after a successful login.
+  Only one local session per fillerId is active in gateway V1; run one filler node instance per fillerId
+  to avoid repeated supersession. SDK-local heartbeat/login-timeout/unsupported-version closes use
+  `4500`/`4501`/`4502`, distinct from the gateway's close codes.
 - **Rate limits** (per `fillerId`, shared by REST and every session). An `error RATE_LIMITED` with
   `retryAfterMs` — on REST a 429 (unsigned, decided by the status), with `retryAfterMs` in the body or
   `Retry-After` — pauses the rate class
