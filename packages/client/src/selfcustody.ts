@@ -1444,7 +1444,11 @@ export async function sha256Hex(text: string): Promise<string> {
   return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** A fresh HTLC preimage: 32 random bytes as hex text, and its hash lock, the SHA-256 of that text. */
+/**
+ * A fresh HTLC preimage: 32 random bytes as hex text, and its hash lock, the SHA-256 of that text. The SDK
+ * keeps no copy of the preimage, so the caller must store it before the swap is made: a lost preimage means
+ * the counter leg can never be claimed, and the swap ends in a refund.
+ */
 export async function newPreimage(): Promise<{ preimage: string; hashLock: string }> {
   const preimage = randomHex(32);
   return { preimage, hashLock: await sha256Hex(preimage) };
@@ -1452,8 +1456,9 @@ export async function newPreimage(): Promise<{ preimage: string; hashLock: strin
 
 /**
  * Claim the counter HTLC of a swap with its preimage (`POST /htlc/:id/claim-counter`). The venue executes
- * the claim, so this call signs nothing, and it never logs or stores the preimage. An empty preimage is
- * refused before any request is made.
+ * the claim, so this call signs nothing, and it never logs or stores the preimage. The venue receives the
+ * preimage, so this call trusts the venue not to use it on the other HTLC of the swap and not to leak it.
+ * An empty preimage is refused before any request is made.
  */
 export function postClaimCounter(http: Pick<Http, 'post'>, swapId: string, preimage: string): Promise<HtlcSwap> {
   if (preimage.length === 0) return Promise.reject(new Error('preimage must not be empty'));
