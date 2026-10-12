@@ -46,6 +46,7 @@ test('the contract is the whole agent surface, not a sample of it', async () => 
   const announced = await announcedTools();
   expect(announced.map((t) => t.name)).toEqual([
     'cancore_connect_wallet',
+    'cancore_get_balances',
     'cancore_intent_status',
     'cancore_list_intents',
     'cancore_propose_autotrade',

@@ -58,7 +58,7 @@ kind of mistake you only notice by what it does there.
    answers with a short code.
 2. **The page must show the same code.** If it does not, the request is not the one your agent
    started — decline it.
-3. You approve. The server keeps a scoped grant (`agent:propose`, `agent:read`); the token is
+3. You approve. The server keeps a scoped grant (`agent:propose`, `agent:read`, `balances:read`); the token is
    written to the grant file and never returned to the agent.
 
 The call waits a bounded while — 45 seconds by default, 5 to 300 by argument — and then
@@ -125,6 +125,13 @@ committed) or `rejected`. The outcome, never the transaction.
 ### `cancore_list_intents`
 
 No arguments. What is still awaiting the owner's decision.
+
+### `cancore_get_balances`
+
+No arguments. The owner's own balances, one entry per token (`balance`, `locked`, `total`,
+`inSwaps`); a row with `unavailable: true` could not be read — its zeroes mean unknown, not
+empty. Needs `balances:read`: a grant approved before it existed is refused; run
+`cancore_connect_wallet` with `force` to ask again.
 
 ## The grant
 
