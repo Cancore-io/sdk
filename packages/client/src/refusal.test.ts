@@ -47,6 +47,8 @@ describe('refusalOf, with no code on the body (prose fallback for a gateway that
     [400, 'Counter proposal already accepted', 'counterAlreadyAccepted'],
     [400, 'swap is both_claimed', 'alreadySettled'],
     [409, 'The platform fee needs a holding of its own: split your balance into at least two holdings and retry.', 'feeHoldingRequired'],
+    // The DvP door's own words (backend DVP_FORBIDDEN_MESSAGE), for a gateway that serves no code (CAN-2400).
+    [403, 'Allocation-DvP is not open to this account on this stand. A DvP trade needs a self-custody, staff/bot or allowlisted party on at least one side.', 'dvpNotAllowed'],
   ])('%i "%s" is %s', (status, message, expected) => {
     expect(refusalOf(refused(status, { statusCode: status, message }))).toBe(expected);
   });
@@ -59,6 +61,23 @@ describe('refusalOf, with no code on the body (prose fallback for a gateway that
 
   test('the status still has to match', () => {
     expect(refusalOf(refused(500, { message: 'safe to retry' }))).toBe('other');
+  });
+
+  // CAN-2400: every 403 used to be read as the DvP refusal. Only the door's own sentence is.
+  test.each([
+    ['self-trade', 403, 'Self-trade is not allowed: the order initiator and acceptor belong to the same person.'],
+    ['documents not accepted', 403, 'The platform documents must be accepted before trading.'],
+    ['a 403 that says nothing', 403, 'Forbidden'],
+    ['a 403 that merely mentions DvP', 403, 'This DvP order is reserved for the user it was quoted to'],
+    ['the sentence in another case', 403, 'allocation-dvp is not open to this account'],
+    ['the sentence under another status', 400, 'Allocation-DvP is not open to this account on this stand.'],
+    ['the sentence under a 401', 401, 'Allocation-DvP is not open to this account on this stand.'],
+  ])('%s is not the DvP refusal', (_what, status, message) => {
+    expect(refusalOf(refused(status, { statusCode: status, message }))).toBe('other');
+  });
+
+  test('a known code decides even when the DvP sentence is in the text', () => {
+    expect(refusalOf(refused(403, { errorCode: 'MIGRATION_REQUIRED', message: 'Allocation-DvP is not open to this account on this stand.' }))).toBe('other');
   });
 
   test('an unknown code from a newer gateway is read by its text, like no code', () => {
