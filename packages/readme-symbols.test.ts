@@ -65,8 +65,9 @@ const ENTRIES = entryPoints();
 const DOCUMENTS = [
   'README.md',
   ...PACKAGE_DIRS.map((dir) => `packages/${dir}/README.md`),
-  // The partner guide is published documentation like any README.
+  // The guides are published documentation like any README.
   'docs/partner-guide.md',
+  'docs/run-a-bot.md',
 ];
 
 /** The guide's full examples, which `npm run typecheck` compiles with the client package. */
@@ -138,6 +139,12 @@ describe('published documentation', () => {
   // A copy in prose is what a partner pastes; the file is what the compiler checks. They must not drift.
   it.each(GUIDE_EXAMPLES)('docs/partner-guide.md carries packages/client/examples/%s verbatim', (file) => {
     expect(read('docs/partner-guide.md')).toContain('```ts\n' + read(`packages/client/examples/${file}`) + '```');
+  });
+
+  // The bot guide is one program cut into steps: its ts blocks, joined in order, are the file the compiler checks.
+  it('docs/run-a-bot.md is packages/client/examples/bot.ts, step by step', () => {
+    const steps = [...read('docs/run-a-bot.md').matchAll(/```ts\n([\s\S]*?)```/g)].map(([, code]) => code);
+    expect(steps.join('\n')).toBe(read('packages/client/examples/bot.ts'));
   });
 
   it.each(PACKAGE_DIRS)('packages/%s/README.md installs the package it documents', (dir) => {
