@@ -250,7 +250,7 @@ const result = await wallet.execute(signer, 'transfer', { receiverPartyId, amoun
 | `submit(operationId, signatures)` | the outcome |
 | `execute(signer, type, params, confirm?)` | the whole ceremony in one call |
 
-Three facts that are expensive to learn from the outside:
+Four facts that are expensive to learn from the outside:
 
 1. **A signature is addressed by `legId`, never by position.** One user action can prepare
    several legs — a CC send prepares the transfer *and* its network fee — and the order is not
@@ -263,10 +263,19 @@ Three facts that are expensive to learn from the outside:
    being made. Omit it and `execute` behaves as it always did.
 
 4. **A leg's `kind` is the server's word, and a `topology` leg is signed raw.** So the wallet
-   holds it to what that path is for: the bytes must be a 34-byte sha2-256 multihash, a
-   topology leg comes alone, `wallet.topology` prepares that one leg and nothing else, and no
-   other operation prepares a topology leg at all. Anything else raises `UnexpectedLegError`
-   before `confirm` is asked and before a single signature is made.
+   holds it to what that path is for: the bytes must be a 34-byte sha2-256 multihash in
+   canonical base64, a topology leg comes alone, `wallet.topology` prepares that one leg (or
+   none, when the party exists) and nothing else, and no other operation prepares a topology
+   leg at all. Anything else raises `UnexpectedLegError` before `confirm` is asked and before a
+   single signature is made. Every other leg is a 32-byte prepared-transaction hash: a signer
+   with `signPreparedHash` checks that itself, and for a signer that only has `signMessage` the
+   wallet checks it before the bytes reach the key.
+
+   **What the wallet cannot check** is which topology a multihash is the hash of. The leg
+   carries the hash, not the topology transactions, so that one signature is made on the
+   server's word. Bind what can be bound from outside: the party the operation names must be
+   the party of your key (`isPartyOfKey(publicKeyHex, meta.partyId)` from `@cancore/wallet`),
+   and run `wallet.topology` only for an account you know has no party.
 
 `signLegs(signer, legs, options?)` signs by hand when you are composing the steps yourself.
 Pass `operation` — the `type` you prepared — and the legs are held to that operation exactly

@@ -119,10 +119,11 @@ describe('@cancore/wallet/operations', () => {
     // between that and what Canton accepts has no second chance — a wrong one is
     // a rejected transaction, not a retry.
     const signMessage = jest.fn().mockResolvedValue(`0x${'ab'.repeat(64)}`);
+    const hash = Buffer.from('cd'.repeat(32), 'hex').toString('base64');
 
-    const signature = await signPreparedHashBase64({ signMessage }, 'aGk=');
+    const signature = await signPreparedHashBase64({ signMessage }, hash);
 
-    expect(signMessage).toHaveBeenCalledWith('hi');
+    expect(signMessage).toHaveBeenCalledWith(base64ToBinaryString(hash));
     expect(signature).toBe(hexSignatureToBase64('ab'.repeat(64)));
   });
 
@@ -261,10 +262,109 @@ describe('@cancore/wallet/operations', () => {
       expect(() => assertOperationLegs([leg('h1', PREPARED_HASH), { legId: 'f1', hash: PREPARED_HASH, kind: 'fee' }], 'tokens.send')).not.toThrow();
     });
 
-    it('says in the error that nothing was signed', async () => {
+    it('says in the error that nothing was signed, and names itself', async () => {
       const { ops, signer } = harness([topology(PREPARED_HASH)]);
 
-      await expect(ops.execute(signer, 'wallet.topology')).rejects.toThrow(/34-byte sha2-256 multihash — nothing was signed/);
+      const error = await ops.execute(signer, 'wallet.topology').catch((e: unknown) => e);
+
+      expect((error as Error).message).toMatch(/34-byte sha2-256 multihash — nothing was signed/);
+      // A caller that cannot use instanceof (two copies of the package) tells it by name.
+      expect((error as Error).name).toBe('UnexpectedLegError');
+    });
+
+    it.each(['wallet.other', 'tokens.topology', 'wallet.topology2', 'Wallet.Topology', ' wallet.topology', 'wallet.topology '])(
+      '"%s" is not the topology operation: only the exact name may carry a topology leg',
+      async (operation) => {
+        const { ops, signer, nothingSigned } = harness([topology(MULTIHASH)]);
+
+        await expect(ops.execute(signer, operation)).rejects.toBeInstanceOf(UnexpectedLegError);
+        nothingSigned();
+      },
+    );
+
+    it.each([
+      ['text that is not base64 at all', '@@@@'],
+      ['one stray character', 'A'],
+      ['the multihash without its padding', MULTIHASH.replace(/=+$/, '')],
+      ['the multihash with a line break in it', `${MULTIHASH.slice(0, 20)}\n${MULTIHASH.slice(20)}`],
+      ['the multihash with a space after it', `${MULTIHASH} `],
+    ])('a topology leg whose hash is %s is refused as a leg, not as a decoding accident', async (_what, hash) => {
+      // `atob` reads several spellings of the same bytes and throws a DOMException on others: one
+      // message has one spelling here, and every refusal is the same typed one.
+      const { ops, signer, nothingSigned } = harness([topology(hash)]);
+
+      await expect(ops.execute(signer, 'wallet.topology')).rejects.toBeInstanceOf(UnexpectedLegError);
+      nothingSigned();
+    });
+
+    it('a confirm that changes the legs it was shown does not get them signed', async () => {
+      // The legs are checked again at the signature, not only before the screen.
+      const { ops, signer } = harness([leg('h1', PREPARED_HASH)]);
+      const confirm = jest.fn(async (legs: OperationLeg[]) => {
+        legs.push(topology(MULTIHASH));
+        return true;
+      });
+
+      await expect(ops.execute(signer, 'tokens.send', undefined, confirm)).rejects.toBeInstanceOf(UnexpectedLegError);
+      expect(signer.signMessage).not.toHaveBeenCalled();
+      expect(signer.signPreparedHash).not.toHaveBeenCalled();
+    });
+  });
+
+  // The same door from the other side: a signer with no shape-checked path (an external
+  // provider, a KMS) signs through `signMessage` whatever the leg's kind says.
+  describe('a signer that only has signMessage (CAN-2399)', () => {
+    const b64 = (bytes: Buffer | string) => Buffer.from(bytes).toString('base64');
+    const hex = (h: string) => Buffer.from(h, 'hex');
+    const HASH = b64(hex('bb'.repeat(32)));
+    const MULTIHASH = b64(hex(`1220${'aa'.repeat(32)}`));
+    const raw = () => ({ signMessage: jest.fn().mockResolvedValue('ab'.repeat(64)) });
+
+    it('signs a 32-byte prepared-transaction hash, as before', async () => {
+      const signer = raw();
+
+      await expect(signLegs(signer, [leg('h1', HASH)])).resolves.toEqual([{ legId: 'h1', signature: hexSignatureToBase64('ab'.repeat(64)) }]);
+      expect(signer.signMessage).toHaveBeenCalledWith(base64ToBinaryString(HASH));
+    });
+
+    it.each([
+      ['a login challenge', b64('Welcome to Cancore 2026-10-12T00:00:00Z sig:deadbeef')],
+      ['a legal consent text', b64('CANCORE_LEGAL_CONSENT_V1\nversion:1\nparty:bot::1220ab')],
+      ['a topology multihash', MULTIHASH],
+      ['31 bytes', b64(hex('bb'.repeat(31)))],
+      ['33 bytes', b64(hex('bb'.repeat(33)))],
+      ['text that is not base64', '@@@@'],
+      ['a 32-byte hash without its padding', HASH.replace(/=+$/, '')],
+      ['a 32-byte hash with a line break in it', `${HASH.slice(0, 10)}\n${HASH.slice(10)}`],
+      ['nothing', ''],
+    ])('does not sign %s called a transfer', async (_what, hash) => {
+      const signer = raw();
+
+      await expect(signLegs(signer, [leg('h1', hash)], { operation: 'tokens.send' })).rejects.toBeInstanceOf(UnexpectedLegError);
+      // And the exported single-hash helper, which callers also use on its own.
+      await expect(signPreparedHashBase64(signer, hash)).rejects.toBeInstanceOf(UnexpectedLegError);
+      expect(signer.signMessage).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['Topology', 'Topology'],
+      ['topology with a space', ' topology'],
+      ['no kind at all', undefined],
+      ['an object for a kind', {}],
+      ['null', null],
+    ])('a multihash under a kind that is not exactly "topology" (%s) is not signed either', async (_what, kind) => {
+      // Such a leg is not a topology leg to the rule above, so it takes the prepared-hash path — which now reads it.
+      const signer = raw();
+
+      await expect(signLegs(signer, [{ legId: 'x', hash: MULTIHASH, kind } as unknown as OperationLeg], { operation: 'tokens.send' })).rejects.toBeInstanceOf(UnexpectedLegError);
+      expect(signer.signMessage).not.toHaveBeenCalled();
+    });
+
+    it.each([123456, null, undefined, { toString: () => HASH }])('a hash that is not a string (%p) is not signed', async (hash) => {
+      const signer = raw();
+
+      await expect(signPreparedHashBase64(signer, hash as unknown as string)).rejects.toBeInstanceOf(UnexpectedLegError);
+      expect(signer.signMessage).not.toHaveBeenCalled();
     });
   });
 

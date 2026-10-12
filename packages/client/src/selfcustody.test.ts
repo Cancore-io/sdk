@@ -11,6 +11,7 @@ import {
   grossAmount,
   legalConsentMessage,
   SettleError,
+  UnexpectedLegError,
   type IncomingTransfer,
   type SelfCustodyOptions,
   type ServeEvent,
@@ -1510,12 +1511,56 @@ describe('what onboard() lets the key sign for the party (CAN-2399)', () => {
     const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 50 }), fetchImpl: api.fetchImpl, ...fast });
     await acct.session.register({ partyName: 'onboarder' });
 
-    await expect(acct.onboard()).rejects.toThrow(/nothing was signed/);
+    const error = await acct.onboard().catch((e: unknown) => e);
 
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect(error).toMatchObject({ operation: 'wallet.topology', stage: 'prepare' });
+    expect((error as CeremonyError).cause).toBeInstanceOf(UnexpectedLegError);
+    expect((error as Error).message).toMatch(/nothing was signed/);
     // The venue was asked, and no operation of any kind came back signed.
     expect(api.asked).toEqual(['wallet.topology']);
     expect(api.log).toEqual([]);
     expect((await acct.me()).partyId ?? null).toBeNull();
+  });
+
+  // Every envelope ceremony names its operation, so a raw-signed leg is refused in each of them — and
+  // as a CeremonyError at `prepare`, which is what the guides tell a partner to watch for.
+  const MULTIHASH = b64(new Uint8Array([0x12, 0x20, ...new Uint8Array(32).fill(0xaa)]));
+  const hostile = () => stub({
+    'GET /auth/me': () => ({ id: 'me', partyId: 'party-me' }),
+    'GET /tokens/transfer-requests/incoming': () => [
+      { contractId: 'c1', templateId: 't', instrumentAdmin: 'admin', instrumentId: 'USDCx', executeBefore: new Date(Date.now() + 60_000).toISOString() },
+    ],
+    'POST /wallet/operations/prepare': () => ({ operationId: 'op', legs: [{ legId: 't', hash: MULTIHASH, kind: 'topology' }], meta: {} }),
+    'POST /wallet/operations/submit': () => ({ ok: true }),
+  });
+  const refusedAtPrepare = (error: unknown, operation: string) => {
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect(error).toMatchObject({ operation, stage: 'prepare' });
+    expect((error as CeremonyError).cause).toBeInstanceOf(UnexpectedLegError);
+  };
+
+  test.each([
+    ['send', 'tokens.send', (acct: ReturnType<typeof createSelfCustody>) => acct.send({ receiverPartyId: 'p::1220', amount: '1' })],
+    ['consolidate', 'tokens.consolidate', (acct: ReturnType<typeof createSelfCustody>) => acct.consolidate()],
+    ['onboard, at the preapproval', 'tokens.preapproval', (acct: ReturnType<typeof createSelfCustody>) => acct.onboard()],
+  ] as const)('%s answered with a well-formed topology leg signs nothing', async (_what, operation, call) => {
+    const api = hostile();
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 56 }), fetchImpl: api.fetchImpl, ...fast });
+
+    refusedAtPrepare(await call(acct).catch((e: unknown) => e), operation);
+    expect(api.hits).not.toContain('POST /wallet/operations/submit');
+  });
+
+  test('accepting an incoming transfer answered with a topology leg signs nothing, and says so per transfer', async () => {
+    const api = hostile();
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 57 }), fetchImpl: api.fetchImpl, ...fast });
+
+    const { accepted, failed } = await acct.acceptIncoming();
+
+    expect(accepted).toEqual([]);
+    refusedAtPrepare(failed[0]!.error, 'tokens.accept');
+    expect(api.hits).not.toContain('POST /wallet/operations/submit');
   });
 
   test('the one multihash leg the venue really prepares is signed, and the party exists', async () => {

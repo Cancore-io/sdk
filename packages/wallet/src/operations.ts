@@ -151,8 +151,32 @@ export async function signPreparedHashBase64(
   if (signer.signPreparedHash) {
     return signer.signPreparedHash(preparedTransactionHashB64);
   }
-  const rawHex = await signer.signMessage(base64ToBinaryString(preparedTransactionHashB64));
+  // A signer with only `signMessage` signs whatever bytes it is handed, so the shape is checked
+  // here for it (CAN-2399): a prepared-transaction hash is 32 bytes and nothing else is. Without
+  // this the fallback was a second way to a raw signature over a login challenge or a multihash.
+  const hash = decodeLegHash(preparedTransactionHashB64);
+  if (hash === null || hash.length !== PREPARED_HASH_BYTES) {
+    throw new UnexpectedLegError(`A prepared-transaction hash must be ${PREPARED_HASH_BYTES} bytes of canonical base64`);
+  }
+  const rawHex = await signer.signMessage(hash);
   return hexSignatureToBase64(rawHex);
+}
+
+const PREPARED_HASH_BYTES = 32;
+
+/**
+ * A leg's hash as the bytes the key would sign (one char per byte), or null when the text is
+ * not the canonical base64 of anything. Canonical on purpose: `atob` also reads unpadded text and
+ * text with whitespace in it, and one signed message must not have several spellings.
+ */
+function decodeLegHash(hashB64: unknown): string | null {
+  if (typeof hashB64 !== 'string') return null;
+  try {
+    const binary = base64ToBinaryString(hashB64);
+    return btoa(binary) === hashB64 ? binary : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -160,8 +184,8 @@ export async function signPreparedHashBase64(
  * is `0x12` (the function), `0x20` (its 32 bytes), then the digest — 34 bytes.
  */
 function topologyMultihash(leg: OperationLeg): string {
-  const binary = base64ToBinaryString(leg.hash);
-  if (binary.length !== 34 || binary.charCodeAt(0) !== 0x12 || binary.charCodeAt(1) !== 0x20) {
+  const binary = decodeLegHash(leg.hash);
+  if (binary === null || binary.length !== 34 || binary.charCodeAt(0) !== 0x12 || binary.charCodeAt(1) !== 0x20) {
     throw new UnexpectedLegError('A topology leg must be a 34-byte sha2-256 multihash');
   }
   return binary;
@@ -192,10 +216,16 @@ async function signLeg(signer: HashSigner, leg: OperationLeg): Promise<string> {
  * caller says which operation prepared them (CAN-2399).
  *
  * A topology leg is signed raw, so it is held to the one ceremony that has
- * one: `wallet.topology` prepares exactly one leg, a topology leg, and no
- * other operation prepares a topology leg at all. Without this a server (or
- * whatever answers in its place) could put a transfer in front of a user who
- * asked to create their party, or a raw signature into a send.
+ * one: `wallet.topology` prepares one leg, a topology leg (or none, when the
+ * party already exists), and no other operation prepares a topology leg at
+ * all. Without this a server (or whatever answers in its place) could put a
+ * transfer in front of a user who asked to create their party, or a raw
+ * signature into a send.
+ *
+ * What this does NOT know is which topology the multihash is of: the leg
+ * carries the hash and not the transactions, so the wallet signs it on the
+ * server's word. A caller binds what it can from outside — the party the
+ * operation names must be the key's own (`isPartyOfKey`).
  *
  * Throws {@link UnexpectedLegError}. No legs is always fine: an operation with
  * nothing left to do says so in `meta`.
