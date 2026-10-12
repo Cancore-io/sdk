@@ -788,7 +788,7 @@ describe('a merge of the account\'s own holdings is signed only as a merge (CAN-
   });
 
   test('a merge that leaves the balance locked, and one with no transfer in it', async () => {
-    await refusedWith(verifyConsolidatePrepared([await regMerge({ outputs: [{ owner: BOT, amount: '0.0003', lockedTo: CBTC.admin }] })], regTerms), /the merge leaves a holding locked/);
+    await refusedWith(verifyConsolidatePrepared([await regMerge({ outputs: [{ owner: BOT, amount: '0.0003', lockedTo: CBTC.admin }] })], regTerms), /leg 0 is a transfer to the account itself that leaves a holding locked/);
     await refusedWith(verifyConsolidatePrepared([await ccMerge([{ owner: BOT, amount: '19.54084', lockedTo: DEV.venue }])], ccTerms), /leg 0 creates a locked holding/);
     await refusedWith(verifyConsolidatePrepared([await ccFee()], ccTerms), /the merge has no transfer in it/);
     await refusedWith(verifyConsolidatePrepared([], ccTerms), /the API prepared nothing to sign/);
@@ -970,6 +970,28 @@ describe('what a second, hostile reading of these verifiers found (CAN-2249)', (
     });
     await refusedWith(verifySendPrepared([unsigned], regTerms), /creates a TransferOffer signed by this account that is neither its holding nor this send/);
     await refusedWith(verifySendPrepared([await regTransfer({ offer: { instrumentId: { id: 'HTEST', admin: CBTC.admin } } })], regTerms), /creates a TransferOffer signed by this account that is neither its holding nor this send/);
+    // The holding handed over AND an offer of the same transfer beside it; and the lock under two offers of it.
+    const handedOver = [{ owner: OWNER, amount: '0.5' }, { owner: BOT, amount: '1.5' }];
+    await refusedWith(verifySendPrepared([await regTransfer({ outputs: handedOver })], regTerms), /leg 0 transfers 0.5 and neither hands exactly that/);
+    const twoOffers = await remade(await regTransfer(), (decoded) => {
+      const offer = decoded.transaction!.nodes.find((n) => n.versionedNode.oneofKind === 'v1' && n.versionedNode.v1.nodeType.oneofKind === 'create'
+        && n.versionedNode.v1.nodeType.create.templateId?.entityName === 'TransferOffer')!;
+      const second = createNode('9', { ...createIn(decoded, offer.nodeId), contractId: '1f'.repeat(34) });
+      decoded.transaction!.nodes.push(second);
+      decoded.transaction!.nodeSeeds.push({ nodeId: 9, seed: new Uint8Array(32).fill(7) });
+      const parent = decoded.transaction!.nodes.find((n) => n.versionedNode.oneofKind === 'v1' && n.versionedNode.v1.nodeType.oneofKind === 'exercise'
+        && n.versionedNode.v1.nodeType.exercise.children.includes(offer.nodeId))!;
+      exerciseIn(decoded, parent.nodeId).children.push('9');
+    });
+    await refusedWith(verifySendPrepared([twoOffers], regTerms), /leg 0 transfers 0.5 and neither hands exactly that .* nor locks exactly that under one offer of this transfer/);
+  });
+
+  test('a registry transfer to the account itself locks nothing: a split or a merge has nobody to accept it', async () => {
+    const toSelf = (outputs: NonNullable<FactoryOver['outputs']>) => factoryTransferLeg({ party: BOT, receiver: BOT, instrument: CBTC, amount: '0.5', input: '2', outputs, offer: null });
+    const splitTerms: SelfSendTerms = { party: BOT, admins: [CBTC.admin], instrument: 'CBTC', amount: '0.5', maxCost: '2', feeRecipients: [] };
+    await expect(verifySelfSendPrepared([await toSelf([{ owner: BOT, amount: '0.5' }, { owner: BOT, amount: '1.5' }])], splitTerms)).resolves.toBeUndefined();
+    // Within the cost the caller allows, and still not a split: the half is locked, and nobody is there to take it.
+    await refusedWith(verifySelfSendPrepared([await toSelf([{ owner: BOT, amount: '0.5', lockedTo: CBTC.admin }, { owner: BOT, amount: '1.5' }])], splitTerms), /leg 0 is a transfer to the account itself that leaves a holding locked/);
   });
 
   test('one contract id is one contract among those a transaction creates, too', async () => {
@@ -992,6 +1014,34 @@ describe('what a second, hostile reading of these verifiers found (CAN-2249)', (
       argument.record.fields.unshift({ label: 'provider', value: v.party(MALLORY) });
     });
     await refusedWith(verifyPreapprovalSetupPrepared([twice], { party: BOT, dso: [DEV.dso], providers: [DEV.venue, BOT], packages: DEFAULT_TRUSTED_PACKAGES.wallet }), /leg 0 carries a record that names a field twice/);
+  });
+
+  test('a field named twice is found wherever a record sits: in a choice argument, in a disclosed contract, and at any depth', async () => {
+    // Not a party among them: the bounds on who appears in a tree would catch a second `receiver`, not a second `amount`.
+    const doubled = { sum: { oneofKind: 'record' as const, record: { fields: [{ label: 'amount', value: v.numeric('1000.0000000000') }, { label: 'amount', value: v.numeric('0.5000000000') }] } } };
+    const wrapped: Array<[string, ReturnType<typeof v.text>]> = [
+      ['a list', v.list([doubled])],
+      ['a text map', v.textMap({ k: doubled })],
+      ['an optional', { sum: { oneofKind: 'optional', optional: { value: doubled } } }],
+      ['a variant', { sum: { oneofKind: 'variant', variant: { constructor: 'C', value: doubled } } }],
+      ['a map key', { sum: { oneofKind: 'genMap', genMap: { entries: [{ key: doubled, value: v.text('x') }] } } }],
+      ['a map value', { sum: { oneofKind: 'genMap', genMap: { entries: [{ key: v.text('x'), value: doubled }] } } }],
+      ['a nested record', v.record({ inner: doubled })],
+    ];
+    for (const [where, value] of wrapped) {
+      const inChoice = await remade(await ccTransfer(), (decoded) => {
+        const argument = exerciseIn(decoded, '0').chosenValue!.sum;
+        if (argument.oneofKind !== 'record') throw new Error('the choice argument is a record');
+        argument.record.fields.push({ label: 'extra', value });
+      });
+      await refusedWith(verifySendPrepared([inChoice], sendTerms), /leg 0 carries a record that names a field twice/).catch((e: unknown) => { throw new Error(`${where}: ${String(e)}`); });
+    }
+    const inDisclosed = await remade(await ccTransfer(), (decoded) => {
+      const contract = decoded.metadata!.inputContracts[0]!.contract;
+      if (contract.oneofKind !== 'v1' || contract.v1.argument?.sum.oneofKind !== 'record') throw new Error('the disclosed contract is a record');
+      contract.v1.argument.sum.record.fields.push({ label: 'extra', value: doubled });
+    });
+    await refusedWith(verifySendPrepared([inDisclosed], sendTerms), /leg 0 carries a record that names a field twice/);
   });
 
   test.each(['constructor', '__proto__', 'toString', 'hasOwnProperty'])('a name the transaction supplies — %s — finds no pin and is refused as any unpinned name is', async (name) => {

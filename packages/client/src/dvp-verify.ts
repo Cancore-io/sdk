@@ -921,7 +921,6 @@ export async function verifyConsolidatePrepared(legs: Leg[], terms: ConsolidateT
   if (maxFee < 0n) refuse('the fee bound is not a decimal of at most ten places');
   const { net, fee, transfers } = await tokenLegs(legs, refuse, { ...terms, dso: terms.dso ?? terms.admins }, terms.party, 'this account');
   if (transfers.length === 0) refuse('the merge has no transfer in it');
-  if (transfers.some((t) => t.locked > 0n)) refuse('the merge leaves a holding locked');
   if (!withinCost(terms.instrument, net, fee, 0n, maxFee)) refuse(`the merge costs this account ${costOf(terms.instrument, net, fee)}, more than the fee it allows`);
 }
 
@@ -1189,6 +1188,9 @@ function factoryMoved(
     if (!handedOver && !offered) {
       refuse(`${what} transfers ${decimalOf(asked)} and neither hands exactly that to ${terms.wanted} nor locks exactly that under one offer of this transfer`);
     }
+  } else if (moved.locked > 0n) {
+    // To itself a registry locks nothing: there is nobody to accept. A lock here is the account's balance tied up.
+    refuse(`${what} is a transfer to the account itself that leaves a holding locked`);
   }
   return { ...moved, factory: true, asked };
 }
