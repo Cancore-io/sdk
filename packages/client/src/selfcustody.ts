@@ -791,10 +791,15 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * A DvP refusal that ends the trade before anything is signed, said in words a partner can act
    * on. The stand refuses at the earliest point it can — placing the order, taking it — and again
    * when the trade is recorded, for a gateway that does not check earlier.
+   *
+   * Only the refusal the API itself calls a DvP refusal (its code, or its words where a gateway
+   * sends no code). Every other 403 — self-trade, documents not accepted, a stopped bot account —
+   * is not rewritten and reaches the caller as the `CancoreApiError` it is (CAN-2400): calling
+   * them all "DvP is not open" sent people to ask for an allowlist entry they did not need.
    */
   function dvpRefusal(err: unknown, what: string, order?: Order, self?: string): SettleError | null {
     const refusal = refusalOf(err);
-    if (refusal === 'dvpNotAllowed' || (err instanceof CancoreApiError && err.status === 403)) {
+    if (refusal === 'dvpNotAllowed') {
       return new SettleError(
         `${what}: allocation-DvP is not open to this account on this stand (${(err as Error).message}); ` +
           'a Canton↔Canton order settles only through DvP, never through HTLC',
