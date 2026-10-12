@@ -9,6 +9,7 @@
 import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
 import { CANTON_ORIGIN_ID, CANTON_SOURCE_ANCHOR, DAML_NUMERIC_SCALE, EIP2294_MAX_CHAIN_ID, INSTRUMENT_LABEL_TAG, MAX_FEE_BPS, OWNER_LABEL_TAG } from './constants';
 import { PERMIT2_ADDRESS } from './deployments';
+import { abiEncodeStrings, exactUnits } from './encoding';
 import { beBytes, hexBytes, keccak, toHex, uint } from './protocol/bytes';
 import { encodeType, hashDomain, hashStruct, hashTypedData } from './protocol/hash';
 import { ORDER_TYPES, routerDomain, type Hex, type Order, type UintLike } from './protocol/typedData';
@@ -181,15 +182,6 @@ export function hashPermitWitness(permit: PermitWitness, chainId: UintLike, perm
 
 // --- encoding helpers
 
-/** A decimal string at exactly `decimals` scale, in base units; anything that does not land on a whole unit is refused. */
-function exactUnits(value: unknown, decimals: number, field: string): bigint {
-  if (typeof value !== 'string' || !/^\d+(\.\d+)?$/.test(value)) throw new TypeError(`${field}: not a plain decimal string: ${String(value)}`);
-  if (!Number.isSafeInteger(decimals) || decimals < 0) throw new TypeError(`${field}: decimals must be a non-negative integer`);
-  const [whole, fraction = ''] = value.split('.');
-  if (fraction.length > decimals) throw new RangeError(`${field}: ${value} does not fit ${decimals} decimals exactly`);
-  return BigInt(whole! + fraction.padEnd(decimals, '0'));
-}
-
 /** Unix seconds as a whole second (a safe integer or a canonical decimal string), within uint64. */
 function wholeSecond(value: unknown, field: string): string {
   return uint(value, 64, `${field} (a whole second)`).toString();
@@ -216,21 +208,4 @@ function checksumAddress(value: unknown, field: string): Hex {
 function label(tag: string, a: string, b: string): Hex {
   const hash = toHex(keccak(abiEncodeStrings([tag, a, b])));
   return checksumAddress(`0x${hash.slice(-40)}`, 'label');
-}
-
-/** `abi.encode(string, …, string)`: one offset word per string, then each as length word and right-padded bytes. */
-function abiEncodeStrings(values: readonly string[]): Uint8Array {
-  const tails = values.map((v) => {
-    const bytes = utf8ToBytes(v);
-    const body = new Uint8Array(Math.ceil(bytes.length / 32) * 32);
-    body.set(bytes);
-    return concatBytes(beBytes(BigInt(bytes.length), 32), body);
-  });
-  let offset = BigInt(values.length * 32);
-  const heads = tails.map((t) => {
-    const head = beBytes(offset, 32);
-    offset += BigInt(t.length);
-    return head;
-  });
-  return concatBytes(...heads, ...tails);
 }
