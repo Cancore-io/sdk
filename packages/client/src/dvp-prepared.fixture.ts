@@ -44,7 +44,7 @@ export interface FixtureLeg {
   instrumentId: { admin: string; id: string };
 }
 
-const v = {
+export const v = {
   party: (party: string): Value => ({ sum: { oneofKind: 'party', party } }),
   text: (text: string): Value => ({ sum: { oneofKind: 'text', text } }),
   numeric: (numeric: string): Value => ({ sum: { oneofKind: 'numeric', numeric } }),
@@ -424,6 +424,14 @@ export async function selfSendLeg(input: {
   return { kind: input.kind, ...built };
 }
 
+/** A prepared leg after `edit` changed its decoded transaction: encoded and hashed again, as a hostile API would hand it over. */
+export async function remade<L extends { preparedTransaction: string }>(leg: L, edit: (decoded: PreparedTransaction) => void): Promise<L & { preparedTransactionHash: string }> {
+  const decoded = PreparedTransaction.fromBinary(Buffer.from(leg.preparedTransaction, 'base64'));
+  edit(decoded);
+  const preparedTransaction = Buffer.from(PreparedTransaction.toBinary(decoded)).toString('base64');
+  return { ...leg, preparedTransaction, preparedTransactionHash: await hashPreparedTransaction(preparedTransaction, 'base64') };
+}
+
 const TRANSFER_API = '55ba4deb0ad4662c4168b39859738a0e91388d252286480c7331b3f71a517281';
 type Output = { owner: string; amount: string; lockedTo?: string; instrument?: { id: string; admin: string } };
 
@@ -485,10 +493,12 @@ export async function acceptTransferLeg(input: {
   interfaceEntity?: string; choice?: string; receiver?: string;
   /** A holding the tree consumes besides the sender's lock: what a hostile accept would take along. */
   alsoSpend?: Create; actAs?: string;
+  /** The contract id of the offer: the transfer the caller was shown. Default `OFFER_CID`. */
+  offerCid?: string;
 }) {
   const admin = input.instrument.admin;
   const leg: FixtureLeg = { sender: input.sender, receiver: input.receiver ?? input.party, amount: input.amount, instrumentId: input.instrument };
-  const honest = transferOffer(OFFER_CID, leg);
+  const honest = transferOffer(input.offerCid ?? OFFER_CID, leg);
   const offer = input.offer?.(honest) ?? honest;
   const on = input.commandOn ?? offer;
   const locked = holding('c0'.repeat(34), input.sender, input.instrument, input.amount, { lockedTo: admin });

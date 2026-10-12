@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519';
 import { cantonFingerprint, deriveWalletKey, LOGIN_CHALLENGE_PREFIX as WALLET_CHALLENGE_PREFIX, providerFromMnemonic } from '@cancore/wallet';
-import { allocationTree, DEV, prepared, proposalAccept, proposalCreate, selfSendLeg, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
+import { acceptTransferLeg, allocationTree, DEV, factoryTransferLeg, holding, preapprovalProposalLeg, prepared, proposalAccept, proposalCreate, selfSendLeg, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
 import type { FetchLike } from './http';
 import {
   CeremonyError,
@@ -13,6 +13,7 @@ import {
   legalConsentMessage,
   SettleError,
   UnexpectedLegError,
+  UnverifiedTransactionError,
   type IncomingTransfer,
   type SelfCustodyOptions,
   type ServeEvent,
@@ -80,8 +81,20 @@ interface VenueOptions {
   feeDebt?: string;
   /** The taker's CC balance (`GET /tokens/balance`). Default 10000. */
   balance?: number;
-  /** What `GET /tokens/transfer/estimate-fee` quotes. Default 0.125. */
+  /** What `GET /tokens/transfer/estimate-fee` quotes, and what a fee leg pays. Default 0.125. */
   networkFee?: number;
+  /** A send to another party is prepared for these terms instead of the ones asked for: what a hostile venue would have the key sign. */
+  sendAs?: { receiverPartyId?: string; amount?: string };
+  /** `tokens.send` to another party answers legs without their bytes, as a gateway older than the bytes does. */
+  sendWithoutBytes?: boolean;
+  /** The provider the preapproval proposal names, instead of the venue. */
+  preapprovalProvider?: string;
+  /** The `splice-wallet` package id the preapproval proposal is created from, instead of a released one. */
+  proposalPackageId?: string;
+  /** `tokens.consolidate` has something to merge: 'honest' merges into one holding, 'theft' pays the balance away. */
+  merge?: 'honest' | 'theft';
+  /** `tokens.send-fee` is refused at prepare. */
+  failSendFee?: boolean;
   /** The fee amount the fee-holding refusal names. Default 24.8756218905. */
   refusedFee?: string;
   /** What `GET /htlc/fee-config` answers without `orderId`: the public (retail) pool's configuration. */
@@ -159,6 +172,12 @@ function venue({
   networkFee = 0.125,
   refusedFee = '24.8756218905',
   feeDebt = '0',
+  sendAs,
+  sendWithoutBytes = false,
+  preapprovalProvider,
+  proposalPackageId,
+  merge,
+  failSendFee = false,
   legacySignUp = false,
   failActivationOnce = false,
 }: VenueOptions = {}) {
@@ -202,6 +221,8 @@ function venue({
   let staleAllocate = staleAllocateOnce;
   let timeoutAllocate = timeoutAllocateOnce;
   const incoming: IncomingTransfer[] = [];
+  /** Sends whose network fee was deferred and is still owed, by update id. */
+  const deferred = new Set<string>();
   let seq = 0;
   let takes = 0;
 
@@ -219,6 +240,26 @@ function venue({
   const partyOf = (owner: Account) => `party-${owner.id}::${cantonFingerprint(owner.publicKey)}`;
   const parties = (): string[] => [...new Set(legs.flatMap((l) => [l.sender, l.receiver]))];
 
+  const asLeg = (t: { kind: string; preparedTransactionHash: string; preparedTransaction: string }): Leg =>
+    ({ legId: `leg-${++seq}`, hash: t.preparedTransactionHash, kind: t.kind, preparedTransaction: t.preparedTransaction });
+  const feeLeg = (party: string) => selfSendLeg({
+    party, kind: 'fee', receiver: DEV.venue, input: '10', ids: 'b', outputs: [{ owner: DEV.venue, amount: String(networkFee) }, { owner: party, amount: (10 - networkFee).toFixed(10) }],
+  });
+
+  /** A send to another party as the participant prepares it: CC through the receiver's preapproval, a registry token as an offer; a fee leg when a second holding can fund one. */
+  async function sendLegs(party: string, params: Record<string, unknown>): Promise<Leg[]> {
+    const [receiver, amount] = [String(sendAs?.receiverPartyId ?? params.receiverPartyId), String(sendAs?.amount ?? params.amount)];
+    if (sendWithoutBytes) return twoHoldings ? [leg('transfer'), leg('fee')] : [leg('transfer')];
+    const change = (balance - Number(amount)).toFixed(10);
+    const transfer = params.tokenId && params.tokenId !== 'CC'
+      ? await factoryTransferLeg({
+        party, receiver, instrument: { id: String(params.tokenId), admin: DEV.cbtcRegistrar }, amount, input: String(balance),
+        outputs: [{ owner: party, amount, lockedTo: DEV.cbtcRegistrar }, { owner: party, amount: change }],
+      })
+      : await selfSendLeg({ party, kind: 'transfer', receiver, input: String(balance), ids: 'a', outputs: [{ owner: receiver, amount }, { owner: party, amount: change }] });
+    return twoHoldings ? [asLeg(transfer), asLeg(await feeLeg(party))] : [asLeg(transfer)];
+  }
+
   /** A CC self-send as the participant prepares it: the transfer (the split and its change) and the network-fee leg to the dev participant party. */
   async function selfSendLegs(party: string, amount: string, mode: NonNullable<VenueOptions['sendBytes']>): Promise<Leg[]> {
     const change = (balance - Number(amount)).toFixed(10);
@@ -230,7 +271,6 @@ function venue({
       party, kind: 'fee', receiver: DEV.venue, input: '10', ids: 'b',
       outputs: mode === 'overcharge' ? [{ owner: DEV.venue, amount: '5' }, { owner: party, amount: '5' }] : [{ owner: DEV.venue, amount: '0.125' }, { owner: party, amount: '9.875' }],
     });
-    const asLeg = (t: typeof transfer): Leg => ({ legId: `leg-${++seq}`, hash: t.preparedTransactionHash, kind: t.kind, preparedTransaction: t.preparedTransaction });
     if (!twoHoldings) return [asLeg(transfer)];
     return [asLeg(transfer), mode === 'mixed' ? { ...asLeg(fee), preparedTransaction: undefined } : asLeg(fee)];
   }
@@ -245,12 +285,29 @@ function venue({
         legs = topologyLegs ? topologyLegs(leg) : [leg('topology', 34)];
         meta = { partyId: topologyParty ? topologyParty(partyOf(owner)) : partyOf(owner) };
         break;
-      case 'tokens.preapproval': legs = owner.roles.includes('has-preapproval') ? [] : [leg('setup')]; meta = { alreadyExists: legs.length === 0 }; break;
-      case 'tokens.consolidate': legs = []; break;
+      case 'tokens.preapproval':
+        legs = owner.roles.includes('has-preapproval') ? [] : [asLeg(await preapprovalProposalLeg({ party: owner.partyId!, provider: preapprovalProvider, packageId: proposalPackageId }))];
+        meta = { alreadyExists: legs.length === 0 };
+        break;
+      // The fee of a send that could not carry one (tokens-send-fee.operation): one fee leg, or none when nothing is owed.
+      case 'tokens.send-fee':
+        if (failSendFee) return refuse(409, 'The deferred fee was already settled', 'DEFERRED_FEE_ALREADY_SETTLED');
+        legs = deferred.delete(String(params.sourceUpdateId)) ? [asLeg(await feeLeg(owner.partyId!))] : [];
+        meta = { nothingToCharge: legs.length === 0 };
+        break;
+      case 'tokens.consolidate':
+        legs = merge ? [asLeg(await selfSendLeg({
+          party: owner.partyId!, kind: 'transfer', receiver: owner.partyId!, input: String(balance), ids: 'a',
+          outputs: merge === 'theft' ? [{ owner: owner.partyId!, amount: '1' }] : [{ owner: owner.partyId!, amount: String(balance) }],
+        }))] : [];
+        meta = { nothingToMerge: legs.length === 0, mergedCount: legs.length === 0 ? 0 : 3 };
+        break;
       case 'tokens.accept': legs = [leg('transfer')]; break;
       case 'tokens.send':
         if (failSend) return refuse(400, 'Insufficient holdings for the transfer');
-        legs = sendBytes ? await selfSendLegs(owner.partyId!, String(params.amount), sendBytes) : twoHoldings ? [leg('transfer'), leg('fee')] : [leg('transfer')];
+        legs = sendBytes ? await selfSendLegs(owner.partyId!, String(params.amount), sendBytes)
+          : params.receiverPartyId === owner.partyId ? (twoHoldings ? [leg('transfer'), leg('fee')] : [leg('transfer')])
+            : await sendLegs(owner.partyId!, params);
         meta = twoHoldings
           ? { fee: { recipientPartyId: DEV.venue, amount: 0.125 }, feeDeferred: null }
           : { fee: null, feeDeferred: { amount: 0.125, recipientPartyId: DEV.venue } };
@@ -269,6 +326,12 @@ function venue({
     for (const l of op.legs) verify(caller, l, signatures.find((s) => s.legId === l.legId)?.signature ?? '');
     pending.delete(operationId);
     log.push({ type: op.type, params: op.params });
+    // A send answers the update it committed in; one that deferred its fee is owed it from then on.
+    if (op.type === 'tokens.send') {
+      const updateId = `update-${++seq}`;
+      if (!twoHoldings) deferred.add(updateId);
+      return json({ updateId, outcome: 'committed', transferKind: 'direct' });
+    }
     switch (op.type) {
       case 'wallet.topology': caller.partyId = recordedParty ? recordedParty(partyOf(caller)) : partyOf(caller); break;
       case 'tokens.preapproval': caller.roles.push('has-preapproval'); break;
@@ -596,6 +659,12 @@ function venue({
 
 // The dev API host: its network (devnet) chooses the pinned instrument admins.
 const baseUrl = 'https://api-dev.cancore.app';
+
+/** The accept of the incoming transfer `cid` as the participant prepares it: CBTC from the venue, to `party`. */
+async function acceptLegs(party: string, cid: string, over: Partial<Parameters<typeof acceptTransferLeg>[0]> = {}): Promise<Leg[]> {
+  const t = await acceptTransferLeg({ party, sender: DEV.venue, instrument: { id: 'CBTC', admin: DEV.cbtcRegistrar }, amount: '1', offerCid: cid, ...over });
+  return [{ legId: 'l', hash: t.preparedTransactionHash, kind: t.kind, preparedTransaction: t.preparedTransaction }];
+}
 // Yield a macrotask per wait: an instantly-resolving sleep would starve jest's own timers.
 const fast = { pollMs: 1, sleep: () => new Promise<void>((resolve) => setImmediate(resolve)) };
 
@@ -718,7 +787,10 @@ async function tradingPair(api: ReturnType<typeof venue>, accounts: [number, num
   const taker = createSelfCustody({ baseUrl, signer: takerKey!, fetchImpl: api.fetchImpl, ...fast, ...takerOptions });
   await maker.session.register({ partyName: 'maker' });
   await taker.session.register({ partyName: 'taker' });
-  await Promise.all([maker.onboard(), taker.onboard()]);
+  // The fake venue is the dev stand. An account pinned to another network, or to none, cannot hold the
+  // stand's preapproval to its own pins; those tests are about the trade, so they onboard unread.
+  const unread = (o: Partial<SelfCustodyOptions>) => ({ allowUnverified: o.network !== undefined || o.baseUrl !== undefined });
+  await Promise.all([maker.onboard(unread(makerOptions)), taker.onboard(unread(takerOptions))]);
   return { maker, taker };
 }
 
@@ -1493,11 +1565,13 @@ test('a timed-out submit is resubmitted on the code alone, and a code with anoth
 test('collect accepts exactly the claim’s own payouts, and nothing else in the inbox', async () => {
   const signer = await providerFromMnemonic(PHRASE);
   const accepted: string[] = [];
-  const ti = (contractId: string) => ({ contractId, templateId: 't', instrumentAdmin: 'a', executeBefore: new Date(Date.now() + 60_000).toISOString() });
+  const me = `party-me::${cantonFingerprint(signer.public_key)}`;
+  const ti = (contractId: string) => ({ contractId, templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId: 'CBTC', executeBefore: new Date(Date.now() + 60_000).toISOString() });
   const fetchImpl: FetchLike = async (url, init) => {
     const path = new URL(url).pathname;
     if (path === '/auth/challenge') return json({ challenge: 'Welcome to Cancore 2026-09-28 sig:1' });
     if (path === '/auth/login-signature') return json({ token: jwt('a'), user: {} });
+    if (path === '/auth/me') return json({ id: 'me', partyId: me });
     if (path === '/partner/cashback/claim') return json({ id: 'c1', status: 'settling' });
     if (path === '/partner/cashback/claims') {
       return json([{ id: 'c1', status: 'settling', payouts: [
@@ -1509,7 +1583,7 @@ test('collect accepts exactly the claim’s own payouts, and nothing else in the
     const body = JSON.parse(String(init.body));
     if (path === '/wallet/operations/prepare') {
       accepted.push(body.params.instructionCid);
-      return json({ operationId: 'op', legs: [{ legId: 'l', hash: b64(new Uint8Array(32)), kind: 'transfer' }], meta: null });
+      return json({ operationId: 'op', legs: await acceptLegs(me, body.params.instructionCid), meta: null });
     }
     return json({ ok: true });
   };
@@ -1613,7 +1687,7 @@ describe('what onboard() lets the key sign for the party (CAN-2399)', () => {
     const signer = await providerFromMnemonic(PHRASE, { account: 56 });
     // The account's party is its key's: onboard() gets as far as the preapproval only then.
     const api = hostile(`party-me::${cantonFingerprint(signer.public_key)}`);
-    const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
+    const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, maxFee: '2' });
 
     refusedAtPrepare(await call(acct).catch((e: unknown) => e), operation);
     expect(api.hits).not.toContain('POST /wallet/operations/submit');
@@ -1769,6 +1843,521 @@ describe('whose party onboard() brings into being (CAN-2249)', () => {
   });
 });
 
+describe('what the key signs outside a trade is read first (CAN-2249)', () => {
+  // The threat: the API is hostile, and the key is about to pay out a bot's budget. Every ceremony
+  // below is prepared by the fake venue the way the dev participant prepares it — or the way a venue
+  // that wants the money would.
+  const OWNER = 'party-owner::1220bb';
+  const MALLORY = 'mallory::1220ff';
+  const account = async (options: VenueOptions, n: number, over: Partial<SelfCustodyOptions> = {}) => {
+    const api = venue(options);
+    // Every account here names its fee ceiling, as a caller must: the SDK ships none (the fake venue charges 0.125 CC).
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: n }), fetchImpl: api.fetchImpl, ...fast, maxFee: '2', ...over });
+    await acct.session.register({ partyName: 'bot' });
+    return { api, acct };
+  };
+  const onboarded = async (options: VenueOptions, n: number, over: Partial<SelfCustodyOptions> = {}) => {
+    const made = await account(options, n, over);
+    await made.acct.onboard();
+    return made;
+  };
+  const submitted = (api: ReturnType<typeof venue>) => api.log.map((e) => e.type).filter((t) => t.startsWith('tokens.') && t !== 'tokens.preapproval');
+  const unread = async (run: Promise<unknown>, operation: string, reason: RegExp) => {
+    const error = await run.catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect(error).toMatchObject({ operation, stage: 'prepare' });
+    expect((error as CeremonyError).cause).toBeInstanceOf(UnverifiedTransactionError);
+    expect((error as Error).message).toMatch(reason);
+  };
+
+  test('a CC send to the owner — a bot\'s withdrawal — is read and signed, and the fee the API deferred is paid right after', async () => {
+    const { api, acct } = await onboarded({}, 60);
+
+    const out = await acct.send({ receiverPartyId: OWNER, amount: '100' });
+
+    expect(out).toMatchObject({ outcome: 'committed', deferredFee: 'paid' });
+    expect(submitted(api)).toEqual(['tokens.send', 'tokens.send-fee']);
+    // The fee is paid for the send it belongs to.
+    expect(api.log.at(-1)!.params).toEqual({ sourceUpdateId: (out as { updateId: string }).updateId });
+  });
+
+  test('with a second holding the fee rides on the send itself: one ceremony, nothing deferred', async () => {
+    const { api, acct } = await onboarded({ twoHoldings: true }, 61);
+
+    const out = await acct.send({ receiverPartyId: OWNER, amount: '100' });
+
+    expect(out).not.toHaveProperty('deferredFee');
+    expect(submitted(api)).toEqual(['tokens.send']);
+  });
+
+  test.each([
+    ['another receiver', { receiverPartyId: MALLORY }, /sends to mallory::1220ff, not to party-owner::1220bb, the receiver this send was asked for/],
+    ['a larger amount', { amount: '9000' }, /is given 9000 Amulet, not the 100 this send was asked for/],
+  ])('a venue that prepares the send for %s gets no signature', async (_what, sendAs, reason) => {
+    const { api, acct } = await onboarded({ sendAs }, 62);
+
+    await unread(acct.send({ receiverPartyId: OWNER, amount: '100' }), 'tokens.send', reason);
+    expect(submitted(api)).toEqual([]);
+  });
+
+  test('a registry token is read the same way: the amount locked under an offer to the receiver named', async () => {
+    const { api, acct } = await onboarded({ twoHoldings: true }, 63);
+    await acct.send({ receiverPartyId: OWNER, amount: '0.5', tokenId: 'CBTC' });
+    expect(submitted(api)).toEqual(['tokens.send']);
+
+    const hostile = await onboarded({ twoHoldings: true, sendAs: { receiverPartyId: MALLORY } }, 64);
+    await unread(hostile.acct.send({ receiverPartyId: OWNER, amount: '0.5', tokenId: 'CBTC' }), 'tokens.send', /leg 0 sends to mallory::1220ff/);
+    expect(submitted(hostile.api)).toEqual([]);
+  });
+
+  test('the network fee is bounded: maxFee, the account\'s or the call\'s', async () => {
+    const options = { twoHoldings: true, networkFee: 5 };
+    const { api, acct } = await onboarded(options, 65);
+    await unread(acct.send({ receiverPartyId: OWNER, amount: '100' }), 'tokens.send', /costs this account 105 Amulet, more than the 100 it sends and the fee it allows/);
+    expect(submitted(api)).toEqual([]);
+
+    await acct.send({ receiverPartyId: OWNER, amount: '100', maxFee: '5' });
+    expect(submitted(api)).toEqual(['tokens.send']);
+
+    const raised = await onboarded(options, 66, { maxFee: '5' });
+    await raised.acct.send({ receiverPartyId: OWNER, amount: '100' });
+    expect(submitted(raised.api)).toEqual(['tokens.send']);
+  });
+
+  test('the SDK has no fee ceiling of its own: a ceremony nobody put one on is refused, and the refusal says what to pass', async () => {
+    const noCeiling = /no ceiling was set on its network fee, and the SDK has none of its own.*Pass maxFee — to createSelfCustody, or to this call/;
+    const { api, acct } = await onboarded({ twoHoldings: true, merge: 'honest' }, 80, { maxFee: undefined });
+
+    await unread(acct.send({ receiverPartyId: OWNER, amount: '100' }), 'tokens.send', noCeiling);
+    await unread(acct.consolidate(), 'tokens.consolidate', noCeiling);
+    expect(submitted(api)).toEqual([]);
+    // Known before the API is asked for anything: no prepared operation is left behind.
+    expect(api.asked.filter((type) => type === 'tokens.send' || type === 'tokens.consolidate')).toEqual([]);
+
+    // The call's own ceiling is enough, and so is the account's ceiling on a split's cost.
+    await acct.send({ receiverPartyId: OWNER, amount: '100', maxFee: '1' });
+    expect(submitted(api)).toEqual(['tokens.send']);
+    const split = await onboarded({ twoHoldings: true }, 81, { maxFee: undefined, maxSplitCost: '1' });
+    await split.acct.send({ receiverPartyId: OWNER, amount: '100' });
+    expect(submitted(split.api)).toEqual(['tokens.send']);
+  });
+
+  test('allowUnverified reads nothing, so it asks for no ceiling — on the send or on the fee the API deferred', async () => {
+    // One holding: the send defers its fee, and both ceremonies are signed as they came.
+    const { api, acct } = await onboarded({}, 82, { maxFee: undefined });
+
+    const out = await acct.send({ receiverPartyId: OWNER, amount: '100', allowUnverified: true });
+
+    expect(out).toMatchObject({ outcome: 'committed', deferredFee: 'paid' });
+    expect(submitted(api)).toEqual(['tokens.send', 'tokens.send-fee']);
+  });
+
+  test('a deferred fee that is not paid does not turn a committed send into an error: it stays owed, and says why', async () => {
+    // The API refuses the fee ceremony.
+    const refused = await onboarded({ failSendFee: true }, 67);
+    const first = await refused.acct.send({ receiverPartyId: OWNER, amount: '100' }) as { deferredFee: string; feeError: unknown; outcome: string };
+    expect(first).toMatchObject({ outcome: 'committed', deferredFee: 'owed' });
+    expect(first.feeError).toBeInstanceOf(CeremonyError);
+    expect(submitted(refused.api)).toEqual(['tokens.send']);
+
+    // The API prepares a fee above the ceiling: read, refused, not signed.
+    const dear = await onboarded({ networkFee: 5 }, 68);
+    const second = await dear.acct.send({ receiverPartyId: OWNER, amount: '100' }) as { deferredFee: string; feeError: CeremonyError };
+    expect(second.deferredFee).toBe('owed');
+    expect(second.feeError.cause).toBeInstanceOf(UnverifiedTransactionError);
+    expect(second.feeError.message).toMatch(/the fee costs this account 5 CC, more than the fee it allows/);
+    expect(submitted(dear.api)).toEqual(['tokens.send']);
+  });
+
+  test('a send that came without its bytes is refused, unless the caller says to sign it unread', async () => {
+    const { api, acct } = await onboarded({ sendWithoutBytes: true, twoHoldings: true }, 69);
+
+    await unread(acct.send({ receiverPartyId: OWNER, amount: '100' }), 'tokens.send', /without its transaction bytes, so it cannot be read/);
+    expect(submitted(api)).toEqual([]);
+
+    await acct.send({ receiverPartyId: OWNER, amount: '100', allowUnverified: true });
+    expect(submitted(api)).toEqual(['tokens.send']);
+  });
+
+  test('allowUnverified reads nothing: what the venue prepared is signed as it came, as before 0.9.0', async () => {
+    const { api, acct } = await onboarded({ sendAs: { receiverPartyId: MALLORY }, twoHoldings: true }, 70);
+
+    await acct.send({ receiverPartyId: OWNER, amount: '100', allowUnverified: true });
+
+    expect(submitted(api)).toEqual(['tokens.send']);
+  });
+
+  test('a send to the account itself is read as the split it is', async () => {
+    const { api, acct } = await onboarded({ sendBytes: 'honest', twoHoldings: true }, 78);
+    await acct.send({ receiverPartyId: api.party('bot'), amount: '25' });
+    expect(submitted(api)).toEqual(['tokens.send']);
+
+    const theft = await onboarded({ sendBytes: 'theft', twoHoldings: true }, 79);
+    await unread(theft.acct.send({ receiverPartyId: theft.api.party('bot'), amount: '25' }), 'tokens.send', /thief::1220/);
+    expect(submitted(theft.api)).toEqual([]);
+  });
+
+  test('a merge is read: nothing is paid away under the name of tidying up', async () => {
+    const honest = await onboarded({ merge: 'honest' }, 71);
+    await expect(honest.acct.consolidate()).resolves.toBe(3);
+    expect(submitted(honest.api)).toEqual(['tokens.consolidate']);
+
+    const theft = await onboarded({ merge: 'theft' }, 72);
+    await unread(theft.acct.consolidate(), 'tokens.consolidate', /the merge costs this account 9999 Amulet, more than the fee it allows/);
+    expect(submitted(theft.api)).toEqual([]);
+
+    // Nothing to merge is nothing to read.
+    const compact = await onboarded({}, 73);
+    await expect(compact.acct.consolidate()).resolves.toBe(0);
+  });
+
+  test('the preapproval step of onboard() is read: a proposal to a provider the SDK does not pin is not signed', async () => {
+    const { api, acct } = await account({ preapprovalProvider: MALLORY }, 74);
+
+    await unread(acct.onboard(), 'tokens.preapproval', /names mallory::1220ff as provider, which is neither this account nor a pinned venue/);
+    // The party was made — that step is the key's own — and the preapproval was asked for and left unsigned.
+    expect(api.asked).toEqual(['wallet.topology', 'tokens.preapproval']);
+    expect(api.log.map((e) => e.type)).toEqual(['wallet.topology']);
+
+    await acct.onboard({ allowUnverified: true });
+    expect(api.log.map((e) => e.type)).toEqual(['wallet.topology', 'tokens.preapproval']);
+  });
+
+  test('an account of a network the SDK has no pins for refuses rather than signs unread', async () => {
+    const { api, acct } = await account({}, 75, { baseUrl: 'https://api.example' });
+    await acct.onboard({ allowUnverified: true });
+
+    const error = await acct.send({ receiverPartyId: OWNER, amount: '100' }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect((error as Error).message).toMatch(/no pinned CC admin for this network to verify against: pass network or instrumentAdmins/);
+    expect(submitted(api)).toEqual([]);
+  });
+
+  describe('accepting an incoming transfer', () => {
+    const inbox = async (legsFor: (me: string, cid: string) => Promise<Leg[]>, n: number, over: Partial<SelfCustodyOptions> = {}) => {
+      const signer = await providerFromMnemonic(PHRASE, { account: n });
+      const me = `party-me::${cantonFingerprint(signer.public_key)}`;
+      const asked: Array<Record<string, unknown>> = [];
+      const api = stub({
+        'GET /auth/me': () => ({ id: 'me', partyId: me }),
+        'GET /tokens/transfer-requests/incoming': () => [
+          { contractId: 'ti-1', templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId: 'CBTC', executeBefore: new Date(Date.now() + 60_000).toISOString() },
+        ],
+        'POST /wallet/operations/prepare': async (body) => {
+          asked.push(body.params as Record<string, unknown>);
+          return { operationId: 'op', legs: await legsFor(me, 'ti-1'), meta: null };
+        },
+        'POST /wallet/operations/submit': () => ({ outcome: 'committed' }),
+      });
+      return { api, asked, acct: createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, ...over }) };
+    };
+
+    test('the accept of the transfer shown is read and signed — and asks for no fee leg unless the call brings a budget for one', async () => {
+      const { api, asked, acct } = await inbox(acceptLegs, 76, { maxFee: '100' });
+
+      const { accepted, failed } = await acct.acceptIncoming();
+
+      expect([accepted.length, failed.length]).toEqual([1, 0]);
+      // The account's own maxFee is for what the account starts — a send, a merge. It is not spent on a list the API supplies.
+      expect(asked[0]).toMatchObject({ instructionCid: 'ti-1' });
+      expect(asked[0]).not.toHaveProperty('withFeeLeg');
+      expect(api.hits).toContain('POST /wallet/operations/submit');
+    });
+
+    test.each([
+      ['the accept of another transfer', (me: string) => acceptLegs(me, 'ti-other'), /accepts another transfer than the one it was asked for/],
+      ['an accept that spends a holding of the account', (me: string, cid: string) => acceptLegs(me, cid, { alsoSpend: holding('d0'.repeat(34), me, { id: 'CBTC', admin: DEV.cbtcRegistrar }, '3') }), /spends this account's own holding/],
+      ['an accept addressed to somebody else', (me: string, cid: string) => acceptLegs(me, cid, { receiver: MALLORY }), /accepts a transfer that is not to this account/],
+    ])('%s is not signed, and the inbox says which transfer failed', async (_what, legsFor, reason) => {
+      const { api, acct } = await inbox(legsFor, 77);
+
+      const { accepted, failed } = await acct.acceptIncoming();
+
+      expect(accepted).toEqual([]);
+      expect((failed[0]!.error as CeremonyError).cause).toBeInstanceOf(UnverifiedTransactionError);
+      expect((failed[0]!.error as Error).message).toMatch(reason);
+      expect(api.hits).not.toContain('POST /wallet/operations/submit');
+    });
+  });
+});
+
+describe('the network fee: one ceiling for a send, one budget for an inbox (CAN-2249, CAN-2423)', () => {
+  // What the security review of the wiring found: a ceiling held per ceremony is a ceiling the API
+  // multiplies — by a second ceremony of the same send, or by the length of a list it supplies itself.
+  const OWNER = 'party-owner::1220bb';
+  const MALLORY = 'mallory::1220ff';
+  let n = 0;
+  const L = (t: { kind: string; preparedTransactionHash: string; preparedTransaction: string }): Leg =>
+    ({ legId: `fee-${++n}`, hash: t.preparedTransactionHash, kind: t.kind, preparedTransaction: t.preparedTransaction });
+  const who = async (account: number) => {
+    const signer = await providerFromMnemonic(PHRASE, { account });
+    return { signer, me: `party-me::${cantonFingerprint(signer.public_key)}` };
+  };
+  const feeLegOf = async (me: string, amount: string) => L(await selfSendLeg({
+    party: me, kind: 'fee', receiver: DEV.venue, input: '100', ids: 'b', outputs: [{ owner: DEV.venue, amount }, { owner: me, amount: (100 - Number(amount)).toFixed(10) }],
+  }));
+  const transferOf = async (me: string) => L(await selfSendLeg({
+    party: me, kind: 'transfer', receiver: OWNER, input: '10000', ids: 'a', outputs: [{ owner: OWNER, amount: '100' }, { owner: me, amount: '9900' }],
+  }));
+  /** A venue whose send carries a fee leg of `first` AND defers a fee of `second` to a ceremony of its own. */
+  const twice = async (account: number, first: string | null, second: string | null, over: Partial<SelfCustodyOptions> = {}, sendAnswer: unknown = { updateId: 'u1', outcome: 'committed' }) => {
+    const { signer, me } = await who(account);
+    const submitted: string[] = [];
+    const api = stub({
+      'GET /auth/me': () => ({ id: 'me', partyId: me }),
+      'POST /wallet/operations/prepare': async (body) => (body.type === 'tokens.send'
+        ? { operationId: 'send', legs: [await transferOf(me), ...(first ? [await feeLegOf(me, first)] : [])], meta: { feeDeferred: { amount: Number(second ?? 0) } } }
+        : { operationId: 'fee', legs: second ? [await feeLegOf(me, second)] : [], meta: {} }),
+      'POST /wallet/operations/submit': (body) => { submitted.push(String(body.operationId)); return body.operationId === 'send' ? sendAnswer : { outcome: 'committed' }; },
+    });
+    return { submitted, acct: createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, maxFee: '2', ...over }) };
+  };
+  type Sent = { outcome: string; deferredFee?: string; feeError?: CeremonyError };
+
+  test('a fee the API deferred is held to what the send left of its ceiling, not to a ceiling of its own', async () => {
+    // The send's own fee leg takes the whole 2 CC; the ceremony after it asks for 2 more.
+    const greedy = await twice(601, '2', '2');
+    const out = await greedy.acct.send({ receiverPartyId: OWNER, amount: '100' }) as Sent;
+    expect(out).toMatchObject({ outcome: 'committed', deferredFee: 'owed' });
+    expect(out.feeError!.cause).toBeInstanceOf(UnverifiedTransactionError);
+    expect(out.feeError!.message).toMatch(/the fee costs this account 2 CC, more than the fee it allows/);
+    expect(greedy.submitted).toEqual(['send']);
+
+    // 0.5 on the send and 1.5 after it is 2: both are signed. And the call's own ceiling is the one that counts.
+    const honest = await twice(602, '0.5', '1.5');
+    expect(await honest.acct.send({ receiverPartyId: OWNER, amount: '100' })).toMatchObject({ deferredFee: 'paid' });
+    expect(honest.submitted).toEqual(['send', 'fee']);
+    const raised = await twice(603, '2', '2');
+    expect(await raised.acct.send({ receiverPartyId: OWNER, amount: '100', maxFee: '4' })).toMatchObject({ deferredFee: 'paid' });
+    const lowered = await twice(604, null, '2');
+    expect(await lowered.acct.send({ receiverPartyId: OWNER, amount: '100', maxFee: '1' })).toMatchObject({ deferredFee: 'owed' });
+  });
+
+  test('the one ceiling counts everything the send cost: a burn on the transfer itself, and a send to oneself', async () => {
+    /** A send whose transfer leg alone costs `burn` beyond the amount (an old input's holding fee), then a deferred fee of `second`. */
+    const burning = async (account: number, toSelf: boolean, burn: string, second: string) => {
+      const { signer, me } = await who(account);
+      const [receiver, amount] = toSelf ? [me, '25'] : [OWNER, '100'];
+      const change = (10000 - Number(amount) - Number(burn)).toFixed(10);
+      const api = stub({
+        'GET /auth/me': () => ({ id: 'me', partyId: me }),
+        'POST /wallet/operations/prepare': async (body) => (body.type === 'tokens.send'
+          ? { operationId: 'send', legs: [L(await selfSendLeg({ party: me, kind: 'transfer', receiver, input: '10000', ids: 'a', outputs: [{ owner: receiver, amount }, { owner: me, amount: change }] }))], meta: { feeDeferred: { amount: 1 } } }
+          : { operationId: 'fee', legs: [await feeLegOf(me, second)], meta: {} }),
+        'POST /wallet/operations/submit': (body) => (body.operationId === 'send' ? { updateId: 'u1', outcome: 'committed' } : { outcome: 'committed' }),
+      });
+      return (createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, maxFee: '2' }).send({ receiverPartyId: receiver, amount }) as Promise<Sent>).then((out) => out.deferredFee, (e: Error) => e.message);
+    };
+    // 0.5 burnt on the way leaves 1.5 of a ceiling of 2 — to another party, and to oneself.
+    expect(await burning(650, false, '0.5', '1.5')).toBe('paid');
+    expect(await burning(651, false, '0.5', '1.6')).toBe('owed');
+    expect(await burning(652, true, '0.5', '1.5')).toBe('paid');
+    expect(await burning(653, true, '0.5', '1.6')).toBe('owed');
+    // And a send to oneself that costs more than the ceiling by itself is not signed at all.
+    expect(await burning(654, true, '2.5', '0')).toMatch(/the send costs this account more than 2 Amulet/);
+  });
+
+  test('a merge is held to its call\'s ceiling when the call names one', async () => {
+    const { signer, me } = await who(655);
+    let submitted = 0;
+    const api = stub({
+      'GET /auth/me': () => ({ id: 'me', partyId: me }),
+      'POST /wallet/operations/prepare': async () => ({
+        operationId: 'merge', meta: { mergedCount: 3 },
+        legs: [L(await selfSendLeg({ party: me, kind: 'transfer', receiver: me, input: '19.5', ids: 'a', outputs: [{ owner: me, amount: '19.5' }] })), await feeLegOf(me, '2')],
+      }),
+      'POST /wallet/operations/submit': () => { submitted++; return { outcome: 'committed' }; },
+    });
+    const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, maxFee: '1' });
+
+    await expect(acct.consolidate()).rejects.toThrow(/the merge costs this account 2 Amulet, more than the fee it allows/);
+    await expect(acct.consolidate('CC', { maxFee: '2' })).resolves.toBe(3);
+    // A ceiling of nothing on the call is a ceiling, not the lack of one: the account's is not used in its place.
+    await expect(acct.consolidate('CC', { maxFee: '0' })).rejects.toThrow(/the merge costs this account 2 Amulet/);
+    // Nor is an empty one: a call that names a ceiling it cannot read is refused on that, not handed the account's.
+    await expect(acct.consolidate('CC', { maxFee: '' })).rejects.toThrow(/the fee bound is not a decimal of at most ten places/);
+    expect(submitted).toBe(1);
+  });
+
+  test('what `deferredFee` says is what happened: nothing asked, nothing named to pay for, a submit nobody saw land', async () => {
+    // The API deferred a fee and then asks for nothing: nothing was signed, so nothing was "paid".
+    const nothing = await twice(605, null, null);
+    expect(await nothing.acct.send({ receiverPartyId: OWNER, amount: '100' })).toMatchObject({ outcome: 'committed', deferredFee: 'waived' });
+    expect(nothing.submitted).toEqual(['send']);
+
+    // The send's answer names no update: there is nothing to pay the fee for, and the caller is told.
+    const unnamed = await twice(606, null, '1', {}, { outcome: 'committed' });
+    const silent = await unnamed.acct.send({ receiverPartyId: OWNER, amount: '100' }) as Sent;
+    expect(silent.deferredFee).toBe('owed');
+    expect(String(silent.feeError)).toMatch(/named no update of the send to pay it for/);
+    expect(unnamed.submitted).toEqual(['send']);
+
+    // The fee was signed and its submit timed out: 'owed' means not seen paid — the stage says it may have landed.
+    const { signer, me } = await who(607);
+    const api = stub({
+      'GET /auth/me': () => ({ id: 'me', partyId: me }),
+      'POST /wallet/operations/prepare': async (body) => (body.type === 'tokens.send'
+        ? { operationId: 'send', legs: [await transferOf(me)], meta: { feeDeferred: { amount: 1 } } }
+        : { operationId: 'fee', legs: [await feeLegOf(me, '1')], meta: {} }),
+      'POST /wallet/operations/submit': (body) => (body.operationId === 'send' ? { updateId: 'u1', outcome: 'committed' } : refuse(400, 'the ledger did not answer')),
+    });
+    const lost = await createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, maxFee: '2' }).send({ receiverPartyId: OWNER, amount: '100' }) as Sent;
+    expect(lost).toMatchObject({ outcome: 'committed', deferredFee: 'owed' });
+    expect(lost.feeError).toMatchObject({ operation: 'tokens.send-fee', stage: 'submit' });
+  });
+
+  /** An inbox of `count` transfers nobody sent: the API makes them up, and prepares a 2 CC fee leg whenever it is asked for one — or always. */
+  const madeUp = async (account: number, count: number, uninvited = false, over: Partial<SelfCustodyOptions> = {}, submitFails = false) => {
+    const { signer, me } = await who(account);
+    const asked: Array<Record<string, unknown>> = [];
+    let feeLegsSigned = 0;
+    const api = stub({
+      'GET /auth/me': () => ({ id: 'me', partyId: me }),
+      'GET /tokens/transfer-requests/incoming': () => Array.from({ length: count }, (_, i) => (
+        { contractId: `ti-${i}`, templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId: 'CBTC', executeBefore: new Date(Date.now() + 60_000).toISOString() })),
+      'POST /wallet/operations/prepare': async (body) => {
+        const params = body.params as { instructionCid: string; withFeeLeg?: boolean };
+        asked.push(params);
+        return { operationId: params.instructionCid, legs: [...await acceptLegs(me, params.instructionCid), ...(params.withFeeLeg || uninvited ? [await feeLegOf(me, '2')] : [])], meta: null };
+      },
+      'POST /wallet/operations/submit': (body) => {
+        feeLegsSigned += (body.signatures as unknown[]).length - 1;
+        return submitFails ? refuse(400, 'the ledger did not answer') : { outcome: 'committed' };
+      },
+    });
+    return { asked, fees: () => feeLegsSigned, acct: createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, ...over }) };
+  };
+
+  test('a fee is spent when the key signs it, not when the API says so: an inbox whose every submit fails gets one budget too', async () => {
+    // The signatures leave with the submit. An API that takes them and answers with an error has the fee leg all the same.
+    const lying = await madeUp(640, 10, false, {}, true);
+
+    const { accepted, failed } = await lying.acct.acceptIncoming(undefined, { maxFee: '2' });
+
+    expect([accepted.length, failed.length]).toEqual([0, 10]);
+    expect(lying.fees()).toBe(1);
+    expect(lying.asked.map((params) => params.withFeeLeg ?? false)).toEqual([true, ...Array.from({ length: 9 }, () => false)]);
+  });
+
+  test('a filter that throws on what the API listed fails that transfer, and keeps what was accepted', async () => {
+    const inbox = await madeUp(641, 3);
+
+    const { accepted, failed } = await inbox.acct.acceptIncoming((t) => { if (t.contractId === 'ti-1') throw new Error('not a transfer I know'); return true; });
+
+    expect(accepted.map((t) => t.contractId)).toEqual(['ti-0', 'ti-2']);
+    expect(failed.map((f) => [f.transfer.contractId, String(f.error)])).toEqual([['ti-1', 'Error: not a transfer I know']]);
+  });
+
+  test('a budget of nothing asks for no fee leg, in one accept as in an inbox; a budget that is not a number is refused outright', async () => {
+    const none = await madeUp(642, 1);
+    const [transfer] = await none.acct.incoming();
+    await none.acct.accept(transfer!, { maxFee: '0' });
+    expect(none.asked[0]).not.toHaveProperty('withFeeLeg');
+
+    for (const maxFee of ['', '-1', '1e3', 'lots']) {
+      await expect(none.acct.accept(transfer!, { maxFee })).rejects.toThrow(RangeError);
+      await expect(none.acct.acceptIncoming(undefined, { maxFee })).rejects.toThrow(RangeError);
+    }
+    expect(none.asked).toHaveLength(1);
+  });
+
+  test('unread, a budget is spent whole by the first accept — and nothing after it is under any budget', async () => {
+    const blind = await madeUp(643, 3);
+    await blind.acct.acceptIncoming(undefined, { maxFee: '2', allowUnverified: true });
+    // What the fee leg took was not read, so the whole budget counts as gone: the rest ask for none.
+    expect(blind.asked.map((params) => params.withFeeLeg ?? false)).toEqual([true, false, false]);
+  });
+
+  test('an inbox the API fills pays no fee unless the call brings a budget — and then that budget, whatever the list holds', async () => {
+    // Twenty made-up transfers, and an account with a generous ceiling of its own: no fee leg is asked for, none is signed.
+    const quiet = await madeUp(610, 20, false, { maxFee: '100' });
+    const first = await quiet.acct.acceptIncoming();
+    expect([first.accepted.length, first.failed.length, quiet.fees()]).toEqual([20, 0, 0]);
+    expect(quiet.asked.some((params) => 'withFeeLeg' in params)).toBe(false);
+
+    // The same list with a budget of 5 CC for the call: two fees of 2 CC are signed, and the third does not fit.
+    const paying = await madeUp(611, 20);
+    const second = await paying.acct.acceptIncoming(undefined, { maxFee: '5' });
+    expect(paying.fees()).toBe(2);
+    expect(second.accepted).toHaveLength(2);
+    expect(second.failed).toHaveLength(18);
+    expect((second.failed[0]!.error as Error).message).toMatch(/the accept costs this account 2 CC of fee, more than the fee it allows/);
+
+    // A budget the fees divide evenly: once it is spent, the rest are accepted without a fee leg.
+    const exact = await madeUp(612, 5);
+    const third = await exact.acct.acceptIncoming(undefined, { maxFee: '4' });
+    expect([third.accepted.length, third.failed.length, exact.fees()]).toEqual([5, 0, 2]);
+    expect(exact.asked.map((params) => params.withFeeLeg ?? false)).toEqual([true, true, false, false, false]);
+
+    // A fee leg nobody asked for is not signed, whatever the account's own ceiling is.
+    const pushy = await madeUp(613, 3, true, { maxFee: '100' });
+    const fourth = await pushy.acct.acceptIncoming();
+    expect([fourth.accepted.length, fourth.failed.length, pushy.fees()]).toEqual([0, 3, 0]);
+    await expect(pushy.acct.acceptIncoming(undefined, { maxFee: 'lots' })).rejects.toThrow(RangeError);
+  });
+
+  test('one accept pays its fee out of the ceiling its own call names', async () => {
+    const one = await madeUp(614, 1);
+    const [transfer] = await one.acct.incoming();
+    await one.acct.accept(transfer!, { maxFee: '2' });
+    expect(one.asked[0]).toMatchObject({ withFeeLeg: true });
+    expect(one.fees()).toBe(1);
+
+    const dear = await madeUp(615, 1);
+    const [other] = await dear.acct.incoming();
+    await expect(dear.acct.accept(other!, { maxFee: '1' })).rejects.toThrow(/the accept costs this account 2 CC of fee, more than the fee it allows/);
+    expect(dear.fees()).toBe(0);
+  });
+
+  test('the party a ceremony is read for is this key\'s own, whatever /auth/me says', async () => {
+    // The API names another party as the account's and prepares a send acting as it.
+    const { signer } = await who(616);
+    let submitted = 0;
+    const api = stub({
+      'GET /auth/me': () => ({ id: 'me', partyId: MALLORY }),
+      'POST /wallet/operations/prepare': async () => ({ operationId: 'send', legs: [await transferOf(MALLORY)], meta: {} }),
+      'POST /wallet/operations/submit': () => { submitted++; return { outcome: 'committed' }; },
+    });
+    const error = await createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, maxFee: '2' }).send({ receiverPartyId: OWNER, amount: '100' }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect((error as CeremonyError).cause).toBeInstanceOf(ForeignPartyError);
+    expect(submitted).toBe(0);
+  });
+
+  test('only `allowUnverified: true` switches the reading off', async () => {
+    for (const [account, value] of [[620, 'false'], [621, 1], [622, 'true']] as const) {
+      const api = venue({ twoHoldings: true, sendAs: { receiverPartyId: MALLORY } });
+      const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account }), fetchImpl: api.fetchImpl, ...fast, maxFee: '2' });
+      await acct.session.register({ partyName: 'bot' });
+      await acct.onboard();
+      // A config value that is merely truthy is not the caller saying "sign it unread".
+      await expect(acct.send({ receiverPartyId: OWNER, amount: '100', allowUnverified: value as unknown as boolean })).rejects.toThrow(/sends to mallory::1220ff/);
+      expect(api.log.map((e) => e.type)).not.toContain('tokens.send');
+    }
+  });
+
+  test('a splice-wallet id the caller adds is trusted next to the released ones, never instead of them', async () => {
+    const custom = 'ab'.repeat(32);
+    const onboardWith = async (account: number, options: VenueOptions, over: Partial<SelfCustodyOptions> = {}) => {
+      const api = venue(options);
+      const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account }), fetchImpl: api.fetchImpl, ...fast, ...over });
+      await acct.session.register({ partyName: 'bot' });
+      return { api, done: await acct.onboard().then(() => 'onboarded', (e: Error) => e.message) };
+    };
+
+    // A proposal from a package no release of Splice has: refused, and the refusal does not send the reader to the id it quotes.
+    const unknown = await onboardWith(630, { proposalPackageId: custom });
+    expect(unknown.done).toMatch(/untrusted package \(splice-wallet (ab){32}\).*never from this message/);
+    expect(unknown.api.log.map((e) => e.type)).toEqual(['wallet.topology']);
+    // Added by the caller, it is signed; and adding it took none of the released ids away.
+    expect((await onboardWith(631, { proposalPackageId: custom }, { trustedPackages: { wallet: { 'splice-wallet': [custom] } } })).done).toBe('onboarded');
+    expect((await onboardWith(632, {}, { trustedPackages: { wallet: { 'splice-wallet': [custom] } } })).done).toBe('onboarded');
+    expect((await onboardWith(633, {}, { trustedPackages: { wallet: { 'splice-wallet': [] } } })).done).toBe('onboarded');
+  });
+});
+
 describe('signing up with an invite code', () => {
   const CODE = 'ABCD-EFGH-JKMN';
 
@@ -1819,7 +2408,7 @@ function stub(handlers: Record<string, (body: Record<string, unknown>) => unknow
     if (route === 'POST /auth/login-signature') return json({ token: jwt('a'), user: {} });
     const handler = handlers[route];
     if (!handler) return refuse(404, `no route ${route}`);
-    const out = handler(init.body ? JSON.parse(String(init.body)) : {});
+    const out = await handler(init.body ? JSON.parse(String(init.body)) : {});
     return out instanceof Response ? out : json(out);
   };
   return { fetchImpl, hits, signed: () => hits.filter((r) => r.startsWith('POST /wallet/operations')) };
@@ -1949,7 +2538,7 @@ describe('refusals that come before anything is signed', () => {
 
   test('a prepare the API refuses surfaces as a CeremonyError naming the operation and the stage', async () => {
     const api = stub({ 'POST /wallet/operations/prepare': () => refuse(400, 'amount must be a number string') });
-    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast });
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast, maxFee: '2' });
     const error = await acct.send({ receiverPartyId: 'p', amount: 'lots' }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(CeremonyError);
     expect(error).toMatchObject({ operation: 'tokens.send', stage: 'prepare', meta: null });
@@ -1959,7 +2548,7 @@ describe('refusals that come before anything is signed', () => {
 
   test('a coded refusal carries its errorCode on the CeremonyError, for the caller to branch on', async () => {
     const api = stub({ 'POST /wallet/operations/prepare': () => refuse(503, 'hosting unknown', 'PARTY_HOSTING_UNKNOWN') });
-    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast });
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast, maxFee: '2' });
     const error = await acct.send({ receiverPartyId: 'p', amount: '1' }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(CeremonyError);
     expect(error).toMatchObject({ stage: 'prepare', errorCode: 'PARTY_HOSTING_UNKNOWN', cause: { errorCode: 'PARTY_HOSTING_UNKNOWN' } });
@@ -1968,10 +2557,13 @@ describe('refusals that come before anything is signed', () => {
 
 test('acceptIncoming skips what expired and what the filter drops, and one refusal does not stop the rest', async () => {
   const at = (ms: number) => new Date(Date.now() + ms).toISOString();
-  const ti = (contractId: string, executeBefore: string, instrumentId = 'USDCx') =>
-    ({ contractId, templateId: 't', instrumentAdmin: 'admin', instrumentId, executeBefore });
+  const ti = (contractId: string, executeBefore: string, instrumentId = 'CBTC') =>
+    ({ contractId, templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId, executeBefore });
   const prepared: string[] = [];
+  const signer = await providerFromMnemonic(PHRASE);
+  const me = `party-me::${cantonFingerprint(signer.public_key)}`;
   const api = stub({
+    'GET /auth/me': () => ({ id: 'me', partyId: me }),
     'GET /tokens/transfer-requests/incoming': () => [
       ti('expired', at(-60_000)), ti('refused', at(60_000)), ti('fine', at(60_000)), ti('dust', at(60_000), 'SPAM'),
     ],
@@ -1980,11 +2572,11 @@ test('acceptIncoming skips what expired and what the filter drops, and one refus
       prepared.push(cid);
       return cid === 'refused'
         ? refuse(400, 'registry context unavailable')
-        : { operationId: `op-${cid}`, legs: [{ legId: 'l', hash: b64(new Uint8Array(32)), kind: 'transfer' }], meta: null };
+        : acceptLegs(me, cid).then((legs) => ({ operationId: `op-${cid}`, legs, meta: null }));
     },
     'POST /wallet/operations/submit': () => ({ outcome: 'committed' }),
   });
-  const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE), fetchImpl: api.fetchImpl, ...fast });
+  const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
   const { accepted, failed } = await acct.acceptIncoming((t) => t.instrumentId !== 'SPAM');
   expect(accepted.map((t) => t.contractId)).toEqual(['fine']);
   expect(failed.map((f) => f.transfer.contractId)).toEqual(['refused']);

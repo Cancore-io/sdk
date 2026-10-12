@@ -22,7 +22,7 @@
  */
 import { decodePreparedTransaction, hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
 import type { DamlTransaction_Node, PreparedTransaction, Value } from '@canton-network/core-ledger-proto';
-import { instrumentKey } from './dvp-admins';
+import { deepFreeze, instrumentKey } from './dvp-admins';
 
 export type DvpOperation = 'dvpCreateProposal' | 'dvpAcceptProposal' | 'dvpAllocateLeg' | 'dvpWithdrawAllocation';
 
@@ -74,12 +74,13 @@ export interface TrustedPackages {
   /**
    * `splice-wallet`, for the one transaction that is a bare create — the transfer preapproval
    * proposal `onboard()` signs. A create runs on no contract an admin signed, so unlike a send or an
-   * allocation it has no anchor but its package id; the ids are Splice's own, the same on every network.
+   * allocation it has no anchor but its package id; the ids are Splice's own: one per release, the
+   * same on every network, and a network may run any release.
    */
   wallet: Record<string, string[]>;
 }
 
-export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = {
+export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = deepFreeze({
   swap: {
     'cancore-swap': [
       '06a6e3f1f5d9dfcdc885d72248b26decdde09c7f99bc4a8af385624a30be2544', // 1.0.0
@@ -89,11 +90,40 @@ export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = {
     ],
   },
   wallet: {
+    // Every released `splice-wallet`, from Splice's own `daml/dars.lock`
+    // (hyperledger-labs/splice @ 5fb974056a29, 2026-09-29). A network runs whichever of them its
+    // super validators voted in, so one stand's id alone would refuse the others — and that stand
+    // too, the day it upgrades. A release after 0.1.25 is added here, or by `trustedPackages.wallet`.
     'splice-wallet': [
-      'd42261314d98cc04bf50bcc58930af98b9f33aeed11339465925de697d3ba66e', // devnet, 2026-10
+      '5f384fba007e8b93c8ff1ac151cdc2d035ae1e0506f5e5770de469048713024c', // 0.1.0
+      'e276113de450c2bb4bf8cf2d2991dd0b397fe7fe8103fe1b5377b8ab6622edec', // 0.1.1
+      'c162e08a4ec0428bfa870b6d9040989e575c74199c3a80558c62e03196dd5146', // 0.1.2
+      '2c35bb4f5084ea66db59717d21750bfd64c43147ef5fd5166615092d592a6917', // 0.1.3
+      '141dad2d33b6410b8e1c35a0c4f8f76cb691e4d9a4410ce89f33f373855317e1', // 0.1.4
+      '614b525a50c624062d851ce7df5bdb90ddfa0d6871c486cb6e2c7b694bfbce59', // 0.1.5
+      'ba51e944e430facce00c297c58f4769240402721de4a1d121705050f8e9be901', // 0.1.6
+      'd9a91419b27aa27002a883334015a892c35075967b07008a446bc4b5073051ec', // 0.1.7
+      '882f6438ef69a4fbbe36e32e020d98f3eb1982ac484686e3ca1e2577d677626a', // 0.1.8
+      '940b9fd181c0cf358dd8c38934a8c908d2a3ee5a4728f72481b4de6720f3f8d5', // 0.1.9
+      '9824ffa414d5803d17efafd75c69c1dd53591ac5197d07048b24dbac1720a462', // 0.1.10
+      '991842eee48ec3caa3a649e8f47e3544dd7b688ce4b363aa934a83db7dada427', // 0.1.11
+      'b30bb727552cf6b624dbc9a5ff95f6c158e0a654e2e9c5c27bcfe3f5d0f9ada2', // 0.1.12
+      'eb6e01efacc3397e23c6be8b9be7db4bf37672211974d69e24b48980e2f98b7e', // 0.1.13
+      '690c1d47bac06db419db344d59a7a30c53fa3f5d961943fe1782cfc6c78794d8', // 0.1.14
+      'fd57252dda29e3ce90028114c91b521cb661df5a9d6e87c41a9e91518215fa5b', // 0.1.15
+      '17dca10fd8eb6a833be530fe9c6f9c2b7397a38c06e9c86d0679adc200b90e14', // 0.1.16
+      '176c2924cd7aa12bc81ffd1a8d6cfaf46e70378f653eb5f19f2d6b9599cfd45c', // 0.1.17
+      '94d88246f69d8a4b69333d1f993e3280deaca19b70511ea7687f01e4328a34a4', // 0.1.18
+      '1d8317b1e476c03ea2a85bed8435e5c182abe501db58350009187fa839ab2cca', // 0.1.19
+      'e485c2eb59cca556e0e2ecfaaef45346dd0ba64f9976a3957938d814f846c78c', // 0.1.20
+      'f799a58fa53dfe48bae52bd5dbcc2b578a7d4dfee3ae3f4eb7635fe9a8cc67d3', // 0.1.21
+      'a78daeeb1a4a2405828b29f8c04814725dbd97ee5a60bd02e839f32518640afa', // 0.1.22
+      '727c0fb9711d59b506fbb3cff2342e55eb583bb88682a946220525c304feca4a', // 0.1.23
+      'd42261314d98cc04bf50bcc58930af98b9f33aeed11339465925de697d3ba66e', // 0.1.24 — the dev stand, 2026-10
+      '916f16ea9413ba72d9ae660c9d0741f1078fc27b82b61e4b9db6a991dc47a848', // 0.1.25
     ],
   },
-};
+});
 
 /**
  * The token-standard allocation factory interface, by package id: the standard's API packages are
@@ -118,7 +148,7 @@ export interface PreparedToSign {
 }
 
 /** The wallet operations outside a trade whose transactions are read before the key signs them. */
-export type TokenOperation = 'tokens.send' | 'tokens.consolidate' | 'tokens.accept' | 'tokens.preapproval';
+export type TokenOperation = 'tokens.send' | 'tokens.send-fee' | 'tokens.consolidate' | 'tokens.accept' | 'tokens.preapproval';
 
 /** A prepared transaction the account refuses to sign, with the reason. */
 export class UnverifiedTransactionError extends Error {
@@ -173,7 +203,39 @@ async function readPrepared(tx: PreparedToSign, what: string, party: string, ref
   // two under the same id it would read one while the ledger runs the other.
   const disclosed = (decoded.metadata?.inputContracts ?? []).map((c) => (c.contract.oneofKind === 'v1' ? c.contract.v1.contractId : ''));
   if (new Set(disclosed).size !== disclosed.length) refuse(`${what} discloses two contracts under one contract id`);
+  // The same of the contracts it creates: the holdings rules read them by id, and a second create
+  // under an id already taken — by a create or by a disclosed contract — would be a holding no rule sees.
+  const made = (decoded.transaction?.nodes ?? []).flatMap((n) => {
+    const type = nodeType(n);
+    return type?.oneofKind === 'create' ? [type.create.contractId] : [];
+  });
+  if (new Set([...disclosed, ...made]).size !== disclosed.length + made.length) refuse(`${what} creates two contracts under one contract id`);
+  // Records are read by label here; a label said twice would be read one way and run another.
+  const values = [
+    ...(decoded.metadata?.inputContracts ?? []).map((c) => (c.contract.oneofKind === 'v1' ? c.contract.v1.argument : undefined)),
+    ...(decoded.transaction?.nodes ?? []).flatMap((n) => {
+      const type = nodeType(n);
+      return type?.oneofKind === 'create' ? [type.create.argument] : type?.oneofKind === 'exercise' ? [type.exercise.chosenValue] : [];
+    }),
+  ];
+  if (values.some(repeatsLabel)) refuse(`${what} carries a record that names a field twice`);
   return decoded;
+}
+
+/** A record, anywhere inside a Daml value, with one label on two fields. */
+function repeatsLabel(value: Value | undefined): boolean {
+  const sum = value?.sum;
+  if (!sum) return false;
+  if (sum.oneofKind === 'record') {
+    const labels = sum.record.fields.map((f) => f.label).filter(Boolean);
+    return new Set(labels).size !== labels.length || sum.record.fields.some((f) => repeatsLabel(f.value));
+  }
+  if (sum.oneofKind === 'list') return sum.list.elements.some(repeatsLabel);
+  if (sum.oneofKind === 'optional') return repeatsLabel(sum.optional.value);
+  if (sum.oneofKind === 'variant') return repeatsLabel(sum.variant.value);
+  if (sum.oneofKind === 'textMap') return sum.textMap.entries.some((e) => repeatsLabel(e.value));
+  if (sum.oneofKind === 'genMap') return sum.genMap.entries.some((e) => repeatsLabel(e.key) || repeatsLabel(e.value));
+  return false;
 }
 
 /**
@@ -586,7 +648,11 @@ const sameId = (a: { packageId: string; moduleName: string; entityName: string }
 
 /** A node's package is trusted only by name AND id. */
 const trusted = (allowed: Record<string, string[]>, packageName: string, packageId: string | undefined) =>
-  !!packageId && (allowed[packageName] ?? []).includes(packageId);
+  !!packageId && pinnedFor(allowed, packageName).includes(packageId);
+
+/** What is pinned under a name the TRANSACTION supplied: an own entry of the map, never `constructor` or `__proto__`. */
+const pinnedFor = (pins: Record<string, readonly string[]>, name: string): readonly string[] =>
+  (Object.prototype.hasOwnProperty.call(pins, name) ? pins[name]! : []);
 
 /** Every Party value inside a Daml value. */
 function partiesIn(value: Value | undefined, found = new Set<string>()): Set<string> {
@@ -764,6 +830,11 @@ const PREAPPROVAL_SEND = /^TransferPreapproval_Send(V2)?$/;
  *  - what the account ends up poorer, the fee leg's payment included, is at most `maxCost`.
  */
 export async function verifySelfSendPrepared(legs: Leg[], terms: SelfSendTerms): Promise<void> {
+  await selfSendCost(legs, terms);
+}
+
+/** {@link verifySelfSendPrepared}, resolving to what the ceremony costs the account, in 1e-10 CC units. */
+export async function selfSendCost(legs: Leg[], terms: SelfSendTerms): Promise<bigint> {
   const refuse = refuser('tokens.send');
   if (units(terms.amount) <= 0n || units(terms.maxCost) < 0n) refuse('the amount or the cost bound is not a decimal of at most ten places');
   const { net, fee, transfers } = await tokenLegs(legs, refuse, { ...terms, dso: terms.admins }, terms.party, 'this account');
@@ -771,6 +842,7 @@ export async function verifySelfSendPrepared(legs: Leg[], terms: SelfSendTerms):
   if (net + fee > units(terms.maxCost)) {
     refuse(`the send costs this account more than ${decimalOf(units(terms.maxCost))} ${terms.instrument} (an old input's accrued holding fee counts: consolidate() it first)`);
   }
+  return net + fee;
 }
 
 /** A send the account asked for, to another party. Amounts are decimal strings. */
@@ -803,6 +875,11 @@ export interface SendTerms {
  * anything is signed.
  */
 export async function verifySendPrepared(legs: Leg[], terms: SendTerms): Promise<void> {
+  await sendCost(legs, terms);
+}
+
+/** {@link verifySendPrepared}, resolving to the CC the ceremony costs the account beyond `amount`, in 1e-10 units. */
+export async function sendCost(legs: Leg[], terms: SendTerms): Promise<bigint> {
   const refuse = refuser('tokens.send');
   const [amount, maxFee] = [units(terms.amount), units(terms.maxFee)];
   if (amount <= 0n || maxFee < 0n) refuse('the amount or the fee bound is not a decimal of at most ten places');
@@ -814,8 +891,10 @@ export async function verifySendPrepared(legs: Leg[], terms: SendTerms): Promise
     refuse(`${terms.receiver} is given ${decimalOf(given)} ${terms.instrument}, not the ${terms.amount} this send was asked for`);
   }
   if (!withinCost(terms.instrument, net, fee, amount, maxFee)) {
-    refuse(`the send costs this account ${costOf(terms.instrument, net, fee)}, more than the ${terms.amount} it sends and the fee it allows (an old input's accrued holding fee counts: consolidate() it first)`);
+    refuse(`the send costs this account ${costOf(terms.instrument, net, fee)}, more than the ${terms.amount} it sends and the fee it allows ` +
+      "(a fee debt the API collects on the fee leg counts, and so does an old input's accrued holding fee: consolidate() it first)");
   }
+  return isAmulet(terms.instrument) ? net + fee - amount : fee;
 }
 
 /** A merge of the account's own holdings of one instrument. Amounts are decimal strings. */
@@ -843,8 +922,27 @@ export async function verifyConsolidatePrepared(legs: Leg[], terms: ConsolidateT
   if (maxFee < 0n) refuse('the fee bound is not a decimal of at most ten places');
   const { net, fee, transfers } = await tokenLegs(legs, refuse, { ...terms, dso: terms.dso ?? terms.admins }, terms.party, 'this account');
   if (transfers.length === 0) refuse('the merge has no transfer in it');
-  if (transfers.some((t) => t.locked > 0n)) refuse('the merge leaves a holding locked');
   if (!withinCost(terms.instrument, net, fee, 0n, maxFee)) refuse(`the merge costs this account ${costOf(terms.instrument, net, fee)}, more than the fee it allows`);
+}
+
+/**
+ * Verify a ceremony that is a network fee and nothing else (`tokens.send-fee`, the fee of a send that
+ * could not carry one): CC sends to a pinned fee recipient, through a preapproval the DSO signed,
+ * costing the account at most `maxFee`.
+ */
+export async function verifyFeePrepared(legs: Leg[], terms: { party: string; dso: string[]; maxFee: string; feeRecipients: string[] }): Promise<void> {
+  await feeCost(legs, terms);
+}
+
+/** {@link verifyFeePrepared}, resolving to the fee the ceremony pays, in 1e-10 CC units. */
+export async function feeCost(legs: Leg[], terms: { party: string; dso: string[]; maxFee: string; feeRecipients: string[] }): Promise<bigint> {
+  const refuse = refuser('tokens.send-fee');
+  const maxFee = units(terms.maxFee);
+  if (maxFee < 0n) refuse('the fee bound is not a decimal of at most ten places');
+  const { fee, transfers } = await tokenLegs(legs, refuse, { ...terms, admins: terms.dso, instrument: 'Amulet' }, terms.party, 'this account');
+  if (transfers.length > 0) refuse('a fee ceremony carries a transfer');
+  if (fee > maxFee) refuse(`the fee costs this account ${decimalOf(fee)} CC, more than the fee it allows`);
+  return fee;
 }
 
 /** An incoming transfer the account was asked to accept. */
@@ -869,6 +967,11 @@ export interface AcceptTerms {
  * to a pinned fee recipient, within `maxFee`.
  */
 export async function verifyAcceptPrepared(legs: Leg[], terms: AcceptTerms): Promise<void> {
+  await acceptCost(legs, terms);
+}
+
+/** {@link verifyAcceptPrepared}, resolving to the fee the accept pays, in 1e-10 CC units. */
+export async function acceptCost(legs: Leg[], terms: AcceptTerms): Promise<bigint> {
   const refuse = refuser('tokens.accept');
   const maxFee = units(terms.maxFee);
   if (maxFee < 0n) refuse('the fee bound is not a decimal of at most ten places');
@@ -878,11 +981,12 @@ export async function verifyAcceptPrepared(legs: Leg[], terms: AcceptTerms): Pro
     const what = `leg ${index}`;
     if (leg.kind !== 'fee' && leg.kind !== 'transfer') refuse(`${what} is a ${leg.kind}, not an accept or its fee`);
     const opened = await openLeg(leg, what, terms.party, refuse);
-    if (leg.kind === 'fee') fee += preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.dso, key: AMULET, receivers: terms.feeRecipients, wanted: 'a pinned network fee recipient' }).net;
+    if (leg.kind === 'fee') fee += costOfLeg(preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.dso, key: AMULET, receivers: terms.feeRecipients, wanted: 'a pinned network fee recipient' }));
     else accepts += acceptLeg(opened, what, refuse, terms);
   }
   if (accepts !== 1) refuse(`expected one accept, the API prepared ${accepts}`);
   if (fee > maxFee) refuse(`the accept costs this account ${decimalOf(fee)} CC of fee, more than the fee it allows`);
+  return fee;
 }
 
 /** The step of `onboard()` that lets CC reach the account directly. */
@@ -910,12 +1014,18 @@ export async function verifyPreapprovalSetupPrepared(legs: Leg[], terms: Preappr
   const { templateId, packageName, signatories, argument } = root.create;
   if (templateId?.moduleName !== 'Splice.Wallet.TransferPreapproval' || templateId.entityName !== 'TransferPreapprovalProposal') refuse('it is not a transfer preapproval proposal');
   // A create has no admin-signed contract under it: the package id is all that says whose code this is.
-  if (!trusted(terms.packages, packageName, templateId?.packageId)) refuse(`it runs code from an untrusted package (${packageName || 'unnamed'} ${templateId?.packageId ?? ''})`);
+  if (!trusted(terms.packages, packageName, templateId?.packageId)) {
+    refuse(`it runs code from an untrusted package (${packageName || 'unnamed'} ${templateId?.packageId ?? ''}): ` +
+      "if a splice-wallet release newer than this SDK lists is live, take its id from Splice's own daml/dars.lock or from Cancore — " +
+      "never from this message, the API wrote the id in it — and add it with trustedPackages: { wallet: { 'splice-wallet': [id] } }");
+  }
   if (signatories.length !== 1 || signatories[0] !== terms.party) refuse('the proposal is not signed by this account alone');
   const proposal = readPlain(argument) as { receiver?: unknown; provider?: unknown; expectedDso?: unknown } | null;
   if (!proposal || Object.keys(proposal).sort().join() !== 'expectedDso,provider,receiver') return refuse('the proposal is not of the shape this SDK knows');
   if (proposal.receiver !== terms.party) refuse('the proposal is for another receiver');
-  if (!terms.providers.includes(proposal.provider as string)) refuse(`the proposal names ${String(proposal.provider)} as provider, which is neither this account nor a pinned venue`);
+  if (!terms.providers.includes(proposal.provider as string)) {
+    refuse(`the proposal names ${String(proposal.provider)} as provider, which is neither this account nor a pinned venue (the venue comes from network, or from venuePartyId)`);
+  }
   if (!terms.dso.includes(proposal.expectedDso as string)) refuse(`the proposal expects ${String(proposal.expectedDso)} as the DSO, which is not a pinned CC admin`);
 }
 
@@ -976,18 +1086,29 @@ async function tokenLegs(
     if (leg.kind !== 'fee' && leg.kind !== 'transfer') refuse(`${what} is a ${leg.kind}, not a transfer or its fee`);
     const opened = await openLeg(leg, what, terms.party, refuse);
     if (leg.kind === 'fee') {
-      out.fee += preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.dso, key: AMULET, receivers: terms.feeRecipients, wanted: 'a pinned network fee recipient' }).net;
+      out.fee += costOfLeg(preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.dso, key: AMULET, receivers: terms.feeRecipients, wanted: 'a pinned network fee recipient' }));
       continue;
     }
     const viaFactory = opened.root?.oneofKind === 'exercise' && opened.root.exercise.choiceId === 'TransferFactory_Transfer';
     const moved = viaFactory
       ? factoryMoved(opened, what, refuse, { party: terms.party, admins: terms.admins, key, receiver: to, wanted })
       : preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.admins, key, receivers: [to], wanted });
-    out.net += moved.net;
+    out.net += costOfLeg(moved);
     out.transfers.push(moved);
   }
   return out;
 }
+
+/**
+ * What one leg costs the account: what its holdings lost, and never less than what the leg hands to
+ * somebody else. The two differ when value enters the transfer from something that is not a holding —
+ * a reward coupon of the account's own — and "spent less change" alone would let that leave unseen,
+ * or let a gain on one leg pay for an overcharge on another.
+ */
+const costOfLeg = (moved: Moved) => {
+  const given = moved.received + moved.locked;
+  return moved.net > given ? moved.net : given;
+};
 
 /** What a ceremony cost, in words: one CC figure, or the instrument's and the CC fee beside it. */
 const costOf = (instrument: string, net: bigint, fee: bigint) =>
@@ -1057,7 +1178,22 @@ function factoryMoved(
   const isThisOffer = (contract: Create) => contract.signatories.includes(admin) && sameTransfer((readPlain(contract.argument) as { transfer?: Partial<TransferLeg> } | null)?.transfer, transfer);
   const bounds = signerBounds(nodes, inputs, created, terms.party, [admin], command.contractId, allowed, 'send', isThisOffer);
   if (bounds) refuse(`${what}: ${bounds}`);
-  return { ...movedHoldings({ nodes, inputs, created }, what, refuse, { party: terms.party, key: terms.key, receiver: terms.receiver }), factory: true, asked };
+  const moved = movedHoldings({ nodes, inputs, created }, what, refuse, { party: terms.party, key: terms.key, receiver: terms.receiver });
+  // To somebody else the leg gives exactly what it transfers, in one of the two ways the standard has:
+  // the holding handed over, or the amount locked under ONE offer of this transfer for the receiver to
+  // accept. A lock with no offer is money nobody can take; half the amount is not the transfer asked.
+  if (terms.receiver !== terms.party) {
+    const offers = [...created.values()].filter(isThisOffer).length;
+    const handedOver = offers === 0 && moved.locked === 0n && moved.received === asked;
+    const offered = offers === 1 && moved.locked === asked && moved.received === 0n;
+    if (!handedOver && !offered) {
+      refuse(`${what} transfers ${decimalOf(asked)} and neither hands exactly that to ${terms.wanted} nor locks exactly that under one offer of this transfer`);
+    }
+  } else if (moved.locked > 0n) {
+    // To itself a registry locks nothing: there is nobody to accept. A lock here is the account's balance tied up.
+    refuse(`${what} is a transfer to the account itself that leaves a holding locked`);
+  }
+  return { ...moved, factory: true, asked };
 }
 
 /** Holdings of one instrument, spent and created: the account's only, but what is created for `receiver`. */
@@ -1108,7 +1244,7 @@ function acceptLeg({ nodes, root, inputs, created }: Opened, what: string, refus
   const admin = transfer?.instrumentId?.admin;
   const key = instrumentKey(String(transfer?.instrumentId?.id));
   if (!transfer || transfer.receiver !== terms.party || typeof transfer.sender !== 'string') return refuse(`${what} accepts a transfer that is not to this account`);
-  if (typeof admin !== 'string' || !(terms.pinnedAdmins[key] ?? []).includes(admin)) return refuse(`${what} accepts ${key} from ${String(admin)}, which is not an admin this SDK pins for it`);
+  if (typeof admin !== 'string' || !pinnedFor(terms.pinnedAdmins, key).includes(admin)) return refuse(`${what} accepts ${key} from ${String(admin)}, which is not an admin this SDK pins for it`);
   if (!sameTemplate(instruction, command)) refuse(`${what} runs on another template than the transfer it names`);
   if (!signedBy(instruction, command, [admin])) refuse(`${what} accepts a transfer the instrument admin did not sign`);
   const allowed = new Set([terms.party, transfer.sender, admin, ...instruction.signatories, ...instruction.stakeholders]);

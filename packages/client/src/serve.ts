@@ -46,7 +46,10 @@ export interface ServeOptions extends Omit<SettleOptions, 'signal'> {
    * watching a serve loop, and funds left locked are the failure it exists to prevent.
    */
   autoWithdraw?: boolean;
-  /** Accept incoming transfers (registry-token deliveries, cashback payouts) on every poll; a function filters them. Default false. */
+  /**
+   * Accept incoming transfers (registry-token deliveries, cashback payouts) on every poll; a function filters them.
+   * No network fee is paid for them here — a loop has no budget to give — so each accept's fee stays the account's debt. Default false.
+   */
   acceptIncoming?: boolean | ((transfer: IncomingTransfer) => boolean);
   /** Stops the loop like `stop()`. */
   signal?: AbortSignal;

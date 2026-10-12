@@ -7,7 +7,9 @@ const env = process.env;
 // The key comes from your secret store through the environment. Never put it in the source, and never print it.
 if (!env.CANCORE_BOT_KEY) throw new Error('set CANCORE_BOT_KEY: the 64 hex characters the wallet showed');
 const signer = await providerFromSeed(env.CANCORE_BOT_KEY);
-const bot = createSelfCustody({ baseUrl: env.CANCORE_API ?? 'https://api-dev.cancore.app', signer });
+// MAX_FEE is the most CC of network fee the bot may pay for one send or one merge. The stand sets that fee and
+// the SDK has no ceiling of its own: without one, a send or a merge is refused before anything is asked of the API.
+const bot = createSelfCustody({ baseUrl: env.CANCORE_API ?? 'https://api-dev.cancore.app', signer, maxFee: env.MAX_FEE });
 await bot.session.login(); // the wallet created the account, so there is no sign-up
 
 const me = await bot.onboard(); // completes whatever setup is missing (party, CC receipts); signs nothing when none is
@@ -16,7 +18,9 @@ console.log('party', me.partyId); // the address the owner funds
 console.log('CC', (await bot.balance('CC')).balance); // a decimal string; or 'CBTC', 'USDCx', …
 
 // A token that arrived as an offer waits for this key's signature. One refusal does not stop the rest.
-const { accepted, failed } = await bot.acceptIncoming();
+// The list comes from the API, so the network fee of the accepts is paid only out of the budget given here —
+// for the whole call, however many there are. With MAX_FEE unset no fee is paid, and it stays the bot's debt.
+const { accepted, failed } = await bot.acceptIncoming(undefined, { maxFee: env.MAX_FEE });
 for (const t of accepted) console.log('accepted', t.amount, t.instrumentId);
 for (const f of failed) console.error('not accepted', f.transfer.contractId, f.error);
 

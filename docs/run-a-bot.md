@@ -91,7 +91,9 @@ const env = process.env;
 // The key comes from your secret store through the environment. Never put it in the source, and never print it.
 if (!env.CANCORE_BOT_KEY) throw new Error('set CANCORE_BOT_KEY: the 64 hex characters the wallet showed');
 const signer = await providerFromSeed(env.CANCORE_BOT_KEY);
-const bot = createSelfCustody({ baseUrl: env.CANCORE_API ?? 'https://api-dev.cancore.app', signer });
+// MAX_FEE is the most CC of network fee the bot may pay for one send or one merge. The stand sets that fee and
+// the SDK has no ceiling of its own: without one, a send or a merge is refused before anything is asked of the API.
+const bot = createSelfCustody({ baseUrl: env.CANCORE_API ?? 'https://api-dev.cancore.app', signer, maxFee: env.MAX_FEE });
 await bot.session.login(); // the wallet created the account, so there is no sign-up
 ```
 
@@ -159,13 +161,26 @@ bot accepts it:
 
 ```ts
 // A token that arrived as an offer waits for this key's signature. One refusal does not stop the rest.
-const { accepted, failed } = await bot.acceptIncoming();
+// The list comes from the API, so the network fee of the accepts is paid only out of the budget given here —
+// for the whole call, however many there are. With MAX_FEE unset no fee is paid, and it stays the bot's debt.
+const { accepted, failed } = await bot.acceptIncoming(undefined, { maxFee: env.MAX_FEE });
 for (const t of accepted) console.log('accepted', t.amount, t.instrumentId);
 for (const f of failed) console.error('not accepted', f.transfer.contractId, f.error);
 ```
 
 Keep some CC on the bot whatever it trades: it pays the CC network fee on its own transfers
 ([section 9](#9-withdraw-to-the-owner)).
+
+- **What an accept costs is yours to cap, for the whole call.** `acceptIncoming` works through a
+  list the API supplies, and each accept can carry a network fee. The SDK pays those fees only out
+  of the `maxFee` you give that call, in total: with a budget of 12 CC and a fee of about 10, one
+  accept pays its fee and the next is refused and listed in `failed`. Raise the budget, or call
+  again — each call is a new budget, so how often you call is part of what you allow. With no
+  `maxFee` on the call, no fee leg is asked for or signed, and each accept's fee stays the bot's
+  debt: the API collects it on the fee leg of a later send, where it counts toward that send's
+  `maxFee`. The account's own `maxFee` is never spent here.
+- **Accept what you expect.** Anyone can send the bot a transfer. Pass a filter —
+  `acceptIncoming((t) => t.instrumentId === 'CBTC')` — when the bot should take only some.
 
 ## 8. First trade
 
@@ -256,9 +271,34 @@ if (env.CANCORE_OWNER_PARTY && env.WITHDRAW_AMOUNT) {
 `CANCORE_OWNER_PARTY` is your own party id: the **Wallet** page shows it, with a copy button.
 Nobody but the bot can move the bot's balance, so withdrawing is the bot's own send.
 
-- **The bot pays the CC network fee.** A send is the transfer plus a network-fee leg in CC, both
-  signed by the bot, whatever token is sent. A CC withdrawal needs the fee on top of the amount,
-  so do not send the last of the CC.
+- **The bot pays the CC network fee.** A send is the transfer plus a network fee in CC, both
+  signed by the bot, whatever token is sent. The fee is a leg of the send when the bot has a second
+  CC holding to pay it from; when it has only one, the API defers it and the SDK pays it right
+  after, as a second signed step. A CC withdrawal needs the fee on top of the amount, so do not
+  send the last of the CC.
+- **What the bot signs is read first.** Before the key signs, the SDK reads the transactions from
+  their bytes and holds them to what you asked for: `receiverPartyId` is given exactly `amount`,
+  nobody else is paid but the network fee to the venue's fee party, and the bot ends up poorer by
+  at most `amount` plus `maxFee` CC — the fee the API defers to a second step included. Anything
+  else is refused — a `CeremonyError` at stage
+  `prepare` whose `cause` is an `UnverifiedTransactionError` — and nothing is signed. This works
+  for CC to an owner who can receive it directly (every wallet account can) and for a registry
+  token such as CBTC, where the owner then accepts the transfer in the wallet.
+- **`maxFee`** is the most network fee one send may cost, all of it together, and it is yours to
+  set — once for the account, as [section 4](#4-sign-in) does from `MAX_FEE`, or per call
+  (`bot.send({ ..., maxFee })`). The SDK has no number of its own: each stand sets its fee by an
+  admin's rule, fixed or priced from cost, and it changes. A send with no ceiling is refused before
+  the API is asked for anything ("no ceiling was set on its network fee"), a send above it is
+  refused before the key signs ("more than the … fee it allows"). `GET /tokens/transfer/estimate-fee`
+  quotes the fee: on the dev stand a transfer cost about 9.4 CC on 2026-10-12, so `MAX_FEE=12`
+  passed there. A fee debt the API collects on the same leg counts toward it. `consolidate` is held
+  to the same ceiling; an accept is not ([section 7](#7-fund-the-bot)).
+- The answer of a send whose fee was deferred carries `deferredFee`. `'paid'`: the second step was
+  signed and submitted. `'waived'`: the API asked for nothing. `'owed'` (with `feeError`): the SDK
+  did not see the fee paid — it was refused (above what the send left of `maxFee`, for one), or its
+  submit failed, and then it may yet have gone through (`feeError.stage` is `'submit'`). In every
+  case the send itself went through: do not send again. An unpaid fee stays the bot's debt and is
+  collected with a later send.
 - A send that fails with a `CeremonyError` at stage `submit` may still have gone through. Check
   `bot.balance()` before sending again
   ([partner guide, section 9](partner-guide.md#9-errors-and-troubleshooting), "Retries").
@@ -311,6 +351,14 @@ for DvP, an expired trade and how to release its funds) is in the
 - **The key depends only on the phrase and the bot's number.** If you use one recovery phrase on
   two stands, the bot at index N has the same key on both: treat a key exposed on dev as exposed
   on mainnet.
+- **What the SDK reads before the key signs:** every step of a trade (`make`, `take`,
+  `withdrawAllocation`), `send`, `splitForFee`, `acceptIncoming`, `consolidate`, and the preapproval
+  step of `onboard`. What it cannot read: the party's topology in `onboard` (the API sends a hash;
+  the party's name is checked — [section 5](#5-onboard)), and anything you run through
+  `execute()` yourself. `allowUnverified: true` on a call switches the reading off for that call —
+  the key then signs what the API prepared, unread, and no `maxFee` — ceiling or budget — holds it. Leave it off unless you know why a ceremony
+  cannot be read (an older gateway that sends no bytes; a token whose registry the SDK does not pin
+  — add its admin with `instrumentAdmins` instead).
 - **One process per bot**, and leave the SDK's checks on. The rest of the
   [partner guide's checklist](partner-guide.md#10-security-checklist-and-going-to-mainnet) applies
   to a bot as it does to a partner account.
