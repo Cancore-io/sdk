@@ -415,6 +415,69 @@ describe('a fee split (a CC send to oneself) is signed only as the account asked
     await expect(verifySelfSendPrepared([await transfer(), await feeLeg()], terms)).resolves.toBeUndefined();
   });
 
+  describe('the preapproval is the DSO\'s own record, or nothing under it is (CAN-2249)', () => {
+    // A choice body runs with the authority of everyone who acts in it. A preapproval the DSO signed runs
+    // the DSO's code; one anybody else made runs theirs — with this account's authority.
+    const MALLORY = 'mallory::1220ff';
+    const EVIL = { packageName: 'splice-amulet', packageId: 'ee'.repeat(32) };
+    type Create = ReturnType<typeof preapprovalContract>;
+    const forged = (c: Create): Create => ({
+      ...c, packageName: EVIL.packageName, templateId: { ...c.templateId!, packageId: EVIL.packageId }, signatories: [MALLORY], stakeholders: [MALLORY, ME],
+    });
+
+    test('a forged preapproval whose "send" makes this account sign a contract that only looks like its holding', async () => {
+      // Nothing leaves the account: what it spends comes back in full, as contracts named Amulet and
+      // owned by it — and signed by it and by their author, in the author's package. Whoever controls
+      // such a contract's choices acts with this account's authority from then on.
+      const proxy = (c: Create): Create => ({ ...c, packageName: EVIL.packageName, templateId: { ...c.templateId!, packageId: EVIL.packageId }, signatories: [MALLORY, ME], stakeholders: [MALLORY, ME] });
+      const leg = await transfer({ preapproval: forged, output: proxy });
+      await refused([leg], /leg 0 sends through a preapproval the instrument admin did not sign/);
+    });
+
+    test('the honest tree, through a preapproval the DSO did not sign', async () => {
+      await refused([await transfer({ preapproval: (c) => ({ ...c, signatories: [ME, DEV.venue] }) }), await feeLeg()], /leg 0 sends through a preapproval the instrument admin did not sign/);
+      await refused([await transfer(), await feeLeg({ preapproval: (c) => ({ ...c, signatories: [DEV.venue] }) })], /leg 1 sends through a preapproval the instrument admin did not sign/);
+    });
+
+    test('a command that names another template than the preapproval it runs on', async () => {
+      const honest = preapprovalContract('00'.repeat(34), ME);
+      const other = (over: Partial<NonNullable<Create['templateId']>>, packageName = honest.packageName) => ({ packageName, templateId: { ...honest.templateId!, ...over } });
+      const wrong = /runs on another template than the preapproval it names/;
+      await refused([await transfer({ commandOn: other({}, 'evil-amulet') })], wrong);
+      await refused([await transfer({ commandOn: other({ moduleName: 'Evil.Rules' }) })], wrong);
+      await refused([await transfer({ commandOn: other({ entityName: 'TransferPreapprovalProxy' }) })], wrong);
+      // The fee leg is held to it like the transfer.
+      await refused([await transfer(), await feeLeg({ commandOn: other({ moduleName: 'Evil.Rules' }) })], /leg 1 runs on another template/);
+    });
+
+    test('a command that names other signatories than the contract it discloses', async () => {
+      // The contract says the DSO signed it; the command exercising it — the ledger's own word — does not.
+      await refused([await transfer({ commandSignatories: [ME, DEV.venue] })], /leg 0 sends through a preapproval the instrument admin did not sign/);
+      // And the other way round: the command claims the DSO for a contract that does not carry its signature.
+      await refused([await transfer({ preapproval: (c) => ({ ...c, signatories: [ME, DEV.venue] }), commandSignatories: [DEV.dso, ME, DEV.venue] })],
+        /leg 0 sends through a preapproval the instrument admin did not sign/);
+    });
+
+    test('no pinned admin at all is a refusal, not a pass', async () => {
+      await refused([await transfer(), await feeLeg()], /the instrument admin did not sign/, { ...terms, admins: [] });
+    });
+
+    test('two contracts disclosed under one contract id', async () => {
+      // The honest preapproval and a decoy with the same id: a reader that keeps the last one sees the
+      // DSO's signature on a contract the ledger is not running.
+      const honest = await transfer();
+      const leg = await transfer({ extraInput: preapprovalContract('af'.repeat(34), ME) });
+      expect(leg.preparedTransactionHash).not.toBe(honest.preparedTransactionHash);
+      await refused([leg], /leg 0 discloses two contracts under one contract id/);
+    });
+
+    test('a newer version of the DSO\'s package is the same template: the DSO upgrades on its own schedule', async () => {
+      const honest = preapprovalContract('00'.repeat(34), ME);
+      const upgraded = { packageName: honest.packageName, templateId: { ...honest.templateId!, packageId: 'ab'.repeat(32) } };
+      await expect(verifySelfSendPrepared([await transfer({ commandOn: upgraded })], terms)).resolves.toBeUndefined();
+    });
+  });
+
   test('a hash that is not the hash of the bytes', async () => {
     const [a, b] = [await transfer(), await feeLeg()];
     await refused([{ ...a, preparedTransactionHash: b.preparedTransactionHash }, b], /leg 0 does not hash to the hash it came with/);
@@ -434,7 +497,7 @@ describe('a fee split (a CC send to oneself) is signed only as the account asked
   });
 
   test('acting on a contract neither the account nor the admin signs', async () => {
-    const stranger = preapprovalContract('c0'.repeat(34), 'other::1220ee', 'other::1220ee');
+    const stranger = { ...preapprovalContract('c0'.repeat(34), 'other::1220ee', 'other::1220ee'), signatories: ['other::1220ee'], stakeholders: ['other::1220ee'] };
     await refused([await transfer({ extra: (c) => spend('x', c, ME), extraInput: stranger }), await feeLeg()],
       /acts on a TransferPreapproval that is neither its holding nor the instrument admin's/);
   });
