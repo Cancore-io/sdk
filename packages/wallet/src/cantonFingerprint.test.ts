@@ -38,6 +38,8 @@ describe('isPartyOfKey — the party of a key, whole (CAN-2249)', () => {
     // The hint is the account's name; the namespace is what the key decides.
     expect(isPartyOfKey(VADIM.publicKey, `grid-bot_1::${FP}`)).toBe(true);
     expect(isPartyOfKey(VADIM.publicKey.toUpperCase(), VADIM.partyId)).toBe(true);
+    // A hint is letters of either case, digits, `_` and `-`.
+    expect(isPartyOfKey(VADIM.publicKey, `Grid-Bot_1::${FP}`)).toBe(true);
   });
 
   it.each([
@@ -53,6 +55,9 @@ describe('isPartyOfKey — the party of a key, whole (CAN-2249)', () => {
     ['the namespace alone', FP],
     ['a single colon', `vadim:${FP}`],
     ['a longer namespace that starts with the fingerprint', `vadim::${FP}00`],
+    ['a longer namespace that ends with the fingerprint', `vadim::00${FP}`],
+    ['a dot in the hint', `va.dim::${FP}`],
+    ['a colon in the hint', `va:dim::${FP}`],
     ['nothing', ''],
   ])('says no to %s', (_what, partyId) => {
     expect(isPartyOfKey(VADIM.publicKey, partyId)).toBe(false);
@@ -64,6 +69,10 @@ describe('isPartyOfKey — the party of a key, whole (CAN-2249)', () => {
       expect(isPartyOfKey(VADIM.publicKey, value)).toBe(false);
     },
   );
+
+  it.each(['zz', 'abc', ''])('says no for a key that cannot be read (%p), and does not throw', (key) => {
+    expect(isPartyOfKey(key, VADIM.partyId)).toBe(false);
+  });
 
   it('is stricter than keyOwnsParty exactly where that one is loose', () => {
     const loose = `x::${FP}::anything`;

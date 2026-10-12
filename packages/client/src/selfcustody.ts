@@ -21,7 +21,7 @@
  * pair through DvP is a SettleError. An EVM leg is locked by an EVM key, which
  * is not this signer.
  */
-import { assertOperationLegs, signLegs, type OperationLeg } from '@cancore/wallet/operations';
+import { assertOperationLegs, signLegs, TOPOLOGY_OPERATION, type OperationLeg } from '@cancore/wallet/operations';
 import { isPartyOfKey } from '@cancore/wallet';
 
 export { UnexpectedLegError } from '@cancore/wallet/operations';
@@ -372,21 +372,27 @@ export class SettleError extends Error {
 
 /**
  * The party the API names for this account is not the party of the account's key (CAN-2249): its id is
- * not `<hint>::<fingerprint of this key>`. Thrown by `onboard()` — wrapped in a {@link CeremonyError}
- * (`stage: 'prepare'`) when the API PROPOSES such a party, and then nothing was signed; thrown as it is
- * when the API RECORDS one after the topology went through. Either way: do not fund `partyId`.
+ * not `<hint>::<fingerprint of this key>`, so this key does not control it. `when` says where it showed:
+ *  - `'proposes'` — in a `wallet.topology` the API prepared. Nothing was signed; it arrives as the
+ *    `cause` of a {@link CeremonyError} (`stage: 'prepare'`), from `onboard()` and `execute()` alike.
+ *  - `'records'` — as the party the account HAS, on any call of `onboard()`, whoever made that party
+ *    and whenever. Thrown as it is, before the preapproval. Do not fund it for a program that holds
+ *    only this key: a party made for another key (an account still in custody, or one the API
+ *    answered wrongly) is not one this key can move funds out of.
  */
 export class ForeignPartyError extends Error {
   constructor(
     readonly partyId: unknown,
     readonly when: 'proposes' | 'records',
   ) {
-    // The id is the API's text: quoted and cut, so it cannot add lines of its own to a log.
-    const shown = typeof partyId === 'string' ? JSON.stringify(partyId.slice(0, 120)) : `a value of type ${typeof partyId}`;
-    super(
-      `the API ${when} a party that is not the party of this account's key (${shown}); ` +
-        (when === 'proposes' ? 'nothing was signed' : 'do not send funds to it'),
-    );
+    // The id is the API's text: cut, quoted, and everything outside printable ASCII escaped, so it
+    // cannot add lines of its own to a log or reorder the one it is on.
+    const shown = typeof partyId === 'string'
+      ? JSON.stringify(partyId.slice(0, 120)).replace(/[^\x20-\x7e]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+      : `a value of type ${typeof partyId}`;
+    super(when === 'proposes'
+      ? `the API proposes a party that is not the party of this account's key (${shown}); nothing was signed`
+      : `this account's party is not the party of its key (${shown}): the key does not control it; do not fund it for a program that holds only this key`);
     this.name = 'ForeignPartyError';
   }
 }
@@ -624,7 +630,14 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         // The legs are what this operation may have, before anything else looks at them (CAN-2399).
         assertOperationLegs(prepared.legs, type);
         // No legs is a success: the thing is already done, and `meta` says so.
-        if (prepared.legs.length > 0) await check?.(prepared.legs, prepared.meta);
+        if (prepared.legs.length > 0) {
+          // The key decides whose party it brings into being, not the API (CAN-2249), and by whichever
+          // door the topology is asked for. What it signs here is a multihash it cannot read, so the one
+          // thing it can hold the API to is the party's name: this key's, whole — or nothing is signed.
+          const proposed = (prepared.meta as { partyId?: unknown } | null)?.partyId;
+          if (type === TOPOLOGY_OPERATION && !isPartyOfKey(session.publicKey, proposed)) throw new ForeignPartyError(proposed, 'proposes');
+          await check?.(prepared.legs, prepared.meta);
+        }
       } catch (err) {
         throw new CeremonyError(type, 'prepare', err, null);
       }
@@ -1251,17 +1264,14 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   async function onboard(): Promise<AccountUser> {
     let user = await me();
     if (!user.partyId) {
-      // The key decides whose party it brings into being, not the API (CAN-2249). What it signs here is a
-      // multihash it cannot read, so the one thing it can hold the API to is the party's name: the party
-      // the API proposes must be this key's, whole — or nothing is signed.
-      await run<{ partyId?: unknown }>('wallet.topology', { publicKey: session.publicKey }, false, async (_legs, meta) => {
-        if (!isPartyOfKey(session.publicKey, meta?.partyId)) throw new ForeignPartyError(meta?.partyId, 'proposes');
-      });
+      await run('wallet.topology', { publicKey: session.publicKey }, false);
       user = await me();
       if (!user.partyId) throw new Error('the party topology was submitted but the account has no party yet');
-      // And the party the account ends up with is the address its owner is about to fund.
-      if (!isPartyOfKey(session.publicKey, user.partyId)) throw new ForeignPartyError(user.partyId, 'records');
     }
+    // The party the account has is the address its owner funds and the one this key must control.
+    // Held to the key on every call — a party made just now, earlier, or by another client — and
+    // before the preapproval: nothing is set up for a party that is not this key's.
+    if (!isPartyOfKey(session.publicKey, user.partyId)) throw new ForeignPartyError(user.partyId, 'records');
     await run('tokens.preapproval', undefined, false);
     return user;
   }

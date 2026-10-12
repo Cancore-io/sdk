@@ -20,13 +20,18 @@
   is one — printable ASCII starting with `Welcome to Cancore ` — the rule a `@cancore/wallet`
   provider already holds its own `signChallenge` to. Before, such a signer signed whatever the API
   returned as the challenge, a 32-byte transaction hash included.
-- `onboard()` makes a party only for its own key (CAN-2249). The party `wallet.topology` proposes
-  must be `<hint>::<fingerprint of this account's key>`, whole, or nothing is signed — a
-  `CeremonyError` at `prepare` whose `cause` is the new `ForeignPartyError` (`when: 'proposes'`).
-  And the party the account shows afterwards must be that key's too, or `onboard()` throws
-  `ForeignPartyError` (`when: 'records'`) and stops before the preapproval: that party is the
-  address its owner is about to fund. An account that already has a party is not judged by this
-  call. The predicate is `isPartyOfKey` in `@cancore/wallet` 0.3.0.
+- `onboard()` holds the account's party to its key (CAN-2249). The party must be
+  `<hint>::<fingerprint of this account's key>`, whole:
+  - the one `wallet.topology` proposes, or nothing is signed — a `CeremonyError` at `prepare` whose
+    `cause` is the new `ForeignPartyError` (`when: 'proposes'`). `execute('wallet.topology')` is held
+    to the same rule;
+  - the one the account has, on every call — made just now, earlier, or by the wallet — or
+    `onboard()` throws `ForeignPartyError` (`when: 'records'`) before the preapproval. It used to
+    return that party as the address to fund. An account whose party is not its key's (one still
+    in custody) was already refused at the preapproval; it is refused one step earlier now.
+
+  This checks the party's name. What else a topology says the key still cannot read (the API sends
+  its hash): see the wallet README. The predicate is `isPartyOfKey` in `@cancore/wallet` 0.3.0.
 
 ## 0.8.0
 

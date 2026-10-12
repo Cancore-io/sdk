@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { cantonFingerprint } from '@cancore/wallet';
 import { requestGrant } from './auth';
 import { createBridgeClient } from './bridge';
 import { createHttp } from './http';
@@ -37,12 +38,14 @@ const spec = JSON.parse(readFileSync(join(__dirname, '..', 'spec', 'openapi.json
 
 const ORDER_REPLY = { id: 'o1', status: 'completed', submissionKey: 'k', preparedTransactionHash: 'h' };
 /** What the self-custody account reads off a reply to get to its next call. */
+const KEY = '00'.repeat(32);
 const SELF_CUSTODY_REPLIES: Record<string, unknown> = {
   '/auth/challenge': { challenge: 'Welcome to Cancore 2026-01-01 sig:0' },
   '/auth/register-challenge': { challenge: 'Welcome to Cancore 2026-01-01 sig:0' },
   '/auth/login-signature': { token: 'h.e30.s', user: { id: 'u' } },
   '/auth/register': { token: 'h.e30.s', user: { id: 'u' } },
-  '/auth/me': { id: 'u', partyId: 'p' },
+  // The party of the key the account below signs with: onboard() holds one to the other.
+  '/auth/me': { id: 'u', partyId: `p::${cantonFingerprint(KEY)}` },
   '/wallet/operations/prepare': { operationId: 'op', legs: [], meta: {} },
   '/partner/cashback/claims': [],
   '/tokens/transfer-requests/incoming': [],
@@ -71,7 +74,7 @@ async function routesTheClientCalls(): Promise<string[]> {
   // The self-custody account's own calls. Its two orchestrators (`make`, `take`)
   // run on swap state, so they are driven by the settled-swap test in
   // selfcustody.test.ts, which checks every route they touch the same way.
-  const signer = { public_key: '00'.repeat(32), signMessage: async () => '00', signChallenge: async () => '00' };
+  const signer = { public_key: KEY, signMessage: async () => '00', signChallenge: async () => '00' };
   const acct = createSelfCustody({ baseUrl: 'https://api.example', signer, fetchImpl: request });
   const doc = { key: 'terms-of-use', version: 'v', url: '/legal/terms-of-use' };
   await acct.session.login();

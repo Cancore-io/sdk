@@ -1591,8 +1591,8 @@ describe('what onboard() lets the key sign for the party (CAN-2399)', () => {
   // Every envelope ceremony names its operation, so a raw-signed leg is refused in each of them — and
   // as a CeremonyError at `prepare`, which is what the guides tell a partner to watch for.
   const MULTIHASH = b64(new Uint8Array([0x12, 0x20, ...new Uint8Array(32).fill(0xaa)]));
-  const hostile = () => stub({
-    'GET /auth/me': () => ({ id: 'me', partyId: 'party-me' }),
+  const hostile = (partyId = 'party-me') => stub({
+    'GET /auth/me': () => ({ id: 'me', partyId }),
     'GET /tokens/transfer-requests/incoming': () => [
       { contractId: 'c1', templateId: 't', instrumentAdmin: 'admin', instrumentId: 'USDCx', executeBefore: new Date(Date.now() + 60_000).toISOString() },
     ],
@@ -1610,8 +1610,10 @@ describe('what onboard() lets the key sign for the party (CAN-2399)', () => {
     ['consolidate', 'tokens.consolidate', (acct: ReturnType<typeof createSelfCustody>) => acct.consolidate()],
     ['onboard, at the preapproval', 'tokens.preapproval', (acct: ReturnType<typeof createSelfCustody>) => acct.onboard()],
   ] as const)('%s answered with a well-formed topology leg signs nothing', async (_what, operation, call) => {
-    const api = hostile();
-    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 56 }), fetchImpl: api.fetchImpl, ...fast });
+    const signer = await providerFromMnemonic(PHRASE, { account: 56 });
+    // The account's party is its key's: onboard() gets as far as the preapproval only then.
+    const api = hostile(`party-me::${cantonFingerprint(signer.public_key)}`);
+    const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
 
     refusedAtPrepare(await call(acct).catch((e: unknown) => e), operation);
     expect(api.hits).not.toContain('POST /wallet/operations/submit');
@@ -1677,17 +1679,80 @@ describe('whose party onboard() brings into being (CAN-2249)', () => {
     expect(api.log).toEqual([]);
   });
 
-  test('the API proposes the key\'s party and then records another: the caller is told not to fund it', async () => {
-    const { api, acct } = await onboarder({ recordedParty: () => `party-onboarder::${OTHER}` }, 53);
+  test.each([
+    ["another key's party", () => `party-onboarder::${OTHER}`],
+    // What a check of the first namespace alone lets through.
+    ['its own namespace with something after it', (honest: string) => `${honest}::${OTHER}`],
+  ] as Array<[string, NonNullable<VenueOptions['recordedParty']>]>)('the API proposes the key\'s party and then records %s: the caller is told not to fund it', async (_what, recordedParty) => {
+    const { api, acct, own } = await onboarder({ recordedParty }, 53);
 
     const error = await acct.onboard().catch((e: unknown) => e);
 
     // The topology it signed was for its own party; what the account now shows is not that.
     expect(error).toBeInstanceOf(ForeignPartyError);
-    expect(error).toMatchObject({ when: 'records', partyId: `party-onboarder::${OTHER}` });
-    expect((error as Error).message).toMatch(/do not send funds to it/);
+    expect(error).toMatchObject({ name: 'ForeignPartyError', when: 'records', partyId: recordedParty(own) });
+    expect((error as Error).message).toMatch(/not the party of its key.*do not fund it for a program that holds only this key/);
     // And it stops there: no preapproval is set up for a party that is not the key's.
     expect(api.asked).toEqual(['wallet.topology']);
+
+    // Asked again, it says so again: the party is there now, and it is still not this key's.
+    await expect(acct.onboard()).rejects.toBeInstanceOf(ForeignPartyError);
+    expect(api.asked).toEqual(['wallet.topology']);
+  });
+
+  test('an account that already has a party is held to the key too: the usual case is a bot made in the wallet', async () => {
+    // Nothing to sign and nothing to propose — the party is simply there. It is the address onboard()
+    // hands back to be funded, so it is read on every call, not only when this call made it.
+    const signer = await providerFromMnemonic(PHRASE, { account: 58 });
+    const api = stub({ 'GET /auth/me': () => ({ id: 'me', partyId: `party-me::${OTHER}` }) });
+    const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
+
+    const error = await acct.onboard().catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ForeignPartyError);
+    expect(error).toMatchObject({ when: 'records', partyId: `party-me::${OTHER}` });
+    expect(api.signed()).toEqual([]);
+  });
+
+  test('execute() is the same door: a topology asked for by name is held to the key as well', async () => {
+    const signer = await providerFromMnemonic(PHRASE, { account: 59 });
+    const own = `party-me::${cantonFingerprint(signer.public_key)}`;
+    const MULTIHASH = Buffer.from(`1220${'aa'.repeat(32)}`, 'hex').toString('base64');
+    for (const meta of [{ partyId: `party-me::${OTHER}` }, {}, null]) {
+      const api = stub({
+        'GET /auth/me': () => ({ id: 'me', partyId: null }),
+        'POST /wallet/operations/prepare': () => ({ operationId: 'op', legs: [{ legId: 't', hash: MULTIHASH, kind: 'topology' }], meta }),
+        'POST /wallet/operations/submit': () => ({ ok: true }),
+      });
+      const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
+
+      const error = await acct.execute('wallet.topology', { publicKey: signer.public_key }).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(CeremonyError);
+      expect((error as CeremonyError).cause).toMatchObject({ name: 'ForeignPartyError', when: 'proposes' });
+      expect(api.hits).not.toContain('POST /wallet/operations/submit');
+    }
+    // And the key's own party goes through, as before.
+    const api = stub({
+      'POST /wallet/operations/prepare': () => ({ operationId: 'op', legs: [{ legId: 't', hash: MULTIHASH, kind: 'topology' }], meta: { partyId: own } }),
+      'POST /wallet/operations/submit': () => ({ ok: true }),
+    });
+    await createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast }).execute('wallet.topology', { publicKey: signer.public_key });
+    expect(api.hits).toContain('POST /wallet/operations/submit');
+  });
+
+  test('what the error shows of the API\'s text: one line, cut, and nothing outside printable ASCII', () => {
+    const shown = (partyId: unknown) => new ForeignPartyError(partyId, 'records').message;
+
+    // A line or paragraph separator, a bidi override: escaped, so the line stays one line and reads as written.
+    expect(shown('a\u2028b\u202ec\u0085d\ne::1220')).toContain('"a\\u2028b\\u202ec\\u0085d\\ne::1220"');
+    expect(shown('a\u2028b\u202ec\u0085d\ne::1220')).toMatch(/^[\x20-\x7e]+$/);
+    // Cut: the API cannot fill a log with it.
+    expect(shown('x'.repeat(5000))).toContain(`"${'x'.repeat(120)}"`);
+    expect(shown('x'.repeat(5000)).length).toBeLessThan(400);
+    // Not a string: its type is said, its contents are not asked for.
+    expect(shown({ toString: () => 'party::1220' })).toContain('a value of type object');
+    expect(shown(undefined)).toContain('a value of type undefined');
   });
 
   test('the key\'s own party is made, and it is what onboard() answers', async () => {
@@ -1697,15 +1762,10 @@ describe('whose party onboard() brings into being (CAN-2249)', () => {
 
     expect(user.partyId).toBe(own);
     expect(api.log.map((e) => e.type)).toEqual(['wallet.topology', 'tokens.preapproval']);
-  });
 
-  test('an account that already has a party is not asked about it again', async () => {
-    // A party made before this rule, or by another client, is not this call's to judge: onboard() goes on to the preapproval.
-    const { api, acct } = await onboarder({ recordedParty: (honest) => `${honest}::${OTHER}` }, 55);
-    await acct.onboard().catch(() => undefined);
-
-    await expect(acct.onboard()).resolves.toMatchObject({ partyId: expect.stringContaining(`::${OTHER}`) });
-    expect(api.asked).toEqual(['wallet.topology', 'tokens.preapproval']);
+    // Called again — every process does, as its first line — the party is there, and it is the key's.
+    await expect(acct.onboard()).resolves.toMatchObject({ partyId: own });
+    expect(api.asked).toEqual(['wallet.topology', 'tokens.preapproval', 'tokens.preapproval']);
   });
 });
 

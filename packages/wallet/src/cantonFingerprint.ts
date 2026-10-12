@@ -54,10 +54,16 @@ const KEY_PARTY = /^[A-Za-z0-9_-]{1,255}::[0-9a-f]+$/;
  * when a device decides, on a server's word, which party a key is about to
  * bring into being or which address its owner is about to fund: a party id is
  * taken as a value of unknown type and is either exactly the key's or not.
+ *
+ * A key that cannot be read has no party: the answer is no, not an error.
  */
-export function isPartyOfKey(publicKeyHex: string, partyId: unknown): partyId is string {
+export function isPartyOfKey(publicKeyHex: string, partyId: unknown): boolean {
   if (typeof partyId !== 'string' || !KEY_PARTY.test(partyId)) return false;
-  return partyId.slice(partyId.indexOf('::') + 2) === cantonFingerprint(publicKeyHex);
+  try {
+    return partyId.slice(partyId.indexOf('::') + 2) === cantonFingerprint(publicKeyHex);
+  } catch {
+    return false;
+  }
 }
 
 function bytesToHexLower(bytes: Uint8Array): string {

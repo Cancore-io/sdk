@@ -119,10 +119,16 @@ Setting a bot up is two steps:
 2. **CC receipts.** A transfer preapproval, paid by the venue, so that CC sent to the bot lands
    directly instead of waiting as an offer.
 
-The party's topology is the one thing the key signs without being able to read it, so the SDK
-holds the API to what it can check: the party must be `<name>::<fingerprint of this key>` and
-nothing else, or `onboard()` signs nothing; and the party the account then shows must be that
-key's too, or `onboard()` throws a `ForeignPartyError` — an address like that is not one to fund.
+The party is held to the key, every time. `onboard()` reads the party the account has — made just
+now, made earlier by the wallet, whichever — and unless it is `<name>::<fingerprint of this key>`
+and nothing else, it throws a `ForeignPartyError` instead of returning an address: this key does
+not control that party, so it is not one to fund for this bot. When the party is still to be made,
+the same holds for the one the API proposes, or the key signs nothing.
+
+What that does not cover: the party's topology is the one thing the key signs without being able
+to read it — the API sends its hash, not the transaction. The name is checked; what else the
+topology says is taken on the API's word. Create a bot's party against an API you trust for that
+one step.
 
 The wallet normally does both when it makes the bot. `onboard()` then finds nothing missing and
 asks for no signature. Make it the first call of every bot process all the same: it is safe to

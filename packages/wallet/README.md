@@ -204,6 +204,7 @@ server to rate-limit an attacker who has the file.
 cantonFingerprint(publicKeyHex);        // "1220…" multihash of the key
 partyNamespace(partyId);                // the fingerprint half of "hint::namespace"
 keyOwnsParty(publicKeyHex, partyId);    // does this key own that party?
+isPartyOfKey(publicKeyHex, partyId);    // is it exactly "hint::<this key's fingerprint>"? takes any value; ask this one on a server's word
 ```
 
 ## Signing
