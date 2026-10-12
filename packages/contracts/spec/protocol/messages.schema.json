@@ -395,17 +395,26 @@
     "ticket.receipt": {
       "x-direction": "F2S",
       "type": "object",
-      "description": "sig = TicketReceipt{ticketHash, ticketSigHash} by the message key",
-      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
-      "required": ["type", "orderHash", "attempt", "ticketHash", "ticketSigHash", "sig"],
+      "description": "form follows the issued ticket (S-14). EVM form (form absent or \"evm\"): sig = TicketReceipt{ticketHash, ticketSigHash} by the message key. Canton form: sig = CantonTicketReceipt{orderHash, attempt, deliveryOrderCidHash = keccak256(utf8(deliveryOrderCid)), validUntil} by the message key, deliveryOrderCid and validUntil exactly as in ticket.issued; fillerId and repayTo are not part of it (protocol §3.3, §10 D-O)",
+      "required": ["type", "orderHash", "attempt", "sig"],
       "properties": {
         "type": { "const": "ticket.receipt" },
+        "form": { "anyOf": [{ "enum": ["evm", "canton"] }, { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }] },
         "orderHash": { "$ref": "#/$defs/bytes32" },
         "attempt": { "$ref": "#/$defs/uint32" },
-        "ticketHash": { "$ref": "#/$defs/bytes32" },
-        "ticketSigHash": { "$ref": "#/$defs/bytes32" },
         "sig": { "$ref": "#/$defs/sig65" }
-      }
+      },
+      "allOf": [
+        { "$ref": "#/$defs/f2sBase" },
+        {
+          "if": { "type": "object", "properties": { "form": { "const": "evm" } } },
+          "then": { "type": "object", "required": ["ticketHash", "ticketSigHash"], "properties": { "ticketHash": { "$ref": "#/$defs/bytes32" }, "ticketSigHash": { "$ref": "#/$defs/bytes32" } } }
+        },
+        {
+          "if": { "type": "object", "properties": { "form": { "const": "canton" } }, "required": ["form"] },
+          "then": { "type": "object", "required": ["deliveryOrderCid", "validUntil"], "properties": { "deliveryOrderCid": { "type": "string", "minLength": 1, "description": "the contract id of the DeliveryOrder, exactly as ticket.issued sent it" }, "validUntil": { "$ref": "#/$defs/timeS", "description": "= ticket.issued.validUntil" } } }
+        }
+      ]
     },
     "fill.reported": {
       "x-direction": "F2S",

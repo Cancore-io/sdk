@@ -106,6 +106,20 @@ export const TICKET_RECEIPT_TYPES = {
   ],
 } as const;
 
+/**
+ * `CantonTicketReceipt(bytes32 orderHash,uint32 attempt,bytes32 deliveryOrderCidHash,uint64 validUntil)` — the receipt of a
+ * Canton-form ticket, which has no `FillTicket` and no `ticketSig`; signed by the message key. `fillerId` and `repayTo`
+ * are not in it: they travel in `ticket.issued` (protocol.md §3.3, §10 D-O).
+ */
+export const CANTON_TICKET_RECEIPT_TYPES = {
+  CantonTicketReceipt: [
+    { name: 'orderHash', type: 'bytes32' },
+    { name: 'attempt', type: 'uint32' },
+    { name: 'deliveryOrderCidHash', type: 'bytes32' },
+    { name: 'validUntil', type: 'uint64' },
+  ],
+} as const;
+
 /** `StakeBinding(string partnerId,address stakingAddress,uint256 chainId,uint64 nonce)` — signed by the staking address. */
 export const STAKE_BINDING_TYPES = {
   StakeBinding: [
@@ -206,6 +220,15 @@ export interface TicketReceipt {
   ticketHash: Hex;
   /** keccak256 of the 65 raw signature bytes. */
   ticketSigHash: Hex;
+}
+
+export interface CantonTicketReceipt {
+  orderHash: Hex;
+  attempt: number;
+  /** `deliveryOrderCidHash(deliveryOrderCid)`: keccak256 of the contract id exactly as `ticket.issued` sent it. */
+  deliveryOrderCidHash: Hex;
+  /** `ticket.issued.validUntil` (= `DeliveryOrder.validUntil`), unix seconds. */
+  validUntil: UintLike;
 }
 
 export interface StakeBinding {

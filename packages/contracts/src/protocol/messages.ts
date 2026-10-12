@@ -171,9 +171,15 @@ export interface TicketIssuedCanton extends S2FBase {
   type: 'ticket.issued'; form: 'canton'; orderHash: Hex; attempt: number; deliveryOrderCid: string; validUntil: DecString; repayTo: Hex;
 }
 export type TicketIssued = TicketIssuedEvm | TicketIssuedCanton;
-export interface TicketReceiptMessage extends F2SBase {
-  type: 'ticket.receipt'; orderHash: Hex; attempt: number; ticketHash: Hex; ticketSigHash: Hex; sig: Hex;
+/** EVM-form receipt (`form` absent or `"evm"`): `sig` = `TicketReceipt{ticketHash, ticketSigHash}` by the message key. */
+export interface TicketReceiptEvm extends F2SBase {
+  type: 'ticket.receipt'; form?: 'evm'; orderHash: Hex; attempt: number; ticketHash: Hex; ticketSigHash: Hex; sig: Hex;
 }
+/** Canton-form receipt: `sig` = `CantonTicketReceipt` (`cantonTicketReceipt(frame)`) by the message key; fields as in `ticket.issued`. */
+export interface TicketReceiptCanton extends F2SBase {
+  type: 'ticket.receipt'; form: 'canton'; orderHash: Hex; attempt: number; deliveryOrderCid: string; validUntil: DecString; sig: Hex;
+}
+export type TicketReceiptMessage = TicketReceiptEvm | TicketReceiptCanton;
 export interface FillReported extends F2SBase { type: 'fill.reported'; orderHash: Hex; attempt: number; txRef: string }
 export interface TicketExpired extends S2FBase { type: 'ticket.expired'; orderHash: Hex; attempt: number; result: ExpiredResult; exemptReason?: ExemptReason }
 export interface OrderSettled extends S2FBase {

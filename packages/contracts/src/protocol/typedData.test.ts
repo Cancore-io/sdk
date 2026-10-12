@@ -5,7 +5,7 @@ import { FILL_PROOF_TYPES } from '../eip712';
 import { encodeType, hashDomain, hashStruct, hashTypedData, type TypedDataDomain, type TypedDataTypes, typeHash } from './hash';
 import { FILLER_GATEWAYS, PROTOCOL_VERSION } from './gateway';
 import {
-  FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, FILLER_AUTH_TYPES, FILLER_KEY_REGISTRATION_TYPES, FILLER_MESSAGE_TYPES, FILLER_PROTOCOL_DOMAIN,
+  FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, CANTON_TICKET_RECEIPT_TYPES, FILLER_AUTH_TYPES, FILLER_KEY_REGISTRATION_TYPES, FILLER_MESSAGE_TYPES, FILLER_PROTOCOL_DOMAIN,
   FILLER_QUOTE_TYPES, GATEWAY_MESSAGE_TYPES, ORDER_TYPES, QUOTE_TYPES, routerDomain, STAKE_BINDING_TYPES, TICKET_INTENT_TYPES, TICKET_RECEIPT_TYPES,
 } from './typedData';
 
@@ -15,7 +15,7 @@ type Spec = { primaryType: string; domain: { name: string; version: string }; ty
 const spec = join(__dirname, '..', '..', 'spec');
 const load = <T = Spec>(...path: string[]): T => JSON.parse(readFileSync(join(spec, ...path), 'utf8')) as T;
 
-// The twelve types of CAN-1842 A1 and CAN-2139, the exported constant each one
+// The thirteen types of CAN-1842 A1, CAN-2139 and CAN-2062, the exported constant each one
 // is held to, and the domain its digests are computed in.
 const ROUTER = (v: Vector) => routerDomain(v.chainId!, v.verifyingContract as `0x${string}`);
 const TABLE: [string, string[], TypedDataTypes, (v: Vector) => TypedDataDomain][] = [
@@ -26,6 +26,7 @@ const TABLE: [string, string[], TypedDataTypes, (v: Vector) => TypedDataDomain][
   ['FillerQuote', ['protocol', 'typed-data', 'FillerQuote.json'], FILLER_QUOTE_TYPES, () => FILLER_PROTOCOL_DOMAIN],
   ['TicketIntent', ['protocol', 'typed-data', 'TicketIntent.json'], TICKET_INTENT_TYPES, () => FILLER_PROTOCOL_DOMAIN],
   ['TicketReceipt', ['protocol', 'typed-data', 'TicketReceipt.json'], TICKET_RECEIPT_TYPES, () => FILLER_PROTOCOL_DOMAIN],
+  ['CantonTicketReceipt', ['protocol', 'typed-data', 'CantonTicketReceipt.json'], CANTON_TICKET_RECEIPT_TYPES, () => FILLER_PROTOCOL_DOMAIN],
   ['StakeBinding', ['protocol', 'typed-data', 'StakeBinding.json'], STAKE_BINDING_TYPES, () => FILLER_PROTOCOL_DOMAIN],
   ['FillerAuth', ['protocol', 'typed-data', 'FillerAuth.json'], FILLER_AUTH_TYPES, () => FILLER_PROTOCOL_DOMAIN],
   ['GatewayMessage', ['protocol', 'typed-data', 'GatewayMessage.json'], GATEWAY_MESSAGE_TYPES, () => FILLER_PROTOCOL_DOMAIN],

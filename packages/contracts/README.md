@@ -161,7 +161,7 @@ breaking protocol change is `0.3`.
 
 ```ts
 import {
-  gatewayBodyHash, hashFillerMessage, hashTicketIntent, repayToFromEvm, fillerIdHash,
+  cantonTicketReceipt, gatewayBodyHash, hashCantonTicketReceipt, hashFillerMessage, hashTicketIntent, repayToFromEvm, fillerIdHash,
 } from '@cancore/contracts';
 
 // what the filler's message key signs to take an offered ticket: its delivery key and payout address
@@ -179,6 +179,9 @@ const msgDigest = hashFillerMessage(message); // bodyHash = keccak256(JCS(messag
 const bodyHash = gatewayBodyHash(frame); // keccak256(JCS(frame without sig))
 
 fillerIdHash('acme'); // the on-chain fillerId of FillTicket, Filled, FillProof, Settled
+
+// the receipt of a Canton-form ticket (no FillTicket, no ticketSig): built from ticket.issued
+const receiptDigest = hashCantonTicketReceipt(cantonTicketReceipt(issued)); // orderHash, attempt, keccak256(cid), validUntil
 ```
 
 `hashTypedData` encodes flat structs (address, bool, bytes, bytesN, string, uintN) and throws on
@@ -193,6 +196,7 @@ manual key change by Cancore staff; there is no key-rotation type or message.
 | --- | --- | --- |
 | `TicketReceipt`, `StakeBinding`, `FillerAuth`, `GatewayMessage` | `CancoreFillerProtocol` v1 | v1 RC — vectors in `spec/protocol/typed-data/` |
 | `FillerQuote` (`string fillerId`), `TicketIntent` (with `fillerId`, `deliveryKey`, `repayTo`), `FillerMessage`, `FillerKeyRegistration` | `CancoreFillerProtocol` v1 | variant A — vectors in `spec/protocol/typed-data/` |
+| `CantonTicketReceipt` (`orderHash`, `attempt`, `deliveryOrderCidHash`, `validUntil`) | `CancoreFillerProtocol` v1 | receipt of a Canton-form ticket (§10 D-O), additive — vectors in `spec/protocol/typed-data/` |
 | `Order` (11 fields, with `createdAt`), `Quote` | `CancoreRouter` v1, source router | router code; provisional copies in `spec/typed-data/` until evm-contracts publishes them |
 | `FillTicket` (`orderHash`, `fillerId`, `deliveryKey`, `repayTo`, `attempt`, `validFrom`, `validUntil`) | `CancoreFillTicket` v1 | variant A, synced from the router (CAN-2140) |
 | `FillProof` (twelve fields) | `CancoreRouter` v1, source router | variant A, synced from the router (above) |
@@ -387,6 +391,18 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
     `encodeCantonAmount(amount)`, type `CantonNetwork`.
   - Vector `spec/vectors/canton-destination.json`: an EVM-source order to Canton devnet and the
     `FillProof` of its delivery.
+- Unreleased (next RC) — `CantonTicketReceipt`, the receipt of a Canton-form ticket (protocol.md
+  §3.3, §3.5, §10 D-O; CAN-2062). Additive only (V-2): no existing type, digest or vector changes.
+  - Type `CantonTicketReceipt(bytes32 orderHash,uint32 attempt,bytes32 deliveryOrderCidHash,uint64 validUntil)`
+    in the `CancoreFillerProtocol` domain, signed by the message key; `fillerId` and `repayTo` are
+    not part of it (they travel in `ticket.issued`). Golden vectors in
+    `spec/protocol/typed-data/CantonTicketReceipt.json`.
+  - Helpers `CANTON_TICKET_RECEIPT_TYPES`, `hashCantonTicketReceipt`, `cantonTicketReceipt` (the
+    struct from a Canton-form `ticket.issued` or `ticket.receipt`) and `deliveryOrderCidHash`.
+  - `ticket.receipt` gains the Canton form: `form: "canton"`, `deliveryOrderCid`, `validUntil`,
+    `sig`; the EVM form (`form` absent or `"evm"`) is unchanged. The same body is the REST
+    `POST /v1/filler/tickets/{orderHash}/{attempt}/receipt`; AsyncAPI carries both examples.
+    `TicketReceiptMessage` is now the union `TicketReceiptEvm | TicketReceiptCanton`.
 - `0.2.0-rc.7` — sync the variant A `CancoreRouter` and `ICancoreRouter` ABIs from
   evm-contracts commit `c214f56f6fe5a62097833c5f1335b0cb5351b225` (CAN-2140).
   - Both the package root and `/abi`, and the shipped `spec/abi/` JSON, expose

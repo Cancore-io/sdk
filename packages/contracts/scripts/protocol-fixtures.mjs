@@ -5,6 +5,9 @@
 import { toBeHex, zeroPadValue } from 'ethers';
 
 /** The EVM-source order @cancore/test-kit serves: 1000 USDC on Sepolia (plus a 30 bps inclusive fee) for 999 USDC on Arbitrum Sepolia. */
+/** The DeliveryOrder contract id of the Canton-form ticket.issued example; its receipt is the first CantonTicketReceipt vector. */
+export const CANTON_DELIVERY_ORDER_CID = '00a1b2c3d4e5f6#fixture-delivery-order';
+
 export const EVM_ORDER = {
   user: '0xa11ce00000000000000000000000000000000001',
   originChainId: '11155111',
