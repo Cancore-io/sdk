@@ -399,7 +399,7 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
-- `0.2.0-rc.8` — connect only after login, limits per fillerId (CAN-2232). **Breaking within the
+- Unreleased (`0.2.0-rc.9`) — connect only after login, limits per fillerId (CAN-2232). **Breaking within the
   RC line** for a filler and for filler-gateway:
   - The login is REST only: `GET /v1/filler/auth/challenge` takes a required `fillerId` query
     (`challengeQuery`), and `auth.challenge` is addressed (envelope `s2fBase`, `fillerId`
@@ -415,7 +415,7 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
     `ErrorMessage.retryAfterMs`, `UnsignedErrorBody`, `ChallengeQuery`, `RestEndpoint.errorBody`.
   - The `auth.challenge` example and its `GatewayMessage` vector carry `fillerId` (that vector's
     digest changes); a `RATE_LIMITED` example; no other digest changes.
-- Unreleased (next RC) — router constants and order hashing helpers (CAN-1934). Additive only:
+- Unreleased (`0.2.0-rc.9`) — router constants and order hashing helpers (CAN-1934). Additive only:
   no existing export, type or digest changes.
   - Constants `BPS`, `MAX_FEE_BPS`, `MIN_FILL_TTL`, `MAX_FILL_TTL`, `MAX_SIG_TTL`,
     `MAX_PROOF_WINDOW`, `GRACE`, `SET_DELAY`, `CANTON_ORIGIN_ID`, `CANTON_SOURCE_ANCHOR`,
@@ -426,13 +426,13 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
     `PERMIT2_WITNESS_TYPE_STRING`, `permit2Domain`, `hashPermitWitness`, `inclusiveFeeSplit` (EVM
     source) and `cantonInclusiveFeeSplit` (Canton source).
   - Vectors `spec/vectors/evm-order.json`, `permit-witness.json`, `fee-split.json`.
-- Unreleased (next RC) — the Canton-destination encoder (protocol.md §3.13; CAN-1935). Additive only.
+- Unreleased (`0.2.0-rc.9`) — the Canton-destination encoder (protocol.md §3.13; CAN-1935). Additive only.
   - `encodeCantonDestination(network)`, `cantonNetworkOfDestination(destination)`,
     `encodeCantonOutputAsset({admin, id})`, `encodeCantonRecipient(partyId)`,
     `encodeCantonAmount(amount)`, type `CantonNetwork`.
   - Vector `spec/vectors/canton-destination.json`: an EVM-source order to Canton devnet and the
     `FillProof` of its delivery.
-- Unreleased (next RC) — `CantonTicketReceipt`, the receipt of a Canton-form ticket (protocol.md
+- Unreleased (`0.2.0-rc.9`) — `CantonTicketReceipt`, the receipt of a Canton-form ticket (protocol.md
   §3.3, §3.5, §10 D-O; CAN-2062). Additive only (V-2): no existing type, digest or vector changes.
   - Type `CantonTicketReceipt(bytes32 orderHash,uint32 attempt,bytes32 deliveryOrderCidHash,uint64 validUntil)`
     in the `CancoreFillerProtocol` domain, signed by the message key; `fillerId` and `repayTo` are
