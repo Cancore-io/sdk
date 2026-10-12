@@ -71,6 +71,12 @@ export interface DvpTerms {
  */
 export interface TrustedPackages {
   swap: Record<string, string[]>;
+  /**
+   * `splice-wallet`, for the one transaction that is a bare create — the transfer preapproval
+   * proposal `onboard()` signs. A create runs on no contract an admin signed, so unlike a send or an
+   * allocation it has no anchor but its package id; the ids are Splice's own, the same on every network.
+   */
+  wallet: Record<string, string[]>;
 }
 
 export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = {
@@ -80,6 +86,11 @@ export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = {
       '2b8060d64191b963d7416e0e2d15d11b239f88ad31aca2f457c4eefa2e15e395', // 1.1.0
       '0164b8f54b26b673b24ba7ca6d141b65bd4dbc8c135cd61922477c871c927a2a', // 1.2.0
       '01208653516ab062e71274729caec86254a9ac55022561cb68c189bfd6fc6742', // 1.3.0
+    ],
+  },
+  wallet: {
+    'splice-wallet': [
+      'd42261314d98cc04bf50bcc58930af98b9f33aeed11339465925de697d3ba66e', // devnet, 2026-10
     ],
   },
 };
@@ -106,9 +117,12 @@ export interface PreparedToSign {
   preparedTransaction?: string;
 }
 
+/** The wallet operations outside a trade whose transactions are read before the key signs them. */
+export type TokenOperation = 'tokens.send' | 'tokens.consolidate' | 'tokens.accept' | 'tokens.preapproval';
+
 /** A prepared transaction the account refuses to sign, with the reason. */
 export class UnverifiedTransactionError extends Error {
-  constructor(operation: DvpOperation | 'tokens.send', reason: string) {
+  constructor(operation: DvpOperation | TokenOperation, reason: string) {
     super(`refusing to sign ${operation}: ${reason}`);
     this.name = 'UnverifiedTransactionError';
   }
@@ -749,72 +763,390 @@ const PREAPPROVAL_SEND = /^TransferPreapproval_Send(V2)?$/;
  *  - one holding of exactly `amount` is created for the account by the transfer (the split);
  *  - what the account ends up poorer, the fee leg's payment included, is at most `maxCost`.
  */
-export async function verifySelfSendPrepared(legs: Array<PreparedToSign & { kind: string }>, terms: SelfSendTerms): Promise<void> {
-  const refuse = (reason: string): never => {
-    throw new UnverifiedTransactionError('tokens.send', reason);
-  };
-  if (legs.length === 0) refuse('the API prepared nothing to sign');
+export async function verifySelfSendPrepared(legs: Leg[], terms: SelfSendTerms): Promise<void> {
+  const refuse = refuser('tokens.send');
   if (units(terms.amount) <= 0n || units(terms.maxCost) < 0n) refuse('the amount or the cost bound is not a decimal of at most ten places');
-  const key = instrumentKey(terms.instrument);
-  let net = 0n;
-  let split = false;
+  const { net, fee, transfers } = await tokenLegs(legs, refuse, { ...terms, dso: terms.admins }, terms.party, 'this account');
+  if (!transfers.some((t) => t.own.includes(units(terms.amount)))) refuse(`no holding of exactly ${terms.amount} ${terms.instrument} is created for this account`);
+  if (net + fee > units(terms.maxCost)) {
+    refuse(`the send costs this account more than ${decimalOf(units(terms.maxCost))} ${terms.instrument} (an old input's accrued holding fee counts: consolidate() it first)`);
+  }
+}
+
+/** A send the account asked for, to another party. Amounts are decimal strings. */
+export interface SendTerms {
+  /** The account signing: the only party that acts, and the owner of everything the send spends or leaves as change. */
+  party: string;
+  /** The instrument's pinned admins (the DSO for CC, the registry for a registry token). */
+  admins: string[];
+  instrument: string;
+  /** The party the caller named: besides the account and a fee recipient, the only owner a holding may be created for. */
+  receiver: string;
+  /** What the receiver must be given, to the unit — no less and no more. */
+  amount: string;
+  /** The most CC the send may cost the account on top of `amount`: its fee leg's payment, and an old CC input's accrued holding fee. */
+  maxFee: string;
+  /** The pinned parties the ceremony's `fee` leg may pay. */
+  feeRecipients: string[];
+  /** The pinned CC admins the fee leg — a CC send, whatever the instrument — is held to. Default: `admins`, right for a CC send. */
+  dso?: string[];
+}
+
+/**
+ * Verify every transaction of a `tokens.send` to ANOTHER party before the account's key signs them
+ * (CAN-2249, stage 4). Read and walked as a DvP step is, with the holdings rule of a payment: the
+ * receiver the caller named is given exactly `amount` — unlocked holdings through its own
+ * preapproval, or, where it must accept (`TransferFactory_Transfer` on the admin's own factory), a
+ * lock of exactly `amount` under an offer to that receiver; nobody else is given anything but the
+ * fee leg's pinned recipient; and the account ends up poorer by at most `amount`, plus `maxFee` CC.
+ * A hostile API that swaps the receiver, the amount, or adds a payee of its own is refused before
+ * anything is signed.
+ */
+export async function verifySendPrepared(legs: Leg[], terms: SendTerms): Promise<void> {
+  const refuse = refuser('tokens.send');
+  const [amount, maxFee] = [units(terms.amount), units(terms.maxFee)];
+  if (amount <= 0n || maxFee < 0n) refuse('the amount or the fee bound is not a decimal of at most ten places');
+  // To oneself nothing is paid: that is a split, and it has its own rule (one holding of exactly the amount).
+  if (terms.receiver === terms.party) refuse('a send to the account itself is a split: verifySelfSendPrepared reads it');
+  const { net, fee, transfers } = await tokenLegs(legs, refuse, { ...terms, dso: terms.dso ?? terms.admins }, terms.receiver, `${terms.receiver}, the receiver this send was asked for`);
+  const given = transfers.reduce((sum, t) => sum + t.received + t.locked, 0n);
+  if (given !== amount || transfers.some((t) => t.factory && t.asked !== amount)) {
+    refuse(`${terms.receiver} is given ${decimalOf(given)} ${terms.instrument}, not the ${terms.amount} this send was asked for`);
+  }
+  if (!withinCost(terms.instrument, net, fee, amount, maxFee)) {
+    refuse(`the send costs this account ${costOf(terms.instrument, net, fee)}, more than the ${terms.amount} it sends and the fee it allows (an old input's accrued holding fee counts: consolidate() it first)`);
+  }
+}
+
+/** A merge of the account's own holdings of one instrument. Amounts are decimal strings. */
+export interface ConsolidateTerms {
+  party: string;
+  /** The instrument's pinned admins. */
+  admins: string[];
+  instrument: string;
+  /** The most CC the merge may cost: a fee leg's payment, and for CC the inputs' accrued holding fees. */
+  maxFee: string;
+  feeRecipients: string[];
+  /** As in {@link SendTerms}. */
+  dso?: string[];
+}
+
+/**
+ * Verify every transaction of a `tokens.consolidate`: a send to the account itself — through its own
+ * preapproval (CC) or the admin's transfer factory (a registry token) — in which every holding spent
+ * and every holding created is the account's, none is left locked, and the account ends up with what
+ * it had, less at most `maxFee` CC.
+ */
+export async function verifyConsolidatePrepared(legs: Leg[], terms: ConsolidateTerms): Promise<void> {
+  const refuse = refuser('tokens.consolidate');
+  const maxFee = units(terms.maxFee);
+  if (maxFee < 0n) refuse('the fee bound is not a decimal of at most ten places');
+  const { net, fee, transfers } = await tokenLegs(legs, refuse, { ...terms, dso: terms.dso ?? terms.admins }, terms.party, 'this account');
+  if (transfers.length === 0) refuse('the merge has no transfer in it');
+  if (transfers.some((t) => t.locked > 0n)) refuse('the merge leaves a holding locked');
+  if (!withinCost(terms.instrument, net, fee, 0n, maxFee)) refuse(`the merge costs this account ${costOf(terms.instrument, net, fee)}, more than the fee it allows`);
+}
+
+/** An incoming transfer the account was asked to accept. */
+export interface AcceptTerms {
+  party: string;
+  /** The transfer instruction the caller chose to accept: the contract the transaction must run on. */
+  instructionCid: string;
+  /** The admins this account trusts, by instrument key (`instrumentKey`): the instruction names its own instrument and admin. */
+  pinnedAdmins: Record<string, string[]>;
+  /** The most CC the accept may cost the account: its fee leg's payment, when it has one. */
+  maxFee: string;
+  feeRecipients: string[];
+  /** The pinned CC admins the fee leg is held to. */
+  dso: string[];
+}
+
+/**
+ * Verify every transaction of a `tokens.accept`: one `TransferInstruction_Accept` on the instruction
+ * the caller chose, which a pinned admin of its instrument signed and which names this account as
+ * receiver. In the whole tree the account spends no holding and signs nothing but the holdings it
+ * receives; holdings go to the account or back to the sender, to nobody else. A `fee` leg is a CC send
+ * to a pinned fee recipient, within `maxFee`.
+ */
+export async function verifyAcceptPrepared(legs: Leg[], terms: AcceptTerms): Promise<void> {
+  const refuse = refuser('tokens.accept');
+  const maxFee = units(terms.maxFee);
+  if (maxFee < 0n) refuse('the fee bound is not a decimal of at most ten places');
+  if (legs.length === 0) refuse('the API prepared nothing to sign');
+  let [fee, accepts] = [0n, 0];
   for (const [index, leg] of legs.entries()) {
     const what = `leg ${index}`;
-    const fee = leg.kind === 'fee';
-    if (!fee && leg.kind !== 'transfer') refuse(`${what} is a ${leg.kind}, not a transfer or its fee`);
-    const decoded = await readPrepared(leg, what, terms.party, refuse);
-    if (!decoded.transaction || decoded.transaction.roots.length !== 1) refuse(`${what}: expected a transaction with exactly one command`);
-    const nodes: Nodes = new Map(decoded.transaction!.nodes.map((n) => [n.nodeId, n]));
-    const shape = walkTree(decoded, nodes);
-    if (shape) refuse(`${what}: ${shape}`);
-    const root = nodeType(nodes.get(decoded.transaction!.roots[0]!));
-    if (root?.oneofKind !== 'exercise' || !PREAPPROVAL_SEND.test(root.exercise.choiceId)) refuse(`${what} is not a send through a transfer preapproval`);
-    const entryCid = (root as Extract<typeof root, { oneofKind: 'exercise' }>).exercise.contractId;
-    const inputs = inputContracts(decoded);
-    const preapproval = inputs.get(entryCid);
-    if (preapproval?.templateId?.entityName !== 'TransferPreapproval') refuse(`${what} does not disclose the preapproval it sends through`);
-    // The preapproval is the trust anchor of everything under it, as the factory is for an allocation:
-    // a choice body acts with this account's authority, so it must be the DSO's code and nobody else's.
-    // A contract the DSO signed is one only the DSO could create, of the template the command runs (the
-    // package id may be a newer version; its name, module and entity may not differ).
-    const command = (root as Extract<typeof root, { oneofKind: 'exercise' }>).exercise;
-    if (!sameTemplate(preapproval!, command)) refuse(`${what} runs on another template than the preapproval it names`);
-    // Who signed it is said twice — by the contract disclosed and by the command exercising it — and
-    // both must say the admin: the command's word is the one the ledger holds the transaction to.
-    if (![preapproval!.signatories, command.signatories].every((signed) => signed.some((p) => terms.admins.includes(p)))) {
-      refuse(`${what} sends through a preapproval the instrument admin did not sign`);
+    if (leg.kind !== 'fee' && leg.kind !== 'transfer') refuse(`${what} is a ${leg.kind}, not an accept or its fee`);
+    const opened = await openLeg(leg, what, terms.party, refuse);
+    if (leg.kind === 'fee') fee += preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.dso, key: AMULET, receivers: terms.feeRecipients, wanted: 'a pinned network fee recipient' }).net;
+    else accepts += acceptLeg(opened, what, refuse, terms);
+  }
+  if (accepts !== 1) refuse(`expected one accept, the API prepared ${accepts}`);
+  if (fee > maxFee) refuse(`the accept costs this account ${decimalOf(fee)} CC of fee, more than the fee it allows`);
+}
+
+/** The step of `onboard()` that lets CC reach the account directly. */
+export interface PreapprovalSetupTerms {
+  party: string;
+  /** The pinned CC admins: the proposal must name one as the DSO it expects. */
+  dso: string[];
+  /** Who may provide the preapproval: the venue this SDK pins for the network, or the account itself. */
+  providers: string[];
+  /** The `splice-wallet` package ids the proposal may be created from ({@link TrustedPackages.wallet}). */
+  packages: Record<string, string[]>;
+}
+
+/**
+ * Verify the one transaction of a `tokens.preapproval`: a single create of a
+ * `TransferPreapprovalProposal` from a pinned `splice-wallet` package, signed by the account alone,
+ * naming the account as receiver, a pinned provider, and the pinned DSO — and nothing else in the tree.
+ */
+export async function verifyPreapprovalSetupPrepared(legs: Leg[], terms: PreapprovalSetupTerms): Promise<void> {
+  const refuse = refuser('tokens.preapproval');
+  if (legs.length !== 1 || legs[0]!.kind !== 'setup') refuse('expected the one transaction that proposes the preapproval');
+  const { root } = await openLeg(legs[0]!, 'leg 0', terms.party, refuse);
+  // A create has no children, and every node hangs from the one root: the tree is this create and nothing else.
+  if (root?.oneofKind !== 'create') return refuse('it is not the creation of a preapproval proposal');
+  const { templateId, packageName, signatories, argument } = root.create;
+  if (templateId?.moduleName !== 'Splice.Wallet.TransferPreapproval' || templateId.entityName !== 'TransferPreapprovalProposal') refuse('it is not a transfer preapproval proposal');
+  // A create has no admin-signed contract under it: the package id is all that says whose code this is.
+  if (!trusted(terms.packages, packageName, templateId?.packageId)) refuse(`it runs code from an untrusted package (${packageName || 'unnamed'} ${templateId?.packageId ?? ''})`);
+  if (signatories.length !== 1 || signatories[0] !== terms.party) refuse('the proposal is not signed by this account alone');
+  const proposal = readPlain(argument) as { receiver?: unknown; provider?: unknown; expectedDso?: unknown } | null;
+  if (!proposal || Object.keys(proposal).sort().join() !== 'expectedDso,provider,receiver') return refuse('the proposal is not of the shape this SDK knows');
+  if (proposal.receiver !== terms.party) refuse('the proposal is for another receiver');
+  if (!terms.providers.includes(proposal.provider as string)) refuse(`the proposal names ${String(proposal.provider)} as provider, which is neither this account nor a pinned venue`);
+  if (!terms.dso.includes(proposal.expectedDso as string)) refuse(`the proposal expects ${String(proposal.expectedDso)} as the DSO, which is not a pinned CC admin`);
+}
+
+type Leg = PreparedToSign & { kind: string };
+type Refuse = (reason: string) => never;
+type Exercise = Extract<NonNullable<ReturnType<typeof nodeType>>, { oneofKind: 'exercise' }>['exercise'];
+type Opened = Awaited<ReturnType<typeof openLeg>>;
+
+const refuser = (operation: TokenOperation): Refuse => (reason) => {
+  throw new UnverifiedTransactionError(operation, reason);
+};
+
+const AMULET = instrumentKey('Amulet');
+const isAmulet = (instrument: string) => instrumentKey(instrument) === AMULET;
+
+/** The token standard's transfer interfaces, by module and entity: the anchor is the admin-signed contract the choice runs on. */
+const TRANSFER_FACTORY_INTERFACE = { moduleName: 'Splice.Api.Token.TransferInstructionV1', entityName: 'TransferFactory' };
+const TRANSFER_INSTRUCTION_INTERFACE = { moduleName: 'Splice.Api.Token.TransferInstructionV1', entityName: 'TransferInstruction' };
+
+/** A Daml value as plain JSON, or null when it holds a kind this SDK does not read. */
+function readPlain(value: Value | undefined): unknown {
+  try {
+    return plain(value);
+  } catch {
+    return null;
+  }
+}
+
+/** A leg read as far as every leg is: its bytes against its hash, its one command, its whole tree. */
+async function openLeg(leg: Leg, what: string, party: string, refuse: Refuse) {
+  const decoded = await readPrepared(leg, what, party, refuse);
+  if (!decoded.transaction || decoded.transaction.roots.length !== 1) refuse(`${what}: expected a transaction with exactly one command`);
+  const nodes: Nodes = new Map(decoded.transaction!.nodes.map((n) => [n.nodeId, n]));
+  const shape = walkTree(decoded, nodes);
+  if (shape) refuse(`${what}: ${shape}`);
+  return { nodes, root: nodeType(nodes.get(decoded.transaction!.roots[0]!)), inputs: inputContracts(decoded), created: createdIn(nodes) };
+}
+
+/**
+ * What a transfer leg did to the account's holdings of the instrument, in 1e-10 units: `net` is what
+ * it spent less what came back unlocked (`own`, each holding's amount); `received` went to the
+ * receiver; `locked` stays the account's under a lock (a transfer the receiver has yet to accept).
+ * `factory` legs also carry the amount the command itself `asked` for.
+ */
+interface Moved { net: bigint; own: bigint[]; received: bigint; locked: bigint; factory: boolean; asked: bigint }
+
+/** The legs of a send or a merge: `transfer` legs to `to`, `fee` legs — CC, whatever the instrument — to a pinned fee recipient. */
+async function tokenLegs(
+  legs: Leg[], refuse: Refuse,
+  terms: { party: string; admins: string[]; instrument: string; feeRecipients: string[]; dso: string[] },
+  to: string, wanted: string,
+): Promise<{ net: bigint; fee: bigint; transfers: Moved[] }> {
+  if (legs.length === 0) refuse('the API prepared nothing to sign');
+  const out = { net: 0n, fee: 0n, transfers: [] as Moved[] };
+  const key = instrumentKey(terms.instrument);
+  for (const [index, leg] of legs.entries()) {
+    const what = `leg ${index}`;
+    if (leg.kind !== 'fee' && leg.kind !== 'transfer') refuse(`${what} is a ${leg.kind}, not a transfer or its fee`);
+    const opened = await openLeg(leg, what, terms.party, refuse);
+    if (leg.kind === 'fee') {
+      out.fee += preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.dso, key: AMULET, receivers: terms.feeRecipients, wanted: 'a pinned network fee recipient' }).net;
+      continue;
     }
-    const receiver = partyOf(fieldsOf(preapproval!.argument)?.get('receiver'));
-    if (!receiver || !(fee ? terms.feeRecipients : [terms.party]).includes(receiver)) {
-      refuse(`${what} sends to ${receiver ?? 'an unreadable receiver'}, not to ${fee ? 'a pinned network fee recipient' : 'this account'}`);
-    }
-    const created = createdIn(nodes);
-    const allowed = new Set([terms.party, ...terms.admins, ...preapproval!.signatories, ...preapproval!.stakeholders]);
-    const bounds = signerBounds(nodes, inputs, created, terms.party, terms.admins, entryCid, allowed, 'send', () => false);
-    if (bounds) refuse(`${what}: ${bounds}`);
-    const spent = spentHoldings(nodes, inputs, created, terms.party);
-    if (typeof spent === 'string') return refuse(`${what}: ${spent}`);
-    for (const [instrument, amount] of spent) {
-      if (instrument !== key) refuse(`${what} spends ${instrument}, not ${key}`);
-      net += amount;
-    }
-    for (const contract of created.values()) {
-      const holding = holdingOf(contract);
-      if (!holding) continue;
-      if (holding.instrument !== key) refuse(`${what} creates ${holding.instrument}, not ${key}`);
-      if (holding.locked) refuse(`${what} creates a locked holding`);
-      if (holding.owner === terms.party) {
-        net -= holding.amount;
-        if (!fee && holding.amount === units(terms.amount)) split = true;
-      } else if (!(fee && holding.owner === receiver)) {
-        refuse(`${what} creates a holding owned by ${holding.owner}`);
+    const viaFactory = opened.root?.oneofKind === 'exercise' && opened.root.exercise.choiceId === 'TransferFactory_Transfer';
+    const moved = viaFactory
+      ? factoryMoved(opened, what, refuse, { party: terms.party, admins: terms.admins, key, receiver: to, wanted })
+      : preapprovalMoved(opened, what, refuse, { party: terms.party, admins: terms.admins, key, receivers: [to], wanted });
+    out.net += moved.net;
+    out.transfers.push(moved);
+  }
+  return out;
+}
+
+/** What a ceremony cost, in words: one CC figure, or the instrument's and the CC fee beside it. */
+const costOf = (instrument: string, net: bigint, fee: bigint) =>
+  isAmulet(instrument) ? `${decimalOf(net + fee)} ${instrument}` : `${decimalOf(net)} ${instrument} and ${decimalOf(fee)} CC of fee`;
+
+/** The instrument's own cost within `amount`, the CC fee within `maxFee`; for CC the two are one balance. */
+const withinCost = (instrument: string, net: bigint, fee: bigint, amount: bigint, maxFee: bigint) =>
+  isAmulet(instrument) ? net + fee <= amount + maxFee : net <= amount && fee <= maxFee;
+
+/**
+ * One leg sent through a CC transfer preapproval: a single `TransferPreapproval_Send` on a disclosed
+ * preapproval the admin signed, whose receiver is one of `receivers`; no party but the account, the
+ * admins and that preapproval's own; every holding spent the account's, every holding created
+ * unlocked and the account's or that receiver's.
+ */
+function preapprovalMoved(
+  { nodes, root, inputs, created }: Opened, what: string, refuse: Refuse,
+  terms: { party: string; admins: string[]; key: string; receivers: string[]; wanted: string },
+): Moved {
+  if (root?.oneofKind !== 'exercise' || !PREAPPROVAL_SEND.test(root.exercise.choiceId)) return refuse(`${what} is not a send through a transfer preapproval`);
+  const command = root.exercise;
+  const preapproval = inputs.get(command.contractId);
+  if (!preapproval || preapproval.templateId?.entityName !== 'TransferPreapproval') return refuse(`${what} does not disclose the preapproval it sends through`);
+  // The preapproval is the trust anchor of everything under it, as the factory is for an allocation:
+  // a choice body acts with this account's authority, so it must be the DSO's code and nobody else's.
+  // A contract the DSO signed is one only the DSO could create, of the template the command runs (the
+  // package id may be a newer version; its name, module and entity may not differ).
+  if (!sameTemplate(preapproval, command)) refuse(`${what} runs on another template than the preapproval it names`);
+  // Who signed it is said twice — by the contract disclosed and by the command exercising it — and
+  // both must say the admin: the command's word is the one the ledger holds the transaction to.
+  if (!signedBy(preapproval, command, terms.admins)) refuse(`${what} sends through a preapproval the instrument admin did not sign`);
+  const receiver = partyOf(fieldsOf(preapproval.argument)?.get('receiver'));
+  if (!receiver || !terms.receivers.includes(receiver)) return refuse(`${what} sends to ${receiver ?? 'an unreadable receiver'}, not to ${terms.wanted}`);
+  const allowed = new Set([terms.party, ...terms.admins, ...preapproval.signatories, ...preapproval.stakeholders]);
+  const bounds = signerBounds(nodes, inputs, created, terms.party, terms.admins, command.contractId, allowed, 'send', () => false);
+  if (bounds) refuse(`${what}: ${bounds}`);
+  const moved = movedHoldings({ nodes, inputs, created }, what, refuse, { party: terms.party, key: terms.key, receiver });
+  if (moved.locked > 0n) refuse(`${what} creates a locked holding`);
+  return moved;
+}
+
+/**
+ * One leg sent through the token standard's transfer factory: a single `TransferFactory_Transfer` on a
+ * disclosed factory a pinned admin signed, from this account to `receiver`, of this instrument. The
+ * account signs nothing but its own holdings and the offer of exactly this transfer; what it spends
+ * comes back as change, goes to the receiver, or is locked under that offer.
+ */
+function factoryMoved(
+  { nodes, root, inputs, created }: Opened, what: string, refuse: Refuse,
+  terms: { party: string; admins: string[]; key: string; receiver: string; wanted: string },
+): Moved {
+  if (root?.oneofKind !== 'exercise' || !sameInterface(root.exercise.interfaceId, TRANSFER_FACTORY_INTERFACE)) return refuse(`${what} is not a token-standard transfer`);
+  const command = root.exercise;
+  const arg = readPlain(command.chosenValue) as { expectedAdmin?: unknown; transfer?: Partial<TransferLeg> } | null;
+  const [admin, transfer] = [arg?.expectedAdmin, arg?.transfer];
+  if (typeof admin !== 'string' || !terms.admins.includes(admin)) return refuse(`${what} names ${String(admin)} as the instrument admin, which is not one this SDK pins for it`);
+  if (!transfer || transfer.sender !== terms.party) return refuse(`${what} sends another party's holdings`);
+  if (transfer.receiver !== terms.receiver) return refuse(`${what} sends to ${String(transfer.receiver)}, not to ${terms.wanted}`);
+  if (transfer.instrumentId?.admin !== admin || instrumentKey(String(transfer.instrumentId?.id)) !== terms.key) return refuse(`${what} transfers another instrument`);
+  const asked = units(transfer.amount);
+  if (asked <= 0n) return refuse(`${what} transfers an amount that is not a positive decimal`);
+  const factory = inputs.get(command.contractId);
+  if (!factory) return refuse(`${what} does not disclose the transfer factory it runs on`);
+  if (!sameTemplate(factory, command)) refuse(`${what} runs on another template than the factory it names`);
+  if (!signedBy(factory, command, [admin])) refuse(`${what} runs on a transfer factory the instrument admin did not sign`);
+  const allowed = new Set([terms.party, terms.receiver, admin, ...factory.signatories, ...factory.stakeholders]);
+  const isThisOffer = (contract: Create) => contract.signatories.includes(admin) && sameTransfer((readPlain(contract.argument) as { transfer?: Partial<TransferLeg> } | null)?.transfer, transfer);
+  const bounds = signerBounds(nodes, inputs, created, terms.party, [admin], command.contractId, allowed, 'send', isThisOffer);
+  if (bounds) refuse(`${what}: ${bounds}`);
+  return { ...movedHoldings({ nodes, inputs, created }, what, refuse, { party: terms.party, key: terms.key, receiver: terms.receiver }), factory: true, asked };
+}
+
+/** Holdings of one instrument, spent and created: the account's only, but what is created for `receiver`. */
+function movedHoldings(
+  { nodes, inputs, created }: Pick<Opened, 'nodes' | 'inputs' | 'created'>, what: string, refuse: Refuse,
+  terms: { party: string; key: string; receiver: string },
+): Moved {
+  const moved: Moved = { net: 0n, own: [], received: 0n, locked: 0n, factory: false, asked: 0n };
+  const spent = spentHoldings(nodes, inputs, created, terms.party);
+  if (typeof spent === 'string') return refuse(`${what}: ${spent}`);
+  for (const [instrument, amount] of spent) {
+    if (instrument !== terms.key) refuse(`${what} spends ${instrument}, not ${terms.key}`);
+    moved.net += amount;
+  }
+  for (const contract of created.values()) {
+    const holding = holdingOf(contract);
+    if (!holding) continue;
+    if (holding.instrument !== terms.key) refuse(`${what} creates ${holding.instrument}, not ${terms.key}`);
+    if (holding.owner === terms.party) {
+      if (holding.locked) moved.locked += holding.amount;
+      else {
+        moved.net -= holding.amount;
+        moved.own.push(holding.amount);
       }
+    } else if (holding.owner === terms.receiver && !holding.locked) {
+      moved.received += holding.amount;
+    } else {
+      refuse(holding.locked ? `${what} creates a locked holding` : `${what} creates a holding owned by ${holding.owner}`);
     }
   }
-  if (!split) refuse(`no holding of exactly ${terms.amount} ${terms.instrument} is created for this account`);
-  if (net > units(terms.maxCost)) {
-    refuse(`the send costs this account more than ${terms.maxCost} ${terms.instrument} (an old input's accrued holding fee counts: consolidate() it first)`);
+  return moved;
+}
+
+/**
+ * The accept of one transfer instruction: `TransferInstruction_Accept` on the contract the caller
+ * chose, disclosed, signed by a pinned admin of the instrument it names, and to this account. The
+ * account spends nothing; holdings are created for it or for the sender.
+ */
+function acceptLeg({ nodes, root, inputs, created }: Opened, what: string, refuse: Refuse, terms: AcceptTerms): number {
+  if (root?.oneofKind !== 'exercise' || root.exercise.choiceId !== 'TransferInstruction_Accept' || !sameInterface(root.exercise.interfaceId, TRANSFER_INSTRUCTION_INTERFACE)) {
+    return refuse(`${what} is not the accept of a token-standard transfer`);
   }
+  const command = root.exercise;
+  if (command.contractId !== terms.instructionCid) refuse(`${what} accepts another transfer than the one it was asked for`);
+  const instruction = inputs.get(command.contractId);
+  if (!instruction) return refuse(`${what} does not disclose the transfer it accepts`);
+  const transfer = (readPlain(instruction.argument) as { transfer?: Partial<TransferLeg> } | null)?.transfer;
+  const admin = transfer?.instrumentId?.admin;
+  const key = instrumentKey(String(transfer?.instrumentId?.id));
+  if (!transfer || transfer.receiver !== terms.party || typeof transfer.sender !== 'string') return refuse(`${what} accepts a transfer that is not to this account`);
+  if (typeof admin !== 'string' || !(terms.pinnedAdmins[key] ?? []).includes(admin)) return refuse(`${what} accepts ${key} from ${String(admin)}, which is not an admin this SDK pins for it`);
+  if (!sameTemplate(instruction, command)) refuse(`${what} runs on another template than the transfer it names`);
+  if (!signedBy(instruction, command, [admin])) refuse(`${what} accepts a transfer the instrument admin did not sign`);
+  const allowed = new Set([terms.party, transfer.sender, admin, ...instruction.signatories, ...instruction.stakeholders]);
+  const bounds = signerBounds(nodes, inputs, created, terms.party, [admin], command.contractId, allowed, 'accept', () => false);
+  if (bounds) refuse(`${what}: ${bounds}`);
+  for (const node of nodes.values()) {
+    const type = nodeType(node)!;
+    if (type.oneofKind !== 'exercise' || !type.exercise.consuming) continue;
+    const target = inputs.get(type.exercise.contractId) ?? created.get(type.exercise.contractId);
+    if (!target) return refuse(`${what} consumes contract ${type.exercise.contractId.slice(0, 16)}… without disclosing what it is`);
+    const owner = holdingOf(target)?.owner;
+    if (owner !== undefined && owner !== transfer.sender) refuse(owner === terms.party ? `${what} spends this account's own holding` : `${what} spends a holding owned by ${owner}`);
+  }
+  for (const contract of created.values()) {
+    const holding = holdingOf(contract);
+    if (!holding) continue;
+    if (holding.instrument !== key) refuse(`${what} creates ${holding.instrument}, not ${key}`);
+    if (holding.owner !== terms.party && holding.owner !== transfer.sender) refuse(`${what} creates a holding owned by ${holding.owner}`);
+    if (holding.owner === terms.party && holding.locked) refuse(`${what} creates a locked holding`);
+  }
+  return 1;
+}
+
+/** Signed by one of `admins` — as the contract disclosed says and as the command exercising it says. */
+const signedBy = (contract: Create, command: Exercise, admins: string[]) =>
+  [contract.signatories, command.signatories].every((signed) => signed.some((p) => admins.includes(p)));
+
+/** The same transfer: sender, receiver, amount, instrument and admin. */
+const sameTransfer = (a: Partial<TransferLeg> | undefined, b: Partial<TransferLeg>) =>
+  !!a && a.sender === b.sender && a.receiver === b.receiver && units(a.amount) === units(b.amount) && units(a.amount) > 0n &&
+  a.instrumentId?.id === b.instrumentId?.id && a.instrumentId?.admin === b.instrumentId?.admin;
+
+/** Exact 1e-10 units back to a decimal string, without trailing zeros. */
+function decimalOf(value: bigint): string {
+  const sign = value < 0n ? '-' : '';
+  const abs = value < 0n ? -value : value;
+  const fraction = (abs % ONE).toString().padStart(10, '0').replace(/0+$/, '');
+  return `${sign}${abs / ONE}${fraction ? `.${fraction}` : ''}`;
 }
 
 const partyOf = (value: Value | undefined) => (value?.sum.oneofKind === 'party' ? value.sum.party : undefined);

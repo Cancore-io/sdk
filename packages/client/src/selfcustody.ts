@@ -573,6 +573,10 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     network ? DEFAULT_INSTRUMENT_ADMINS[network] : {},
     Object.fromEntries(Object.entries(options.instrumentAdmins ?? {}).map(([id, list]) => [instrumentKey(id), list])),
   );
+  const trustedPackages: TrustedPackages = {
+    swap: mergeLists(DEFAULT_TRUSTED_PACKAGES.swap, options.trustedPackages?.swap),
+    wallet: mergeLists(DEFAULT_TRUSTED_PACKAGES.wallet, options.trustedPackages?.wallet),
+  };
   const feeRecipients = [...new Set([...(network ? DEFAULT_FEE_RECIPIENTS[network] : []), ...[options.feeRecipientPartyId ?? []].flat()])];
   // Every Canton↔Canton order this account places asks for allocation-DvP: that is the only way it settles.
   const swap: SwapClient = {
@@ -988,7 +992,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       venue,
       feeParty: forWithdraw ? null : (config?.feeRecipient ?? null),
       feeRate,
-      packages: { swap: mergeLists(DEFAULT_TRUSTED_PACKAGES.swap, options.trustedPackages?.swap) },
+      packages: trustedPackages,
       now: now(),
       maxWindowMs: options.maxSettlementWindowMs ?? DEFAULT_SETTLEMENT_WINDOW_MS,
     };
