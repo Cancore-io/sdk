@@ -415,6 +415,43 @@ describe('a fee split (a CC send to oneself) is signed only as the account asked
     await expect(verifySelfSendPrepared([await transfer(), await feeLeg()], terms)).resolves.toBeUndefined();
   });
 
+  describe('the preapproval is the DSO\'s own record, or nothing under it is (CAN-2249)', () => {
+    // A choice body runs with the authority of everyone who acts in it. A preapproval the DSO signed runs
+    // the DSO's code; one anybody else made runs theirs — with this account's authority.
+    const MALLORY = 'mallory::1220ff';
+    const EVIL = { packageName: 'splice-amulet', packageId: 'ee'.repeat(32) };
+    type Create = ReturnType<typeof preapprovalContract>;
+    const forged = (c: Create): Create => ({
+      ...c, packageName: EVIL.packageName, templateId: { ...c.templateId!, packageId: EVIL.packageId }, signatories: [MALLORY], stakeholders: [MALLORY, ME],
+    });
+
+    test('a forged preapproval whose "send" makes this account sign a contract that only looks like its holding', async () => {
+      // Nothing is spent and nothing leaves: the tree only creates a contract named Amulet, owned by this
+      // account, signed by it and by its author. Whoever controls that contract's choices then acts as
+      // this account whenever they like — the whole balance, later, without another signature.
+      const proxy = (c: Create): Create => ({ ...c, packageName: EVIL.packageName, templateId: { ...c.templateId!, packageId: EVIL.packageId }, signatories: [MALLORY, ME], stakeholders: [MALLORY, ME] });
+      const leg = await transfer({ preapproval: forged, output: proxy });
+      await refused([leg], /leg 0 sends through a preapproval the instrument admin did not sign/);
+    });
+
+    test('the honest tree, through a preapproval the DSO did not sign', async () => {
+      await refused([await transfer({ preapproval: (c) => ({ ...c, signatories: [ME, DEV.venue] }) }), await feeLeg()], /leg 0 sends through a preapproval the instrument admin did not sign/);
+      await refused([await transfer(), await feeLeg({ preapproval: (c) => ({ ...c, signatories: [DEV.venue] }) })], /leg 1 sends through a preapproval the instrument admin did not sign/);
+    });
+
+    test('a command that names another template than the preapproval it runs on', async () => {
+      const honest = preapprovalContract('00'.repeat(34), ME);
+      await refused([await transfer({ commandOn: { packageName: 'evil-amulet', templateId: honest.templateId } })], /leg 0 runs on another template than the preapproval it names/);
+      await refused([await transfer({ commandOn: { packageName: honest.packageName, templateId: { ...honest.templateId!, moduleName: 'Evil.Rules' } } })], /leg 0 runs on another template than the preapproval it names/);
+    });
+
+    test('a newer version of the DSO\'s package is the same template: the DSO upgrades on its own schedule', async () => {
+      const honest = preapprovalContract('00'.repeat(34), ME);
+      const upgraded = { packageName: honest.packageName, templateId: { ...honest.templateId!, packageId: 'ab'.repeat(32) } };
+      await expect(verifySelfSendPrepared([await transfer({ commandOn: upgraded })], terms)).resolves.toBeUndefined();
+    });
+  });
+
   test('a hash that is not the hash of the bytes', async () => {
     const [a, b] = [await transfer(), await feeLeg()];
     await refused([{ ...a, preparedTransactionHash: b.preparedTransactionHash }, b], /leg 0 does not hash to the hash it came with/);
@@ -434,7 +471,7 @@ describe('a fee split (a CC send to oneself) is signed only as the account asked
   });
 
   test('acting on a contract neither the account nor the admin signs', async () => {
-    const stranger = preapprovalContract('c0'.repeat(34), 'other::1220ee', 'other::1220ee');
+    const stranger = { ...preapprovalContract('c0'.repeat(34), 'other::1220ee', 'other::1220ee'), signatories: ['other::1220ee'], stakeholders: ['other::1220ee'] };
     await refused([await transfer({ extra: (c) => spend('x', c, ME), extraInput: stranger }), await feeLeg()],
       /acts on a TransferPreapproval that is neither its holding nor the instrument admin's/);
   });

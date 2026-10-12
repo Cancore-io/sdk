@@ -769,6 +769,12 @@ export async function verifySelfSendPrepared(legs: Array<PreparedToSign & { kind
     const inputs = inputContracts(decoded);
     const preapproval = inputs.get(entryCid);
     if (preapproval?.templateId?.entityName !== 'TransferPreapproval') refuse(`${what} does not disclose the preapproval it sends through`);
+    // The preapproval is the trust anchor of everything under it, as the factory is for an allocation:
+    // a choice body acts with this account's authority, so it must be the DSO's code and nobody else's.
+    // A contract the DSO signed is one only the DSO could create, of the template the command runs (the
+    // package id may be a newer version; its name, module and entity may not differ).
+    if (!sameTemplate(preapproval!, (root as Extract<typeof root, { oneofKind: 'exercise' }>).exercise)) refuse(`${what} runs on another template than the preapproval it names`);
+    if (!preapproval!.signatories.some((p) => terms.admins.includes(p))) refuse(`${what} sends through a preapproval the instrument admin did not sign`);
     const receiver = partyOf(fieldsOf(preapproval!.argument)?.get('receiver'));
     if (!receiver || !(fee ? terms.feeRecipients : [terms.party]).includes(receiver)) {
       refuse(`${what} sends to ${receiver ?? 'an unreadable receiver'}, not to ${fee ? 'a pinned network fee recipient' : 'this account'}`);

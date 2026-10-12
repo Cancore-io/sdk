@@ -1,5 +1,20 @@
 # Changelog — `@cancore/client`
 
+## 0.8.1
+
+### Security
+
+- `splitForFee` (and `take` with `autoSplitForFee`) verified a CC send without holding the transfer
+  preapproval it goes through to the DSO (CAN-2249). The preapproval is what the whole transaction
+  runs on: its choice acts with this account's authority. A hostile API could disclose a contract
+  of its own under the same template name, and its "send" could have this account sign a contract
+  that only looks like its holding — one whose author then acts as the account, for the whole
+  balance, without another signature. Nothing was spent in the transaction itself, so every amount
+  check passed. Now each leg's preapproval must be signed by a pinned CC admin (the DSO) and be of
+  the template the command names, the same anchor an allocation's factory already had; anything
+  else is an `UnverifiedTransactionError` before the key signs. A send the real DSO prepared is
+  unaffected. `allowUnverified` still signs without reading, as it says.
+
 ## 0.8.0
 
 ### Added
