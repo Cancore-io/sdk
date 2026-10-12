@@ -1331,6 +1331,44 @@ describe('submit refusals of a DvP step, by text and by errorCode alone', () => 
   });
 });
 
+describe('a signer that only has signMessage is not handed a challenge that is not one (CAN-2399)', () => {
+  // The challenge is the API's to choose, and the fallback signs it raw: 32 bytes of it would be a
+  // signature over a transaction hash, and a server can ask for a login whenever it likes (a 401).
+  const raw = () => ({ public_key: '00'.repeat(32), signMessage: jest.fn(async () => '00') });
+  const answering = (challenge: unknown): FetchLike => async (url) =>
+    new URL(url).pathname === '/auth/challenge' ? json({ challenge }) : json({ token: jwt('a'), refreshToken: 'r1', user: {} });
+
+  test.each<[string, unknown]>([
+    ['a transaction hash', String.fromCharCode(...new Array<number>(32).fill(0xbb))],
+    ['a topology multihash', `\x12\x20${'a'.repeat(32)}`],
+    ['32 printable characters', 'x'.repeat(32)],
+    ['a challenge with a line break in it', 'Welcome to Cancore 2026-09-28\nsig:1'],
+    ['the prefix without its space', 'Welcome to Cancore'],
+    ['nothing', ''],
+    ['a value that is not a string', { toString: () => 'Welcome to Cancore 2026-09-28 sig:1' }],
+  ])('%s is not signed', async (_what, challenge) => {
+    const signer = raw();
+
+    await expect(createSession({ baseUrl, signer, fetchImpl: answering(challenge) }).login()).rejects.toThrow(/not a Cancore login challenge/);
+    expect(signer.signMessage).not.toHaveBeenCalled();
+  });
+
+  test('a real challenge is signed, as before', async () => {
+    const signer = raw();
+
+    await createSession({ baseUrl, signer, fetchImpl: answering('Welcome to Cancore 2026-09-28 sig:1') }).login();
+    expect(signer.signMessage).toHaveBeenCalledWith('Welcome to Cancore 2026-09-28 sig:1');
+  });
+
+  test('a signer with its own signChallenge is asked as before: the check is its own', async () => {
+    const signer = { ...raw(), signChallenge: jest.fn(async () => '00') };
+
+    await createSession({ baseUrl, signer, fetchImpl: answering('anything') }).login();
+    expect(signer.signChallenge).toHaveBeenCalledWith('anything');
+    expect(signer.signMessage).not.toHaveBeenCalled();
+  });
+});
+
 test('the session renews an expiring token and signs in again after a 401', async () => {
   const signer = await providerFromMnemonic(PHRASE);
   const seen: string[] = [];

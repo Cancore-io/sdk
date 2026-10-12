@@ -14,6 +14,12 @@
   refusal is a `CeremonyError` at `prepare` whose `cause` is `UnexpectedLegError`
   (`@cancore/wallet/operations`, re-exported from `./selfcustody`); nothing is signed or submitted.
   DvP steps are unaffected: they were already read before signing.
+- Every other leg's hash must be 32 bytes of canonical base64, and the whole set is read before the
+  first signature: one leg that is not a hash refuses the set, with nothing signed.
+- A signer that has only `signMessage` (no `signChallenge`) is handed a login challenge only when it
+  is one — printable ASCII starting with `Welcome to Cancore ` — the rule a `@cancore/wallet`
+  provider already holds its own `signChallenge` to. Before, such a signer signed whatever the API
+  returned as the challenge, a 32-byte transaction hash included.
 
 ## 0.8.0
 

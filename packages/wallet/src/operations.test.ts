@@ -12,6 +12,9 @@ import {
 } from './operations';
 
 const leg = (legId: string, hash: string): OperationLeg => ({ legId, hash, kind: 'transfer' });
+/** A prepared-transaction hash as the participant gives one: 32 bytes, canonical base64. */
+const hashOf = (byte: string) => Buffer.from(byte.repeat(32), 'hex').toString('base64');
+const [HASH_A, HASH_B] = [hashOf('a1'), hashOf('b2')];
 
 /** A request function that answers each call in turn, recording what it was asked. */
 function stubRequest(answers: unknown[]): { request: WalletRequest; calls: Array<[string, unknown]> } {
@@ -52,7 +55,7 @@ describe('@cancore/wallet/operations', () => {
     // network fee. A positional submit would one day post the fee's signature
     // for the transfer, and both would be real signatures over real transactions.
     const { request, calls } = stubRequest([
-      { operationId: 'op-1', legs: [leg('sk-main', 'aGk='), leg('sk-fee', 'Ymxh')], meta: null },
+      { operationId: 'op-1', legs: [leg('sk-main', HASH_A), leg('sk-fee', HASH_B)], meta: null },
       { updateId: 'u-1' },
     ]);
     const signPreparedHash = jest.fn(async (hash: string) => `sig(${hash})`);
@@ -68,8 +71,8 @@ describe('@cancore/wallet/operations', () => {
       {
         operationId: 'op-1',
         signatures: [
-          { legId: 'sk-main', signature: 'sig(aGk=)' },
-          { legId: 'sk-fee', signature: 'sig(Ymxh)' },
+          { legId: 'sk-main', signature: `sig(${HASH_A})` },
+          { legId: 'sk-fee', signature: `sig(${HASH_B})` },
         ],
       },
     ]);
@@ -78,7 +81,7 @@ describe('@cancore/wallet/operations', () => {
 
   it('signs the legs in order, one prompt for the whole ceremony', async () => {
     const { request } = stubRequest([
-      { operationId: 'op-1', legs: [leg('a', 'aGk='), leg('b', 'Ymxh')], meta: null },
+      { operationId: 'op-1', legs: [leg('a', HASH_A), leg('b', HASH_B)], meta: null },
       {},
     ]);
     const seen: string[] = [];
@@ -89,7 +92,7 @@ describe('@cancore/wallet/operations', () => {
 
     await createWalletOperations(request).execute({ signMessage: jest.fn(), signPreparedHash }, 'x');
 
-    expect(seen).toEqual(['aGk=', 'Ymxh']);
+    expect(seen).toEqual([HASH_A, HASH_B]);
   });
 
   it('submits nothing to sign as an empty signature list rather than skipping the submit', async () => {
@@ -109,8 +112,8 @@ describe('@cancore/wallet/operations', () => {
     const signPreparedHash = jest.fn().mockResolvedValue('already-base64');
     const signMessage = jest.fn();
 
-    expect(await signPreparedHashBase64({ signMessage, signPreparedHash }, 'aGk=')).toBe('already-base64');
-    expect(signPreparedHash).toHaveBeenCalledWith('aGk=');
+    expect(await signPreparedHashBase64({ signMessage, signPreparedHash }, HASH_A)).toBe('already-base64');
+    expect(signPreparedHash).toHaveBeenCalledWith(HASH_A);
     expect(signMessage).not.toHaveBeenCalled();
   });
 
@@ -301,13 +304,27 @@ describe('@cancore/wallet/operations', () => {
       // The legs are checked again at the signature, not only before the screen.
       const { ops, signer } = harness([leg('h1', PREPARED_HASH)]);
       const confirm = jest.fn(async (legs: OperationLeg[]) => {
-        legs.push(topology(MULTIHASH));
+        // Replaced, not added to: a topology leg on its own passes the "signed alone" rule, so only
+        // the operation's own rule stands between a send and a raw signature.
+        legs.splice(0, 1, topology(MULTIHASH));
         return true;
       });
 
       await expect(ops.execute(signer, 'tokens.send', undefined, confirm)).rejects.toBeInstanceOf(UnexpectedLegError);
       expect(signer.signMessage).not.toHaveBeenCalled();
       expect(signer.signPreparedHash).not.toHaveBeenCalled();
+    });
+
+    it('a set with one hash that is not one is refused whole, before the first signature', async () => {
+      // The provider path too: its own check would refuse the second leg only after signing the first.
+      const signer = { signMessage: jest.fn(), signPreparedHash: jest.fn().mockResolvedValue('sig') };
+
+      for (const bad of ['@@@@', b64(hex('bb'.repeat(31))), MULTIHASH, '']) {
+        await expect(signLegs(signer, [leg('h1', PREPARED_HASH), leg('h2', bad)], { operation: 'tokens.send' })).rejects.toBeInstanceOf(UnexpectedLegError);
+        expect(() => assertOperationLegs([leg('h1', PREPARED_HASH), { legId: 'f1', hash: bad, kind: 'fee' }], 'tokens.send')).toThrow(UnexpectedLegError);
+      }
+      expect(signer.signPreparedHash).not.toHaveBeenCalled();
+      expect(signer.signMessage).not.toHaveBeenCalled();
     });
   });
 
@@ -374,7 +391,7 @@ describe('@cancore/wallet/operations', () => {
     const { request } = stubRequest([
       {
         operationId: 'op-1',
-        legs: [leg('a', 'aGk='), leg('b', 'Ymxh')],
+        legs: [leg('a', HASH_A), leg('b', HASH_B)],
         meta: null,
       },
       {},
@@ -400,7 +417,7 @@ describe('@cancore/wallet/operations', () => {
     // legs" and "we sign" to show the user anything. `confirm` is that gap.
 
     it('signs and submits nothing when confirm refuses', async () => {
-      const { request, calls } = stubRequest([{ operationId: 'op-1', legs: [leg('a', 'aGk=')], meta: null }]);
+      const { request, calls } = stubRequest([{ operationId: 'op-1', legs: [leg('a', HASH_A)], meta: null }]);
       const signPreparedHash = jest.fn();
       const confirm = jest.fn().mockResolvedValue(false);
 
@@ -417,7 +434,7 @@ describe('@cancore/wallet/operations', () => {
     it('hands confirm exactly the legs and meta prepare answered, before any signature', async () => {
       const meta = { swapId: 'swap-1' };
       const { request } = stubRequest([
-        { operationId: 'op-1', legs: [leg('a', 'aGk='), leg('b', 'Ymxh')], meta },
+        { operationId: 'op-1', legs: [leg('a', HASH_A), leg('b', HASH_B)], meta },
         {},
       ]);
       const confirm = jest.fn().mockResolvedValue(true);
@@ -430,14 +447,14 @@ describe('@cancore/wallet/operations', () => {
       );
 
       expect(confirm).toHaveBeenCalledWith(
-        [leg('a', 'aGk='), leg('b', 'Ymxh')],
+        [leg('a', HASH_A), leg('b', HASH_B)],
         meta,
       );
     });
 
     it('signs and submits once confirm agrees', async () => {
       const { request, calls } = stubRequest([
-        { operationId: 'op-1', legs: [leg('a', 'aGk=')], meta: null },
+        { operationId: 'op-1', legs: [leg('a', HASH_A)], meta: null },
         { updateId: 'u-1' },
       ]);
       const signPreparedHash = jest.fn().mockResolvedValue('sig(aGk=)');
@@ -450,7 +467,7 @@ describe('@cancore/wallet/operations', () => {
         confirm,
       );
 
-      expect(signPreparedHash).toHaveBeenCalledWith('aGk=');
+      expect(signPreparedHash).toHaveBeenCalledWith(HASH_A);
       expect(calls[1]).toEqual([
         '/wallet/operations/submit',
         { operationId: 'op-1', signatures: [{ legId: 'a', signature: 'sig(aGk=)' }] },
@@ -460,12 +477,12 @@ describe('@cancore/wallet/operations', () => {
 
     it('behaves exactly as before when no caller passes a confirm', async () => {
       // Optional, so every existing caller keeps working unchanged.
-      const { request, calls } = stubRequest([{ operationId: 'op-1', legs: [leg('a', 'aGk=')], meta: null }, {}]);
+      const { request, calls } = stubRequest([{ operationId: 'op-1', legs: [leg('a', HASH_A)], meta: null }, {}]);
       const signPreparedHash = jest.fn().mockResolvedValue('sig');
 
       await createWalletOperations(request).execute({ signMessage: jest.fn(), signPreparedHash }, 'tokens.accept');
 
-      expect(signPreparedHash).toHaveBeenCalledWith('aGk=');
+      expect(signPreparedHash).toHaveBeenCalledWith(HASH_A);
       expect(calls[1][0]).toBe('/wallet/operations/submit');
     });
   });

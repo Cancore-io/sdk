@@ -154,11 +154,7 @@ export async function signPreparedHashBase64(
   // A signer with only `signMessage` signs whatever bytes it is handed, so the shape is checked
   // here for it (CAN-2399): a prepared-transaction hash is 32 bytes and nothing else is. Without
   // this the fallback was a second way to a raw signature over a login challenge or a multihash.
-  const hash = decodeLegHash(preparedTransactionHashB64);
-  if (hash === null || hash.length !== PREPARED_HASH_BYTES) {
-    throw new UnexpectedLegError(`A prepared-transaction hash must be ${PREPARED_HASH_BYTES} bytes of canonical base64`);
-  }
-  const rawHex = await signer.signMessage(hash);
+  const rawHex = await signer.signMessage(preparedHash(preparedTransactionHashB64));
   return hexSignatureToBase64(rawHex);
 }
 
@@ -183,6 +179,13 @@ function decodeLegHash(hashB64: unknown): string | null {
  * The bytes a topology leg has the key sign, or a refusal: a sha2-256 multihash
  * is `0x12` (the function), `0x20` (its 32 bytes), then the digest — 34 bytes.
  */
+function preparedHash(hashB64: unknown): string {
+  const hash = decodeLegHash(hashB64);
+  if (hash === null || hash.length !== PREPARED_HASH_BYTES) {
+    throw new UnexpectedLegError(`A prepared-transaction hash must be ${PREPARED_HASH_BYTES} bytes of canonical base64`);
+  }
+  return hash;
+}
 function topologyMultihash(leg: OperationLeg): string {
   const binary = decodeLegHash(leg.hash);
   if (binary === null || binary.length !== 34 || binary.charCodeAt(0) !== 0x12 || binary.charCodeAt(1) !== 0x20) {
@@ -235,7 +238,12 @@ export function assertOperationLegs(legs: OperationLeg[], operation?: string): v
   if (topology.length > 0 && legs.length !== 1) {
     throw new UnexpectedLegError('A topology leg is signed alone, and there is only ever one');
   }
-  topology.forEach(topologyMultihash);
+  // Every hash of the set, not only the one about to be signed: a set with one bad leg is refused
+  // whole, before the first signature.
+  for (const leg of legs) {
+    if (leg.kind === 'topology') topologyMultihash(leg);
+    else preparedHash(leg.hash);
+  }
   if (operation === undefined) return;
   if (operation === TOPOLOGY_OPERATION ? topology.length !== legs.length : topology.length > 0) {
     throw new UnexpectedLegError(`"${operation}" prepared a transaction of a kind it does not have`);
