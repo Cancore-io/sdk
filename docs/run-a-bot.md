@@ -91,7 +91,9 @@ const env = process.env;
 // The key comes from your secret store through the environment. Never put it in the source, and never print it.
 if (!env.CANCORE_BOT_KEY) throw new Error('set CANCORE_BOT_KEY: the 64 hex characters the wallet showed');
 const signer = await providerFromSeed(env.CANCORE_BOT_KEY);
-const bot = createSelfCustody({ baseUrl: env.CANCORE_API ?? 'https://api-dev.cancore.app', signer });
+// MAX_FEE is the most CC of network fee the bot may pay for one transfer — a send, an accept, a merge. The stand
+// sets that fee and the SDK has no ceiling of its own: without one, those are refused before the key signs.
+const bot = createSelfCustody({ baseUrl: env.CANCORE_API ?? 'https://api-dev.cancore.app', signer, maxFee: env.MAX_FEE });
 await bot.session.login(); // the wallet created the account, so there is no sign-up
 ```
 
@@ -268,10 +270,15 @@ Nobody but the bot can move the bot's balance, so withdrawing is the bot's own s
   `prepare` whose `cause` is an `UnverifiedTransactionError` — and nothing is signed. This works
   for CC to an owner who can receive it directly (every wallet account can) and for a registry
   token such as CBTC, where the owner then accepts the transfer in the wallet.
-- **`maxFee`** is the most network fee one send may cost, `'2'` CC unless you set it
-  (`createSelfCustody({ ..., maxFee })`, or per call). A stand that charges more refuses the send
-  with "more than the … fee it allows": on the dev stand a transfer costs about 9.4 CC, so set
-  `maxFee: '12'` there. A fee debt the API collects on the same leg counts toward it.
+- **`maxFee`** is the most network fee one transfer may cost, and it is yours to set — once for
+  the account, as [section 4](#4-sign-in) does from `MAX_FEE`, or per call
+  (`bot.send({ ..., maxFee })`). The SDK has no number of its own: each stand sets its fee by an
+  admin's rule, fixed or priced from cost, and it changes. A send with no ceiling is refused ("no
+  ceiling was set on its network fee"), a send above it too ("more than the … fee it allows");
+  neither is signed. `GET /tokens/transfer/estimate-fee` quotes the fee: on the dev stand a
+  transfer cost about 9.4 CC on 2026-10-12, so `MAX_FEE=12` passed there. A fee debt the API
+  collects on the same leg counts toward it. `acceptIncoming` and `consolidate` are held to the
+  same ceiling.
 - The answer of a send whose fee was deferred carries `deferredFee: 'paid'`. `'owed'` (with
   `feeError`) means the send went through and its fee did not: do not send again — the fee stays
   the bot's debt and is collected with a later send.

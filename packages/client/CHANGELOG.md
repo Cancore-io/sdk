@@ -44,13 +44,22 @@
   this account, to the pinned venue or itself, under the pinned DSO, from a pinned `splice-wallet`
   package. A ceremony that does not hold, or came without bytes, is a `CeremonyError` at `prepare`
   whose `cause` is `UnverifiedTransactionError` (now exported from `./selfcustody`); nothing is signed.
-  - **Breaking for:** an account on a network the SDK has no pins for (pass `network` or
+  - **Breaking for every caller of `send`, `accept` / `acceptIncoming`, `consolidate` and
+    `cashback.collect`: set `maxFee`** — on the account (`createSelfCustody({ ..., maxFee })`) or
+    per call (`TokenCallOptions`). It is the most CC one of these ceremonies may cost in network fee,
+    and the SDK ships no default: a stand sets that fee by an admin's rule (fixed, or priced from
+    cost), so any number here would be one stand on one day — on 2026-10-12 the dev stand charged
+    about 9.4 CC a transfer. A ceremony with no ceiling is refused with a message that says so
+    (`maxSplitCost`, when you set it, serves as the ceiling); `GET /tokens/transfer/estimate-fee`
+    quotes the fee. The ceiling is what bounds the fee leg: its recipient is pinned, its amount is
+    not.
+  - **Also breaking for:** an account on a network the SDK has no pins for (pass `network` or
     `instrumentAdmins`); a registry token whose admin is not pinned; a gateway that returns no
-    transaction bytes; testnet and mainnet until their `splice-wallet` package id is pinned
-    (`trustedPackages.wallet`) — only the dev id ships. Each call takes `allowUnverified: true`,
-    which signs unread as 0.8 did.
-  - New options: `maxFee` on the account and per call (`TokenCallOptions`) — the most CC one of
-    these ceremonies may cost in network fee, default `maxSplitCost`, else `'2'`.
+    transaction bytes; a network whose `splice-wallet` is a release after 0.1.25 (pass its package
+    id in `trustedPackages.wallet`). Every released `splice-wallet` up to 0.1.25 is pinned, from
+    Splice's `daml/dars.lock`; the dev stand ran 0.1.24 on 2026-10-12, and which release testnet and
+    mainnet run was not measured. Each call takes `allowUnverified: true`, which signs unread as 0.8
+    did.
 - **The network fee is paid** (CAN-2423). `send` used to ignore a fee the API deferred (a send from
   a single holding) and `accept` never asked for its fee leg, so each left a fee debt. `send` now
   runs the deferred fee's own ceremony right after, read like any fee leg; its answer carries

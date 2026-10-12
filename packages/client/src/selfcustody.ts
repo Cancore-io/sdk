@@ -343,15 +343,16 @@ export interface SelfCustodyOptions extends SessionOptions {
    * The most CC one `send`, `accept` or `consolidate` may cost this account in network fee — its fee
    * leg, a fee debt the API collects on that leg, an old CC input's accrued holding fee. A ceremony
    * prepared above it is refused before the key signs; a call's own `maxFee` overrides it for that
-   * call. Default: `maxSplitCost`, else `'2'`. A stand that charges more per transfer (the dev stand
-   * does) needs it raised.
+   * call. Default: `maxSplitCost` when that is set — otherwise there is none, and a ceremony that is
+   * given no ceiling is refused: the fee is each stand's own (an admin's rule, fixed or priced from
+   * cost), so the SDK ships no number for it. `GET /tokens/transfer/estimate-fee` quotes it.
    */
   maxFee?: string;
 }
 
 /** How one token ceremony — a send, an accept, a merge — is held before the key signs it. */
 export interface TokenCallOptions {
-  /** The most CC this ceremony may cost in network fee. Default: the account's `maxFee`. */
+  /** The most CC this ceremony may cost in network fee. Default: the account's `maxFee`; with neither, the ceremony is refused. */
   maxFee?: string;
   /**
    * Sign what the API prepared without reading it, as every one of these calls did before 0.9.0.
@@ -705,7 +706,20 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     if (dso.length === 0) throw new Error(`no pinned CC admin for ${network ?? 'this network'} to verify against: pass network or instrumentAdmins`);
     return { dso, feeRecipients: [...(network ? DEFAULT_NETWORK_FEE_RECIPIENTS[network] : []), ...(options.networkFeeRecipients ?? [])] };
   }
-  const feeCeiling = (given?: string) => given ?? options.maxFee ?? options.maxSplitCost ?? DEFAULT_MAX_SPLIT_COST;
+  /**
+   * The fee ceiling of one token ceremony. No number is built in: a stand sets its network fee by an
+   * admin's rule (a fixed amount or cost-plus pricing), so any default here would be a snapshot of
+   * one stand on one day. A ceremony nobody put a ceiling on is refused, and the refusal says so.
+   */
+  const feeCeiling = (operation: TokenOperation, given?: string) => {
+    const ceiling = given ?? options.maxFee ?? options.maxSplitCost;
+    if (ceiling === undefined) {
+      throw new UnverifiedTransactionError(operation, 'no ceiling was set on its network fee, and the SDK has none of its own: ' +
+        'the stand decides that fee. Pass maxFee — to createSelfCustody, or to this call — as the most CC it may cost ' +
+        '(GET /tokens/transfer/estimate-fee quotes the fee; allowUnverified signs without reading)');
+    }
+    return ceiling;
+  };
   /** The on-ledger instrument a token id of the API names, and the admins pinned for it. */
   const instrumentOf = (tokenId?: string) => (tokenId && !isCc(tokenId) ? tokenId : 'Amulet');
   const tokenAdmins = (instrument: string) => admins[instrumentKey(instrument)] ?? [];
@@ -792,18 +806,21 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       // The accept's network fee rides on the accept itself (CAN-2423), not into a debt paid later.
       withFeeLeg: true,
     }, false, reading('tokens.accept', call, (legs, pins, party) => verifyAcceptPrepared(legs, {
-      party, instructionCid: transfer.contractId, pinnedAdmins: admins, dso: pins.dso, maxFee: feeCeiling(call?.maxFee), feeRecipients: pins.feeRecipients,
+      party, instructionCid: transfer.contractId, pinnedAdmins: admins, dso: pins.dso, maxFee: feeCeiling('tokens.accept', call?.maxFee), feeRecipients: pins.feeRecipients,
     })));
   }
 
   async function send(input: { receiverPartyId: string; amount: string; tokenId?: string; description?: string } & TokenCallOptions): Promise<unknown> {
     const { receiverPartyId, amount, tokenId, description } = input;
-    const [instrument, maxFee] = [instrumentOf(tokenId), feeCeiling(input.maxFee)];
+    const instrument = instrumentOf(tokenId);
     const { meta, result } = await run<{ feeDeferred?: unknown }>(
       'tokens.send', { receiverPartyId, amount, ...(tokenId ? { tokenId } : {}), ...(description ? { description } : {}) }, false,
-      reading('tokens.send', input, (legs, pins, party) => (receiverPartyId === party
-        ? verifySelfSendPrepared(legs, { party, admins: pins.dso, instrument, amount, maxCost: maxFee, feeRecipients: pins.feeRecipients })
-        : verifySendPrepared(legs, { party, admins: tokenAdmins(instrument), dso: pins.dso, instrument, receiver: receiverPartyId, amount, maxFee, feeRecipients: pins.feeRecipients }))),
+      reading('tokens.send', input, (legs, pins, party) => {
+        const maxFee = feeCeiling('tokens.send', input.maxFee);
+        return receiverPartyId === party
+          ? verifySelfSendPrepared(legs, { party, admins: pins.dso, instrument, amount, maxCost: maxFee, feeRecipients: pins.feeRecipients })
+          : verifySendPrepared(legs, { party, admins: tokenAdmins(instrument), dso: pins.dso, instrument, receiver: receiverPartyId, amount, maxFee, feeRecipients: pins.feeRecipients });
+      }),
     );
     const updateId = (result as { updateId?: unknown } | null)?.updateId;
     if (!meta?.feeDeferred || typeof updateId !== 'string') return result;
@@ -812,7 +829,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     // is not an error of the send — unpaid, it stays the account's debt and rides on a later fee leg.
     try {
       await run('tokens.send-fee', { sourceUpdateId: updateId }, false, reading('tokens.send-fee', input, (legs, pins, party) =>
-        verifyFeePrepared(legs, { party, dso: pins.dso, maxFee, feeRecipients: pins.feeRecipients })));
+        verifyFeePrepared(legs, { party, dso: pins.dso, maxFee: feeCeiling('tokens.send-fee', input.maxFee), feeRecipients: pins.feeRecipients })));
       return { ...(result as object), deferredFee: 'paid' };
     } catch (feeError) {
       return { ...(result as object), deferredFee: 'owed', feeError };
@@ -888,7 +905,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     const instrument = instrumentOf(tokenId);
     const { meta } = await run<{ mergedCount?: number }>('tokens.consolidate', tokenId ? { tokenId } : {}, false,
       reading('tokens.consolidate', call, (legs, pins, party) => verifyConsolidatePrepared(legs, {
-        party, admins: tokenAdmins(instrument), dso: pins.dso, instrument, maxFee: feeCeiling(call?.maxFee), feeRecipients: pins.feeRecipients,
+        party, admins: tokenAdmins(instrument), dso: pins.dso, instrument, maxFee: feeCeiling('tokens.consolidate', call?.maxFee), feeRecipients: pins.feeRecipients,
       })));
     return Number(meta?.mergedCount ?? 0);
   }

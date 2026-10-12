@@ -1584,7 +1584,7 @@ test('collect accepts exactly the claim’s own payouts, and nothing else in the
     }
     return json({ ok: true });
   };
-  const acct = createSelfCustody({ baseUrl, signer, fetchImpl, ...fast });
+  const acct = createSelfCustody({ baseUrl, signer, fetchImpl, ...fast, maxFee: '2' });
   const { pending } = await acct.cashback.collect();
   expect(accepted).toEqual(['ti-cashback']);
   expect(pending).toBe(0);
@@ -1848,7 +1848,8 @@ describe('what the key signs outside a trade is read first (CAN-2249)', () => {
   const MALLORY = 'mallory::1220ff';
   const account = async (options: VenueOptions, n: number, over: Partial<SelfCustodyOptions> = {}) => {
     const api = venue(options);
-    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: n }), fetchImpl: api.fetchImpl, ...fast, ...over });
+    // Every account here names its fee ceiling, as a caller must: the SDK ships none (the fake venue charges 0.125 CC).
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: n }), fetchImpl: api.fetchImpl, ...fast, maxFee: '2', ...over });
     await acct.session.register({ partyName: 'bot' });
     return { api, acct };
   };
@@ -1918,6 +1919,32 @@ describe('what the key signs outside a trade is read first (CAN-2249)', () => {
     const raised = await onboarded(options, 66, { maxFee: '5' });
     await raised.acct.send({ receiverPartyId: OWNER, amount: '100' });
     expect(submitted(raised.api)).toEqual(['tokens.send']);
+  });
+
+  test('the SDK has no fee ceiling of its own: a ceremony nobody put one on is refused, and the refusal says what to pass', async () => {
+    const noCeiling = /no ceiling was set on its network fee, and the SDK has none of its own.*Pass maxFee — to createSelfCustody, or to this call/;
+    const { api, acct } = await onboarded({ twoHoldings: true, merge: 'honest' }, 80, { maxFee: undefined });
+
+    await unread(acct.send({ receiverPartyId: OWNER, amount: '100' }), 'tokens.send', noCeiling);
+    await unread(acct.consolidate(), 'tokens.consolidate', noCeiling);
+    expect(submitted(api)).toEqual([]);
+
+    // The call's own ceiling is enough, and so is the account's ceiling on a split's cost.
+    await acct.send({ receiverPartyId: OWNER, amount: '100', maxFee: '1' });
+    expect(submitted(api)).toEqual(['tokens.send']);
+    const split = await onboarded({ twoHoldings: true }, 81, { maxFee: undefined, maxSplitCost: '1' });
+    await split.acct.send({ receiverPartyId: OWNER, amount: '100' });
+    expect(submitted(split.api)).toEqual(['tokens.send']);
+  });
+
+  test('allowUnverified reads nothing, so it asks for no ceiling — on the send or on the fee the API deferred', async () => {
+    // One holding: the send defers its fee, and both ceremonies are signed as they came.
+    const { api, acct } = await onboarded({}, 82, { maxFee: undefined });
+
+    const out = await acct.send({ receiverPartyId: OWNER, amount: '100', allowUnverified: true });
+
+    expect(out).toMatchObject({ outcome: 'committed', deferredFee: 'paid' });
+    expect(submitted(api)).toEqual(['tokens.send', 'tokens.send-fee']);
   });
 
   test('a deferred fee that is not paid does not turn a committed send into an error: it stays owed, and says why', async () => {
@@ -2003,7 +2030,7 @@ describe('what the key signs outside a trade is read first (CAN-2249)', () => {
   });
 
   describe('accepting an incoming transfer', () => {
-    const inbox = async (legsFor: (me: string, cid: string) => Promise<Leg[]>, n: number) => {
+    const inbox = async (legsFor: (me: string, cid: string) => Promise<Leg[]>, n: number, over: Partial<SelfCustodyOptions> = {}) => {
       const signer = await providerFromMnemonic(PHRASE, { account: n });
       const me = `party-me::${cantonFingerprint(signer.public_key)}`;
       const asked: Array<Record<string, unknown>> = [];
@@ -2018,7 +2045,7 @@ describe('what the key signs outside a trade is read first (CAN-2249)', () => {
         },
         'POST /wallet/operations/submit': () => ({ outcome: 'committed' }),
       });
-      return { api, asked, acct: createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast }) };
+      return { api, asked, acct: createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, maxFee: '2', ...over }) };
     };
 
     test('the accept of the transfer shown is read and signed, and asks for its fee to ride along', async () => {
@@ -2029,6 +2056,17 @@ describe('what the key signs outside a trade is read first (CAN-2249)', () => {
       expect([accepted.length, failed.length]).toEqual([1, 0]);
       expect(asked[0]).toMatchObject({ instructionCid: 'ti-1', withFeeLeg: true });
       expect(api.hits).toContain('POST /wallet/operations/submit');
+    });
+
+    test('an accept nobody put a fee ceiling on is not signed, and the inbox carries the reason', async () => {
+      const { api, acct } = await inbox(acceptLegs, 83, { maxFee: undefined });
+
+      const { accepted, failed } = await acct.acceptIncoming();
+
+      expect(accepted).toEqual([]);
+      expect((failed[0]!.error as CeremonyError).cause).toBeInstanceOf(UnverifiedTransactionError);
+      expect((failed[0]!.error as Error).message).toMatch(/refusing to sign tokens\.accept: no ceiling was set on its network fee.*Pass maxFee/);
+      expect(api.hits).not.toContain('POST /wallet/operations/submit');
     });
 
     test.each([
@@ -2266,7 +2304,7 @@ test('acceptIncoming skips what expired and what the filter drops, and one refus
     },
     'POST /wallet/operations/submit': () => ({ outcome: 'committed' }),
   });
-  const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
+  const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, maxFee: '2' });
   const { accepted, failed } = await acct.acceptIncoming((t) => t.instrumentId !== 'SPAM');
   expect(accepted.map((t) => t.contractId)).toEqual(['fine']);
   expect(failed.map((f) => f.transfer.contractId)).toEqual(['refused']);

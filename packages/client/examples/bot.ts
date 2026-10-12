@@ -7,7 +7,9 @@ const env = process.env;
 // The key comes from your secret store through the environment. Never put it in the source, and never print it.
 if (!env.CANCORE_BOT_KEY) throw new Error('set CANCORE_BOT_KEY: the 64 hex characters the wallet showed');
 const signer = await providerFromSeed(env.CANCORE_BOT_KEY);
-const bot = createSelfCustody({ baseUrl: env.CANCORE_API ?? 'https://api-dev.cancore.app', signer });
+// MAX_FEE is the most CC of network fee the bot may pay for one transfer — a send, an accept, a merge. The stand
+// sets that fee and the SDK has no ceiling of its own: without one, those are refused before the key signs.
+const bot = createSelfCustody({ baseUrl: env.CANCORE_API ?? 'https://api-dev.cancore.app', signer, maxFee: env.MAX_FEE });
 await bot.session.login(); // the wallet created the account, so there is no sign-up
 
 const me = await bot.onboard(); // completes whatever setup is missing (party, CC receipts); signs nothing when none is

@@ -856,10 +856,25 @@ describe('the preapproval step of onboard() is signed only as a proposal of the 
   });
 
   test('a create has no admin-signed contract under it: its package is pinned by id', async () => {
-    await refused([await proposal({ packageId: 'ee'.repeat(32) })], /runs code from an untrusted package \(splice-wallet e{64}\)/);
+    await refused([await proposal({ packageId: 'ee'.repeat(32) })], /runs code from an untrusted package \(splice-wallet e{64}\): if that is a splice-wallet release newer than this SDK lists, add its id with trustedPackages\.wallet/);
     await refused([await proposal({ packageName: 'evil-wallet' })], /untrusted package \(evil-wallet/);
     await refused([await proposal()], /untrusted package/, { ...terms, packages: {} });
     await refused([await proposal({ entityName: 'TransferPreapprovalProxy' })], /is not a transfer preapproval proposal/);
+  });
+
+  test('every released splice-wallet is pinned, not one stand\'s: a network runs whichever its validators voted in', async () => {
+    const released = DEFAULT_TRUSTED_PACKAGES.wallet['splice-wallet']!;
+    expect(released).toHaveLength(26);
+    expect(new Set(released).size).toBe(26);
+    expect(released.every((id) => /^[0-9a-f]{64}$/.test(id))).toBe(true);
+    // 0.1.24 is what the dev stand prepared on 2026-10-12; the oldest and the newest hold as well.
+    for (const packageId of [released[0]!, 'd42261314d98cc04bf50bcc58930af98b9f33aeed11339465925de697d3ba66e', released.at(-1)!]) {
+      await expect(verifyPreapprovalSetupPrepared([await proposal({ packageId })], terms)).resolves.toBeUndefined();
+    }
+    // An id the caller adds is trusted next to them, never instead.
+    const added = mergeLists(DEFAULT_TRUSTED_PACKAGES.wallet, { 'splice-wallet': ['ab'.repeat(32)] });
+    await expect(verifyPreapprovalSetupPrepared([await proposal({ packageId: 'ab'.repeat(32) })], { ...terms, packages: added })).resolves.toBeUndefined();
+    await expect(verifyPreapprovalSetupPrepared([await proposal()], { ...terms, packages: added })).resolves.toBeUndefined();
   });
 
   test('a proposal for somebody else, to an unpinned provider, or to another DSO', async () => {

@@ -74,7 +74,8 @@ export interface TrustedPackages {
   /**
    * `splice-wallet`, for the one transaction that is a bare create — the transfer preapproval
    * proposal `onboard()` signs. A create runs on no contract an admin signed, so unlike a send or an
-   * allocation it has no anchor but its package id; the ids are Splice's own, the same on every network.
+   * allocation it has no anchor but its package id; the ids are Splice's own: one per release, the
+   * same on every network, and a network may run any release.
    */
   wallet: Record<string, string[]>;
 }
@@ -89,8 +90,37 @@ export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = {
     ],
   },
   wallet: {
+    // Every released `splice-wallet`, from Splice's own `daml/dars.lock`
+    // (hyperledger-labs/splice @ 5fb974056a29, 2026-09-29). A network runs whichever of them its
+    // super validators voted in, so one stand's id alone would refuse the others — and that stand
+    // too, the day it upgrades. A release after 0.1.25 is added here, or by `trustedPackages.wallet`.
     'splice-wallet': [
-      'd42261314d98cc04bf50bcc58930af98b9f33aeed11339465925de697d3ba66e', // devnet, 2026-10
+      '5f384fba007e8b93c8ff1ac151cdc2d035ae1e0506f5e5770de469048713024c', // 0.1.0
+      'e276113de450c2bb4bf8cf2d2991dd0b397fe7fe8103fe1b5377b8ab6622edec', // 0.1.1
+      'c162e08a4ec0428bfa870b6d9040989e575c74199c3a80558c62e03196dd5146', // 0.1.2
+      '2c35bb4f5084ea66db59717d21750bfd64c43147ef5fd5166615092d592a6917', // 0.1.3
+      '141dad2d33b6410b8e1c35a0c4f8f76cb691e4d9a4410ce89f33f373855317e1', // 0.1.4
+      '614b525a50c624062d851ce7df5bdb90ddfa0d6871c486cb6e2c7b694bfbce59', // 0.1.5
+      'ba51e944e430facce00c297c58f4769240402721de4a1d121705050f8e9be901', // 0.1.6
+      'd9a91419b27aa27002a883334015a892c35075967b07008a446bc4b5073051ec', // 0.1.7
+      '882f6438ef69a4fbbe36e32e020d98f3eb1982ac484686e3ca1e2577d677626a', // 0.1.8
+      '940b9fd181c0cf358dd8c38934a8c908d2a3ee5a4728f72481b4de6720f3f8d5', // 0.1.9
+      '9824ffa414d5803d17efafd75c69c1dd53591ac5197d07048b24dbac1720a462', // 0.1.10
+      '991842eee48ec3caa3a649e8f47e3544dd7b688ce4b363aa934a83db7dada427', // 0.1.11
+      'b30bb727552cf6b624dbc9a5ff95f6c158e0a654e2e9c5c27bcfe3f5d0f9ada2', // 0.1.12
+      'eb6e01efacc3397e23c6be8b9be7db4bf37672211974d69e24b48980e2f98b7e', // 0.1.13
+      '690c1d47bac06db419db344d59a7a30c53fa3f5d961943fe1782cfc6c78794d8', // 0.1.14
+      'fd57252dda29e3ce90028114c91b521cb661df5a9d6e87c41a9e91518215fa5b', // 0.1.15
+      '17dca10fd8eb6a833be530fe9c6f9c2b7397a38c06e9c86d0679adc200b90e14', // 0.1.16
+      '176c2924cd7aa12bc81ffd1a8d6cfaf46e70378f653eb5f19f2d6b9599cfd45c', // 0.1.17
+      '94d88246f69d8a4b69333d1f993e3280deaca19b70511ea7687f01e4328a34a4', // 0.1.18
+      '1d8317b1e476c03ea2a85bed8435e5c182abe501db58350009187fa839ab2cca', // 0.1.19
+      'e485c2eb59cca556e0e2ecfaaef45346dd0ba64f9976a3957938d814f846c78c', // 0.1.20
+      'f799a58fa53dfe48bae52bd5dbcc2b578a7d4dfee3ae3f4eb7635fe9a8cc67d3', // 0.1.21
+      'a78daeeb1a4a2405828b29f8c04814725dbd97ee5a60bd02e839f32518640afa', // 0.1.22
+      '727c0fb9711d59b506fbb3cff2342e55eb583bb88682a946220525c304feca4a', // 0.1.23
+      'd42261314d98cc04bf50bcc58930af98b9f33aeed11339465925de697d3ba66e', // 0.1.24 — the dev stand, 2026-10
+      '916f16ea9413ba72d9ae660c9d0741f1078fc27b82b61e4b9db6a991dc47a848', // 0.1.25
     ],
   },
 };
@@ -924,7 +954,10 @@ export async function verifyPreapprovalSetupPrepared(legs: Leg[], terms: Preappr
   const { templateId, packageName, signatories, argument } = root.create;
   if (templateId?.moduleName !== 'Splice.Wallet.TransferPreapproval' || templateId.entityName !== 'TransferPreapprovalProposal') refuse('it is not a transfer preapproval proposal');
   // A create has no admin-signed contract under it: the package id is all that says whose code this is.
-  if (!trusted(terms.packages, packageName, templateId?.packageId)) refuse(`it runs code from an untrusted package (${packageName || 'unnamed'} ${templateId?.packageId ?? ''})`);
+  if (!trusted(terms.packages, packageName, templateId?.packageId)) {
+    refuse(`it runs code from an untrusted package (${packageName || 'unnamed'} ${templateId?.packageId ?? ''}): ` +
+      'if that is a splice-wallet release newer than this SDK lists, add its id with trustedPackages.wallet');
+  }
   if (signatories.length !== 1 || signatories[0] !== terms.party) refuse('the proposal is not signed by this account alone');
   const proposal = readPlain(argument) as { receiver?: unknown; provider?: unknown; expectedDso?: unknown } | null;
   if (!proposal || Object.keys(proposal).sort().join() !== 'expectedDso,provider,receiver') return refuse('the proposal is not of the shape this SDK knows');
