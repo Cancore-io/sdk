@@ -423,3 +423,106 @@ export async function selfSendLeg(input: {
   const built = await prepared(input.actAs ?? input.party, [root, spend('1', owned, input.party), ...outputs, ...extra], [preapproval, owned, ...(input.extraInput ? [input.extraInput] : [])]);
   return { kind: input.kind, ...built };
 }
+
+const TRANSFER_API = '55ba4deb0ad4662c4168b39859738a0e91388d252286480c7331b3f71a517281';
+type Output = { owner: string; amount: string; lockedTo?: string; instrument?: { id: string; admin: string } };
+
+/**
+ * A registry's record of a transfer its receiver has yet to accept, as the utility registry writes it:
+ * signed by the admin and the sender, seen by the operator and the receiver as well.
+ */
+export const transferOffer = (contractId: string, leg: FixtureLeg, signatories = [leg.instrumentId.admin, leg.sender]): Create => ({
+  ...createOf(contractId, 'utility-registry-app-v0', PKG.registryApp, 'Utility.Registry.App.V0.Model.Transfer', 'TransferOffer',
+    v.record({ operator: v.party(DEV.utilityOperator), provider: v.party(leg.instrumentId.admin), transfer: legValue(leg) }), signatories),
+  stakeholders: [DEV.utilityOperator, ...signatories, leg.receiver],
+});
+
+export const OFFER_CID = '0f'.repeat(34);
+
+/**
+ * One `transfer` leg through the token standard's factory, as the participant prepares it:
+ * `TransferFactory_Transfer` on the admin's factory, acting as `party`, spending one holding of
+ * `input` and creating `outputs` — and, unless `offer` is null, the offer the receiver accepts.
+ * The overrides are the shapes a hostile API would hand over instead.
+ */
+export async function factoryTransferLeg(input: {
+  party: string; receiver: string; instrument: { id: string; admin: string }; amount: string; input: string; outputs: Output[];
+  /** The offer's own transfer where it differs from the command's; null for none (a direct transfer, or a merge). */
+  offer?: Partial<FixtureLeg> | null;
+  command?: Partial<FixtureLeg>; expectedAdmin?: string; factory?: (honest: Create) => Create;
+  commandOn?: Pick<Create, 'packageName' | 'templateId'>; commandSignatories?: string[]; interfaceEntity?: string;
+  inputOwner?: string; actAs?: string;
+}) {
+  const leg: FixtureLeg = { sender: input.party, receiver: input.receiver, amount: input.amount, instrumentId: input.instrument, ...input.command };
+  const honest = factoryContract(input.instrument.admin, { instrument: input.instrument.id });
+  const factory = input.factory?.(honest) ?? honest;
+  const on = input.commandOn ?? factory;
+  const owned = holding('a0'.repeat(34), input.inputOwner ?? input.party, input.instrument, input.input);
+  const outputs = input.outputs.map((o, i) => createNode(String(i + 2), holding(`a${i + 1}`.repeat(34), o.owner, o.instrument ?? input.instrument, o.amount, { lockedTo: o.lockedTo })));
+  const offer = input.offer === null ? [] : [createNode(String(outputs.length + 2), transferOffer(OFFER_CID, { ...leg, ...input.offer }, [input.instrument.admin, input.party]))];
+  const root = node('0', {
+    oneofKind: 'exercise',
+    exercise: {
+      lfVersion: '2.1', contractId: factory.contractId, packageName: on.packageName, templateId: on.templateId,
+      interfaceId: template('Splice.Api.Token.TransferInstructionV1', input.interfaceEntity ?? 'TransferFactory', TRANSFER_API),
+      signatories: input.commandSignatories ?? factory.signatories, stakeholders: factory.stakeholders, actingParties: [input.party],
+      choiceId: 'TransferFactory_Transfer',
+      chosenValue: v.record({ expectedAdmin: v.party(input.expectedAdmin ?? input.instrument.admin), transfer: legValue(leg), extraArgs: v.record({ context: v.record({ values: v.textMap({}) }), meta: meta() }) }),
+      consuming: false, children: ['1', ...outputs.map((n) => n.nodeId), ...offer.map((n) => n.nodeId)], choiceObservers: [],
+    },
+  });
+  return { kind: 'transfer', ...(await prepared(input.actAs ?? input.party, [root, spend('1', owned, input.party), ...outputs, ...offer], [factory, owned])) };
+}
+
+/**
+ * The `transfer` leg of a `tokens.accept`: `TransferInstruction_Accept` on the offer, acting as
+ * `party`; the registry archives the sender's locked holding and creates `outputs` (default: one
+ * holding of the amount for `party`).
+ */
+export async function acceptTransferLeg(input: {
+  party: string; sender: string; instrument: { id: string; admin: string }; amount: string; outputs?: Output[];
+  offer?: (honest: Create) => Create; commandOn?: Pick<Create, 'packageName' | 'templateId'>; commandSignatories?: string[];
+  interfaceEntity?: string; choice?: string; receiver?: string;
+  /** A holding the tree consumes besides the sender's lock: what a hostile accept would take along. */
+  alsoSpend?: Create; actAs?: string;
+}) {
+  const admin = input.instrument.admin;
+  const leg: FixtureLeg = { sender: input.sender, receiver: input.receiver ?? input.party, amount: input.amount, instrumentId: input.instrument };
+  const honest = transferOffer(OFFER_CID, leg);
+  const offer = input.offer?.(honest) ?? honest;
+  const on = input.commandOn ?? offer;
+  const locked = holding('c0'.repeat(34), input.sender, input.instrument, input.amount, { lockedTo: admin });
+  const outputs = (input.outputs ?? [{ owner: input.party, amount: input.amount }])
+    .map((o, i) => createNode(String(i + 2), holding(`c${i + 1}`.repeat(34), o.owner, input.instrument, o.amount, { lockedTo: o.lockedTo })));
+  const also = input.alsoSpend ? [spend(String(outputs.length + 2), input.alsoSpend, admin)] : [];
+  const root = node('0', {
+    oneofKind: 'exercise',
+    exercise: {
+      lfVersion: '2.1', contractId: offer.contractId, packageName: on.packageName, templateId: on.templateId,
+      interfaceId: template('Splice.Api.Token.TransferInstructionV1', input.interfaceEntity ?? 'TransferInstruction', TRANSFER_API),
+      signatories: input.commandSignatories ?? offer.signatories, stakeholders: offer.stakeholders, actingParties: [input.party],
+      choiceId: input.choice ?? 'TransferInstruction_Accept',
+      chosenValue: v.record({ extraArgs: v.record({ context: v.record({ values: v.textMap({}) }), meta: meta() }) }),
+      consuming: true, children: ['1', ...outputs.map((n) => n.nodeId), ...also.map((n) => n.nodeId)], choiceObservers: [],
+    },
+  });
+  const built = await prepared(input.actAs ?? input.party, [root, spend('1', locked, admin), ...outputs, ...also], [offer, locked, ...(input.alsoSpend ? [input.alsoSpend] : [])]);
+  return { kind: 'transfer', ...built };
+}
+
+/** The one `setup` leg of a `tokens.preapproval`: a bare create of the proposal, signed by the receiver. */
+export async function preapprovalProposalLeg(input: {
+  party: string; provider?: string; receiver?: string; expectedDso?: string | null;
+  packageName?: string; packageId?: string; entityName?: string; signatories?: string[];
+  extraField?: Record<string, Value>; extraNode?: DamlTransaction_Node; kind?: string; actAs?: string;
+}) {
+  const proposal = createOf('9a'.repeat(34), input.packageName ?? 'splice-wallet', input.packageId ?? DEFAULT_TRUSTED_PACKAGES.wallet['splice-wallet']!.at(-1)!,
+    'Splice.Wallet.TransferPreapproval', input.entityName ?? 'TransferPreapprovalProposal',
+    v.record({
+      receiver: v.party(input.receiver ?? input.party), provider: v.party(input.provider ?? DEV.venue),
+      expectedDso: input.expectedDso === null ? v.none() : { sum: { oneofKind: 'optional', optional: { value: v.party(input.expectedDso ?? DEV.dso) } } },
+      ...input.extraField,
+    }), input.signatories ?? [input.party]);
+  const nodes = [createNode('0', proposal), ...(input.extraNode ? [{ ...input.extraNode, nodeId: '1' }] : [])];
+  return { kind: input.kind ?? 'setup', ...(await prepared(input.actAs ?? input.party, nodes, [], nodes.map((n) => n.nodeId).slice(0, 1))) };
+}

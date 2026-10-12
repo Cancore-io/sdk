@@ -1,7 +1,7 @@
 import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
-import { allocationTree, createNode, DEV, exercise, factoryContract, holding, preapprovalContract, prepared, proposalAccept, proposalCreate, selfSendLeg, spend, spendTransfer, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
+import { acceptTransferLeg, allocationTree, createNode, DEV, exercise, factoryContract, factoryTransferLeg, holding, OFFER_CID, preapprovalContract, preapprovalProposalLeg, prepared, proposalAccept, proposalCreate, selfSendLeg, spend, spendTransfer, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
 import { DEFAULT_INSTRUMENT_ADMINS, DEFAULT_VENUES, instrumentKey, mergeLists } from './dvp-admins';
-import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyDvpPrepared, verifySelfSendPrepared, type DvpTerms, type SelfSendTerms } from './dvp-verify';
+import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyAcceptPrepared, verifyConsolidatePrepared, verifyDvpPrepared, verifyPreapprovalSetupPrepared, verifySelfSendPrepared, verifySendPrepared, type AcceptTerms, type ConsolidateTerms, type DvpTerms, type PreapprovalSetupTerms, type SelfSendTerms, type SendTerms } from './dvp-verify';
 
 const MAKER = 'maker::1220aa';
 const TAKER = 'taker::1220bb';
@@ -529,3 +529,353 @@ describe('a fee split (a CC send to oneself) is signed only as the account asked
     await refused([await transfer(), await feeLeg({ outputs: [{ owner: DEV.venue, amount: '5' }, { owner: ME, amount: '5' }] })], /costs this account more than 0.5 Amulet/);
   });
 });
+
+describe('a CC send to another party is signed only as the account asked for it (CAN-2249)', () => {
+  // The stage-4 threat: the API is hostile, and the key is about to pay out a bot's budget.
+  const ME = 'party-bot::1220aa';
+  const OWNER = 'party-owner::1220bb';
+  const MALLORY = 'mallory::1220ff';
+  const terms: SendTerms = { party: ME, admins: [DEV.dso], instrument: 'Amulet', receiver: OWNER, amount: '100', maxFee: '0.5', feeRecipients: [DEV.venue] };
+  type Over = Partial<Parameters<typeof selfSendLeg>[0]>;
+  const transfer = (over: Over = {}) => selfSendLeg({
+    party: ME, kind: 'transfer', receiver: OWNER, input: '10000', ids: 'a',
+    outputs: [{ owner: OWNER, amount: '100' }, { owner: ME, amount: '9900' }], ...over,
+  });
+  const feeLeg = (over: Over = {}) => selfSendLeg({
+    party: ME, kind: 'fee', receiver: DEV.venue, input: '10', ids: 'b',
+    outputs: [{ owner: DEV.venue, amount: '0.125' }, { owner: ME, amount: '9.875' }], ...over,
+  });
+  const refused = async (legs: Array<Awaited<ReturnType<typeof transfer>>>, reason: RegExp, t: SendTerms = terms) => {
+    const err = await verifySendPrepared(legs, t).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnverifiedTransactionError);
+    expect((err as Error).message).toMatch(reason);
+  };
+
+  test('the honest send passes, with its network-fee leg and without one', async () => {
+    await expect(verifySendPrepared([await transfer(), await feeLeg()], terms)).resolves.toBeUndefined();
+    // One holding: the API defers the fee, and the send is the transfer alone.
+    await expect(verifySendPrepared([await transfer()], terms)).resolves.toBeUndefined();
+  });
+
+  test('the receiver may be given the amount in more than one holding', async () => {
+    const legs = [await transfer({ outputs: [{ owner: OWNER, amount: '60' }, { owner: OWNER, amount: '40' }, { owner: ME, amount: '9900' }] })];
+    await expect(verifySendPrepared(legs, terms)).resolves.toBeUndefined();
+  });
+
+  test('a send through another party\'s preapproval', async () => {
+    await refused([await transfer({ receiver: MALLORY, outputs: [{ owner: MALLORY, amount: '100' }, { owner: ME, amount: '9900' }] })],
+      /leg 0 sends to mallory::1220ff, not to party-owner::1220bb, the receiver this send was asked for/);
+  });
+
+  test('the right preapproval, and the holding made for somebody else', async () => {
+    await refused([await transfer({ outputs: [{ owner: MALLORY, amount: '100' }, { owner: ME, amount: '9900' }] })], /leg 0: node \d+ involves mallory::1220ff, who is not part of this send/);
+  });
+
+  test('the holding made for a party the send does involve, and still not the receiver', async () => {
+    // The DSO is in every CC send; that does not make it somebody to pay.
+    await refused([await transfer({ outputs: [{ owner: DEV.dso, amount: '100' }, { owner: ME, amount: '9900' }] })], new RegExp(`leg 0 creates a holding owned by ${DEV.dso}`));
+  });
+
+  test('a second payee beside the receiver', async () => {
+    await refused([await transfer({ outputs: [{ owner: OWNER, amount: '100' }, { owner: MALLORY, amount: '9000' }, { owner: ME, amount: '900' }] })],
+      /leg 0: node \d+ involves mallory::1220ff, who is not part of this send/);
+  });
+
+  test.each([
+    ['less', '99.9999999999', '9900.0000000001'],
+    ['more', '1000', '9000'],
+    ['everything', '10000', '0.0000000001'],
+  ])('the receiver given %s than was asked for', async (_what, toReceiver, change) => {
+    await refused([await transfer({ outputs: [{ owner: OWNER, amount: toReceiver }, { owner: ME, amount: change }] })],
+      /party-owner::1220bb is given [0-9.]+ Amulet, not the 100 this send was asked for/);
+  });
+
+  test('the receiver given nothing at all', async () => {
+    await refused([await transfer({ outputs: [{ owner: ME, amount: '10000' }] })], /is given 0 Amulet, not the 100/);
+  });
+
+  test('the right amount to the receiver, and the change gone', async () => {
+    // Nobody else is paid — the rest of the input simply does not come back.
+    await refused([await transfer({ outputs: [{ owner: OWNER, amount: '100' }, { owner: ME, amount: '5000' }] })],
+      /the send costs this account 5000 Amulet, more than the 100 it sends and the fee it allows/);
+  });
+
+  test('a locked holding for the receiver', async () => {
+    await refused([await transfer({ outputs: [{ owner: OWNER, amount: '100', lockedTo: DEV.venue }, { owner: ME, amount: '9900' }] })], /leg 0 creates a locked holding/);
+  });
+
+  test('a fee leg paying a party that is not pinned', async () => {
+    await refused([await transfer(), await feeLeg({ receiver: 'thief::1220dd', outputs: [{ owner: 'thief::1220dd', amount: '0.125' }, { owner: ME, amount: '9.875' }] })],
+      /leg 1 sends to thief::1220dd, not to a pinned network fee recipient/);
+  });
+
+  test('a fee leg that pays the receiver instead — the fee leg is not a second transfer', async () => {
+    await refused([await transfer(), await feeLeg({ receiver: OWNER, outputs: [{ owner: OWNER, amount: '0.125' }, { owner: ME, amount: '9.875' }] })],
+      /leg 1 sends to party-owner::1220bb, not to a pinned network fee recipient/);
+  });
+
+  test('a fee above the bound', async () => {
+    await refused([await transfer(), await feeLeg({ outputs: [{ owner: DEV.venue, amount: '5' }, { owner: ME, amount: '5' }] })],
+      /the send costs this account 105 Amulet, more than the 100 it sends and the fee it allows/);
+  });
+
+  test('a hash that is not the hash of the bytes', async () => {
+    const [a, b] = [await transfer(), await feeLeg()];
+    await refused([{ ...a, preparedTransactionHash: b.preparedTransactionHash }, b], /leg 0 does not hash to the hash it came with/);
+  });
+
+  test('a transaction acting as another party', async () => {
+    await refused([await transfer({ actAs: MALLORY })], /leg 0 acts as mallory::1220ff, not as this account/);
+  });
+
+  test('a leg without its bytes', async () => {
+    const a = await transfer();
+    await refused([{ ...a, preparedTransaction: undefined as unknown as string }], /leg 0 came without its bytes/);
+  });
+
+  test('spending a holding of someone else', async () => {
+    await refused([await transfer({ inputOwner: MALLORY })], /mallory::1220ff/);
+  });
+
+  test('a leg of another kind, and no legs at all', async () => {
+    await refused([{ ...(await transfer()), kind: 'setup' as never }], /leg 0 is a setup, not a transfer or its fee/);
+    await refused([], /the API prepared nothing to sign/);
+  });
+
+  test('a send to oneself is the split\'s to read, not this one\'s', async () => {
+    await refused([await transfer({ receiver: ME, outputs: [{ owner: ME, amount: '100' }, { owner: ME, amount: '9900' }] })],
+      /a send to the account itself is a split/, { ...terms, receiver: ME });
+  });
+
+  test.each([['0'], ['-1'], ['1.00000000001'], ['lots']])('an amount of %s is not one the ledger could hold', async (amount) => {
+    await refused([await transfer()], /not a decimal of at most ten places/, { ...terms, amount });
+  });
+
+  test('a send to a fee recipient: what the fee leg pays it is the fee, not part of the amount', async () => {
+    const toVenue = { ...terms, receiver: DEV.venue };
+    const pay = (amount: string, change: string) => transfer({ receiver: DEV.venue, outputs: [{ owner: DEV.venue, amount }, { owner: ME, amount: change }] });
+    await expect(verifySendPrepared([await pay('100', '9900'), await feeLeg()], toVenue)).resolves.toBeUndefined();
+    await refused([await pay('99.875', '9900.125'), await feeLeg()], /is given 99.875 Amulet, not the 100 this send was asked for/, toVenue);
+  });
+
+  test('the bound is the amount plus the fee allowed, to the unit', async () => {
+    // 100 to the receiver, 0.5 lost to an old input's accrued fee: exactly at the bound.
+    const atBound = [await transfer({ outputs: [{ owner: OWNER, amount: '100' }, { owner: ME, amount: '9899.5' }] })];
+    await expect(verifySendPrepared(atBound, terms)).resolves.toBeUndefined();
+    await refused([await transfer({ outputs: [{ owner: OWNER, amount: '100' }, { owner: ME, amount: '9899.4999999999' }] })], /more than the 100 it sends and the fee it allows/);
+  });
+});
+
+// The shapes below are the ones the dev stand prepares (captured 2026-10-12): a registry send is a
+// TransferFactory_Transfer that locks the amount under an offer; an accept consumes that offer; a
+// merge is a send to oneself; the preapproval step is one bare create.
+const BOT = 'party-bot::1220aa';
+const OWNER = 'party-owner::1220bb';
+const MALLORY = 'mallory::1220ff';
+type Prepared = { kind: string; preparedTransaction: string; preparedTransactionHash: string };
+const refusedWith = async (run: Promise<void>, reason: RegExp) => {
+  const err = await run.catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(UnverifiedTransactionError);
+  expect((err as Error).message).toMatch(reason);
+};
+const ccFee = (over: Partial<Parameters<typeof selfSendLeg>[0]> = {}) => selfSendLeg({
+  party: BOT, kind: 'fee', receiver: DEV.venue, input: '10', ids: 'b', outputs: [{ owner: DEV.venue, amount: '0.125' }, { owner: BOT, amount: '9.875' }], ...over,
+});
+
+describe('a registry-token send is signed only as the account asked for it (CAN-2249)', () => {
+  const terms: SendTerms = { party: BOT, admins: [CBTC.admin], dso: [DEV.dso], instrument: 'CBTC', receiver: OWNER, amount: '0.5', maxFee: '0.5', feeRecipients: [DEV.venue] };
+  type Over = Partial<Parameters<typeof factoryTransferLeg>[0]>;
+  const offered: Over['outputs'] = [{ owner: BOT, amount: '0.5', lockedTo: CBTC.admin }, { owner: BOT, amount: '1.5' }];
+  const transfer = (over: Over = {}) => factoryTransferLeg({ party: BOT, receiver: OWNER, instrument: CBTC, amount: '0.5', input: '2', outputs: offered, ...over });
+  const refused = (legs: Prepared[], reason: RegExp, t: SendTerms = terms) => refusedWith(verifySendPrepared(legs, t), reason);
+
+  test('the honest send passes: the amount locked under an offer to the receiver, with and without its CC fee leg', async () => {
+    await expect(verifySendPrepared([await transfer()], terms)).resolves.toBeUndefined();
+    await expect(verifySendPrepared([await transfer(), await ccFee()], terms)).resolves.toBeUndefined();
+  });
+
+  test('a registry that hands the holding over at once passes too', async () => {
+    await expect(verifySendPrepared([await transfer({ offer: null, outputs: [{ owner: OWNER, amount: '0.5' }, { owner: BOT, amount: '1.5' }] })], terms)).resolves.toBeUndefined();
+  });
+
+  test('the command sends to another party, or another amount', async () => {
+    await refused([await transfer({ command: { receiver: MALLORY } })], /leg 0 sends to mallory::1220ff, not to party-owner::1220bb, the receiver this send was asked for/);
+    // The lock is of the right size; the command it runs under asks for more.
+    await refused([await transfer({ command: { amount: '1.5' }, offer: { amount: '1.5' } })], /is given 0.5 CBTC, not the 0.5 this send was asked for/);
+    await refused([await transfer({ command: { amount: '0' } })], /transfers an amount that is not a positive decimal/);
+  });
+
+  test('more locked than was asked for, or the change gone', async () => {
+    await refused([await transfer({ outputs: [{ owner: BOT, amount: '2', lockedTo: CBTC.admin }] })], /is given 2 CBTC, not the 0.5/);
+    await refused([await transfer({ outputs: [{ owner: BOT, amount: '0.5', lockedTo: CBTC.admin }] })], /the send costs this account 2 CBTC and 0 CC of fee, more than the 0.5 it sends/);
+  });
+
+  test('a holding for a third party, and an offer to one', async () => {
+    await refused([await transfer({ outputs: [...offered!, { owner: MALLORY, amount: '0.1' }] })], /involves mallory::1220ff, who is not part of this send/);
+    await refused([await transfer({ offer: { receiver: MALLORY } })], /involves mallory::1220ff/);
+    // An offer that names only parties of this send, and is still not this transfer: a second, larger one.
+    await refused([await transfer({ offer: { amount: '2' } })], /creates a TransferOffer signed by this account that is neither its holding nor this send/);
+    await refused([await transfer({ outputs: [{ owner: DEV.venue, amount: '0.5' }, { owner: BOT, amount: '1.5' }], factory: (c) => ({ ...c, stakeholders: [...c.stakeholders, DEV.venue] }) })],
+      /leg 0 creates a holding owned by cancore::/);
+  });
+
+  test('a locked holding made for the receiver is not a payment', async () => {
+    await refused([await transfer({ offer: null, outputs: [{ owner: OWNER, amount: '0.5', lockedTo: CBTC.admin }, { owner: BOT, amount: '1.5' }] })], /leg 0 creates a locked holding/);
+  });
+
+  test('the factory is the admin\'s own, or nothing under it is', async () => {
+    await refused([await transfer({ expectedAdmin: MALLORY })], /names mallory::1220ff as the instrument admin, which is not one this SDK pins for it/);
+    await refused([await transfer({ factory: (c) => ({ ...c, signatories: [DEV.utilityOperator] }) })], /runs on a transfer factory the instrument admin did not sign/);
+    await refused([await transfer({ commandSignatories: [DEV.utilityOperator] })], /runs on a transfer factory the instrument admin did not sign/);
+    const honest = factoryContract(CBTC.admin, { instrument: 'CBTC' });
+    await refused([await transfer({ commandOn: { packageName: 'evil', templateId: honest.templateId } })], /runs on another template than the factory it names/);
+    await refused([await transfer({ interfaceEntity: 'TransferFactoryProxy' })], /is not a token-standard transfer/);
+    // An admin pinned for another instrument is not this one's.
+    await refused([await transfer()], /names cbtc-network::\S+ as the instrument admin/, { ...terms, admins: [DEV.dso] });
+  });
+
+  test('the change comes back in another token', async () => {
+    // The right amount is locked; what is left of the input returns as a holding of something else.
+    await refused([await transfer({ outputs: [{ owner: BOT, amount: '0.5', lockedTo: CBTC.admin }, { owner: BOT, amount: '1.5', instrument: { id: 'HTEST', admin: CBTC.admin } }] })],
+      /leg 0 creates HTEST, not CBTC/);
+  });
+
+  test('another sender, another instrument, someone else\'s holding', async () => {
+    await refused([await transfer({ command: { sender: OWNER } })], /sends another party's holdings/);
+    await refused([await transfer({ command: { instrumentId: { id: 'USDCx', admin: CBTC.admin } } })], /transfers another instrument/);
+    await refused([await transfer({ command: { instrumentId: { id: 'CBTC', admin: MALLORY } } })], /transfers another instrument/);
+    await refused([await transfer({ inputOwner: OWNER })], /spends a holding owned by party-owner::1220bb/);
+    await refused([await transfer({ actAs: MALLORY })], /acts as mallory::1220ff, not as this account/);
+  });
+
+  test('the fee leg is a CC send, held to the DSO and to the fee bound — not to the token\'s admin', async () => {
+    await refused([await transfer(), await ccFee({ outputs: [{ owner: DEV.venue, amount: '5' }, { owner: BOT, amount: '5' }] })], /costs this account 0.5 CBTC and 5 CC of fee, more than/);
+    await refused([await transfer(), await ccFee({ receiver: MALLORY, outputs: [{ owner: MALLORY, amount: '0.125' }, { owner: BOT, amount: '9.875' }] })], /leg 1 sends to mallory::1220ff, not to a pinned network fee recipient/);
+    await refused([await transfer(), await ccFee()], /leg 1 sends through a preapproval the instrument admin did not sign/, { ...terms, dso: [CBTC.admin] });
+    // A fee "preapproval" the token's registry signed is not the DSO's: the registry is trusted for its token, not for CC.
+    await refused([await transfer(), await ccFee({ preapproval: (c) => ({ ...c, signatories: [CBTC.admin, DEV.venue] }) })], /leg 1 sends through a preapproval the instrument admin did not sign/);
+  });
+});
+
+describe('a merge of the account\'s own holdings is signed only as a merge (CAN-2249)', () => {
+  const ccTerms: ConsolidateTerms = { party: BOT, admins: [DEV.dso], instrument: 'Amulet', maxFee: '0.5', feeRecipients: [DEV.venue] };
+  const regTerms: ConsolidateTerms = { party: BOT, admins: [CBTC.admin], dso: [DEV.dso], instrument: 'CBTC', maxFee: '0.5', feeRecipients: [DEV.venue] };
+  const ccMerge = (outputs: Array<{ owner: string; amount: string; lockedTo?: string }>, over: Partial<Parameters<typeof selfSendLeg>[0]> = {}) =>
+    selfSendLeg({ party: BOT, kind: 'transfer', receiver: BOT, input: '19.54084', ids: 'a', outputs, ...over });
+  const regMerge = (over: Partial<Parameters<typeof factoryTransferLeg>[0]> = {}) =>
+    factoryTransferLeg({ party: BOT, receiver: BOT, instrument: CBTC, amount: '0.0003', input: '0.0003', outputs: [{ owner: BOT, amount: '0.0003' }], offer: null, ...over });
+
+  test('the honest merges pass: CC through the account\'s own preapproval, a registry token through the factory', async () => {
+    await expect(verifyConsolidatePrepared([await ccMerge([{ owner: BOT, amount: '19.5212991599' }, { owner: BOT, amount: '0.0195408401' }])], ccTerms)).resolves.toBeUndefined();
+    await expect(verifyConsolidatePrepared([await ccMerge([{ owner: BOT, amount: '19.4' }]), await ccFee()], ccTerms)).resolves.toBeUndefined();
+    await expect(verifyConsolidatePrepared([await regMerge()], regTerms)).resolves.toBeUndefined();
+  });
+
+  test('a "merge" that pays somebody', async () => {
+    await refusedWith(verifyConsolidatePrepared([await ccMerge([{ owner: OWNER, amount: '19.54084' }], { receiver: OWNER })], ccTerms), /leg 0 sends to party-owner::1220bb, not to this account/);
+    await refusedWith(verifyConsolidatePrepared([await regMerge({ command: { receiver: OWNER } })], regTerms), /leg 0 sends to party-owner::1220bb, not to this account/);
+    await refusedWith(verifyConsolidatePrepared([await regMerge({ outputs: [{ owner: BOT, amount: '0.0002' }, { owner: DEV.cbtcRegistrar, amount: '0.0001' }] })], regTerms), /creates a holding owned by cbtc-network::/);
+  });
+
+  test('a merge that loses more than the fee it allows', async () => {
+    await refusedWith(verifyConsolidatePrepared([await ccMerge([{ owner: BOT, amount: '19' }])], ccTerms), /the merge costs this account 0.54084 Amulet, more than the fee it allows/);
+    await refusedWith(verifyConsolidatePrepared([await ccMerge([{ owner: BOT, amount: '19.4' }]), await ccFee({ outputs: [{ owner: DEV.venue, amount: '0.4' }, { owner: BOT, amount: '9.6' }] })], ccTerms), /the merge costs this account 0.54084 Amulet/);
+    // A registry token has no holding fee: the merge gives back every unit.
+    await refusedWith(verifyConsolidatePrepared([await regMerge({ outputs: [{ owner: BOT, amount: '0.0002' }] })], regTerms), /the merge costs this account 0.0001 CBTC and 0 CC of fee/);
+  });
+
+  test('a merge that leaves the balance locked, and one with no transfer in it', async () => {
+    await refusedWith(verifyConsolidatePrepared([await regMerge({ outputs: [{ owner: BOT, amount: '0.0003', lockedTo: CBTC.admin }] })], regTerms), /the merge leaves a holding locked/);
+    await refusedWith(verifyConsolidatePrepared([await ccMerge([{ owner: BOT, amount: '19.54084', lockedTo: DEV.venue }])], ccTerms), /leg 0 creates a locked holding/);
+    await refusedWith(verifyConsolidatePrepared([await ccFee()], ccTerms), /the merge has no transfer in it/);
+    await refusedWith(verifyConsolidatePrepared([], ccTerms), /the API prepared nothing to sign/);
+    await refusedWith(verifyConsolidatePrepared([await regMerge()], { ...regTerms, maxFee: '-1' }), /the fee bound is not a decimal/);
+  });
+});
+
+describe('an incoming transfer is accepted only as the one the account chose (CAN-2249)', () => {
+  const terms: AcceptTerms = { party: BOT, instructionCid: OFFER_CID, pinnedAdmins: { CBTC: [CBTC.admin], Amulet: [DEV.dso] }, dso: [DEV.dso], maxFee: '0.5', feeRecipients: [DEV.venue] };
+  type Over = Partial<Parameters<typeof acceptTransferLeg>[0]>;
+  const accept = (over: Over = {}) => acceptTransferLeg({ party: BOT, sender: OWNER, instrument: CBTC, amount: '0.5', ...over });
+  const refused = (legs: Prepared[], reason: RegExp, t: AcceptTerms = terms) => refusedWith(verifyAcceptPrepared(legs, t), reason);
+
+  test('the honest accept passes, with and without a CC fee leg', async () => {
+    await expect(verifyAcceptPrepared([await accept()], terms)).resolves.toBeUndefined();
+    await expect(verifyAcceptPrepared([await accept(), await ccFee()], terms)).resolves.toBeUndefined();
+    // What the lock held beyond the amount goes back to the sender.
+    await expect(verifyAcceptPrepared([await accept({ outputs: [{ owner: BOT, amount: '0.5' }, { owner: OWNER, amount: '0.1' }] })], terms)).resolves.toBeUndefined();
+  });
+
+  test('another transfer than the one asked for, or one to somebody else', async () => {
+    await refused([await accept()], /accepts another transfer than the one it was asked for/, { ...terms, instructionCid: 'ee'.repeat(34) });
+    await refused([await accept({ receiver: MALLORY })], /accepts a transfer that is not to this account/);
+  });
+
+  test('the instruction is the admin\'s own, or nothing under it is', async () => {
+    await refused([await accept({ offer: (c) => ({ ...c, signatories: [OWNER] }) })], /accepts a transfer the instrument admin did not sign/);
+    await refused([await accept({ commandSignatories: [OWNER] })], /accepts a transfer the instrument admin did not sign/);
+    await refused([await accept()], /accepts CBTC from cbtc-network::\S+, which is not an admin this SDK pins for it/, { ...terms, pinnedAdmins: { CBTC: [DEV.dso] } });
+    await refused([await accept()], /which is not an admin this SDK pins for it/, { ...terms, pinnedAdmins: {} });
+    await refused([await accept({ commandOn: { packageName: 'evil', templateId: { packageId: 'ee'.repeat(32), moduleName: 'Utility.Registry.App.V0.Model.Transfer', entityName: 'TransferOffer' } } })], /runs on another template than the transfer it names/);
+    await refused([await accept({ interfaceEntity: 'TransferInstructionProxy' })], /is not the accept of a token-standard transfer/);
+    await refused([await accept({ choice: 'TransferInstruction_Withdraw' })], /is not the accept of a token-standard transfer/);
+  });
+
+  test('an accept that takes something of the account along', async () => {
+    const mine = holding('d0'.repeat(34), BOT, CBTC, '3');
+    await refused([await accept({ alsoSpend: mine })], /leg 0 spends this account's own holding/);
+    await refused([await accept({ alsoSpend: holding('d1'.repeat(34), DEV.venue, CBTC, '3'), offer: (c) => ({ ...c, stakeholders: [...c.stakeholders, DEV.venue] }) })], /leg 0 spends a holding owned by cancore::/);
+  });
+
+  test('holdings for a third party, of another instrument, or locked', async () => {
+    await refused([await accept({ outputs: [{ owner: MALLORY, amount: '0.5' }] })], /involves mallory::1220ff, who is not part of this accept/);
+    await refused([await accept({ outputs: [{ owner: DEV.venue, amount: '0.5' }], offer: (c) => ({ ...c, stakeholders: [...c.stakeholders, DEV.venue] }) })], /leg 0 creates a holding owned by cancore::/);
+    await refused([await accept({ outputs: [{ owner: BOT, amount: '0.5', lockedTo: CBTC.admin }] })], /leg 0 creates a locked holding/);
+  });
+
+  test('the fee leg within its bound and to a pinned recipient; one accept, no more and no fewer', async () => {
+    await refused([await accept(), await ccFee({ outputs: [{ owner: DEV.venue, amount: '5' }, { owner: BOT, amount: '5' }] })], /the accept costs this account 5 CC of fee, more than the fee it allows/);
+    await refused([await accept(), await ccFee({ receiver: MALLORY, outputs: [{ owner: MALLORY, amount: '0.1' }, { owner: BOT, amount: '9.9' }] })], /leg 1 sends to mallory::1220ff, not to a pinned network fee recipient/);
+    await refused([await accept(), await accept()], /expected one accept, the API prepared 2/);
+    await refused([await ccFee()], /expected one accept, the API prepared 0/);
+    await refused([], /the API prepared nothing to sign/);
+    await refused([{ ...(await accept()), kind: 'setup' }], /leg 0 is a setup, not an accept or its fee/);
+    await refused([await accept({ actAs: MALLORY })], /acts as mallory::1220ff/);
+  });
+});
+
+describe('the preapproval step of onboard() is signed only as a proposal of the account\'s own (CAN-2249)', () => {
+  const terms: PreapprovalSetupTerms = { party: BOT, dso: [DEV.dso], providers: [DEV.venue, BOT], packages: DEFAULT_TRUSTED_PACKAGES.wallet };
+  type Over = Partial<Parameters<typeof preapprovalProposalLeg>[0]>;
+  const proposal = (over: Over = {}) => preapprovalProposalLeg({ party: BOT, ...over });
+  const refused = (legs: Prepared[], reason: RegExp, t: PreapprovalSetupTerms = terms) => refusedWith(verifyPreapprovalSetupPrepared(legs, t), reason);
+
+  test('the honest proposal passes: provided by the venue, or by the account itself', async () => {
+    await expect(verifyPreapprovalSetupPrepared([await proposal()], terms)).resolves.toBeUndefined();
+    await expect(verifyPreapprovalSetupPrepared([await proposal({ provider: BOT })], terms)).resolves.toBeUndefined();
+  });
+
+  test('a create has no admin-signed contract under it: its package is pinned by id', async () => {
+    await refused([await proposal({ packageId: 'ee'.repeat(32) })], /runs code from an untrusted package \(splice-wallet e{64}\)/);
+    await refused([await proposal({ packageName: 'evil-wallet' })], /untrusted package \(evil-wallet/);
+    await refused([await proposal()], /untrusted package/, { ...terms, packages: {} });
+    await refused([await proposal({ entityName: 'TransferPreapprovalProxy' })], /is not a transfer preapproval proposal/);
+  });
+
+  test('a proposal for somebody else, to an unpinned provider, or to another DSO', async () => {
+    await refused([await proposal({ receiver: OWNER })], /involves|the proposal is for another receiver/);
+    await refused([await proposal({ provider: MALLORY })], /names mallory::1220ff as provider, which is neither this account nor a pinned venue/);
+    await refused([await proposal({ expectedDso: MALLORY })], /expects mallory::1220ff as the DSO, which is not a pinned CC admin/);
+    await refused([await proposal({ expectedDso: null })], /expects null as the DSO/);
+  });
+
+  test('anything more than the one create', async () => {
+    await refused([await proposal({ signatories: [BOT, MALLORY] })], /the proposal is not signed by this account alone/);
+    await refused([await proposal({ extraField: { controller: { sum: { oneofKind: 'party', party: MALLORY } } } })], /the proposal is not of the shape this SDK knows/);
+    await refused([await proposal({ extraNode: createNode('1', holding('e0'.repeat(34), BOT, CC, '1')) })], /carries nodes outside its command/);
+    await refused([await proposal(), await proposal()], /expected the one transaction that proposes the preapproval/);
+    await refused([await proposal({ kind: 'transfer' })], /expected the one transaction that proposes the preapproval/);
+    await refused([await proposal({ actAs: MALLORY })], /acts as mallory::1220ff/);
+  });
+});
+
