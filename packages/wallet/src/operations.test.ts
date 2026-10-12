@@ -315,6 +315,18 @@ describe('@cancore/wallet/operations', () => {
       expect(signer.signPreparedHash).not.toHaveBeenCalled();
     });
 
+    it('the single-hash helper reads the hash for a signer with its own signPreparedHash too', async () => {
+      // A provider of this package checks for itself; somebody else's KMS behind the same method may not.
+      const signer = { signMessage: jest.fn(), signPreparedHash: jest.fn().mockResolvedValue('sig') };
+
+      for (const bad of ['@@@@', b64(hex('bb'.repeat(31))), MULTIHASH, b64('Welcome to Cancore 2026-10-12 sig:1'), '']) {
+        await expect(signPreparedHashBase64(signer, bad)).rejects.toBeInstanceOf(UnexpectedLegError);
+      }
+      expect(signer.signPreparedHash).not.toHaveBeenCalled();
+      await expect(signPreparedHashBase64(signer, PREPARED_HASH)).resolves.toBe('sig');
+      expect(signer.signPreparedHash).toHaveBeenCalledWith(PREPARED_HASH);
+    });
+
     it('a set with one hash that is not one is refused whole, before the first signature', async () => {
       // The provider path too: its own check would refuse the second leg only after signing the first.
       const signer = { signMessage: jest.fn(), signPreparedHash: jest.fn().mockResolvedValue('sig') };

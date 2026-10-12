@@ -148,14 +148,15 @@ export async function signPreparedHashBase64(
   signer: HashSigner,
   preparedTransactionHashB64: string,
 ): Promise<string> {
+  // The shape is checked here, whichever method signs (CAN-2399): a prepared-transaction hash is 32
+  // bytes and nothing else is. A signer with only `signMessage` signs whatever bytes it is handed —
+  // without this the fallback was a second way to a raw signature over a login challenge or a
+  // multihash — and a `signPreparedHash` that is not this package's own may not check for itself.
+  const hash = preparedHash(preparedTransactionHashB64);
   if (signer.signPreparedHash) {
     return signer.signPreparedHash(preparedTransactionHashB64);
   }
-  // A signer with only `signMessage` signs whatever bytes it is handed, so the shape is checked
-  // here for it (CAN-2399): a prepared-transaction hash is 32 bytes and nothing else is. Without
-  // this the fallback was a second way to a raw signature over a login challenge or a multihash.
-  const rawHex = await signer.signMessage(preparedHash(preparedTransactionHashB64));
-  return hexSignatureToBase64(rawHex);
+  return hexSignatureToBase64(await signer.signMessage(hash));
 }
 
 const PREPARED_HASH_BYTES = 32;

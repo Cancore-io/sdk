@@ -102,6 +102,9 @@ function refusalFromProse(err: CancoreApiError): Refusal {
   if (says(400, 'Counter proposal already accepted')) return 'counterAlreadyAccepted';
   if (says(400, 'both_claimed')) return 'alreadySettled';
   if (says(409, 'needs a holding of its own') || says(409, 'separate holding for the platform fee')) return 'feeHoldingRequired';
+  // The DvP door's own words (backend DVP_FORBIDDEN_MESSAGE). A 403 that says anything else is not
+  // this refusal: self-trade, documents not accepted and a stopped bot account are 403 as well.
+  if (says(403, 'Allocation-DvP is not open')) return 'dvpNotAllowed';
   // A sign-up DTO without the field: the whitelisting validation pipe names it.
   if (says(400, 'property inviteCode should not exist')) return 'redeemInviteSeparately';
   return 'other';
