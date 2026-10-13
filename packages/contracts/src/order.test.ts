@@ -8,7 +8,7 @@ import {
   buildCantonSourceOrder, hashOrder, hashPermitWitness, isCantonOriginId, permit2Domain, PERMIT_WITNESS_TYPES, sourceOrderHash,
   type CantonSourceIntent, type PermitWitness,
 } from './order';
-import { ORDER_TYPES, routerDomain, type Hex, type Order } from './protocol/typedData';
+import { FILLER_PROTOCOL_DOMAIN, ORDER_TYPES, TICKET_INTENT_TYPES, routerDomain, type Hex, type Order } from './protocol/typedData';
 import { PROTOCOL_SCHEMAS, SCHEMA_VOCABULARY, messageSchemaRef } from './protocol/schemas';
 
 // The router's order hashing, and the EVM-form Order of a Canton-source intent
@@ -157,6 +157,31 @@ describe('twelve-field public acceptance', () => {
     expect(sourceOrderHash(order)).toBe(TypedDataEncoder.hash(canton.domain, types, order));
   });
 
+  test('Canton consent, ticket and proof preserve the Order identity and payout tuple', () => {
+    const consentSpec = JSON.parse(readFileSync(join(spec, 'protocol', 'typed-data', 'TicketIntent.json'), 'utf8'));
+    const ticketSpec = JSON.parse(readFileSync(join(spec, 'typed-data', 'FillTicket.json'), 'utf8'));
+    const proofSpec = JSON.parse(readFileSync(join(spec, 'typed-data', 'FillProof.json'), 'utf8'));
+    const matching = (rows: { message: { orderHash: string } }[]) => rows.filter((row) => row.message.orderHash === canton.orderHash);
+    const consents = matching(consentSpec.vectors);
+    const tickets = matching(ticketSpec.vectors);
+    const proofs = matching(proofSpec.vectors);
+    expect([consents.length, tickets.length, proofs.length]).toEqual([1, 1, 1]);
+    const consent = consentSpec.vectors.find((row: { message: { orderHash: string } }) => row.message.orderHash === canton.orderHash);
+    const ticket = ticketSpec.vectors.find((row: { message: { orderHash: string } }) => row.message.orderHash === canton.orderHash);
+    const proof = proofSpec.vectors.find((row: { message: { orderHash: string } }) => row.message.orderHash === canton.orderHash);
+    expect(consent.message.fillerId).toBe(canton.input.fillerId);
+    const fillerWord = id(consent.message.fillerId);
+    expect([canton.order.fillerId, ticket.message.fillerId, proof.message.fillerId]).toEqual([fillerWord, fillerWord, fillerWord]);
+    expect(TypedDataEncoder.hash(canton.domain, types, canton.order)).toBe(consent.message.orderHash);
+    expect(TypedDataEncoder.hash(FILLER_PROTOCOL_DOMAIN, { TicketIntent: [...TICKET_INTENT_TYPES.TicketIntent] }, consent.message)).toBe(consent.digest);
+    expect([consent.message.validFrom, consent.message.validUntil, consent.message.deliveryKey, consent.message.repayTo, consent.message.attempt]).toEqual([ticket.message.validFrom, ticket.message.validUntil, ticket.message.deliveryKey, ticket.message.repayTo, ticket.message.attempt]);
+    expect([proof.message.repayTo, proof.message.attempt]).toEqual([consent.message.repayTo, consent.message.attempt]);
+    expect([ticket.repayToParty, proof.repayToParty]).toEqual([consent.repayToParty, consent.repayToParty]);
+    expect(consent.message.repayTo).toBe(id(consent.repayToParty));
+    expect(BigInt(proof.message.filledAt)).toBeGreaterThanOrEqual(BigInt(consent.message.validFrom));
+    expect(BigInt(proof.message.filledAt)).toBeLessThanOrEqual(BigInt(consent.message.validUntil));
+  });
+
   test('changing only filler changes Order and nested Permit2 commitments', () => {
     const changed = { ...order, fillerId: id('bravo') as `0x${string}` };
     expect(hashOrder(order, canton.domain)).not.toBe(hashOrder(changed, canton.domain));
@@ -177,7 +202,7 @@ describe('twelve-field public acceptance', () => {
     expect(hashPermitWitness(mutated, '1')).toBe(TypedDataEncoder.hash(permit2Domain('1'), witnessTypes, mutated));
   });
 
-  test.each([undefined, '', 'a'.repeat(64), 'Acme', ' acme', 'acme '])('Canton builder refuses operational filler %p', (fillerId) => {
+  test.each([undefined, '', 'a'.repeat(64), 'acmE', ' acme', 'acme '])('Canton builder refuses operational filler %p', (fillerId) => {
     expect(() => buildCantonSourceOrder({ ...input, fillerId })).toThrow(/fillerId/);
   });
 
