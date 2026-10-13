@@ -378,16 +378,21 @@ EVM_CONTRACTS_DIR=../evm-contracts npm run sync   # then review the diff and rel
 
 `npm run sync` is two scripts: `scripts/sync.mjs` (ABIs, error tables, release identity, the
 router and AttestorSet constants in `spec/constants.json`) and
-`scripts/sync-typed-data.mjs` (`abi/typed-data/*.json`). Until evm-contracts publishes
-`abi/typed-data/` the second one fails; run the first one alone:
-
-```bash
-EVM_CONTRACTS_DIR=../evm-contracts node scripts/sync.mjs
-```
+`scripts/sync-typed-data.mjs` (all four `abi/typed-data/*.json` schemas). Use the
+full command above: the standalone typed-data script does not validate or stamp
+source provenance.
 
 `EVM_CONTRACTS_DIR` must be the root of a clean git checkout of `evm-contracts`: the sync records
 its `HEAD` as `CONTRACTS_RELEASE.commit` and refuses a directory that is not a checkout root or
 has uncommitted changes, so the release cannot name a commit its data did not come from.
+
+Before publishing rc.10, merge EVM [#108](https://github.com/Cancore-io/evm-contracts/pull/108)
+then [#114](https://github.com/Cancore-io/evm-contracts/pull/114), then SDK
+[#90](https://github.com/Cancore-io/sdk/pull/90) and [#91](https://github.com/Cancore-io/sdk/pull/91).
+After the EVM changes reach `main`, run the full sync from a clean checkout of
+that actual merged `main` commit, commit the resulting pins, and rerun the checks
+before publishing. This resync is mandatory for merge, squash and rebase alike:
+the current `4970669` pin describes an incoming review snapshot.
 
 It reads `abi/*.json` except the two manifests (`bytecode-hashes.json`, `versions.json`) and
 `vendor/*.json` (the `.abi` field), and refuses to run when `spec/abi/` holds a snapshot the
