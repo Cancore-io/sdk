@@ -235,10 +235,7 @@ describe('twelve-field public acceptance', () => {
   });
 });
 
-test('order.ts helpers are exported from the package root, as the same functions (S4)', () => {
-  for (const name of ['hashOrder', 'sourceOrderHash', 'buildCantonSourceOrder', 'isCantonOriginId', 'hashPermitWitness', 'permit2Domain'] as const) {
-    expect(typeof pkg[name]).toBe('function');
-  }
+test('order.ts helpers are the very functions the package root exports (S4; presence is also covered in constants.test.ts)', () => {
   expect(pkg.hashOrder).toBe(hashOrder);
   expect(pkg.sourceOrderHash).toBe(sourceOrderHash);
   expect(pkg.buildCantonSourceOrder).toBe(buildCantonSourceOrder);

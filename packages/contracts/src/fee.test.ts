@@ -66,9 +66,7 @@ describe('Canton source: cantonInclusiveFeeSplit is Daml inclusiveFee in EVM-for
   });
 });
 
-test('fee helpers are exported from the package root, as the same functions (S4)', () => {
-  expect(typeof pkg.inclusiveFeeSplit).toBe('function');
-  expect(typeof pkg.cantonInclusiveFeeSplit).toBe('function');
+test('fee helpers are the very functions the package root exports (S4; presence is also covered in constants.test.ts)', () => {
   expect(pkg.inclusiveFeeSplit).toBe(inclusiveFeeSplit);
   expect(pkg.cantonInclusiveFeeSplit).toBe(cantonInclusiveFeeSplit);
 });
