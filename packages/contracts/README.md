@@ -406,11 +406,12 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
     filler the user picked: `ORDER_TYPES`, `Order`, `OrderJson` (and the `order` of
     `messages.schema.json`), `ORDER_TYPEHASH` `0xf68105de…9d22`, `PERMIT2_WITNESS_TYPE_STRING`.
     The router fills an order only on a ticket naming that filler and settles it only on a proof
-    naming it (`WrongFiller`).
+    naming it (`WrongFiller`); it refuses to open an order whose `fillerId` is zero
+    (`ZeroFillerId`).
   - `buildCantonSourceOrder` takes a required `fillerId` and refuses an empty or malformed one;
     the Canton-source form carries it too (OD-6), so the Daml hash changes with it.
-  - ABIs and typed data synced from evm-contracts `678b11a` (evm-contracts#108): `WrongFiller`,
-    `UnknownOrder`, `NotOrderUser`, `InvalidRefundRecipient`; `Refunded(orderHash, recipient,
+  - ABIs and typed data synced from evm-contracts `496c12a` (evm-contracts#108): `WrongFiller`,
+    `ZeroFillerId`, `UnknownOrder`, `NotOrderUser`, `InvalidRefundRecipient`; `Refunded(orderHash, recipient,
     amount)`.
   - Vectors: `canton-order.json` is evm-contracts#108's (orderHash `0x22e3a53a…e79a`, equal to
     canton-contracts#216's Daml `orderHashOf`); `evm-order.json`, `permit-witness.json`,

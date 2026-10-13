@@ -132,6 +132,7 @@ export const CANCORE_ROUTER_ERRORS: Readonly<Record<string, string>> = {
   '0xfee255be': 'WrongOriginChain()',
   '0xd92e233d': 'ZeroAddress()',
   '0xc3b08f54': 'ZeroFillRef()',
+  '0xebb5752b': 'ZeroFillerId()',
   '0xa443558f': 'ZeroMinReceived()',
 };
 
@@ -217,6 +218,7 @@ export const ICANCORE_ROUTER_ERRORS: Readonly<Record<string, string>> = {
   '0xfee255be': 'WrongOriginChain()',
   '0xd92e233d': 'ZeroAddress()',
   '0xc3b08f54': 'ZeroFillRef()',
+  '0xebb5752b': 'ZeroFillerId()',
   '0xa443558f': 'ZeroMinReceived()',
 };
 

@@ -231,6 +231,11 @@
   },
   {
     "inputs": [],
+    "name": "ZeroFillerId",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "ZeroMinReceived",
     "type": "error"
   },

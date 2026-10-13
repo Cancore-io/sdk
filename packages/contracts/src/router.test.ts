@@ -75,6 +75,23 @@ test('CancoreRouter emits the events the taker follows', () => {
   expect(entries(ICANCORE_ROUTER_ABI, 'event')).toEqual(expect.arrayContaining(ROUTER_EVENTS));
 });
 
+// OD-1 (CAN-2495): an order names its picked filler. Opening one whose fillerId is
+// zero reverts ZeroFillerId; filling or settling it for another filler reverts
+// WrongFiller. A client decodes both from revert data with the package tables.
+test.each(['ZeroFillerId', 'WrongFiller'])('the router revert %s() decodes from the package ABI and error tables', (name) => {
+  for (const [abi, table] of [
+    [CANCORE_ROUTER_ABI, CANCORE_ROUTER_ERRORS],
+    [ICANCORE_ROUTER_ABI, ICANCORE_ROUTER_ERRORS],
+  ] as const) {
+    const iface = new Interface(abi as never);
+    const error = iface.getError(name);
+    expect(error).not.toBeNull();
+    expect(error!.inputs).toHaveLength(0);
+    expect(table[error!.selector]).toBe(`${name}()`);
+    expect(iface.parseError(error!.selector)?.name).toBe(name);
+  }
+});
+
 test('AttestorSet exposes the set reads, and the router inherits them', () => {
   expect(entries(ATTESTOR_SET_ABI, 'function')).toEqual(expect.arrayContaining(ATTESTOR_SET_READS));
   expect(entries(CANCORE_ROUTER_ABI, 'function')).toEqual(expect.arrayContaining(ATTESTOR_SET_READS));
