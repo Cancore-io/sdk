@@ -97,3 +97,81 @@ export const FILL_TICKET_TYPE_STRING = "FillTicket(bytes32 orderHash,bytes32 fil
 
 /** Name and version of the domain; chain id and verifying contract are the deployment's. */
 export const FILL_TICKET_DOMAIN = {"name":"CancoreFillTicket","version":"1"} as const;
+
+/** `Order(address user,uint64 originChainId,address inputToken,uint256 inputAmount,bytes32 destination,bytes32 outputAsset,uint256 minReceived,bytes32 recipient,uint64 createdAt,uint64 fillDeadline,uint16 feeBps,bytes32 fillerId)` — from evm-contracts/abi/typed-data/Order.json. */
+export const ORDER_TYPES = {
+  "Order": [
+    {
+      "name": "user",
+      "type": "address"
+    },
+    {
+      "name": "originChainId",
+      "type": "uint64"
+    },
+    {
+      "name": "inputToken",
+      "type": "address"
+    },
+    {
+      "name": "inputAmount",
+      "type": "uint256"
+    },
+    {
+      "name": "destination",
+      "type": "bytes32"
+    },
+    {
+      "name": "outputAsset",
+      "type": "bytes32"
+    },
+    {
+      "name": "minReceived",
+      "type": "uint256"
+    },
+    {
+      "name": "recipient",
+      "type": "bytes32"
+    },
+    {
+      "name": "createdAt",
+      "type": "uint64"
+    },
+    {
+      "name": "fillDeadline",
+      "type": "uint64"
+    },
+    {
+      "name": "feeBps",
+      "type": "uint16"
+    },
+    {
+      "name": "fillerId",
+      "type": "bytes32"
+    }
+  ]
+} as const;
+
+export const ORDER_TYPE_STRING = "Order(address user,uint64 originChainId,address inputToken,uint256 inputAmount,bytes32 destination,bytes32 outputAsset,uint256 minReceived,bytes32 recipient,uint64 createdAt,uint64 fillDeadline,uint16 feeBps,bytes32 fillerId)";
+
+/** Name and version of the domain; chain id and verifying contract are the deployment's. */
+export const ORDER_DOMAIN = {"name":"CancoreRouter","version":"1"} as const;
+
+/** `Quote(bytes32 orderHash,uint64 quoteDeadline)` — from evm-contracts/abi/typed-data/Quote.json. */
+export const QUOTE_TYPES = {
+  "Quote": [
+    {
+      "name": "orderHash",
+      "type": "bytes32"
+    },
+    {
+      "name": "quoteDeadline",
+      "type": "uint64"
+    }
+  ]
+} as const;
+
+export const QUOTE_TYPE_STRING = "Quote(bytes32 orderHash,uint64 quoteDeadline)";
+
+/** Name and version of the domain; chain id and verifying contract are the deployment's. */
+export const QUOTE_DOMAIN = {"name":"CancoreRouter","version":"1"} as const;

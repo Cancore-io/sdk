@@ -1,5 +1,5 @@
 {
-  "$comment": "PROVISIONAL hand copy of the CancoreRouter.sol struct (evm-contracts f936594) until evm-contracts publishes abi/typed-data for it with its own vectors (follow-up F-1); digests by ethers TypedDataEncoder, checked in this package by the shipped encoder as well.",
+  "$comment": "EIP-712 schema of Quote verified by CancoreRouter. Source for @cancore/contracts sync; test/TypedDataVectors.ts checks its types and vectors against the router. Golden inputs from sdk b2e4afd802a389560e1b55828254f76968bd6721.",
   "primaryType": "Quote",
   "domain": {
     "name": "CancoreRouter",
@@ -64,6 +64,16 @@
         "quoteDeadline": "1789999430"
       },
       "digest": "0xc77dff2a2eef3d324772ee5156003e55147351eecbee0826622bac4032f3c740"
+    },
+    {
+      "note": "Hardhat source domain: production router golden digest",
+      "chainId": "31337",
+      "verifyingContract": "0x00000000000000000000000000000000cafe0001",
+      "message": {
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
+        "quoteDeadline": "1790000030"
+      },
+      "digest": "0x63877fbf7f35834ca64066328b372d6f826b8c1f42be410a87de9078338fa5bf"
     }
   ]
 }

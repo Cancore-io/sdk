@@ -198,7 +198,7 @@ manual key change by Cancore staff; there is no key-rotation type or message.
 | `TicketReceipt`, `StakeBinding`, `FillerAuth`, `GatewayMessage` | `CancoreFillerProtocol` v1 | v1 RC — vectors in `spec/protocol/typed-data/` |
 | `FillerQuote` (`string fillerId`), `TicketIntent` (with `fillerId`, `deliveryKey`, `repayTo`), `FillerMessage`, `FillerKeyRegistration` | `CancoreFillerProtocol` v1 | variant A — vectors in `spec/protocol/typed-data/` |
 | `CantonTicketReceipt` (`orderHash`, `attempt`, `deliveryOrderCidHash`, `validUntil`) | `CancoreFillerProtocol` v1 | receipt of a Canton-form ticket (§10 D-O), additive — vectors in `spec/protocol/typed-data/` |
-| `Order` (12 fields, with `createdAt`; `fillerId` last), `Quote` | `CancoreRouter` v1, source router | router code; provisional copies in `spec/typed-data/` until evm-contracts publishes them |
+| `Order` (12 fields, with `createdAt`; `fillerId` last), `Quote` | `CancoreRouter` v1, source router | `abi/typed-data/` in evm-contracts, synced byte for byte to `spec/typed-data/` |
 | `FillTicket` (`orderHash`, `fillerId`, `deliveryKey`, `repayTo`, `attempt`, `validFrom`, `validUntil`) | `CancoreFillTicket` v1 | variant A, synced from the router (CAN-2140) |
 | `FillProof` (twelve fields) | `CancoreRouter` v1, source router | variant A, synced from the router (above) |
 

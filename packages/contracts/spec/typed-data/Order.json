@@ -1,5 +1,5 @@
 {
-  "$comment": "PROVISIONAL hand copy of the CancoreRouter.sol struct (evm-contracts f936594) until evm-contracts publishes abi/typed-data for it with its own vectors (follow-up F-1); digests by ethers TypedDataEncoder, checked in this package by the shipped encoder as well. The canton vector equals spec/vectors/canton-order.json (Solidity-pinned); the sepolia vector is the test-kit fixture order.",
+  "$comment": "EIP-712 schema of Order verified by CancoreRouter. Source for @cancore/contracts sync; test/TypedDataVectors.ts checks its types and vectors against the router. Golden inputs from sdk b2e4afd802a389560e1b55828254f76968bd6721.",
   "primaryType": "Order",
   "domain": {
     "name": "CancoreRouter",
@@ -144,6 +144,26 @@
         "fillerId": "0x0000000000000000000000000000000000000000000000000000000000000000"
       },
       "digest": "0xc623da4e472bc8cbe48f7cded744ec164f3caf592612a75d64bb7024f4ee6789"
+    },
+    {
+      "note": "Hardhat source domain: production router golden digest",
+      "chainId": "31337",
+      "verifyingContract": "0x00000000000000000000000000000000cafe0001",
+      "message": {
+        "user": "0xa11ce00000000000000000000000000000000001",
+        "originChainId": "11155111",
+        "inputToken": "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
+        "inputAmount": "1003000000",
+        "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
+        "outputAsset": "0x00000000000000000000000075faf114eafb1bdbe2f0316df893fd58ce46aa4d",
+        "minReceived": "999000000",
+        "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
+        "createdAt": "1790000000",
+        "fillDeadline": "1790000600",
+        "feeBps": "30",
+        "fillerId": "0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5"
+      },
+      "digest": "0x1dda16e2253b9f25d589f051b1de5be25fdb56f3723c00471109e23b8e4314b0"
     }
   ]
 }
