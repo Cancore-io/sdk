@@ -5,7 +5,7 @@ export const CONTRACTS_RELEASE = {
   "version": "1.4.0-dev",
   "releaseChannel": "dev",
   "updatedAt": "2026-07-24T19:55:00Z",
-  "commit": "c214f56f6fe5a62097833c5f1335b0cb5351b225"
+  "commit": "678b11a8f4ab57265fe626e21f9e85548238ae1f"
 } as const;
 
 /**
@@ -38,10 +38,10 @@ export const BUILD_HASHES = {
     "runtimeHexLength": 2394
   },
   "CancoreRouter": {
-    "creationHexSha256": "43f61c94c1bb04ee4a0f3ad39356744e6b542eb9945ce4f0561665e049d451b0",
-    "runtimeHexSha256": "0c826474f8df21fdceefaf5234d3c50e0a8afcdf3124beb002aed4585227de72",
-    "creationHexLength": 40820,
-    "runtimeHexLength": 35248
+    "creationHexSha256": "5c44a48e06f515c5597c5f77157bdb612dc25d624e85d68b98c62c8497f3e50d",
+    "runtimeHexSha256": "d2e5cf631e6a74da7436ebe7770a0200b2aa350b05605ef6ca751b01ee4f8d3d",
+    "creationHexLength": 49744,
+    "runtimeHexLength": 44172
   },
   "CNRXStaking": {
     "creationHexSha256": "dfda056ee22b593e2f2e1fc4e679fbb9dc34b04964f389b46914402c422b40fb",
@@ -95,10 +95,10 @@ export const BYTECODE_HASHES = {
     "deployedBytecodeLength": 2394
   },
   "CancoreRouter": {
-    "bytecodeHash": "43f61c94c1bb04ee4a0f3ad39356744e6b542eb9945ce4f0561665e049d451b0",
-    "deployedBytecodeHash": "0c826474f8df21fdceefaf5234d3c50e0a8afcdf3124beb002aed4585227de72",
-    "bytecodeLength": 40820,
-    "deployedBytecodeLength": 35248
+    "bytecodeHash": "5c44a48e06f515c5597c5f77157bdb612dc25d624e85d68b98c62c8497f3e50d",
+    "deployedBytecodeHash": "d2e5cf631e6a74da7436ebe7770a0200b2aa350b05605ef6ca751b01ee4f8d3d",
+    "bytecodeLength": 49744,
+    "deployedBytecodeLength": 44172
   },
   "CNRXStaking": {
     "bytecodeHash": "dfda056ee22b593e2f2e1fc4e679fbb9dc34b04964f389b46914402c422b40fb",

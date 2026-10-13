@@ -36,12 +36,13 @@
       "recipient": "0x8330f18e4203206b15fc33cb80a36595317e2638ec444305e71b9502faa9e628",
       "createdAt": "1790000000",
       "fillDeadline": "1790000600",
-      "feeBps": "30"
+      "feeBps": "30",
+      "fillerId": "0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5"
     },
-    "orderHash": "0x1f3979c601435cebd62f68143f5d58e772004fe783a0f839b66df616e250ca1a",
+    "orderHash": "0xab052e14369b46bf7a298daf3de9e563db7c60dc7562334f1243b16357606437",
     "proof": {
       "kind": 1,
-      "orderHash": "0x1f3979c601435cebd62f68143f5d58e772004fe783a0f839b66df616e250ca1a",
+      "orderHash": "0xab052e14369b46bf7a298daf3de9e563db7c60dc7562334f1243b16357606437",
       "destination": "0x0f6f82ab16aa8bfd8099433fefad277a2ac9da342a11fe80fbfc3342c5bb0db9",
       "fillRef": "0x6e160b17d1a59750069b532ec354c9bfd5d99295375064d712fcb08284b50a1d",
       "recipient": "0x8330f18e4203206b15fc33cb80a36595317e2638ec444305e71b9502faa9e628",
@@ -53,7 +54,7 @@
       "attempt": 0,
       "setId": 1
     },
-    "structHash": "0xa711551e2660339997b4fffe99e58dbc71f7c09dd3de8d6c9ffca22c2cfd7fdf",
-    "digest": "0xa246a541f0e49b98383f6dd2f38a981569f98fc512396b5b4283a594d501c8ab"
+    "structHash": "0x3f1343d942d7f21b9c8e7ba8eafbce0ee2652f803a240f8f17d56f9c6eff5fd5",
+    "digest": "0x68228fec9b687d9599b5758d44b19ec9c5f022c7aa50dbb0063cb48e1b4af81b"
   }
 }

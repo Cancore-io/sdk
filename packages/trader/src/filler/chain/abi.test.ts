@@ -31,6 +31,7 @@ const ORDER = {
   createdAt: 1_790_000_000n,
   fillDeadline: 1_790_000_600n,
   feeBps: 500n,
+  fillerId: `0x${'f1'.repeat(32)}`,
 };
 const HASH: Hex = `0x${'ab'.repeat(32)}`;
 const FILLER_ID: Hex = `0x${'f1'.repeat(32)}`;

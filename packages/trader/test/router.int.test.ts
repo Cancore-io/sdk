@@ -89,13 +89,14 @@ live('RouterReader against the stand router (make intent-genesis)', () => {
       createdAt: '1790000000',
       fillDeadline: '1790000600',
       feeBps: 500,
+      fillerId: fillerIdHash('acme'),
     };
     const source = { chainId: stand.chainId, router: stand.contracts.CancoreRouter };
     const orderHash = hashOrder(order, source);
     await expect(r.hashOrder(order)).resolves.toBe(orderHash);
     await expect(r.sourceOrderHash(order)).resolves.toBe(orderHash);
     // Variant A types (CAN-2139): these match only a stand router built from CAN-2140 on, with its ABI synced here.
-    const fillerId = fillerIdHash('acme');
+    const fillerId = order.fillerId;
     const repayTo = repayToFromEvm('0x2222222222222222222222222222222222222222');
     const ticket: FillTicket = { orderHash, fillerId, deliveryKey: '0x2222222222222222222222222222222222222222', repayTo, attempt: 3, validFrom: '1790000100', validUntil: '1790000400' };
     await expect(r.hashTicket(ticket)).resolves.toBe(hashTicket(ticket));

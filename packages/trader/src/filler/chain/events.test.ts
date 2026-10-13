@@ -22,6 +22,7 @@ const ORDER = {
   createdAt: 1_790_000_000n,
   fillDeadline: 1_790_000_600n,
   feeBps: 500n,
+  fillerId: `0x${'f1'.repeat(32)}`,
 };
 
 const FILLER_ID: Hex = `0x${'f1'.repeat(32)}`;
@@ -74,7 +75,7 @@ describe('router events are reported once confirmed, in chain order', () => {
       if (request.method !== 'eth_getLogs') return result;
       return [...(result as object[]), { ...(result as Array<Record<string, unknown>>)[0], removed: true, address: ROUTER }];
     }) as typeof chain.request;
-    chain.emit(ROUTER, 'Refunded', { orderHash: B, user: FILLER, amount: 105n }, 96n);
+    chain.emit(ROUTER, 'Refunded', { orderHash: B, recipient: FILLER, amount: 105n }, 96n);
     await watcher.poll();
     expect(seen()).toEqual(['added Refunded 0xbb @96']);
   });

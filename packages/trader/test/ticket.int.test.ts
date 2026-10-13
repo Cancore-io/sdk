@@ -156,6 +156,7 @@ live('the ticket flow against the real filler-gateway', () => {
       createdAt: String(nowS),
       fillDeadline: String(nowS + 900n),
       feeBps: '500',
+      fillerId: fillerIdHash(FILLER_ID!),
     };
     const orderHash = hashOrder(order, { chainId: 56n, router: SRC_ROUTER });
     const src = new FakeChain(56n, 'bsc');

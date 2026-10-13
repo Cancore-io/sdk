@@ -11,7 +11,7 @@
       "verifyingContract"
     ]
   },
-  "typeString": "Order(address user,uint64 originChainId,address inputToken,uint256 inputAmount,bytes32 destination,bytes32 outputAsset,uint256 minReceived,bytes32 recipient,uint64 createdAt,uint64 fillDeadline,uint16 feeBps)",
+  "typeString": "Order(address user,uint64 originChainId,address inputToken,uint256 inputAmount,bytes32 destination,bytes32 outputAsset,uint256 minReceived,bytes32 recipient,uint64 createdAt,uint64 fillDeadline,uint16 feeBps,bytes32 fillerId)",
   "types": {
     "Order": [
       {
@@ -57,6 +57,10 @@
       {
         "name": "feeBps",
         "type": "uint16"
+      },
+      {
+        "name": "fillerId",
+        "type": "bytes32"
       }
     ]
   },
@@ -76,9 +80,10 @@
         "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
         "createdAt": "1789999400",
         "fillDeadline": "1790000000",
-        "feeBps": "30"
+        "feeBps": "30",
+        "fillerId": "0xe29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf"
       },
-      "digest": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204"
+      "digest": "0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a"
     },
     {
       "note": "EVM-source fixture order of @cancore/test-kit (sepolia to arbitrum sepolia)",
@@ -95,9 +100,10 @@
         "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
         "createdAt": "1790000000",
         "fillDeadline": "1790000600",
-        "feeBps": "30"
+        "feeBps": "30",
+        "fillerId": "0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5"
       },
-      "digest": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6"
+      "digest": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b"
     },
     {
       "note": "every integer at its maximum",
@@ -114,9 +120,10 @@
         "recipient": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         "createdAt": "18446744073709551615",
         "fillDeadline": "18446744073709551615",
-        "feeBps": "65535"
+        "feeBps": "65535",
+        "fillerId": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
       },
-      "digest": "0x86cc928e50ec1003b13c9474aca3fd27a02eba667560e281f47f1962388300f8"
+      "digest": "0xfb6d2cba32ce501e0d2a2f4f4c7cb4380fc03aa833c5d1504b281165323e2d59"
     },
     {
       "note": "zero words and the zero address",
@@ -133,9 +140,10 @@
         "recipient": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "createdAt": "0",
         "fillDeadline": "0",
-        "feeBps": "0"
+        "feeBps": "0",
+        "fillerId": "0x0000000000000000000000000000000000000000000000000000000000000000"
       },
-      "digest": "0x3da628e3bc0683cdb45726c73345d9d2c479dc7607d9fa31275cb5e59a0cbd44"
+      "digest": "0xc623da4e472bc8cbe48f7cded744ec164f3caf592612a75d64bb7024f4ee6789"
     }
   ]
 }

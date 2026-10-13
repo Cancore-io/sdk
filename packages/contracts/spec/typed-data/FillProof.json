@@ -200,28 +200,28 @@
       "digest": "0x81c3633199fbeed50c8d6aa235b1fdd5e0fa98d21caf70dc331d47936faced4b"
     },
     {
-      "note": "Canton source: the delivery of spec/vectors/canton-order.json's order, in the domain Daml settles in — chainId CANTON_ORIGIN_ID = 2^63 + 1 (a string: it does not survive a JSON number), verifyingContract CANTON_SOURCE_ANCHOR; repayTo = keccak256(utf8(partyId)) of the filler party (repayToParty), fillerId keccak256(\"acme-markets\"). Daml FillProofVerify must reproduce typeHash, domainSeparator, structHash and digest",
-      "fillerIdString": "acme-markets",
+      "note": "Canton source: the delivery of spec/vectors/canton-order.json's order, in the domain Daml settles in — chainId CANTON_ORIGIN_ID = 2^63 + 1 (a string: it does not survive a JSON number), verifyingContract CANTON_SOURCE_ANCHOR; repayTo = keccak256(utf8(partyId)) of the filler party (repayToParty), fillerId keccak256(\"acme\") — the filler the order picked (OD-1). Daml FillProofVerify must reproduce typeHash, domainSeparator, structHash and digest",
+      "fillerIdString": "acme",
       "repayToParty": "acme-markets::1220acdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacdeacde",
       "chainId": "9223372036854775809",
       "verifyingContract": "0x2f37b46Ea93001829498b145985fb53028033701",
       "message": {
         "kind": 1,
-        "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204",
+        "orderHash": "0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a",
         "destination": "0x0000000000000000000000000000000000000000000000000000000000000001",
         "fillRef": "0xcef5e95eb00bff57a5c6565834f300cdc8c694151245ab062e86822a8819897a",
         "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
         "outputAsset": "0x000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
         "amountDelivered": "1246760000",
         "filledAt": "1789999700",
-        "fillerId": "0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5",
+        "fillerId": "0xe29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf",
         "repayTo": "0xe61d35ec4ca48f587165d3138bd11c79b42e52f6de0cec4b9e2d4350017f1e87",
         "attempt": 1,
         "setId": 1
       },
       "domainSeparator": "0x1f754285aeeb7c329e1107ea7f22092765deea7fd0db2c98bce7e0bda644ec16",
-      "structHash": "0xde3d93c38518796a0d639e855b5a875eeccd7e2dc9417b28d4b7c36d04d9f58d",
-      "digest": "0xfdc7e00e2d79fb63ee6bcb3c46dbe531ee0c40eaa0a670c371902a862615df80"
+      "structHash": "0x020e5d6af786617b2a3f47e44366fb5f0871ac8313edfa65653debb1590d5c04",
+      "digest": "0xbeb13e87d8daa5eff32f78a558611b5be48c31d5c2b187eeb523d99a8a5e5e16"
     }
   ]
 }

@@ -26,7 +26,7 @@
         "id": "g-20",
         "fillerId": "acme-markets",
         "sentAt": 1790000020000,
-        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
         "attempt": 0,
         "order": {
           "user": "0xa11ce00000000000000000000000000000000001",
@@ -39,7 +39,8 @@
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
           "createdAt": "1790000000",
           "fillDeadline": "1790000600",
-          "feeBps": "30"
+          "feeBps": "30",
+          "fillerId": "0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5"
         },
         "amountOut": "999000000",
         "validFrom": "1790000040",
@@ -47,11 +48,11 @@
         "acceptBy": 1790000023000,
         "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b"
       },
-      "jcs": "{\"acceptBy\":1790000023000,\"amountOut\":\"999000000\",\"attempt\":0,\"fillerId\":\"acme-markets\",\"id\":\"g-20\",\"order\":{\"createdAt\":\"1790000000\",\"destination\":\"0x0000000000000000000000000000000000000000000000000000000000066eee\",\"feeBps\":\"30\",\"fillDeadline\":\"1790000600\",\"inputAmount\":\"1003000000\",\"inputToken\":\"0x1c7d4b196cb0c7b01d743fbc6116a902379c7238\",\"minReceived\":\"999000000\",\"originChainId\":\"11155111\",\"outputAsset\":\"0x00000000000000000000000075faf114eafb1bdbe2f0316df893fd58ce46aa4d\",\"recipient\":\"0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e\",\"user\":\"0xa11ce00000000000000000000000000000000001\"},\"orderHash\":\"0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6\",\"sentAt\":1790000020000,\"type\":\"ticket.offer\",\"validFrom\":\"1790000040\",\"validUntil\":\"1790000400\"}",
+      "jcs": "{\"acceptBy\":1790000023000,\"amountOut\":\"999000000\",\"attempt\":0,\"fillerId\":\"acme-markets\",\"id\":\"g-20\",\"order\":{\"createdAt\":\"1790000000\",\"destination\":\"0x0000000000000000000000000000000000000000000000000000000000066eee\",\"feeBps\":\"30\",\"fillDeadline\":\"1790000600\",\"fillerId\":\"0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5\",\"inputAmount\":\"1003000000\",\"inputToken\":\"0x1c7d4b196cb0c7b01d743fbc6116a902379c7238\",\"minReceived\":\"999000000\",\"originChainId\":\"11155111\",\"outputAsset\":\"0x00000000000000000000000075faf114eafb1bdbe2f0316df893fd58ce46aa4d\",\"recipient\":\"0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e\",\"user\":\"0xa11ce00000000000000000000000000000000001\"},\"orderHash\":\"0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b\",\"sentAt\":1790000020000,\"type\":\"ticket.offer\",\"validFrom\":\"1790000040\",\"validUntil\":\"1790000400\"}",
       "message": {
-        "bodyHash": "0x9761fd334e3181da88a7535ed44b41ad489861149416d59559afeff730e6aca7"
+        "bodyHash": "0x887b6924db96f9fcc421e3316a87db397b25ca73122afc1fbc8db37d770346c5"
       },
-      "digest": "0xe9fe85265890cbe31ec53a5edd4fcd2309fcad75f82de04e9772cd480adfc242"
+      "digest": "0x9745d5b4ab87cde20184d36a5f6742ce92f1fa43f62821a53e0973c2b9f59000"
     },
     {
       "note": "quote.ack",

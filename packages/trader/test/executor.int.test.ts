@@ -130,6 +130,7 @@ live('Executor against the stand router (make intent-genesis)', () => {
       createdAt: String(now - 60n),
       fillDeadline: String(now + 3_600n),
       feeBps: '30',
+      fillerId: fillerIdHash(FILLER),
     };
     const orderHash = hashOrder(order, { chainId: stand.chainId, router });
     const validUntil = options.validUntil ?? now + BigInt(options.ttlS ?? 300);

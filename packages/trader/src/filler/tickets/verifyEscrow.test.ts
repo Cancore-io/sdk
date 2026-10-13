@@ -39,6 +39,7 @@ async function setup() {
     createdAt: String(nowS - 60n),
     fillDeadline: String(nowS + 600n),
     feeBps: '500',
+    fillerId: fillerIdHash(FILLER),
   };
   const orderHash = hashOrder(order, { chainId: 56n, router: SRC_ROUTER });
   const src = new FakeChain(56n, 'bsc');

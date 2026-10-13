@@ -24,6 +24,7 @@
     "feeBps": "feeRate × 10000; refused unless it is a whole number and ≤ MAX_FEE_BPS (1000). The fee is INCLUSIVE on both rails: inputAmount is the total, payout = inputAmount × 10000 / (10000 + feeBps) floored, fee = inputAmount − payout",
     "createdAt": "unix seconds, the signing time of the Canton request; refused unless it is a whole second. Part of the hash only: the destination does not check it",
     "fillDeadline": "unix seconds; refused unless it is a whole second",
+    "fillerId": "keccak256(utf8(fillerId)) of the filler the owner picked, the twelfth and last Order field; the request is refused when fillerId is empty. The destination router's fill accepts only a ticket naming it, and settle only a proof naming it (WrongFiller)",
     "$requestId": "requestId is part of the owner label on purpose: without it two identical requests in the same second share one orderHash, and one delivery would match two SwapIntents (AUD-E-13, AUD-C-3)."
   },
   "vector": {
@@ -41,7 +42,8 @@
       "createdAt": 1789999400,
       "fillDeadline": 1790000000,
       "feeRate": "0.003",
-      "cantonOriginId": "9223372036854775809"
+      "cantonOriginId": "9223372036854775809",
+      "fillerId": "acme"
     },
     "order": {
       "user": "0x47f0d84377B46651f7936AE656DCEceFDc1A2A86",
@@ -54,7 +56,8 @@
       "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
       "createdAt": "1789999400",
       "fillDeadline": "1790000000",
-      "feeBps": "30"
+      "feeBps": "30",
+      "fillerId": "0xe29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf"
     },
     "domain": {
       "name": "CancoreRouter",
@@ -62,6 +65,6 @@
       "chainId": "9223372036854775809",
       "verifyingContract": "0x2f37b46Ea93001829498b145985fb53028033701"
     },
-    "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204"
+    "orderHash": "0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a"
   }
 }

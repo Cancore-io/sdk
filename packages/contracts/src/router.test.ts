@@ -80,10 +80,10 @@ test('AttestorSet exposes the set reads, and the router inherits them', () => {
 });
 
 describe('Order', () => {
-  // `createdAt` between `recipient` and `fillDeadline` since CAN-1683.
+  // `createdAt` between `recipient` and `fillDeadline` since CAN-1683; `fillerId` last since CAN-2495.
   const typedData = ORDER_TYPES.Order.map((f) => `${f.type} ${f.name}`);
 
-  test.each(ROUTER_WRITES)('%s takes the 11-field Order tuple in the typed-data order', (name) => {
+  test.each(ROUTER_WRITES)('%s takes the 12-field Order tuple in the typed-data order', (name) => {
     for (const abi of [CANCORE_ROUTER_ABI, ICANCORE_ROUTER_ABI] as const) {
       const fn = (abi as readonly Entry[]).find((e) => e.type === 'function' && e.name === name);
       const order = fn?.inputs?.find((p) => p.internalType === 'struct ICancoreRouter.Order');
@@ -92,7 +92,7 @@ describe('Order', () => {
   });
 
   test('ORDER_TYPEHASH from the package typed data is the router’s', () => {
-    expect(typedData).toHaveLength(11);
-    expect(typeHash(ORDER_TYPES, 'Order')).toBe('0x1f93a050ad6e8cc50e77b273767fdc0bfbb439bade69b3ffc73337227024750a');
+    expect(typedData).toHaveLength(12);
+    expect(typeHash(ORDER_TYPES, 'Order')).toBe('0xf68105debdb242de0650ab79cad1d11e4ed4f4e986e191ff672a79737f4c9d22');
   });
 });

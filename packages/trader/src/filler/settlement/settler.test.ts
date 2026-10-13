@@ -58,6 +58,7 @@ async function world(options: { refundAfterS?: number; proofWindowS?: bigint } =
     createdAt: String(nowS - 600n),
     fillDeadline: String(nowS + 3_600n),
     feeBps: '500',
+    fillerId: fillerIdHash(FILLER),
   };
   const orderHash = hashOrder(order, { chainId: 56n, router: SRC_ROUTER });
   const router = src.router(SRC_ROUTER);

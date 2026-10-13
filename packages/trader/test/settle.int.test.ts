@@ -164,6 +164,7 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
       createdAt: String(now - 5n),
       fillDeadline: String(now + 1_800n),
       feeBps: '30',
+      fillerId: fillerIdHash(FILLER),
     };
     const orderHash = hashOrder(order, { chainId: stand.chainId, router });
     const quoteDeadline = now + 300n;

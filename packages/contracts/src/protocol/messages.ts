@@ -72,6 +72,7 @@ export type DrawClosedBy = (typeof DRAW_CLOSED_BY)[number];
 export interface OrderJson {
   user: Hex; originChainId: DecString; inputToken: Hex; inputAmount: DecString; destination: Hex; outputAsset: Hex;
   minReceived: DecString; recipient: Hex; createdAt: DecString; fillDeadline: DecString; feeBps: DecString;
+  fillerId: Hex;
 }
 
 /** Every S→F frame: signed by the gateway (`GatewayMessage`), addressed (`fillerId`) and timed (`sentAt`). */
