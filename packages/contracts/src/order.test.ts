@@ -1,4 +1,5 @@
-import { TypedDataEncoder } from 'ethers';
+import { TypedDataEncoder, id } from 'ethers';
+import Ajv2020 from 'ajv/dist/2020';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CANTON_ORIGIN_ID, CANTON_SOURCE_ANCHOR } from './constants';
@@ -8,6 +9,7 @@ import {
   type CantonSourceIntent, type PermitWitness,
 } from './order';
 import { ORDER_TYPES, routerDomain, type Hex, type Order } from './protocol/typedData';
+import { PROTOCOL_SCHEMAS, SCHEMA_VOCABULARY, messageSchemaRef } from './protocol/schemas';
 
 // The router's order hashing, and the EVM-form Order of a Canton-source intent
 // (protocol.md §3.7-3.9): a port of evm-contracts test/helpers/cantonOrder.ts,
@@ -131,5 +133,78 @@ describe('Permit2 witness: what the maker signs to open an EVM-source intent', (
     expect(hashPermitWitness({ ...v.message, witness: { ...v.message.witness, fillerId: `0x${'00'.repeat(32)}` } }, v.chainId)).not.toBe(v.digest);
     expect(hashPermitWitness({ ...v.message, permitted: { ...v.message.permitted, amount: '1' } }, v.chainId)).not.toBe(v.digest);
     expect(hashPermitWitness({ ...v.message, spender: CANTON_SOURCE_ANCHOR }, v.chainId)).not.toBe(v.digest);
+  });
+});
+
+describe('twelve-field public acceptance', () => {
+  const canton = JSON.parse(readFileSync(join(__dirname, '../spec/vectors/canton-order.json'), 'utf8')).vector;
+  const types = { Order: [
+    { name: 'user', type: 'address' }, { name: 'originChainId', type: 'uint64' },
+    { name: 'inputToken', type: 'address' }, { name: 'inputAmount', type: 'uint256' },
+    { name: 'destination', type: 'bytes32' }, { name: 'outputAsset', type: 'bytes32' },
+    { name: 'minReceived', type: 'uint256' }, { name: 'recipient', type: 'bytes32' },
+    { name: 'createdAt', type: 'uint64' }, { name: 'fillDeadline', type: 'uint64' },
+    { name: 'feeBps', type: 'uint16' }, { name: 'fillerId', type: 'bytes32' },
+  ] };
+  const order: Order & { fillerId: `0x${string}` } = { ...canton.order, fillerId: id('acme') as `0x${string}` };
+  const input = { ...canton.input, fillerId: 'acme' };
+
+  test('twelve-field public Order matches the independent Canton assertion', () => {
+    expect(ORDER_TYPES.Order).toEqual(types.Order);
+    expect(id(TypedDataEncoder.from(types).encodeType('Order'))).toBe('0xf68105debdb242de0650ab79cad1d11e4ed4f4e986e191ff672a79737f4c9d22');
+    expect(hashOrder(order, canton.domain)).toBe('0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a');
+    expect(buildCantonSourceOrder(input).order).toEqual(order);
+    expect(sourceOrderHash(order)).toBe(TypedDataEncoder.hash(canton.domain, types, order));
+  });
+
+  test('changing only filler changes Order and nested Permit2 commitments', () => {
+    const changed = { ...order, fillerId: id('bravo') as `0x${string}` };
+    expect(hashOrder(order, canton.domain)).not.toBe(hashOrder(changed, canton.domain));
+    expect(sourceOrderHash(changed)).toBe(TypedDataEncoder.hash(canton.domain, types, changed));
+    const rebuilt = buildCantonSourceOrder({ ...input, fillerId: 'bravo' });
+    expect(rebuilt.domain).toEqual(canton.domain);
+    expect(rebuilt.orderHash).toBe(sourceOrderHash(changed));
+    const witnessTypes = {
+      PermitWitnessTransferFrom: [
+        { name: 'permitted', type: 'TokenPermissions' }, { name: 'spender', type: 'address' },
+        { name: 'nonce', type: 'uint256' }, { name: 'deadline', type: 'uint256' }, { name: 'witness', type: 'Order' },
+      ], TokenPermissions: [{ name: 'token', type: 'address' }, { name: 'amount', type: 'uint256' }], ...types,
+    };
+    const permit = { permitted: { token: order.inputToken, amount: order.inputAmount }, spender: canton.domain.verifyingContract, nonce: '1', deadline: '1790000000', witness: order };
+    expect(hashPermitWitness(permit, '1')).toBe(TypedDataEncoder.hash(permit2Domain('1'), witnessTypes, permit));
+    const mutated = { ...permit, witness: changed };
+    expect(hashPermitWitness(permit, '1')).not.toBe(hashPermitWitness(mutated, '1'));
+    expect(hashPermitWitness(mutated, '1')).toBe(TypedDataEncoder.hash(permit2Domain('1'), witnessTypes, mutated));
+  });
+
+  test.each([undefined, '', 'a'.repeat(64), 'Acme', ' acme', 'acme '])('Canton builder refuses operational filler %p', (fillerId) => {
+    expect(() => buildCantonSourceOrder({ ...input, fillerId })).toThrow(/fillerId/);
+  });
+
+  test.each(['a', 'a'.repeat(63)])('Canton identity bound %p is preserved without normalization', (fillerId) => {
+    const built = buildCantonSourceOrder({ ...input, fillerId });
+    expect(built.order).toHaveProperty('fillerId', id(fillerId));
+    expect(built.domain).toEqual(canton.domain);
+    expect(built.orderHash).toBe(TypedDataEncoder.hash(canton.domain, types, built.order));
+  });
+
+  test.each(['acme', '0x1234', undefined])('raw filler word %p cannot enter either hash', (fillerId) => {
+    const malformed = { ...order, fillerId } as unknown as Order;
+    expect(() => hashOrder(malformed, canton.domain)).toThrow();
+    expect(() => hashPermitWitness({ permitted: { token: order.inputToken, amount: '1' }, spender: canton.domain.verifyingContract, nonce: '1', deadline: '1', witness: malformed }, '1')).toThrow();
+  });
+
+  test.each(['ticket.offer', 'quote.reconfirm'])('%s schema refuses eleven-field and malformed-word Orders', (type) => {
+    const ajv = new Ajv2020({ strict: true, allErrors: true });
+    ajv.addVocabulary([...SCHEMA_VOCABULARY]);
+    for (const schema of Object.values(PROTOCOL_SCHEMAS)) ajv.addSchema(schema as object);
+    const { examples } = JSON.parse(readFileSync(join(__dirname, '../spec/protocol/vectors/messages.json'), 'utf8'));
+    const validOrder = { ...examples[type][0].order, fillerId: order.fillerId };
+    const frame = { ...examples[type][0], order: validOrder };
+    expect(ajv.validate(messageSchemaRef(type), frame)).toBe(true);
+    for (const fillerId of [undefined, 'acme', '0x1234']) {
+      expect(ajv.validate(messageSchemaRef(type), { ...frame, order: { ...validOrder, fillerId } })).toBe(false);
+      expect(ajv.errors?.some((error) => error.instancePath === '/order/fillerId' || error.params.missingProperty === 'fillerId')).toBe(true);
+    }
   });
 });
