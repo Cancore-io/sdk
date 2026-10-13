@@ -1,3 +1,4 @@
+import { Interface } from 'ethers';
 import {
   ATTESTOR_SET_ABI,
   ATTESTOR_SET_ERRORS,
@@ -96,3 +97,21 @@ describe('Order', () => {
     expect(typeHash(ORDER_TYPES, 'Order')).toBe('0xf68105debdb242de0650ab79cad1d11e4ed4f4e986e191ff672a79737f4c9d22');
   });
 });
+
+// ABI 3.1 identifies the actual redirected payout recipient, not the original user.
+test.each([['CancoreRouter', CANCORE_ROUTER_ABI], ['ICancoreRouter', ICANCORE_ROUTER_ABI]] as const)(
+  '%s Refunded roundtrip exposes the indexed payout recipient',
+  (_name, snapshot) => {
+    const iface = new Interface(snapshot);
+    const event = iface.getEvent('Refunded');
+    expect(event).not.toBeNull();
+    expect(event!.inputs.map(({ name, type, indexed }) => [name, type, indexed])).toEqual([
+      ['orderHash', 'bytes32', true], ['recipient', 'address', true], ['amount', 'uint256', false],
+    ]);
+    const orderHash = `0x${'ab'.repeat(32)}`;
+    const recipient = `0x${'12'.repeat(20)}`;
+    const encoded = iface.encodeEventLog(event!, [orderHash, recipient, 105n]);
+    const decoded = iface.decodeEventLog(event!, encoded.data, encoded.topics);
+    expect(decoded.toObject()).toEqual({ orderHash, recipient, amount: 105n });
+  },
+);

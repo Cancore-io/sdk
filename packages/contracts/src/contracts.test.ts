@@ -25,8 +25,8 @@ test.each(snapshots)('%s: the exported ABI equals the reviewed JSON snapshot', (
 
 test('the snapshot set is the whole contracts surface, not a sample of it', () => {
   expect(snapshots).toEqual([
-    'AttestorSet', 'CNRX', 'CNRXStaking', 'CancoreRouter', 'FeeVault', 'HTLC', 'IBurnMintERC20', 'ICancoreRouter', 'IHTLC',
-    'IPermit2', 'MultiBalanceChecker', 'PointsClaim',
+    'AttestorSet', 'CNRX', 'CNRXStaking', 'CancoreRouter', 'FeeVault', 'HTLC', 'IAttribute', 'IBurnMintERC20', 'ICancoreRouter', 'IFormula', 'IHTLC',
+    'IPayment', 'IPermit2', 'IResolver', 'IStep', 'IVariableRole', 'MultiBalanceChecker', 'PointsClaim',
   ]);
 });
 
@@ -36,7 +36,8 @@ test('the snapshot set is the whole contracts surface, not a sample of it', () =
 test('the ABI export names are exactly these', () => {
   expect(Object.keys(abi).filter((k) => k.endsWith('_ABI')).sort()).toEqual([
     'ATTESTOR_SET_ABI', 'CANCORE_ROUTER_ABI', 'CNRX_ABI', 'CNRX_STAKING_ABI', 'FEE_VAULT_ABI', 'HTLC_ABI',
-    'IBURN_MINT_ERC20_ABI', 'ICANCORE_ROUTER_ABI', 'IHTLC_ABI', 'IPERMIT2_ABI', 'MULTI_BALANCE_CHECKER_ABI', 'POINTS_CLAIM_ABI',
+    'IATTRIBUTE_ABI', 'IBURN_MINT_ERC20_ABI', 'ICANCORE_ROUTER_ABI', 'IFORMULA_ABI', 'IHTLC_ABI',
+    'IPAYMENT_ABI', 'IPERMIT2_ABI', 'IRESOLVER_ABI', 'ISTEP_ABI', 'IVARIABLE_ROLE_ABI', 'MULTI_BALANCE_CHECKER_ABI', 'POINTS_CLAIM_ABI',
   ]);
 });
 
