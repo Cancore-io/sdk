@@ -1,0 +1,55 @@
+[
+  {
+    "inputs": [
+      {
+        "internalType": "bytes",
+        "name": "payload",
+        "type": "bytes"
+      }
+    ],
+    "name": "resolve",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "bytes[]",
+            "name": "steps",
+            "type": "bytes[]"
+          },
+          {
+            "internalType": "bytes[]",
+            "name": "variables",
+            "type": "bytes[]"
+          },
+          {
+            "internalType": "bytes[]",
+            "name": "payments",
+            "type": "bytes[]"
+          },
+          {
+            "components": [
+              {
+                "internalType": "string",
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "internalType": "bytes",
+                "name": "data",
+                "type": "bytes"
+              }
+            ],
+            "internalType": "struct IResolver.Assumption[]",
+            "name": "assumptions",
+            "type": "tuple[]"
+          }
+        ],
+        "internalType": "struct IResolver.ResolvedOrder",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
+]

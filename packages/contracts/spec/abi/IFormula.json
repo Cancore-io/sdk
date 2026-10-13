@@ -1,0 +1,28 @@
+[
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "val",
+        "type": "uint256"
+      }
+    ],
+    "name": "Constant",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "varIdx",
+        "type": "uint256"
+      }
+    ],
+    "name": "Variable",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
+]

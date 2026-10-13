@@ -67,7 +67,7 @@ describe('router events are reported once confirmed, in chain order', () => {
   });
 
   test('logs of another address and logs flagged removed by the node are ignored', async () => {
-    const { chain, watcher, seen } = setup(0);
+    const { chain, watcher, seen, updates } = setup(0);
     chain.emit(OTHER, 'Filled', filled(A), 95n);
     const original = chain.request.bind(chain);
     chain.request = (async (request) => {
@@ -78,6 +78,7 @@ describe('router events are reported once confirmed, in chain order', () => {
     chain.emit(ROUTER, 'Refunded', { orderHash: B, recipient: FILLER, amount: 105n }, 96n);
     await watcher.poll();
     expect(seen()).toEqual(['added Refunded 0xbb @96']);
+    expect(updates[0]!.log.args).toMatchObject({ orderHash: B, recipient: FILLER, amount: 105n });
   });
 });
 

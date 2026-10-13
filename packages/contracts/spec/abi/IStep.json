@@ -1,0 +1,30 @@
+[
+  {
+    "inputs": [
+      {
+        "internalType": "bytes",
+        "name": "target",
+        "type": "bytes"
+      },
+      {
+        "internalType": "bytes4",
+        "name": "selector",
+        "type": "bytes4"
+      },
+      {
+        "internalType": "bytes[]",
+        "name": "arguments",
+        "type": "bytes[]"
+      },
+      {
+        "internalType": "bytes[]",
+        "name": "attributes",
+        "type": "bytes[]"
+      }
+    ],
+    "name": "Call",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
+]

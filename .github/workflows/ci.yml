@@ -134,6 +134,7 @@ jobs:
                 }
                 console.log('packed contracts: variant A Filled/Settled exports and spec match');
               "
+              node "$GITHUB_WORKSPACE/packages/contracts/scripts/check-packed-order.mjs" "$PWD"
             fi
             # Every subpath ships its declarations — not just a root entry, which
             # a package such as @cancore/trader (subpaths only) does not have.
