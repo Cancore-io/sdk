@@ -202,7 +202,7 @@ describe('twelve-field public acceptance', () => {
     expect(hashPermitWitness(mutated, '1')).toBe(TypedDataEncoder.hash(permit2Domain('1'), witnessTypes, mutated));
   });
 
-  test.each([undefined, '', 'a'.repeat(64), 'acmE', ' acme', 'acme '])('Canton builder refuses operational filler %p', (fillerId) => {
+  test.each([undefined, '', 'a'.repeat(64), 'acmE', ' acme', 'acme ', 'acme_1', 'acme.x', 'acme/1'])('Canton builder refuses operational filler %p', (fillerId) => {
     expect(() => buildCantonSourceOrder({ ...input, fillerId })).toThrow(/fillerId/);
   });
 

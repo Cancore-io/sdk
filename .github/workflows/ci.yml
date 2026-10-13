@@ -49,6 +49,10 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # The committed vectors must be what the generators produce: a hand-edited
+      # or stale spec file fails here instead of shipping (CAN-2496 review F-2).
+      - name: Vectors are regenerated, not hand-edited
+        run: npm run vectors -w @cancore/contracts && git diff --exit-code packages/contracts/spec
       # Suites against a local stand; they skip themselves without its artifacts (CI has no stand yet).
       - run: npm run test:int
 
