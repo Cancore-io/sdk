@@ -29,7 +29,9 @@ describe('buildCantonSourceOrder', () => {
     expect(built.order).toEqual(canton.order);
     expect(built.domain).toEqual(canton.domain);
     expect(built.orderHash).toBe(canton.orderHash);
-    expect(built.orderHash).toBe('0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204');
+    expect(built.orderHash).toBe('0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a');
+    // keccak256(utf8("acme")): the filler the owner picked, the same word evm-contracts#108 and canton-contracts#216 pin
+    expect(built.order.fillerId).toBe('0xe29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf');
     expect(hashOrder(built.order, built.domain)).toBe(canton.orderHash);
     expect(sourceOrderHash(built.order)).toBe(canton.orderHash);
     expect(TypedDataEncoder.hash(built.domain, orderTypes, built.order)).toBe(canton.orderHash);
@@ -50,6 +52,7 @@ describe('buildCantonSourceOrder', () => {
     ['fillDeadline', { fillDeadline: (input.fillDeadline as number) + 1 }],
     ['feeRate', { feeRate: '0.0031' }],
     ['the Canton network', { cantonOriginId: CANTON_ORIGIN_ID.devnet }],
+    ['fillerId (another filler)', { fillerId: 'acme2' }],
   ])('a change of %s changes the orderHash', (_n, change) => {
     expect(buildCantonSourceOrder({ ...input, ...change } as never).orderHash).not.toBe(canton.orderHash);
   });
@@ -67,6 +70,9 @@ describe('buildCantonSourceOrder', () => {
     ['an origin id above uint64', { cantonOriginId: 2n ** 64n }],
     ['a recipient that is not an address', { recipient: '0x1234' }],
     ['a wantToken that is not an address', { wantToken: 'usdc' }],
+    ['an empty fillerId (no picked filler: nobody could fill it)', { fillerId: '' }],
+    ['a missing fillerId', { fillerId: undefined }],
+    ['a fillerId outside the issued alphabet', { fillerId: 'Acme' }],
   ])('%s is refused: the order is not built', (_n, change) => {
     expect(() => buildCantonSourceOrder({ ...input, ...change } as never)).toThrow();
   });
@@ -122,6 +128,7 @@ describe('Permit2 witness: what the maker signs to open an EVM-source intent', (
     expect(hashPermitWitness(v.message, v.chainId)).toBe(v.digest);
     expect(permit2Domain(v.chainId)).toEqual({ name: 'Permit2', chainId: v.chainId, verifyingContract: PERMIT2_ADDRESS });
     expect(hashPermitWitness({ ...v.message, witness: { ...v.message.witness, feeBps: '31' } }, v.chainId)).not.toBe(v.digest);
+    expect(hashPermitWitness({ ...v.message, witness: { ...v.message.witness, fillerId: `0x${'00'.repeat(32)}` } }, v.chainId)).not.toBe(v.digest);
     expect(hashPermitWitness({ ...v.message, permitted: { ...v.message.permitted, amount: '1' } }, v.chainId)).not.toBe(v.digest);
     expect(hashPermitWitness({ ...v.message, spender: CANTON_SOURCE_ANCHOR }, v.chainId)).not.toBe(v.digest);
   });

@@ -48,7 +48,7 @@ const jcs = (v) =>
 
 const T = (fields) => fields.map(([type, name]) => ({ name, type }));
 const TYPES = {
-  Order: T([['address', 'user'], ['uint64', 'originChainId'], ['address', 'inputToken'], ['uint256', 'inputAmount'], ['bytes32', 'destination'], ['bytes32', 'outputAsset'], ['uint256', 'minReceived'], ['bytes32', 'recipient'], ['uint64', 'createdAt'], ['uint64', 'fillDeadline'], ['uint16', 'feeBps']]),
+  Order: T([['address', 'user'], ['uint64', 'originChainId'], ['address', 'inputToken'], ['uint256', 'inputAmount'], ['bytes32', 'destination'], ['bytes32', 'outputAsset'], ['uint256', 'minReceived'], ['bytes32', 'recipient'], ['uint64', 'createdAt'], ['uint64', 'fillDeadline'], ['uint16', 'feeBps'], ['bytes32', 'fillerId']]),
   Quote: T([['bytes32', 'orderHash'], ['uint64', 'quoteDeadline']]),
   FillTicket: T([['bytes32', 'orderHash'], ['bytes32', 'fillerId'], ['address', 'deliveryKey'], ['bytes32', 'repayTo'], ['uint32', 'attempt'], ['uint64', 'validFrom'], ['uint64', 'validUntil']]),
   FillProof: T([['uint8', 'kind'], ['bytes32', 'orderHash'], ['bytes32', 'destination'], ['bytes32', 'fillRef'], ['bytes32', 'recipient'], ['bytes32', 'outputAsset'], ['uint256', 'amountDelivered'], ['uint64', 'filledAt'], ['bytes32', 'fillerId'], ['bytes32', 'repayTo'], ['uint32', 'attempt'], ['uint32', 'setId']]),
@@ -102,8 +102,8 @@ const FILLER_PARTY = `acme-markets::1220${'acde'.repeat(16)}`;
 out('spec/typed-data/Order.json', file('Order', ROUTER_META, `${PROVISIONAL} The canton vector equals spec/vectors/canton-order.json (Solidity-pinned); the sepolia vector is the test-kit fixture order.`, routerVectors('Order', [
   { note: 'canton-source golden order (spec/vectors/canton-order.json)', domain: CANTON_DOMAIN, message: lower(canton.order) },
   { note: 'EVM-source fixture order of @cancore/test-kit (sepolia to arbitrum sepolia)', domain: EVM_DOMAIN, message: EVM_ORDER },
-  { note: 'every integer at its maximum', domain: EVM_DOMAIN, message: { user: FF20, originChainId: U64, inputToken: FF20, inputAmount: U256, destination: FF32, outputAsset: FF32, minReceived: U256, recipient: FF32, createdAt: U64, fillDeadline: U64, feeBps: '65535' } },
-  { note: 'zero words and the zero address', domain: EVM_DOMAIN, message: { user: Z20, originChainId: '0', inputToken: Z20, inputAmount: '0', destination: Z32, outputAsset: Z32, minReceived: '0', recipient: Z32, createdAt: '0', fillDeadline: '0', feeBps: '0' } },
+  { note: 'every integer at its maximum', domain: EVM_DOMAIN, message: { user: FF20, originChainId: U64, inputToken: FF20, inputAmount: U256, destination: FF32, outputAsset: FF32, minReceived: U256, recipient: FF32, createdAt: U64, fillDeadline: U64, feeBps: '65535', fillerId: FF32 } },
+  { note: 'zero words and the zero address', domain: EVM_DOMAIN, message: { user: Z20, originChainId: '0', inputToken: Z20, inputAmount: '0', destination: Z32, outputAsset: Z32, minReceived: '0', recipient: Z32, createdAt: '0', fillDeadline: '0', feeBps: '0', fillerId: Z32 } },
 ])));
 out('spec/typed-data/Quote.json', file('Quote', ROUTER_META, PROVISIONAL, routerVectors('Quote', [
   { note: 'quote signer approves the fixture order', domain: EVM_DOMAIN, message: { orderHash: evmOrderHash, quoteDeadline: '1790000030' } },
@@ -113,11 +113,11 @@ out('spec/typed-data/Quote.json', file('Quote', ROUTER_META, PROVISIONAL, router
 ])));
 const specTicket = { orderHash: WORKED_DRAW.orderHash, fillerId: fillerIdHash('acme'), deliveryKey: DELIVERY_KEY, repayTo: repayEvm(DELIVERY_KEY), attempt: 0, validFrom: '1789999000', validUntil: '1789999180' };
 const fixtureTicket = { orderHash: evmOrderHash, fillerId: fillerIdHash('acme-markets'), deliveryKey: DELIVERY_KEY, repayTo: repayEvm(PAYOUT), attempt: 0, validFrom: '1790000040', validUntil: '1790000400' };
-const cantonSourceTicket = { orderHash: canton.orderHash, fillerId: fillerIdHash('acme-markets'), deliveryKey: DELIVERY_KEY, repayTo: repayParty(FILLER_PARTY), attempt: 1, validFrom: '1789999500', validUntil: '1789999800' };
+const cantonSourceTicket = { orderHash: canton.orderHash, fillerId: fillerIdHash('acme'), deliveryKey: DELIVERY_KEY, repayTo: repayParty(FILLER_PARTY), attempt: 1, validFrom: '1789999500', validUntil: '1789999800' };
 const ticketRows = flat(TICKET, 'FillTicket')([
   { note: 'protocol.md §3.3 hashTicket example: a fixed bytes32 orderHash input, fillerId keccak256("acme"), repayTo the padded delivery key', message: specTicket },
   { note: 'ticket for the test-kit fixture order, attempt 0: EVM source, repayTo another address than the delivery key', fillerIdString: 'acme-markets', message: fixtureTicket },
-  { note: 'Canton source (canton-order.json): repayTo = keccak256(utf8(partyId)) of the filler party', fillerIdString: 'acme-markets', repayToParty: FILLER_PARTY, message: cantonSourceTicket },
+  { note: 'Canton source (canton-order.json): the filler the order picked (acme), repayTo = keccak256(utf8(partyId)) of the filler party', fillerIdString: 'acme', repayToParty: FILLER_PARTY, message: cantonSourceTicket },
   { note: 'every integer at its maximum', message: { orderHash: FF32, fillerId: FF32, deliveryKey: FF20, repayTo: FF32, attempt: U32, validFrom: U64, validUntil: U64 } },
   { note: 'zero', message: { orderHash: Z32, fillerId: Z32, deliveryKey: Z20, repayTo: Z32, attempt: 0, validFrom: '0', validUntil: '0' } },
 ]);
@@ -155,14 +155,14 @@ const proofRows = [
   },
   { note: 'same proof, another chain (11155111) and router', domain: { chainId: 11155111, verifyingContract: '0xa5Ca448044cbF78a8b2a3853598b879e2722ce65' }, message: proofBase },
   {
-    note: 'Canton source: the delivery of spec/vectors/canton-order.json\'s order, in the domain Daml settles in — chainId CANTON_ORIGIN_ID = 2^63 + 1 (a string: it does not survive a JSON number), verifyingContract CANTON_SOURCE_ANCHOR; repayTo = keccak256(utf8(partyId)) of the filler party (repayToParty), fillerId keccak256("acme-markets"). Daml FillProofVerify must reproduce typeHash, domainSeparator, structHash and digest',
+    note: 'Canton source: the delivery of spec/vectors/canton-order.json\'s order, in the domain Daml settles in — chainId CANTON_ORIGIN_ID = 2^63 + 1 (a string: it does not survive a JSON number), verifyingContract CANTON_SOURCE_ANCHOR; repayTo = keccak256(utf8(partyId)) of the filler party (repayToParty), fillerId keccak256("acme") — the filler the order picked (OD-1). Daml FillProofVerify must reproduce typeHash, domainSeparator, structHash and digest',
     domain: { chainId: canton.domain.chainId, verifyingContract: canton.domain.verifyingContract },
-    fillerIdString: 'acme-markets',
+    fillerIdString: 'acme',
     repayToParty: FILLER_PARTY,
     message: {
       kind: 1, orderHash: canton.orderHash, destination: canton.order.destination, fillRef: '0xcef5e95eb00bff57a5c6565834f300cdc8c694151245ab062e86822a8819897a',
       recipient: canton.order.recipient, outputAsset: canton.order.outputAsset, amountDelivered: '1246760000', filledAt: '1789999700',
-      fillerId: fillerIdHash('acme-markets'), repayTo: repayParty(FILLER_PARTY), attempt: 1, setId: 1,
+      fillerId: fillerIdHash('acme'), repayTo: repayParty(FILLER_PARTY), attempt: 1, setId: 1,
     },
   },
 ];

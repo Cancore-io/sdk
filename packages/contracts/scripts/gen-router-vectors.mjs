@@ -20,7 +20,7 @@ const out = (rel, data) => {
   writeFileSync(join(pkg, rel), `${JSON.stringify(data, null, 2)}\n`);
 };
 const T = (fields) => fields.map(([type, name]) => ({ name, type }));
-const ORDER = { Order: T([['address', 'user'], ['uint64', 'originChainId'], ['address', 'inputToken'], ['uint256', 'inputAmount'], ['bytes32', 'destination'], ['bytes32', 'outputAsset'], ['uint256', 'minReceived'], ['bytes32', 'recipient'], ['uint64', 'createdAt'], ['uint64', 'fillDeadline'], ['uint16', 'feeBps']]) };
+const ORDER = { Order: T([['address', 'user'], ['uint64', 'originChainId'], ['address', 'inputToken'], ['uint256', 'inputAmount'], ['bytes32', 'destination'], ['bytes32', 'outputAsset'], ['uint256', 'minReceived'], ['bytes32', 'recipient'], ['uint64', 'createdAt'], ['uint64', 'fillDeadline'], ['uint16', 'feeBps'], ['bytes32', 'fillerId']]) };
 const PERMIT = {
   PermitWitnessTransferFrom: T([['TokenPermissions', 'permitted'], ['address', 'spender'], ['uint256', 'nonce'], ['uint256', 'deadline'], ['Order', 'witness']]),
   TokenPermissions: T([['address', 'token'], ['uint256', 'amount']]),
@@ -149,7 +149,7 @@ const HARDHAT = { chainId: 31337, verifyingContract: '0x000000000000000000000000
 const destOrder = {
   user: '0xa11ce00000000000000000000000000000000001', originChainId: '31337', inputToken: EVM_ORDER.inputToken, inputAmount: '1203610000',
   destination: encoded.destination, outputAsset: encoded.outputAsset, minReceived: encoded.minReceived, recipient: encoded.recipient,
-  createdAt: '1790000000', fillDeadline: '1790000600', feeBps: '30',
+  createdAt: '1790000000', fillDeadline: '1790000600', feeBps: '30', fillerId: utf8Hash('acme-markets'),
 };
 const destOrderHash = TypedDataEncoder.hash(router(HARDHAT.chainId, HARDHAT.verifyingContract), ORDER, destOrder);
 const destProof = {

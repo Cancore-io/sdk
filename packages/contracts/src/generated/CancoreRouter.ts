@@ -165,6 +165,11 @@ export const CANCORE_ROUTER_ABI = [
   },
   {
     "inputs": [],
+    "name": "InvalidRefundRecipient",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "InvalidShortString",
     "type": "error"
   },
@@ -186,6 +191,11 @@ export const CANCORE_ROUTER_ABI = [
   {
     "inputs": [],
     "name": "NotAttestor",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NotOrderUser",
     "type": "error"
   },
   {
@@ -344,6 +354,11 @@ export const CANCORE_ROUTER_ABI = [
   },
   {
     "inputs": [],
+    "name": "UnknownOrder",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "UnsortedMembers",
     "type": "error"
   },
@@ -365,6 +380,11 @@ export const CANCORE_ROUTER_ABI = [
   {
     "inputs": [],
     "name": "WrongDestination",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "WrongFiller",
     "type": "error"
   },
   {
@@ -627,6 +647,11 @@ export const CANCORE_ROUTER_ABI = [
             "internalType": "uint16",
             "name": "feeBps",
             "type": "uint16"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
           }
         ],
         "indexed": false,
@@ -776,7 +801,7 @@ export const CANCORE_ROUTER_ABI = [
       {
         "indexed": true,
         "internalType": "address",
-        "name": "user",
+        "name": "recipient",
         "type": "address"
       },
       {
@@ -1258,6 +1283,11 @@ export const CANCORE_ROUTER_ABI = [
             "internalType": "uint16",
             "name": "feeBps",
             "type": "uint16"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
           }
         ],
         "internalType": "struct ICancoreRouter.Order",
@@ -1514,6 +1544,11 @@ export const CANCORE_ROUTER_ABI = [
             "internalType": "uint16",
             "name": "feeBps",
             "type": "uint16"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
           }
         ],
         "internalType": "struct ICancoreRouter.Order",
@@ -1780,6 +1815,11 @@ export const CANCORE_ROUTER_ABI = [
             "internalType": "uint16",
             "name": "feeBps",
             "type": "uint16"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
           }
         ],
         "internalType": "struct ICancoreRouter.Order",
@@ -2033,6 +2073,11 @@ export const CANCORE_ROUTER_ABI = [
             "internalType": "uint16",
             "name": "feeBps",
             "type": "uint16"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
           }
         ],
         "internalType": "struct ICancoreRouter.Order",
@@ -2046,9 +2091,142 @@ export const CANCORE_ROUTER_ABI = [
     "type": "function"
   },
   {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "user",
+            "type": "address"
+          },
+          {
+            "internalType": "uint64",
+            "name": "originChainId",
+            "type": "uint64"
+          },
+          {
+            "internalType": "address",
+            "name": "inputToken",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "inputAmount",
+            "type": "uint256"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "destination",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "outputAsset",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "uint256",
+            "name": "minReceived",
+            "type": "uint256"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "recipient",
+            "type": "bytes32"
+          },
+          {
+            "internalType": "uint64",
+            "name": "createdAt",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint64",
+            "name": "fillDeadline",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint16",
+            "name": "feeBps",
+            "type": "uint16"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct ICancoreRouter.Order",
+        "name": "order",
+        "type": "tuple"
+      },
+      {
+        "internalType": "address",
+        "name": "newRecipient",
+        "type": "address"
+      }
+    ],
+    "name": "refund",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
     "inputs": [],
     "name": "renounceOwnership",
     "outputs": [],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes",
+        "name": "payload",
+        "type": "bytes"
+      }
+    ],
+    "name": "resolve",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "bytes[]",
+            "name": "steps",
+            "type": "bytes[]"
+          },
+          {
+            "internalType": "bytes[]",
+            "name": "variables",
+            "type": "bytes[]"
+          },
+          {
+            "internalType": "bytes[]",
+            "name": "payments",
+            "type": "bytes[]"
+          },
+          {
+            "components": [
+              {
+                "internalType": "string",
+                "name": "name",
+                "type": "string"
+              },
+              {
+                "internalType": "bytes",
+                "name": "data",
+                "type": "bytes"
+              }
+            ],
+            "internalType": "struct IResolver.Assumption[]",
+            "name": "assumptions",
+            "type": "tuple[]"
+          }
+        ],
+        "internalType": "struct IResolver.ResolvedOrder",
+        "name": "resolved",
+        "type": "tuple"
+      }
+    ],
     "stateMutability": "view",
     "type": "function"
   },
@@ -2240,6 +2418,11 @@ export const CANCORE_ROUTER_ABI = [
             "internalType": "uint16",
             "name": "feeBps",
             "type": "uint16"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
           }
         ],
         "internalType": "struct ICancoreRouter.Order",
@@ -2382,6 +2565,11 @@ export const CANCORE_ROUTER_ABI = [
             "internalType": "uint16",
             "name": "feeBps",
             "type": "uint16"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "fillerId",
+            "type": "bytes32"
           }
         ],
         "internalType": "struct ICancoreRouter.Order",

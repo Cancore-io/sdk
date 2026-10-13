@@ -48,7 +48,8 @@ describe('verifying the fixture draw from its records', () => {
   test('the round follows from t0 + deltaDrand, and r and the winner from the round', () => {
     expect(firstRoundAtOrAfter(BigInt(a.tBase) + BigInt(draw.deltaDrand))).toBe(BigInt(a.drandRound));
     expect(drawWinner(drawValue(a.drandRandomness, draw.orderHash, a.attempt), a.candidates)).toEqual({ r: BigInt(a.r), winnerFillerId: a.winnerFillerId });
-    expect(a.winnerFillerId).toBe('acme-markets');
+    // The fixture order's hash changed with its twelfth field (CAN-2496), and with it the draw value.
+    expect(a.winnerFillerId).toBe('zeta-liquidity');
   });
 });
 

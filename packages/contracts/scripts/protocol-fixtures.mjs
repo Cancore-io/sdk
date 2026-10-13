@@ -2,7 +2,7 @@
 // The drand beacons are real quicknet rounds as served by
 // https://api.drand.sh/52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971/public/<round>
 // (fetched 2026-09-29); nothing here is fetched at generation time.
-import { toBeHex, zeroPadValue } from 'ethers';
+import { id, toBeHex, zeroPadValue } from 'ethers';
 
 /** The EVM-source order @cancore/test-kit serves: 1000 USDC on Sepolia (plus a 30 bps inclusive fee) for 999 USDC on Arbitrum Sepolia. */
 /** The DeliveryOrder contract id of the Canton-form ticket.issued example; its receipt is the first CantonTicketReceipt vector. */
@@ -20,6 +20,8 @@ export const EVM_ORDER = {
   createdAt: '1790000000',
   fillDeadline: '1790000600',
   feeBps: '30',
+  // the filler its tickets name (acme-markets): the router fills an order only on a ticket of the order's filler
+  fillerId: id('acme-markets'),
 };
 
 /** Weights of the auction-and-draw §3.7 example: (base + step) × reliabilityBps. */

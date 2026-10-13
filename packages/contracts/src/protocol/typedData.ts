@@ -30,7 +30,7 @@ export function routerDomain(chainId: UintLike, verifyingContract: Hex) {
   return { name: 'CancoreRouter', version: '1', chainId, verifyingContract } as const;
 }
 
-/** `Order(address user,uint64 originChainId,address inputToken,uint256 inputAmount,bytes32 destination,bytes32 outputAsset,uint256 minReceived,bytes32 recipient,uint64 createdAt,uint64 fillDeadline,uint16 feeBps)` */
+/** `Order(address user,uint64 originChainId,address inputToken,uint256 inputAmount,bytes32 destination,bytes32 outputAsset,uint256 minReceived,bytes32 recipient,uint64 createdAt,uint64 fillDeadline,uint16 feeBps,bytes32 fillerId)` */
 export const ORDER_TYPES = {
   Order: [
     { name: 'user', type: 'address' },
@@ -44,6 +44,7 @@ export const ORDER_TYPES = {
     { name: 'createdAt', type: 'uint64' },
     { name: 'fillDeadline', type: 'uint64' },
     { name: 'feeBps', type: 'uint16' },
+    { name: 'fillerId', type: 'bytes32' },
   ],
 } as const;
 
@@ -173,6 +174,8 @@ export interface Order {
   createdAt: UintLike;
   fillDeadline: UintLike;
   feeBps: number | string;
+  /** `fillerIdHash(fillerId)` of the filler the user picked: only its ticket fills the order and only a proof naming it settles it (`WrongFiller`). */
+  fillerId: Hex;
 }
 
 export interface Quote {

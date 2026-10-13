@@ -77,6 +77,7 @@ function world(clock: FakeClock) {
     createdAt: String(nowS - 60n),
     fillDeadline: String(nowS + 600n),
     feeBps: '500',
+    fillerId: fillerIdHash(FILLER),
   };
   const orderHash = hashOrder(order, { chainId: 56n, router: SRC_ROUTER });
   src.router(SRC_ROUTER).openIntent(orderHash, { refundAfter: nowS + 600n + 3_600n, openedAt: nowS - 50n, atBlock: 90n });

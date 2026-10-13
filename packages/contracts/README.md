@@ -60,7 +60,7 @@ describeRevert(revertData, [CANCORE_ROUTER_ERRORS]); // 'AlreadyFilled()' | …
 helpers, the events); `ATTESTOR_SET_ABI` is the set on its own (`getAttestorSet`,
 `currentSetId`, `isMember`, `revokedAttestors`), which `CancoreRouter` inherits. A test pins what
 the taker client relies on: those views and calls, the events `IntentOpened`, `Filled`,
-`Settled` and `Refunded`, and the 11-field `Order` tuple in the order of `ORDER_TYPES`, whose
+`Settled` and `Refunded`, and the 12-field `Order` tuple in the order of `ORDER_TYPES`, whose
 type hash is the router's `ORDER_TYPEHASH`. Router addresses are not in this package yet.
 
 ### Orders, the Permit2 witness, the fee
@@ -83,6 +83,7 @@ const { order, domain, orderHash } = buildCantonSourceOrder({
   ownerPartyId, requestId, instrumentAdmin, instrumentId, amount: '1250.5',
   destinationChainId: 1, wantToken, wantDecimals: 6, minReceived: '1200.25', recipient,
   createdAt, fillDeadline, feeRate: '0.003', cantonOriginId: CANTON_ORIGIN_ID.devnet,
+  fillerId: 'acme', // the filler the owner picked; the order carries keccak256(utf8(fillerId))
 });
 
 // what the maker signs for openFor: Permit2 PermitWitnessTransferFrom, the order as witness (PERMIT_WITNESS_TYPES for the wallet)
@@ -197,7 +198,7 @@ manual key change by Cancore staff; there is no key-rotation type or message.
 | `TicketReceipt`, `StakeBinding`, `FillerAuth`, `GatewayMessage` | `CancoreFillerProtocol` v1 | v1 RC — vectors in `spec/protocol/typed-data/` |
 | `FillerQuote` (`string fillerId`), `TicketIntent` (with `fillerId`, `deliveryKey`, `repayTo`), `FillerMessage`, `FillerKeyRegistration` | `CancoreFillerProtocol` v1 | variant A — vectors in `spec/protocol/typed-data/` |
 | `CantonTicketReceipt` (`orderHash`, `attempt`, `deliveryOrderCidHash`, `validUntil`) | `CancoreFillerProtocol` v1 | receipt of a Canton-form ticket (§10 D-O), additive — vectors in `spec/protocol/typed-data/` |
-| `Order` (11 fields, with `createdAt`), `Quote` | `CancoreRouter` v1, source router | router code; provisional copies in `spec/typed-data/` until evm-contracts publishes them |
+| `Order` (12 fields, with `createdAt`; `fillerId` last), `Quote` | `CancoreRouter` v1, source router | router code; provisional copies in `spec/typed-data/` until evm-contracts publishes them |
 | `FillTicket` (`orderHash`, `fillerId`, `deliveryKey`, `repayTo`, `attempt`, `validFrom`, `validUntil`) | `CancoreFillTicket` v1 | variant A, synced from the router (CAN-2140) |
 | `FillProof` (twelve fields) | `CancoreRouter` v1, source router | variant A, synced from the router (above) |
 
@@ -398,6 +399,24 @@ A contract change is a release of this package. `CONTRACTS_RELEASE.version` says
 Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
+
+- `0.2.0-rc.10` — the order names its filler (OD-1, OD-6; CAN-2496). **Breaking**: every order
+  hash changes.
+  - `Order` gains a twelfth and last field, `bytes32 fillerId` = `fillerIdHash(fillerId)` of the
+    filler the user picked: `ORDER_TYPES`, `Order`, `OrderJson` (and the `order` of
+    `messages.schema.json`), `ORDER_TYPEHASH` `0xf68105de…9d22`, `PERMIT2_WITNESS_TYPE_STRING`.
+    The router fills an order only on a ticket naming that filler and settles it only on a proof
+    naming it (`WrongFiller`).
+  - `buildCantonSourceOrder` takes a required `fillerId` and refuses an empty or malformed one;
+    the Canton-source form carries it too (OD-6), so the Daml hash changes with it.
+  - ABIs and typed data synced from evm-contracts `678b11a` (evm-contracts#108): `WrongFiller`,
+    `UnknownOrder`, `NotOrderUser`, `InvalidRefundRecipient`; `Refunded(orderHash, recipient,
+    amount)`.
+  - Vectors: `canton-order.json` is evm-contracts#108's (orderHash `0x22e3a53a…e79a`, equal to
+    canton-contracts#216's Daml `orderHashOf`); `evm-order.json`, `permit-witness.json`,
+    `canton-destination.json`, `Order.json`, `Quote.json` and the protocol vectors built on the
+    fixture order are regenerated. The fixture order names `acme-markets`; the Canton-source
+    ticket and proof name `acme`, the filler `canton-order.json` picked.
 
 `0.2.0-rc.9` follows `0.2.0-rc.7`: no `0.2.0-rc.8` was published. Its four entries below ship
 together; the first is breaking within the RC line for a filler and for filler-gateway, the other

@@ -69,6 +69,7 @@ async function world(options: WorldOptions = {}) {
     createdAt: String(nowS - 60n),
     fillDeadline: String(nowS + 3_600n),
     feeBps: '500',
+    fillerId: fillerIdHash(FILLER),
   };
   const orderHash = hashOrder(order, { chainId: 56n, router: SRC_ROUTER });
   const validUntil = nowS + BigInt(options.ttlS ?? 300);

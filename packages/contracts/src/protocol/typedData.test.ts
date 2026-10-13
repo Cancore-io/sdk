@@ -61,7 +61,7 @@ test('Order: the canton vector is the Solidity-pinned orderHash of canton-order.
   const pinned = load<{ vector: { orderHash: string; order: Record<string, string> } }>('vectors', 'canton-order.json').vector;
   const order = load('typed-data', 'Order.json').vectors[0]!;
   expect(order.digest).toBe(pinned.orderHash);
-  expect(pinned.orderHash).toBe('0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204');
+  expect(pinned.orderHash).toBe('0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a');
   expect(Object.keys(pinned.order)).toEqual(ORDER_TYPES.Order.map((f) => f.name));
 });
 
@@ -72,7 +72,7 @@ test('FillTicket: the hashTicket example of protocol.md §3.3', () => {
 });
 
 test('type hashes and domain separators equal the protocol.md §3.3 check values', () => {
-  expect(typeHash(ORDER_TYPES, 'Order')).toBe('0x1f93a050ad6e8cc50e77b273767fdc0bfbb439bade69b3ffc73337227024750a');
+  expect(typeHash(ORDER_TYPES, 'Order')).toBe('0xf68105debdb242de0650ab79cad1d11e4ed4f4e986e191ff672a79737f4c9d22');
   expect(typeHash(QUOTE_TYPES, 'Quote')).toBe('0xc76518f4d4ad76a1c01188b552131332d0907df782b6352e36e9523c3d74d249');
   expect(typeHash(FILL_TICKET_TYPES, 'FillTicket')).toBe('0x3b13cc38a5a61268c25e4816e0757e2301dc1d1fba2efe63f42f2fa30673ec82');
   expect(typeHash(FILL_PROOF_TYPES, 'FillProof')).toBe('0xc37e18cdd22fbc1e707c1bcc554d9d29c2e6c5a44bb4a9a4dc38e2c28e2419ae');

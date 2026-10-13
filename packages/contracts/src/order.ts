@@ -12,6 +12,7 @@ import { PERMIT2_ADDRESS } from './deployments';
 import { abiEncodeStrings, exactUnits } from './encoding';
 import { beBytes, hexBytes, keccak, toHex, uint } from './protocol/bytes';
 import { encodeType, hashDomain, hashStruct, hashTypedData } from './protocol/hash';
+import { fillerIdHash } from './protocol/identity';
 import { ORDER_TYPES, routerDomain, type Hex, type Order, type UintLike } from './protocol/typedData';
 
 /** The source-router domain an order is hashed in: its chain id and router (Canton: `CANTON_ORIGIN_ID`, `CANTON_SOURCE_ANCHOR`). */
@@ -78,6 +79,8 @@ export interface CantonSourceIntent {
   feeRate: string;
   /** One of `CANTON_ORIGIN_ID`. */
   cantonOriginId: UintLike;
+  /** Id of the filler the owner picked, as Cancore issued it (e.g. `acme`); the order carries `keccak256(utf8(fillerId))`. */
+  fillerId: string;
 }
 
 export interface CantonSourceOrder {
@@ -114,6 +117,8 @@ export function buildCantonSourceOrder(intent: CantonSourceIntent): CantonSource
     createdAt: wholeSecond(intent.createdAt, 'createdAt'),
     fillDeadline: wholeSecond(intent.fillDeadline, 'fillDeadline'),
     feeBps: feeBps.toString(),
+    // refuses an empty or malformed id: an order with no picked filler can be filled by nobody
+    fillerId: fillerIdHash(intent.fillerId),
   };
   const domain = { name: 'CancoreRouter', version: '1', chainId: originChainId.toString(), verifyingContract: CANTON_SOURCE_ANCHOR } as const;
   return { order, domain, orderHash: hashOrder(order, domain) };
