@@ -73,6 +73,13 @@ export type FillerStage =
   | 'ticket.expired'
   /** Delivery (`detail.reason`, `detail.detail`): not sent — no receipt, `sendGuard`, below `minReceived`, already filled, a revert in `eth_estimateGas`. */
   | 'fill.refused'
+  /**
+   * Operator alert: an RPC answered a `pending` transaction count above
+   * `latest` + the key's open nonces (`detail.chain`, `detail.address`,
+   * `detail.pending`, `detail.latest`, `detail.open`); the allocation used
+   * `detail.used` instead. A real jump means another sender uses the key.
+   */
+  | 'nonce.suspect'
   /** Broadcast: `detail.nonce`, `detail.gasLimit`, `detail.maxFeePerGas`, `detail.maxPriorityFeePerGas`. */
   | 'fill.sent'
   /** Replaced by fee on the same nonce: `detail.from`, `detail.txHash` and the new fees. */

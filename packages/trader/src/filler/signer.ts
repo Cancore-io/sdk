@@ -15,7 +15,7 @@
  * high-s, `v` of 0/1, the wrong key) fails loudly instead of producing a frame
  * `filler-gateway` or the router rejects.
  */
-import { hashTypedData, type Hex, type TypedDataInput } from '@cancore/contracts';
+import { FILLER_KEY_REGISTRATION_TYPES, FILLER_PROTOCOL_DOMAIN, hashTypedData, type DecString, type Hex, type SignedFillerKeyRegistration, type TypedDataInput } from '@cancore/contracts';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
@@ -123,4 +123,19 @@ export async function signTypedDataChecked(signer: TypedDataSigner, input: Typed
 export function addressOfPublicKey(uncompressed: Uint8Array): Hex {
   if (uncompressed.length !== 65 || uncompressed[0] !== 4) throw new TypeError('expected a 65-byte uncompressed public key');
   return `0x${bytesToHex(keccak_256(uncompressed.subarray(1)).subarray(12))}`;
+}
+
+/**
+ * Proof of possession of the message key (protocol §3.16):
+ * `FillerKeyRegistration{fillerId, messageKey, issuedAt}` signed by that key,
+ * through the checked signature contract. The result is the body Cancore
+ * takes at onboarding and at a manual key change by Cancore staff; there is no
+ * key rotation in the protocol. `issuedAt` is unix seconds.
+ */
+export async function signFillerKeyRegistration(messageSigner: TypedDataSigner, registration: { fillerId: string; issuedAt: bigint | DecString }): Promise<SignedFillerKeyRegistration> {
+  const issuedAt = typeof registration.issuedAt === 'bigint' ? registration.issuedAt.toString() : registration.issuedAt;
+  if (!/^(0|[1-9][0-9]*)$/.test(issuedAt) || BigInt(issuedAt) >= 2n ** 64n) throw new TypeError('issuedAt must be uint64 unix seconds');
+  const message = { fillerId: registration.fillerId, messageKey: messageSigner.address.toLowerCase() as Hex, issuedAt };
+  const sig = await signTypedDataChecked(messageSigner, { domain: FILLER_PROTOCOL_DOMAIN, types: FILLER_KEY_REGISTRATION_TYPES, primaryType: 'FillerKeyRegistration', message });
+  return { ...message, sig };
 }

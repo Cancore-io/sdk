@@ -14,7 +14,11 @@
  * - `nonce` strictly greater than any nonce of this quote key for the
  *   `requestId`, on any replica and across restarts (the store allocates it);
  * - a reconfirm is accepted only at `order.minReceived` — the price does not
- *   change (T-20) — and only before `replyBy`.
+ *   change (T-20) — and only before `replyBy`;
+ * - a reconfirm is answered only for an order that names this filler
+ *   (`order.fillerId`): the user picked it, and filler-gateway asks only the
+ *   picked filler, when its price expired before the offer (FS-14). A
+ *   reconfirm of another filler's order is dropped unanswered.
  *
  * A sent quote is stored before it goes out, so its `quote.ack` (attached by
  * the protocol client) has a quote to land on, and it stays in the store as
@@ -24,6 +28,7 @@ import {
   FILLER_PROTOCOL_DOMAIN,
   FILLER_QUOTE_TYPES,
   hashTypedData,
+  fillerIdHash,
   requestIdHash,
   type DecString,
   type Hex,
@@ -93,6 +98,12 @@ export interface FillerQuoteRequest extends QuoteRequest {
   payout: bigint;
   /** `inputAmount − payout`. */
   fee: bigint;
+  /**
+   * The quote is listed to the user next to this filler's public profile and
+   * the user picks the filler (filler-selection.md): there is no draw and no
+   * second attempt. Pricing is unchanged by it.
+   */
+  shownToUser: true;
 }
 
 /** A `quote.reconfirm` with the payout of its opened order. */
@@ -242,7 +253,7 @@ export class QuoteDesk {
     const payout = payoutOf(total, request.feeBps);
     let decision: QuoteDecisionInput | null;
     try {
-      decision = await hook({ ...request, payout, fee: total - payout });
+      decision = await hook({ ...request, payout, fee: total - payout, shownToUser: true });
     } catch (error) {
       this.options.logger.error('quotes: onQuoteRequest threw', { requestId, error: String(error) });
       return skip('hook-failed');
@@ -289,7 +300,7 @@ export class QuoteDesk {
    * signed `FillerQuote` and a fresh nonce, or declines — always before
    * `replyBy`; after it, nothing is sent.
    */
-  async onReconfirm(delivery: Delivery): Promise<{ reply: QuoteReconfirmReply } | { skipped: 'redelivered' | 'late' | 'malformed' | 'disconnected' }> {
+  async onReconfirm(delivery: Delivery): Promise<{ reply: QuoteReconfirmReply } | { skipped: 'redelivered' | 'late' | 'malformed' | 'disconnected' | 'not-ours' }> {
     const reconfirm = delivery.frame as unknown as QuoteReconfirm;
     if (!delivery.firstSeen) return { skipped: 'redelivered' };
     const replyBy = millis(reconfirm.replyBy);
@@ -315,6 +326,11 @@ export class QuoteDesk {
     const origin = decimal(order?.originChainId);
     if (!order || minReceived === undefined || amountOut === undefined || total === undefined || origin === undefined || !Number.isSafeInteger(feeBps)) {
       return decline('malformed');
+    }
+    // FS-14: only the filler the user picked is asked; another filler's order gets no answer at all.
+    if (typeof order.fillerId !== 'string' || order.fillerId.toLowerCase() !== fillerIdHash(this.options.fillerId)) {
+      this.options.logger.warn('quotes: quote.reconfirm for an order of another filler ignored', { orderHash });
+      return { skipped: 'not-ours' };
     }
     if (amountOut !== minReceived) return decline('price-changed');
     // T-12: a Canton source pays by the ledger formula, never the EVM one.

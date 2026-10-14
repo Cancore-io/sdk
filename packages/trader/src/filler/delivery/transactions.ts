@@ -11,12 +11,16 @@
  *   on the same nonce with both fees raised by at least `feeBumpPercent`
  *   (nodes refuse less than +10 %), never above `maxFeePerGasWei`. A `fill`,
  *   `approve` or `cancel` is also never replaced above
- *   `REPLACEMENT_FEE_CAP_MULTIPLE` × the first fee on its nonce (F-3); a
+ *   `REPLACEMENT_FEE_CAP_MULTIPLE` × the first fee of its kind on its nonce (F-3); a
  *   `settle` is held to `maxFeePerGasWei` only, and close to `refundAfter` is
  *   priced at it at once (R-14): a capped `settle` loses the filler its payout.
  * - **No gaps.** A held nonce with nothing recorded on it is reused before a
  *   new one is allocated, so a send abandoned after the nonce was taken never
  *   strands the transactions behind it.
+ * - **No jumps.** The store never lowers its counter, so one inflated
+ *   `pending` count would push every later nonce out of reach. A `pending`
+ *   above `latest` + the open nonces of the key is not believed: the
+ *   allocation takes that bound instead and the jump is reported.
  *
  * The signer only signs; this module picks the nonce, prices the
  * transaction and broadcasts it. Nothing here logs a raw transaction (S8).
@@ -100,6 +104,18 @@ export class FeeCeilingError extends Error {
   override readonly name = 'FeeCeilingError';
 }
 
+/** A `pending` transaction count above what the key can have in flight (CAN-2636). */
+export interface SuspectNonce {
+  chain: EvmChainId;
+  address: Hex;
+  pending: bigint;
+  latest: bigint;
+  /** Open nonces of the key in the store, every replica's. */
+  open: number;
+  /** What the allocation used instead: `latest` + `open`. */
+  used: bigint;
+}
+
 /** A replacement would cost more than `REPLACEMENT_FEE_CAP_MULTIPLE` × the first fee on its nonce. */
 export class ReplacementCapError extends Error {
   override readonly name = 'ReplacementCapError';
@@ -125,6 +141,8 @@ export interface TransactionDriverOptions {
   leaseTtlMs: number;
   fees: FeePolicy;
   logger: Logger;
+  /** Called when `pending` looks inflated; the allocation goes on with the bound. */
+  onSuspectNonce?: (suspect: SuspectNonce) => void;
 }
 
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
@@ -162,13 +180,37 @@ export class TransactionDriver {
   async acquire(): Promise<NonceLease> {
     const { store, owner, leaseTtlMs } = this.options;
     const now = await store.now();
-    for (const record of await store.nonces.listOpen(this.chain, this.address)) {
+    const open = await store.nonces.listOpen(this.chain, this.address);
+    for (const record of open) {
       if (record.owner !== owner || record.expiresAtMs <= now || record.transactions.length > 0) continue;
       const renewed = await store.nonces.renew(record, leaseTtlMs);
       if (renewed) return renewed;
     }
-    const chainNonce = await this.transactionCount('pending');
+    const chainNonce = await this.plausiblePending(open.length);
     return store.nonces.allocate({ chain: this.chain, address: this.address, owner, ttlMs: leaseTtlMs, chainNonce });
+  }
+
+  /**
+   * `pending`, unless it is above `latest` + `open`: every transaction of this
+   * key not yet in a block is on an open nonce of the store (N-9: one key, one
+   * writer), so more than that pending is an RPC answer not to trust — once in
+   * the store's counter it would never come down. The bound is used instead.
+   */
+  private async plausiblePending(open: number): Promise<bigint> {
+    const pending = await this.transactionCount('pending');
+    const latest = await this.transactionCount('latest');
+    const bound = latest + BigInt(open);
+    if (pending <= bound) return pending;
+    const suspect: SuspectNonce = { chain: this.chain, address: this.address, pending, latest, open, used: bound };
+    this.options.logger.error('tx: the pending nonce is above latest + open nonces; not taken', {
+      chain: this.chain,
+      address: this.address,
+      pending: pending.toString(),
+      latest: latest.toString(),
+      open,
+    });
+    this.options.onSuspectNonce?.(suspect);
+    return bound;
   }
 
   /** Extends a held lease; null when it is no longer held. */
@@ -232,6 +274,8 @@ export class TransactionDriver {
     };
     if (fees.maxPriorityFeePerGas > fees.maxFeePerGas) fees.maxFeePerGas = fees.maxPriorityFeePerGas;
     const ceiling = this.options.fees.maxFeePerGasWei;
+    // Urgent pricing comes first and the relative cap after it: today only settle is urgent, and
+    // settle is not in RELATIVE_CAP_KINDS. A kind both urgent and capped would be refused here.
     if (options.urgent && ceiling !== undefined && fees.maxFeePerGas < ceiling) fees.maxFeePerGas = ceiling;
     if (options.first && options.kind && RELATIVE_CAP_KINDS.has(options.kind)) {
       const cap = options.first.maxFeePerGas * REPLACEMENT_FEE_CAP_MULTIPLE;

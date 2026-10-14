@@ -62,8 +62,8 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 
 | Member | Returns | Does | Task |
 |---|---|---|---|
-| `onQuoteRequest(hook)` | `void` | price for a `quote.request` (with `payout` and `fee` added): `{ amountOut, validUntil }` or `null` | CAN-1852 |
-| `onReconfirm(hook)` | `void` | stand behind `order.minReceived` for an opened order (with `payout` and `fee` added): `boolean` | CAN-1852 |
+| `onQuoteRequest(hook)` | `void` | price for a `quote.request` (with `payout`, `fee` and `shownToUser: true` added — the user sees the quote with this filler's profile and picks the filler): `{ amountOut, validUntil }` or `null` | CAN-1852, CAN-2482 |
+| `onReconfirm(hook)` | `void` | stand behind `order.minReceived` for an opened order this filler was picked for (with `payout` and `fee` added): `boolean`. A no or silence is a `RECONFIRM_DECLINE` (statistics only); a signed `ticket.decline` of the offer that follows is a `PICKED_DECLINE`, which counts towards a ban | CAN-1852, CAN-2482 |
 | `onTicketOffer(hook)` | `void` | take the ticket: `'accept'`, `'decline'` (`OTHER`) or `{ decline: reason, detail? }` | CAN-1861 |
 | `start()` | `Promise<void>` | login over REST, then the WebSocket with the token; heartbeat, reconnect, REST fallback; reconcile from the store; then quote, take tickets, fill, settle. Needs all three hooks. Resolves at the first `auth.ok` | CAN-1847 |
 | `stop()` | `Promise<void>` | closes the session; in-flight work stays in the store for any replica | CAN-1847 |
@@ -206,6 +206,8 @@ offered ──► intent-sent ──► intent-acked ──► checking ──�
 - **Outcome.** `ticket.expired` is stored on the attempt and reported as stage `ticket.expired` with its result
   (an unknown result as `OTHER`); `penalty.applied` and `order.settled` become the `penalty` and `settled`
   events; every decline the `declined` event.
+- **One attempt per order** (filler-selection.md). The user picks the filler; there is no redraw. An offer
+  of a later attempt of an order this filler was already offered is stale: declined `OTHER` without the hook.
 
 ## Delivery
 
@@ -229,8 +231,9 @@ receipted ──► pending ──► sent ──► included ──► confirme
   by `delivery.feeBumpPercent` (15 %, at least 10), while `validUntil` has not passed and never above
   `chains.<caip2>.maxFeePerGasWei`. Once the chain's own time is past `validUntil` the fill can never succeed,
   and its nonce is freed by a zero-value transfer to self.
-- **Replacement caps** (F-3, R-14). A `fill`, `approve` or `cancel` is never replaced above 3× the first
-  `maxFeePerGas` on its nonce (`REPLACEMENT_FEE_CAP_MULTIPLE`). A `settle` has no relative cap — capping it
+- **Replacement caps** (F-3, R-14). A `fill` or `approve` is never replaced above 3× the first
+  `maxFeePerGas` on its nonce (`REPLACEMENT_FEE_CAP_MULTIPLE`); a `cancel` counts from its own first
+  cancel, so a fill stuck at its cap can always be cancelled up to `maxFeePerGasWei`. A `settle` has no relative cap — capping it
   would lose the payout when gas spikes — only `chains.<caip2>.maxFeePerGasWei`; within
   `settlement.alertBeforeRefundMs` of `refundAfter` it is replaced at that ceiling at once, so set the ceiling
   on every chain the filler settles on. A capped transaction stays as it is and is resent, same bytes, if a
@@ -242,7 +245,10 @@ receipted ──► pending ──► sent ──► included ──► confirme
   (`delivery.nonceLeaseTtlMs`, default 60 s), recorded before they are broadcast; the lease is re-checked
   at the record and renewed while the nonce is driven. Every lease TTL a replica claims the expired leases of
   dead replicas and drives their nonces from the chain. A held nonce with nothing recorded is reused, so an
-  abandoned send never strands the transactions behind it.
+  abandoned send never strands the transactions behind it. A new nonce is `max(pending on chain, last
+  allocated + 1)`, and the store never lowers its counter; so a `pending` above `latest` + the key's open
+  nonces is not believed — that bound is used and stage `nonce.suspect` raised (CAN-2636). A real jump means
+  something else sends from the delivery key.
 - **Restart** (N-15). The fill record, the nonce journal and `filled(orderHash)` decide: a fill already
   recorded on a nonce is driven, never sent a second time; a receipted attempt with nothing under way is
   delivered.
@@ -295,12 +301,12 @@ They stop at the first failure, and the failure is the `ticket.decline` reason:
 | V-E2 | `intents(orderHash).status == Opened`, read `openConfirmations` deep on the source | `ESCROW_NOT_OPEN` |
 | V-E3 | `refundAfter − fillDeadline ≥ requiredProofWindowSec` of the destination | `PROOF_WINDOW_TOO_SHORT` |
 | V-T1 | the ticket signer is in `ticketSigners` of the config and `ticketSigners(signer)` on the destination router | `TICKET_SIGNER_UNKNOWN` |
-| V-E4 | `repayTo` will be paid: the input token's blocklist view on the source is false for it | not read yet (CAN-2151): reported `skipped`; that `repayTo` is the node's own is held by V-T2 |
+| V-E4 | `repayTo` will be paid: the input token's blocklist view on the source (USDC `isBlacklisted`, USDT `isBlackListed`) is false for it; a token without one passes; that `repayTo` is the node's own is held by V-T2 | `OTHER` (`repayTo-blocklisted`) |
 | V-E5 | not `filled` on the destination; balance and allowance ≥ `amountOut`, gas ≥ `minGasWei` | `OTHER` (`already-filled`), `NO_INVENTORY` |
 
 A fact that cannot be read declines with the code of the check that needed it (`unverifiable: …` in the
 detail): an unverifiable ticket is never receipted. No setting turns a check off. Each check's result —
-`passed`, `failed` or `skipped` (V-E4 for now) — is emitted as stage `ticket.checked`. V-T4 compares the
+`passed`, `failed` or `skipped` — is emitted as stage `ticket.checked`. V-T4 compares the
 time `ticket.issued` arrived, which the protocol client writes on the attempt when the frame is received; a
 ticket whose arrival is not recorded is refused as unverifiable. A Canton source and a Canton-form ticket are declined `OTHER` until their
 checks land; V1 does not check the draw.
@@ -327,7 +333,9 @@ checks land; V1 does not check the draw.
   and restarts, so a later quote in the window replaces the earlier one.
 - **Firm price.** Each sent quote is stored before it goes out and stays there as the firm price until its
   `validUntil` (T-4); its `quote.ack` is attached when it arrives.
-- **Reconfirm.** `quote.reconfirm` is accepted only at `order.minReceived` — a frame whose `amountOut`
+- **Reconfirm.** filler-gateway asks only the filler the user picked, when its price expired before the
+  offer (FS-14): a `quote.reconfirm` whose `order.fillerId` is not this filler's is dropped unanswered, the
+  hook not asked. It is accepted only at `order.minReceived` — a frame whose `amountOut`
   differs is declined without asking the hook (T-20) — and only before `replyBy`. An accepted reply signs
   `FillerQuote{requestId, filler, minReceived, validUntil, nonce}` with a fresh nonce and
   `validUntil = ⌈replyBy / 1000⌉ + ticketTtl + 30 s`. Declines carry no signature.

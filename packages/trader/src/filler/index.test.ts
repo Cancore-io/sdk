@@ -189,7 +189,8 @@ describe('the skeleton of sdk.md §3.6', () => {
     const assert = <T extends true>(): T => true as T;
     assert<Equal<Parameters<Filler['onQuoteRequest']>[0], (request: FillerQuoteRequest) => Promise<{ amountOut: bigint | string; validUntil: bigint | string } | null>>>();
     assert<Equal<Parameters<Filler['onReconfirm']>[0], (reconfirm: FillerReconfirm) => Promise<boolean>>>();
-    assert<Equal<Omit<FillerQuoteRequest, 'payout' | 'fee'>, QuoteRequest>>();
+    assert<Equal<Omit<FillerQuoteRequest, 'payout' | 'fee' | 'shownToUser'>, QuoteRequest>>();
+    assert<Equal<FillerQuoteRequest['shownToUser'], true>>();
     assert<Equal<Omit<FillerReconfirm, 'payout' | 'fee'>, QuoteReconfirm>>();
     assert<Equal<Parameters<Filler['onTicketOffer']>[0], (offer: TicketOffer) => Promise<'accept' | 'decline' | { decline: 'NO_INVENTORY' | 'RISK_LIMIT' | 'PRICE_MOVED' | 'PAUSED' | 'OTHER'; detail?: string }>>>();
     assert<Equal<ReturnType<Filler['start']>, Promise<void>>>();

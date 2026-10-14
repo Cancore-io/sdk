@@ -1,9 +1,12 @@
 import { FILLER_PROTOCOL_DOMAIN, FILLER_QUOTE_TYPES, hashTypedData, requestIdHash, type Hex, type TypedDataInput } from '@cancore/contracts';
 import { secp256k1 } from '@noble/curves/secp256k1';
-import { bytesToHex } from '@noble/hashes/utils';
+import { keccak_256 } from '@noble/hashes/sha3';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Wallet } from 'ethers';
 import { SignatureContractError } from './errors';
-import { assertSignature, recoverAddress, recoverTypedDataSigner, signTypedDataChecked, type TypedDataSigner } from './signer';
+import { assertSignature, recoverAddress, recoverTypedDataSigner, signFillerKeyRegistration, signTypedDataChecked, type TypedDataSigner } from './signer';
 import { createTestTypedDataSigner } from './testing';
 
 // Hardhat's well-known account #0 and #1: public test keys, never funded on a real network.
@@ -117,5 +120,33 @@ describe('signer contract: 65 bytes r‖s‖v, low-s, v ∈ {27, 28} (protocol �
     const sig = await createTestTypedDataSigner(KEY_A).signTypedData(quote);
     expect(assertSignature(sig.toUpperCase().replace('0X', '0x'))).toBe(sig);
     expect(() => recoverAddress(hashTypedData(quote), sig.slice(0, 130) as Hex)).toThrow(SignatureContractError);
+  });
+});
+
+describe('signFillerKeyRegistration (CAN-2151, protocol §3.16)', () => {
+  type Registration = { note: string; message: { fillerId: string; messageKey: string; issuedAt: string }; signature?: Hex };
+  const file = join(__dirname, '..', '..', '..', 'contracts', 'spec', 'protocol', 'typed-data', 'FillerKeyRegistration.json');
+  const signed = (JSON.parse(readFileSync(file, 'utf8')) as { vectors: Registration[] }).vectors.filter((v) => v.signature);
+  // The vectors' keys come from public labels (gen-protocol-vectors.mjs), built here at run time: never literal keys.
+  const labelKey = (label: string): Hex => `0x${bytesToHex(keccak_256(utf8ToBytes(`cancore:test:message-key:${label}`)))}`;
+
+  test.each([
+    [0, 'acme-markets:1'],
+    [1, 'acme-markets:2'],
+  ])('reproduces golden vector %i byte for byte', async (i, label) => {
+    const v = signed[i]!;
+    const signer = createTestTypedDataSigner(labelKey(label));
+    expect(signer.address.toLowerCase()).toBe(v.message.messageKey);
+    await expect(signFillerKeyRegistration(signer, { fillerId: v.message.fillerId, issuedAt: BigInt(v.message.issuedAt) })).resolves.toEqual({ ...v.message, sig: v.signature });
+    await expect(signFillerKeyRegistration(signer, { fillerId: v.message.fillerId, issuedAt: v.message.issuedAt })).resolves.toEqual({ ...v.message, sig: v.signature });
+  });
+
+  test('issuedAt must be uint64 seconds; the key named is always the signer', async () => {
+    const signer = createTestTypedDataSigner(KEY_A);
+    for (const issuedAt of ['-1', '1.5', '01', (2n ** 64n).toString()]) {
+      await expect(signFillerKeyRegistration(signer, { fillerId: 'acme', issuedAt })).rejects.toBeInstanceOf(TypeError);
+    }
+    const r = await signFillerKeyRegistration(signer, { fillerId: 'acme', issuedAt: 0n });
+    expect(r.messageKey).toBe(ADDRESS_A);
   });
 });

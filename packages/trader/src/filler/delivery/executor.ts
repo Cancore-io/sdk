@@ -248,6 +248,15 @@ export class Executor {
           ...(readers.config.maxFeePerGasWei !== undefined ? { maxFeePerGasWei: readers.config.maxFeePerGasWei } : {}),
         },
         logger: this.options.logger,
+        onSuspectNonce: (suspect) =>
+          this.stage('nonce.suspect', undefined, undefined, {
+            chain: suspect.chain,
+            address: suspect.address,
+            pending: suspect.pending.toString(),
+            latest: suspect.latest.toString(),
+            open: suspect.open,
+            used: suspect.used.toString(),
+          }),
       });
       this.drivers.set(chain, driver);
     }
@@ -901,9 +910,12 @@ export class Executor {
     const last = txs.at(-1)!;
     const urgent = last.kind === 'settle' && (await this.settleUrgent(t.driver.chain, last));
     if (t.capped?.hash === last.hash && (t.capped.urgent || !urgent)) return false;
+    // The relative cap counts from the first transaction of the same kind on the nonce: a cancel
+    // replaces a fill that may already sit at 3× its own first fee (review sdk#94).
+    const first = last.kind === 'cancel' ? txs.find((x) => x.kind === 'cancel')! : txs[0]!;
     let fees;
     try {
-      fees = await t.driver.replacementFees(last, { kind: last.kind, first: txs[0]!, urgent });
+      fees = await t.driver.replacementFees(last, { kind: last.kind, first, urgent });
     } catch (error) {
       if (!(error instanceof FeeCeilingError || error instanceof ReplacementCapError)) throw error;
       this.capped(t, last, error, urgent);
@@ -953,10 +965,12 @@ export class Executor {
   /** The fill can no longer succeed (the chain is past `validUntil`): free its nonce with a zero-value transfer to self. False when the cancel is capped. */
   private async cancel(t: Tracker, txs: readonly InFlightTransaction[], fill: InFlightTransaction): Promise<boolean> {
     const last = txs.at(-1)!;
-    if (t.capped?.hash === last.hash) return false;
+    // The first cancel has no relative cap — its base would be the stuck fill's first fee, and the
+    // nonce could never be freed (review sdk#94); only maxFeePerGasWei holds it. A fill capped at 3×
+    // is cancelled all the same, so a cap recorded for the fill does not stop it.
     let fees;
     try {
-      fees = await t.driver.replacementFees(last, { kind: 'cancel', first: txs[0]! });
+      fees = await t.driver.replacementFees(last, { kind: 'cancel' });
     } catch (error) {
       if (!(error instanceof FeeCeilingError || error instanceof ReplacementCapError)) throw error;
       this.capped(t, last, error, false);

@@ -457,6 +457,21 @@ describe('ticket.expired, order.settled, penalty.applied', () => {
     await h.filler.stop();
   });
 
+  test('one attempt per order: after ticket.expired a later attempt of the same order is declined as stale, without the hook', async () => {
+    const h = await harness();
+    await consent(h);
+    h.socket.receive(h.gateway.frame({ type: 'ticket.expired', fillerId: FILLER, orderHash: h.w.orderHash, attempt: 0, result: 'NO_SHOW' }));
+    await settle();
+    const calls = h.hookCalls.length;
+    h.socket.receive(h.gateway.frame(h.offerFrame({ id: 'g-offer-2', attempt: 1, acceptBy: h.clock.now() + 5_000 })));
+    await settle();
+    expect(h.hookCalls).toHaveLength(calls);
+    expect(h.sent('ticket.intent').filter((i) => i.attempt === 1)).toHaveLength(0);
+    expect(h.sent('ticket.decline')).toContainEqual(expect.objectContaining({ attempt: 1, reason: 'OTHER', detail: expect.stringContaining('stale') }));
+    expect(await h.record(1)).toMatchObject({ state: 'declined' });
+    await h.filler.stop();
+  });
+
   test('penalty.applied and order.settled become the penalty and settled events', async () => {
     const h = await harness();
     h.socket.receive(h.gateway.frame({ type: 'penalty.applied', fillerId: FILLER, violationId: 'v-1', code: 'NO_SHOW', step: 'RECORDED', details: {} }));
