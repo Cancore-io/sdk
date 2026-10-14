@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import * as pkg from './index';
 import { cantonInclusiveFeeSplit, inclusiveFeeSplit } from './fee';
 
 // The inclusive fee (protocol.md §3.11): the maker hands over T = N + F, the filler is paid
@@ -63,4 +64,9 @@ describe('Canton source: cantonInclusiveFeeSplit is Daml inclusiveFee in EVM-for
       expect(ledger - evm === 0n || ledger - evm === 1n).toBe(true);
     }
   });
+});
+
+test('fee helpers are the very functions the package root exports (S4; presence is also covered in constants.test.ts)', () => {
+  expect(pkg.inclusiveFeeSplit).toBe(inclusiveFeeSplit);
+  expect(pkg.cantonInclusiveFeeSplit).toBe(cantonInclusiveFeeSplit);
 });

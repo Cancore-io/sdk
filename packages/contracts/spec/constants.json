@@ -1,6 +1,6 @@
 {
   "$comment": "Public constants of CancoreRouter and AttestorSet, read by scripts/sync.mjs from their Solidity source at `commit` (the same checkout as the ABIs). Values are decimal strings for integers, the text for strings, the hash for keccak256 of a string literal. src/constants.test.ts holds the package's constants to this file (SDK-6). Not edited by hand.",
-  "commit": "4970669df9143bf519b148e389d9e3eb42229d53",
+  "commit": "4056e83cd84a94d9d00eb4486d5cabf55dd71741",
   "contracts": {
     "CancoreRouter": {
       "ORDER_TYPEHASH": {

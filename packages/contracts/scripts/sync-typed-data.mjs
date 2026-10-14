@@ -7,7 +7,7 @@
 // Separate from sync.mjs so a schema can be refreshed without re-syncing every
 // ABI; `npm run sync` runs both. Nothing here is edited by hand.
 //
-//   EVM_CONTRACTS_DIR=../evm-contracts npm run sync
+//   EVM_CONTRACTS_DIR=../evm-contracts node scripts/sync-typed-data.mjs
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

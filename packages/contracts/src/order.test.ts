@@ -1,4 +1,5 @@
 import { TypedDataEncoder, id } from 'ethers';
+import * as pkg from './index';
 import Ajv2020 from 'ajv/dist/2020';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -232,4 +233,10 @@ describe('twelve-field public acceptance', () => {
       expect(ajv.errors?.some((error) => error.instancePath === '/order/fillerId' || error.params.missingProperty === 'fillerId')).toBe(true);
     }
   });
+});
+
+test('order.ts helpers are the very functions the package root exports (S4; presence is also covered in constants.test.ts)', () => {
+  expect(pkg.hashOrder).toBe(hashOrder);
+  expect(pkg.sourceOrderHash).toBe(sourceOrderHash);
+  expect(pkg.buildCantonSourceOrder).toBe(buildCantonSourceOrder);
 });

@@ -386,13 +386,16 @@ source provenance.
 its `HEAD` as `CONTRACTS_RELEASE.commit` and refuses a directory that is not a checkout root or
 has uncommitted changes, so the release cannot name a commit its data did not come from.
 
-Before publishing rc.10, merge EVM [#108](https://github.com/Cancore-io/evm-contracts/pull/108)
-then [#114](https://github.com/Cancore-io/evm-contracts/pull/114), then SDK
-[#90](https://github.com/Cancore-io/sdk/pull/90) and [#91](https://github.com/Cancore-io/sdk/pull/91).
-After the EVM changes reach `main`, run the full sync from a clean checkout of
-that actual merged `main` commit, commit the resulting pins, and rerun the checks
-before publishing. This resync is mandatory for merge, squash and rebase alike:
-the current `4970669` pin describes an incoming review snapshot.
+EVM [#108](https://github.com/Cancore-io/evm-contracts/pull/108) and
+[#114](https://github.com/Cancore-io/evm-contracts/pull/114), and SDK
+[#90](https://github.com/Cancore-io/sdk/pull/90), are merged. This snapshot is fully
+synced from the clean, merged EVM `main` commit
+[`4056e83`](https://github.com/Cancore-io/evm-contracts/commit/4056e83cd84a94d9d00eb4486d5cabf55dd71741),
+as recorded by `CONTRACTS_RELEASE.commit` and `spec/constants.json`. Before publishing
+rc.10, merge SDK [#91](https://github.com/Cancore-io/sdk/pull/91) and pass its checks.
+For every subsequent upstream change, run the full sync from a clean checkout of the
+actual merged `main` commit, commit the resulting pins, and rerun the checks before
+publishing. This resync is mandatory for merge, squash and rebase alike.
 
 It reads `abi/*.json` except the two manifests (`bytecode-hashes.json`, `versions.json`) and
 `vendor/*.json` (the `.abi` field), and refuses to run when `spec/abi/` holds a snapshot the
