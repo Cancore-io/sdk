@@ -16,6 +16,7 @@ import { CANCORE_ROUTER_ABI, IBURN_MINT_ERC20_ABI, type FillProof, type FillTick
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
 import { decodeParams, encodeEventLog, encodeFunctionResult, selectorOf, topicOf, type AbiEntry } from '../chain/abi';
+import { BLOCKLIST_VIEWS } from '../chain/erc20';
 import { decodeSignedTransaction, type DecodedTransaction } from './transactions';
 import { recoverAddress } from '../signer';
 import { hashFillProof, hashOrder, hashTicket } from '../chain/hashes';
@@ -126,6 +127,16 @@ export class FakeToken {
   readonly balances = new Map<string, bigint>();
   /** `${owner}:${spender}` → allowance. */
   readonly allowances = new Map<string, bigint>();
+  /** The blocklist view this token has — USDC `isBlacklisted`, USDT `isBlackListed` — or none. */
+  blocklistView: 'isBlacklisted' | 'isBlackListed' | undefined;
+  readonly blocklisted = new Set<string>();
+
+  /** Gives the token `view` and blocklists `account` in it. */
+  block(account: Hex, view: 'isBlacklisted' | 'isBlackListed' = 'isBlacklisted'): this {
+    this.blocklistView = view;
+    this.blocklisted.add(lower(account));
+    return this;
+  }
 
   setBalance(owner: Hex, amount: bigint): this {
     this.balances.set(lower(owner), amount);
@@ -642,6 +653,11 @@ export class FakeChain implements EvmRpc {
       return encodeFunctionResult(entry, router.answer(entry, args, block));
     }
     const token = this.tokens.get(to);
+    const view = BLOCKLIST_VIEWS.find((v) => v.name === token?.blocklistView);
+    if (token && view && selector === selectorOf(view)) {
+      const [account] = decodeParams(view.inputs ?? [], `0x${data.slice(10)}`);
+      return encodeFunctionResult(view, [token.blocklisted.has(lower(String(account)))]);
+    }
     const entry = ERC20_FUNCTIONS.get(selector);
     if (token && entry) {
       const args = decodeParams(entry.inputs ?? [], `0x${data.slice(10)}`).map((a) => lower(String(a)));

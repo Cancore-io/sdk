@@ -50,6 +50,7 @@ export {
   assertSignature,
   recoverAddress,
   recoverTypedDataSigner,
+  signFillerKeyRegistration,
   signTypedDataChecked,
 } from './signer';
 export type { EvmTransactionRequest, FillSigner, QuoteSigner, StakingSigner, TransactionSigner, TypedDataSigner } from './signer';
