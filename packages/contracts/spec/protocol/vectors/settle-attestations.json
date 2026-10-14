@@ -38,9 +38,10 @@
         "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
         "createdAt": "1790000000",
         "fillDeadline": "1790000600",
-        "feeBps": "30"
+        "feeBps": "30",
+        "fillerId": "0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5"
       },
-      "digest": "0xa5599322a208b3f0fc64ff9c1bfcf28323a41d4928473fcfd40a31dd7adb4493",
+      "digest": "0x3ac49b1b7711077ea4936c316ee71e42189f3e9e14c066554afddcd3bb087fe7",
       "set": {
         "setId": 1,
         "threshold": 2,
@@ -55,12 +56,12 @@
         "id": "g-sa-1",
         "fillerId": "acme-markets",
         "sentAt": 1790000160000,
-        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
         "attempt": 0,
         "sourceChainId": "eip155:11155111",
         "proof": {
           "kind": 1,
-          "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
           "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
           "fillRef": "0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740",
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
@@ -75,29 +76,29 @@
         "signatures": [
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
-            "signature": "0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c"
+            "signature": "0x280a1c67572079434e423c51ee29272a0afb87bc485b3292192fb08242aeef687bcd1417aff35025ab16da3f43a73972585877b131a2b4dfe83d1ae4f5ef0fad1b"
           },
           {
             "signer": "0x6805cf7ce01e1c392d47806813503e367c932544",
-            "signature": "0x29a0148c3a5cdcadf63a4aaef763784751a3fa6064dc276330227729ddbc69015ea1efdab546cf1552ca726de9ccf4480e8d5ff3c3ed9b718c4964b5bc03ddcf1c"
+            "signature": "0x77cba7cedee87b88ac9d90ce0440bb55fa510930318e1a7cb9e2567f198208fb3784a5ca3343c3df2d7dfc29b0a2eae3b87b475893b4d134fa6ce9d8df2a88521b"
           }
         ],
         "setId": 1,
         "threshold": 2,
         "refundAfter": "1790002400",
-        "sig": "0x1d81fa8e56999d9bf8365f2aa18025291198a51b769dcddd7ebaaa3b61eca32f262f218caf2618bc8b351c65eca89417defeb5f3905f7327a68e9cdd1d29f99d1b"
+        "sig": "0x703468572b0f0d056f7c8547a2a70dbb76469888d23059926e906d23cc0468ac54cd96efe6a0f298750a225cd4a7e6acb511f144631076ed2825de0bf0e40b1e1b"
       },
       "rest": {
         "type": "settle.attestations",
         "id": "g-sa-2",
         "fillerId": "acme-markets",
         "sentAt": 1790000175000,
-        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
         "attempt": 0,
         "sourceChainId": "eip155:11155111",
         "proof": {
           "kind": 1,
-          "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
           "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
           "fillRef": "0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740",
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
@@ -112,23 +113,23 @@
         "signatures": [
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
-            "signature": "0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c"
+            "signature": "0x280a1c67572079434e423c51ee29272a0afb87bc485b3292192fb08242aeef687bcd1417aff35025ab16da3f43a73972585877b131a2b4dfe83d1ae4f5ef0fad1b"
           },
           {
             "signer": "0x6805cf7ce01e1c392d47806813503e367c932544",
-            "signature": "0x29a0148c3a5cdcadf63a4aaef763784751a3fa6064dc276330227729ddbc69015ea1efdab546cf1552ca726de9ccf4480e8d5ff3c3ed9b718c4964b5bc03ddcf1c"
+            "signature": "0x77cba7cedee87b88ac9d90ce0440bb55fa510930318e1a7cb9e2567f198208fb3784a5ca3343c3df2d7dfc29b0a2eae3b87b475893b4d134fa6ce9d8df2a88521b"
           }
         ],
         "setId": 1,
         "threshold": 2,
         "refundAfter": "1790002400",
-        "sig": "0x6dc2e1ea2f9f72f9ae7316e76771ed7df1e7d5cb5c2aa97acdabb7f250aa34a314a81e004b5c9ae50717da0b77c65887a647afef59729de20fd8c6ece5e619fd1c"
+        "sig": "0x8977095382f1cd56ce8be4a55ce65984d6021cc964fd5c906843e85d3755e6df401854129efafd16f13fc11cdad31f9d520f4059ddaecc0b2f145992c98711b01b"
       },
-      "payloadJcs": "{\"attempt\":0,\"orderHash\":\"0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6\",\"proof\":{\"amountDelivered\":\"999000000\",\"attempt\":0,\"destination\":\"0x0000000000000000000000000000000000000000000000000000000000066eee\",\"fillRef\":\"0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740\",\"filledAt\":\"1790000100\",\"fillerId\":\"0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5\",\"kind\":1,\"orderHash\":\"0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6\",\"outputAsset\":\"0x00000000000000000000000075faf114eafb1bdbe2f0316df893fd58ce46aa4d\",\"recipient\":\"0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e\",\"repayTo\":\"0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e\",\"setId\":1},\"refundAfter\":\"1790002400\",\"setId\":1,\"signatures\":[{\"signature\":\"0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c\",\"signer\":\"0x5e877d05b3bfef8b53a59dde76b911fb521415cd\"},{\"signature\":\"0x29a0148c3a5cdcadf63a4aaef763784751a3fa6064dc276330227729ddbc69015ea1efdab546cf1552ca726de9ccf4480e8d5ff3c3ed9b718c4964b5bc03ddcf1c\",\"signer\":\"0x6805cf7ce01e1c392d47806813503e367c932544\"}],\"sourceChainId\":\"eip155:11155111\",\"threshold\":2}",
-      "payloadHash": "0xd58d52823bdd00e87c15b849b80990e5b3729a00d86bd7ab4d17425bbdd777ff"
+      "payloadJcs": "{\"attempt\":0,\"orderHash\":\"0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b\",\"proof\":{\"amountDelivered\":\"999000000\",\"attempt\":0,\"destination\":\"0x0000000000000000000000000000000000000000000000000000000000066eee\",\"fillRef\":\"0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740\",\"filledAt\":\"1790000100\",\"fillerId\":\"0x112e2693409c427698100f54d0439fc3593fedb25221fe3a54c4823c0a0ee2d5\",\"kind\":1,\"orderHash\":\"0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b\",\"outputAsset\":\"0x00000000000000000000000075faf114eafb1bdbe2f0316df893fd58ce46aa4d\",\"recipient\":\"0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e\",\"repayTo\":\"0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e\",\"setId\":1},\"refundAfter\":\"1790002400\",\"setId\":1,\"signatures\":[{\"signature\":\"0x280a1c67572079434e423c51ee29272a0afb87bc485b3292192fb08242aeef687bcd1417aff35025ab16da3f43a73972585877b131a2b4dfe83d1ae4f5ef0fad1b\",\"signer\":\"0x5e877d05b3bfef8b53a59dde76b911fb521415cd\"},{\"signature\":\"0x77cba7cedee87b88ac9d90ce0440bb55fa510930318e1a7cb9e2567f198208fb3784a5ca3343c3df2d7dfc29b0a2eae3b87b475893b4d134fa6ce9d8df2a88521b\",\"signer\":\"0x6805cf7ce01e1c392d47806813503e367c932544\"}],\"sourceChainId\":\"eip155:11155111\",\"threshold\":2}",
+      "payloadHash": "0x47bd981d8ab7332b3aa5e8d3e2e96944415f0a7b34c4231723fa4555dd0ece87"
     },
     "canton": {
-      "note": "Canton source (spec/vectors/canton-order.json, mainnet origin id): 3 of 3, k = 2; each entry is a SigEntry of SwapIntent_SettleWithProof (pubKey, signature, without 0x on the ledger); repayTo = keccak256(utf8(partyId)) of the reserve filler party, the payee SwapIntent_SettleWithProof finds under fillerId; rsv: the 65-byte form of the same signatures, for cross-checks",
+      "note": "Canton source (spec/vectors/canton-order.json, mainnet origin id): 3 of 3, k = 2; each entry is a SigEntry of SwapIntent_SettleWithProof (pubKey, signature, without 0x on the ledger); repayTo = keccak256(utf8(partyId)) of the party of the filler acme, the payee SwapIntent_SettleWithProof finds under fillerId; rsv: the 65-byte form of the same signatures, for cross-checks",
       "domain": {
         "chainId": "9223372036854775809",
         "verifyingContract": "0x2f37b46ea93001829498b145985fb53028033701"
@@ -144,9 +145,10 @@
         "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
         "createdAt": "1789999400",
         "fillDeadline": "1790000000",
-        "feeBps": "30"
+        "feeBps": "30",
+        "fillerId": "0xe29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf"
       },
-      "digest": "0xcab8e14ac92a8ecf75288bf86dbe58e987775a4b8f796affa82ad7cdb5582ecd",
+      "digest": "0x1b4179e2cd9d9e94cedd917b287dfc889d3bf118ddf499f2eb2b70856b73da51",
       "set": {
         "setId": 3,
         "threshold": 2,
@@ -157,28 +159,28 @@
         ]
       },
       "rsv": [
-        "0xa7554c31e432a90ae7384910ae3f9128b41034769dd072319fcf8131bb8062b106ac576ed5858c881238334835d35f5aacb765b16842a3f926a540355997883e1c",
-        "0x35cdea625125d6b555d9ab2405afb085c1d9a65d780048e607ace4f78740f5fc7d4236924fd1e29bdc1576077c56da025ebfe63ed0c13bb720baa9ed4a444a931c",
-        "0xb4523bba8213ce348a7334680f4b3c54bfa3b815c907993415a43dc54452cb0e1fc0f93a9199dfe16f3aff06684146bf6f28ff1df5efea5d874b3d877051678b1b"
+        "0x48f14c61c1f52f541ab136ef92bbbcfca14dd0560db802feb510f7fce19477b2230a636d4d10c7e5c16b997394a8261185a899f0e8d8e5ffad14db4d4123dd161b",
+        "0xd4cb2f8a3084bf5749871a06fa543a9ba80889471eb2799ab4c4c08b31ee7e293e2b4af4e08f263168a046a4b6a6370398c7b03de7797f1a011910c0d784f4bc1c",
+        "0x0a300c658594fe20fb429c4f32e23e0b3e444a017f320622cb636792d6f13ca80cbd9bcb4ea5719f63f8a510e7e9f3d730a47691a7b6eb8e78ec787218997e021b"
       ],
       "ws": {
         "type": "settle.attestations",
         "id": "g-sa-3",
-        "fillerId": "cancore-reserve",
+        "fillerId": "acme",
         "sentAt": 1789999760000,
-        "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204",
+        "orderHash": "0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a",
         "attempt": 1,
         "sourceChainId": "canton:mainnet",
         "proof": {
           "kind": 1,
-          "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204",
+          "orderHash": "0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a",
           "destination": "0x0000000000000000000000000000000000000000000000000000000000000001",
           "fillRef": "0xfba8fd8a079872a9efe9646fcf34cfbbe8711ebd63665e8f2e0924949264c471",
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
           "outputAsset": "0x000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
           "amountDelivered": "1200250000",
           "filledAt": "1789999700",
-          "fillerId": "0xe3a8297b35498225c7903ca1a305ef64fcd783cf42c6c687b7b332c83d4dd837",
+          "fillerId": "0xe29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf",
           "repayTo": "0x4fa94ace29856f88ebea07ce6d18e21f52c60b4f66d147134c03c82b62957f9d",
           "attempt": 1,
           "setId": 3
@@ -187,42 +189,42 @@
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
             "pubKey": "0x3056301006072a8648ce3d020106052b8104000a034200046e4ce4835ad9bacce317724d5a85bfb72f73c0e0e0d9bb0ece443a23c405994056f031b0c83296033a1fd06fc21cbfdab8a821b09c0172ed64ef1b1ee3469be3",
-            "signature": "0x3045022100a7554c31e432a90ae7384910ae3f9128b41034769dd072319fcf8131bb8062b1022006ac576ed5858c881238334835d35f5aacb765b16842a3f926a540355997883e"
+            "signature": "0x3044022048f14c61c1f52f541ab136ef92bbbcfca14dd0560db802feb510f7fce19477b20220230a636d4d10c7e5c16b997394a8261185a899f0e8d8e5ffad14db4d4123dd16"
           },
           {
             "signer": "0x6805cf7ce01e1c392d47806813503e367c932544",
             "pubKey": "0x3056301006072a8648ce3d020106052b8104000a034200044f15010d9f9457006502d7cbe0cfc5ed67076c2d6f2d4d034b8412e1c07561c370356c5da930ec7a271c3c8d11d00a14e36a3cd3a2a4fad8c05b367357f15b7e",
-            "signature": "0x3044022035cdea625125d6b555d9ab2405afb085c1d9a65d780048e607ace4f78740f5fc02207d4236924fd1e29bdc1576077c56da025ebfe63ed0c13bb720baa9ed4a444a93"
+            "signature": "0x3045022100d4cb2f8a3084bf5749871a06fa543a9ba80889471eb2799ab4c4c08b31ee7e2902203e2b4af4e08f263168a046a4b6a6370398c7b03de7797f1a011910c0d784f4bc"
           },
           {
             "signer": "0x695ba7eb3c2a35bfc8d16562560a01ba1f9931d0",
             "pubKey": "0x3056301006072a8648ce3d020106052b8104000a0342000479d89465d2de95e32eb728c63c58f4554dbecd39dacf7b680a326672cbc601af2abda0dd84f5b8a4bf8efebcb5eb0d24643dc0cc32af3f76a6ef877b71e19e2b",
-            "signature": "0x3045022100b4523bba8213ce348a7334680f4b3c54bfa3b815c907993415a43dc54452cb0e02201fc0f93a9199dfe16f3aff06684146bf6f28ff1df5efea5d874b3d877051678b"
+            "signature": "0x304402200a300c658594fe20fb429c4f32e23e0b3e444a017f320622cb636792d6f13ca802200cbd9bcb4ea5719f63f8a510e7e9f3d730a47691a7b6eb8e78ec787218997e02"
           }
         ],
         "setId": 3,
         "threshold": 2,
         "refundAfter": "1790001800",
-        "sig": "0x31ef2d7b9fb10cc97215e965e9cc866e6e595ba92d9f630a00fbaedc3241399f0d65b0e75c81504ba0989eb4264e55e46b571bd7252f45699ab4792d40e5ca931b"
+        "sig": "0x481041cd0c07174f6db63b7acdc96a0bcc399de0be60df07faea3be6f0f09c83553a59f5e5443a6d7d1763789404d732a4b5cdc57758b729adf50245b8f96c2d1b"
       },
       "rest": {
         "type": "settle.attestations",
         "id": "g-sa-4",
-        "fillerId": "cancore-reserve",
+        "fillerId": "acme",
         "sentAt": 1789999790000,
-        "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204",
+        "orderHash": "0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a",
         "attempt": 1,
         "sourceChainId": "canton:mainnet",
         "proof": {
           "kind": 1,
-          "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204",
+          "orderHash": "0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a",
           "destination": "0x0000000000000000000000000000000000000000000000000000000000000001",
           "fillRef": "0xfba8fd8a079872a9efe9646fcf34cfbbe8711ebd63665e8f2e0924949264c471",
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
           "outputAsset": "0x000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
           "amountDelivered": "1200250000",
           "filledAt": "1789999700",
-          "fillerId": "0xe3a8297b35498225c7903ca1a305ef64fcd783cf42c6c687b7b332c83d4dd837",
+          "fillerId": "0xe29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf",
           "repayTo": "0x4fa94ace29856f88ebea07ce6d18e21f52c60b4f66d147134c03c82b62957f9d",
           "attempt": 1,
           "setId": 3
@@ -231,26 +233,26 @@
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
             "pubKey": "0x3056301006072a8648ce3d020106052b8104000a034200046e4ce4835ad9bacce317724d5a85bfb72f73c0e0e0d9bb0ece443a23c405994056f031b0c83296033a1fd06fc21cbfdab8a821b09c0172ed64ef1b1ee3469be3",
-            "signature": "0x3045022100a7554c31e432a90ae7384910ae3f9128b41034769dd072319fcf8131bb8062b1022006ac576ed5858c881238334835d35f5aacb765b16842a3f926a540355997883e"
+            "signature": "0x3044022048f14c61c1f52f541ab136ef92bbbcfca14dd0560db802feb510f7fce19477b20220230a636d4d10c7e5c16b997394a8261185a899f0e8d8e5ffad14db4d4123dd16"
           },
           {
             "signer": "0x6805cf7ce01e1c392d47806813503e367c932544",
             "pubKey": "0x3056301006072a8648ce3d020106052b8104000a034200044f15010d9f9457006502d7cbe0cfc5ed67076c2d6f2d4d034b8412e1c07561c370356c5da930ec7a271c3c8d11d00a14e36a3cd3a2a4fad8c05b367357f15b7e",
-            "signature": "0x3044022035cdea625125d6b555d9ab2405afb085c1d9a65d780048e607ace4f78740f5fc02207d4236924fd1e29bdc1576077c56da025ebfe63ed0c13bb720baa9ed4a444a93"
+            "signature": "0x3045022100d4cb2f8a3084bf5749871a06fa543a9ba80889471eb2799ab4c4c08b31ee7e2902203e2b4af4e08f263168a046a4b6a6370398c7b03de7797f1a011910c0d784f4bc"
           },
           {
             "signer": "0x695ba7eb3c2a35bfc8d16562560a01ba1f9931d0",
             "pubKey": "0x3056301006072a8648ce3d020106052b8104000a0342000479d89465d2de95e32eb728c63c58f4554dbecd39dacf7b680a326672cbc601af2abda0dd84f5b8a4bf8efebcb5eb0d24643dc0cc32af3f76a6ef877b71e19e2b",
-            "signature": "0x3045022100b4523bba8213ce348a7334680f4b3c54bfa3b815c907993415a43dc54452cb0e02201fc0f93a9199dfe16f3aff06684146bf6f28ff1df5efea5d874b3d877051678b"
+            "signature": "0x304402200a300c658594fe20fb429c4f32e23e0b3e444a017f320622cb636792d6f13ca802200cbd9bcb4ea5719f63f8a510e7e9f3d730a47691a7b6eb8e78ec787218997e02"
           }
         ],
         "setId": 3,
         "threshold": 2,
         "refundAfter": "1790001800",
-        "sig": "0x51da469cd8158b7952cf3cc1fad761ee722c2a32e31e81032106d41793f593e00eebfd8e50df66229d33b665e7c9d8a8e16f86e77f5344d53d8343d7904724d01c"
+        "sig": "0xe8eec55aed49975739f9d24c12c196658ce4580e963129534dcd7145d57da7116884381fd166eb20130e9f91faba164a9586ea08c92b146f3bd51c558e79fbc91c"
       },
-      "payloadJcs": "{\"attempt\":1,\"orderHash\":\"0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204\",\"proof\":{\"amountDelivered\":\"1200250000\",\"attempt\":1,\"destination\":\"0x0000000000000000000000000000000000000000000000000000000000000001\",\"fillRef\":\"0xfba8fd8a079872a9efe9646fcf34cfbbe8711ebd63665e8f2e0924949264c471\",\"filledAt\":\"1789999700\",\"fillerId\":\"0xe3a8297b35498225c7903ca1a305ef64fcd783cf42c6c687b7b332c83d4dd837\",\"kind\":1,\"orderHash\":\"0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204\",\"outputAsset\":\"0x000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48\",\"recipient\":\"0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e\",\"repayTo\":\"0x4fa94ace29856f88ebea07ce6d18e21f52c60b4f66d147134c03c82b62957f9d\",\"setId\":3},\"refundAfter\":\"1790001800\",\"setId\":3,\"signatures\":[{\"pubKey\":\"0x3056301006072a8648ce3d020106052b8104000a034200046e4ce4835ad9bacce317724d5a85bfb72f73c0e0e0d9bb0ece443a23c405994056f031b0c83296033a1fd06fc21cbfdab8a821b09c0172ed64ef1b1ee3469be3\",\"signature\":\"0x3045022100a7554c31e432a90ae7384910ae3f9128b41034769dd072319fcf8131bb8062b1022006ac576ed5858c881238334835d35f5aacb765b16842a3f926a540355997883e\",\"signer\":\"0x5e877d05b3bfef8b53a59dde76b911fb521415cd\"},{\"pubKey\":\"0x3056301006072a8648ce3d020106052b8104000a034200044f15010d9f9457006502d7cbe0cfc5ed67076c2d6f2d4d034b8412e1c07561c370356c5da930ec7a271c3c8d11d00a14e36a3cd3a2a4fad8c05b367357f15b7e\",\"signature\":\"0x3044022035cdea625125d6b555d9ab2405afb085c1d9a65d780048e607ace4f78740f5fc02207d4236924fd1e29bdc1576077c56da025ebfe63ed0c13bb720baa9ed4a444a93\",\"signer\":\"0x6805cf7ce01e1c392d47806813503e367c932544\"},{\"pubKey\":\"0x3056301006072a8648ce3d020106052b8104000a0342000479d89465d2de95e32eb728c63c58f4554dbecd39dacf7b680a326672cbc601af2abda0dd84f5b8a4bf8efebcb5eb0d24643dc0cc32af3f76a6ef877b71e19e2b\",\"signature\":\"0x3045022100b4523bba8213ce348a7334680f4b3c54bfa3b815c907993415a43dc54452cb0e02201fc0f93a9199dfe16f3aff06684146bf6f28ff1df5efea5d874b3d877051678b\",\"signer\":\"0x695ba7eb3c2a35bfc8d16562560a01ba1f9931d0\"}],\"sourceChainId\":\"canton:mainnet\",\"threshold\":2}",
-      "payloadHash": "0x7946457eb38a23a49cb5eebd90d7a22a9b95b63238612c8c2f644b8670555799"
+      "payloadJcs": "{\"attempt\":1,\"orderHash\":\"0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a\",\"proof\":{\"amountDelivered\":\"1200250000\",\"attempt\":1,\"destination\":\"0x0000000000000000000000000000000000000000000000000000000000000001\",\"fillRef\":\"0xfba8fd8a079872a9efe9646fcf34cfbbe8711ebd63665e8f2e0924949264c471\",\"filledAt\":\"1789999700\",\"fillerId\":\"0xe29dae06ef4c3e336b7538b6d4f52ca1ecec009b1df6fb501320e11b223aeeaf\",\"kind\":1,\"orderHash\":\"0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a\",\"outputAsset\":\"0x000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48\",\"recipient\":\"0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e\",\"repayTo\":\"0x4fa94ace29856f88ebea07ce6d18e21f52c60b4f66d147134c03c82b62957f9d\",\"setId\":3},\"refundAfter\":\"1790001800\",\"setId\":3,\"signatures\":[{\"pubKey\":\"0x3056301006072a8648ce3d020106052b8104000a034200046e4ce4835ad9bacce317724d5a85bfb72f73c0e0e0d9bb0ece443a23c405994056f031b0c83296033a1fd06fc21cbfdab8a821b09c0172ed64ef1b1ee3469be3\",\"signature\":\"0x3044022048f14c61c1f52f541ab136ef92bbbcfca14dd0560db802feb510f7fce19477b20220230a636d4d10c7e5c16b997394a8261185a899f0e8d8e5ffad14db4d4123dd16\",\"signer\":\"0x5e877d05b3bfef8b53a59dde76b911fb521415cd\"},{\"pubKey\":\"0x3056301006072a8648ce3d020106052b8104000a034200044f15010d9f9457006502d7cbe0cfc5ed67076c2d6f2d4d034b8412e1c07561c370356c5da930ec7a271c3c8d11d00a14e36a3cd3a2a4fad8c05b367357f15b7e\",\"signature\":\"0x3045022100d4cb2f8a3084bf5749871a06fa543a9ba80889471eb2799ab4c4c08b31ee7e2902203e2b4af4e08f263168a046a4b6a6370398c7b03de7797f1a011910c0d784f4bc\",\"signer\":\"0x6805cf7ce01e1c392d47806813503e367c932544\"},{\"pubKey\":\"0x3056301006072a8648ce3d020106052b8104000a0342000479d89465d2de95e32eb728c63c58f4554dbecd39dacf7b680a326672cbc601af2abda0dd84f5b8a4bf8efebcb5eb0d24643dc0cc32af3f76a6ef877b71e19e2b\",\"signature\":\"0x304402200a300c658594fe20fb429c4f32e23e0b3e444a017f320622cb636792d6f13ca802200cbd9bcb4ea5719f63f8a510e7e9f3d730a47691a7b6eb8e78ec787218997e02\",\"signer\":\"0x695ba7eb3c2a35bfc8d16562560a01ba1f9931d0\"}],\"sourceChainId\":\"canton:mainnet\",\"threshold\":2}",
+      "payloadHash": "0xd06813c76383390707c16c1d0441e13619478823f463ca6e0b510fcbbe590da6"
     }
   },
   "invalid": [
@@ -258,12 +260,12 @@
       "note": "fewer signatures than threshold",
       "rule": "threshold",
       "payload": {
-        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
         "attempt": 0,
         "sourceChainId": "eip155:11155111",
         "proof": {
           "kind": 1,
-          "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
           "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
           "fillRef": "0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740",
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
@@ -278,7 +280,7 @@
         "signatures": [
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
-            "signature": "0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c"
+            "signature": "0x280a1c67572079434e423c51ee29272a0afb87bc485b3292192fb08242aeef687bcd1417aff35025ab16da3f43a73972585877b131a2b4dfe83d1ae4f5ef0fad1b"
           }
         ],
         "setId": 1,
@@ -290,12 +292,12 @@
       "note": "signers not strictly ascending",
       "rule": "ascending",
       "payload": {
-        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
         "attempt": 0,
         "sourceChainId": "eip155:11155111",
         "proof": {
           "kind": 1,
-          "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
           "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
           "fillRef": "0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740",
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
@@ -310,11 +312,11 @@
         "signatures": [
           {
             "signer": "0x6805cf7ce01e1c392d47806813503e367c932544",
-            "signature": "0x29a0148c3a5cdcadf63a4aaef763784751a3fa6064dc276330227729ddbc69015ea1efdab546cf1552ca726de9ccf4480e8d5ff3c3ed9b718c4964b5bc03ddcf1c"
+            "signature": "0x77cba7cedee87b88ac9d90ce0440bb55fa510930318e1a7cb9e2567f198208fb3784a5ca3343c3df2d7dfc29b0a2eae3b87b475893b4d134fa6ce9d8df2a88521b"
           },
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
-            "signature": "0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c"
+            "signature": "0x280a1c67572079434e423c51ee29272a0afb87bc485b3292192fb08242aeef687bcd1417aff35025ab16da3f43a73972585877b131a2b4dfe83d1ae4f5ef0fad1b"
           }
         ],
         "setId": 1,
@@ -326,12 +328,12 @@
       "note": "one signer twice",
       "rule": "ascending",
       "payload": {
-        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
         "attempt": 0,
         "sourceChainId": "eip155:11155111",
         "proof": {
           "kind": 1,
-          "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
           "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
           "fillRef": "0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740",
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
@@ -346,11 +348,11 @@
         "signatures": [
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
-            "signature": "0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c"
+            "signature": "0x280a1c67572079434e423c51ee29272a0afb87bc485b3292192fb08242aeef687bcd1417aff35025ab16da3f43a73972585877b131a2b4dfe83d1ae4f5ef0fad1b"
           },
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
-            "signature": "0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c"
+            "signature": "0x280a1c67572079434e423c51ee29272a0afb87bc485b3292192fb08242aeef687bcd1417aff35025ab16da3f43a73972585877b131a2b4dfe83d1ae4f5ef0fad1b"
           }
         ],
         "setId": 1,
@@ -362,12 +364,12 @@
       "note": "attempt differs from proof.attempt",
       "rule": "attempt",
       "payload": {
-        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
         "attempt": 1,
         "sourceChainId": "eip155:11155111",
         "proof": {
           "kind": 1,
-          "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
           "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
           "fillRef": "0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740",
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
@@ -382,11 +384,11 @@
         "signatures": [
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
-            "signature": "0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c"
+            "signature": "0x280a1c67572079434e423c51ee29272a0afb87bc485b3292192fb08242aeef687bcd1417aff35025ab16da3f43a73972585877b131a2b4dfe83d1ae4f5ef0fad1b"
           },
           {
             "signer": "0x6805cf7ce01e1c392d47806813503e367c932544",
-            "signature": "0x29a0148c3a5cdcadf63a4aaef763784751a3fa6064dc276330227729ddbc69015ea1efdab546cf1552ca726de9ccf4480e8d5ff3c3ed9b718c4964b5bc03ddcf1c"
+            "signature": "0x77cba7cedee87b88ac9d90ce0440bb55fa510930318e1a7cb9e2567f198208fb3784a5ca3343c3df2d7dfc29b0a2eae3b87b475893b4d134fa6ce9d8df2a88521b"
           }
         ],
         "setId": 1,
@@ -398,12 +400,12 @@
       "note": "setId differs from proof.setId",
       "rule": "setId",
       "payload": {
-        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
         "attempt": 0,
         "sourceChainId": "eip155:11155111",
         "proof": {
           "kind": 1,
-          "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
           "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
           "fillRef": "0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740",
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
@@ -418,11 +420,11 @@
         "signatures": [
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
-            "signature": "0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c"
+            "signature": "0x280a1c67572079434e423c51ee29272a0afb87bc485b3292192fb08242aeef687bcd1417aff35025ab16da3f43a73972585877b131a2b4dfe83d1ae4f5ef0fad1b"
           },
           {
             "signer": "0x6805cf7ce01e1c392d47806813503e367c932544",
-            "signature": "0x29a0148c3a5cdcadf63a4aaef763784751a3fa6064dc276330227729ddbc69015ea1efdab546cf1552ca726de9ccf4480e8d5ff3c3ed9b718c4964b5bc03ddcf1c"
+            "signature": "0x77cba7cedee87b88ac9d90ce0440bb55fa510930318e1a7cb9e2567f198208fb3784a5ca3343c3df2d7dfc29b0a2eae3b87b475893b4d134fa6ce9d8df2a88521b"
           }
         ],
         "setId": 2,
@@ -434,12 +436,12 @@
       "note": "orderHash differs from proof.orderHash",
       "rule": "orderHash",
       "payload": {
-        "orderHash": "0x770f1ebba8ab5b96e3efbed39c0f630d56f934f9f232771abaccdb0cf17ca204",
+        "orderHash": "0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a",
         "attempt": 0,
         "sourceChainId": "eip155:11155111",
         "proof": {
           "kind": 1,
-          "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
           "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
           "fillRef": "0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740",
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
@@ -454,11 +456,11 @@
         "signatures": [
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
-            "signature": "0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c"
+            "signature": "0x280a1c67572079434e423c51ee29272a0afb87bc485b3292192fb08242aeef687bcd1417aff35025ab16da3f43a73972585877b131a2b4dfe83d1ae4f5ef0fad1b"
           },
           {
             "signer": "0x6805cf7ce01e1c392d47806813503e367c932544",
-            "signature": "0x29a0148c3a5cdcadf63a4aaef763784751a3fa6064dc276330227729ddbc69015ea1efdab546cf1552ca726de9ccf4480e8d5ff3c3ed9b718c4964b5bc03ddcf1c"
+            "signature": "0x77cba7cedee87b88ac9d90ce0440bb55fa510930318e1a7cb9e2567f198208fb3784a5ca3343c3df2d7dfc29b0a2eae3b87b475893b4d134fa6ce9d8df2a88521b"
           }
         ],
         "setId": 1,
@@ -470,12 +472,12 @@
       "note": "a valid signature by 0xd0688bd789e97cf1d0e7faa29d8c3be5ad085a38, which is not a member of set 1",
       "rule": "member",
       "payload": {
-        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
         "attempt": 0,
         "sourceChainId": "eip155:11155111",
         "proof": {
           "kind": 1,
-          "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
           "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
           "fillRef": "0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740",
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
@@ -490,11 +492,11 @@
         "signatures": [
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
-            "signature": "0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c"
+            "signature": "0x280a1c67572079434e423c51ee29272a0afb87bc485b3292192fb08242aeef687bcd1417aff35025ab16da3f43a73972585877b131a2b4dfe83d1ae4f5ef0fad1b"
           },
           {
             "signer": "0xd0688bd789e97cf1d0e7faa29d8c3be5ad085a38",
-            "signature": "0x1430bc823a95b45110e05e5cf78e23154159ccb0b7b7ddf1f4cea48f11e344eb6302e25f1c668ce648edf35bc4659be1ebfec390bee3812067739bf3b28dc3551c"
+            "signature": "0xb683be15d9b44cc0dd103aa1227772693e28679d85fd940c7a2c59e041a30206752655d50349b5775a93e852cd5fd2e8b9028dc752f9d622a0b184bcbacdb30c1b"
           }
         ],
         "setId": 1,
@@ -506,12 +508,12 @@
       "note": "amountDelivered raised after signing: the signatures no longer recover to their signers",
       "rule": "signature",
       "payload": {
-        "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
         "attempt": 0,
         "sourceChainId": "eip155:11155111",
         "proof": {
           "kind": 1,
-          "orderHash": "0x585ec61a0813109803da9d47aea37a165f7df1371553f1e4ea8c139cf74058a6",
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
           "destination": "0x0000000000000000000000000000000000000000000000000000000000066eee",
           "fillRef": "0xfc4cba975d6b96ed2be00adae2d970f61413b963279089dcfc6402ddccc42740",
           "recipient": "0x000000000000000000000000742d35cc6634c0532925a3b844bc454e4438f44e",
@@ -526,11 +528,11 @@
         "signatures": [
           {
             "signer": "0x5e877d05b3bfef8b53a59dde76b911fb521415cd",
-            "signature": "0x4efcf401d43002b059a1bf5f12a1a6c868a1917a533cb2df79022845bd8704da1d5a6a67e206d057e29bd06efc19fef0afcc0ece462e732268da4cedb57e4c321c"
+            "signature": "0x280a1c67572079434e423c51ee29272a0afb87bc485b3292192fb08242aeef687bcd1417aff35025ab16da3f43a73972585877b131a2b4dfe83d1ae4f5ef0fad1b"
           },
           {
             "signer": "0x6805cf7ce01e1c392d47806813503e367c932544",
-            "signature": "0x29a0148c3a5cdcadf63a4aaef763784751a3fa6064dc276330227729ddbc69015ea1efdab546cf1552ca726de9ccf4480e8d5ff3c3ed9b718c4964b5bc03ddcf1c"
+            "signature": "0x77cba7cedee87b88ac9d90ce0440bb55fa510930318e1a7cb9e2567f198208fb3784a5ca3343c3df2d7dfc29b0a2eae3b87b475893b4d134fa6ce9d8df2a88521b"
           }
         ],
         "setId": 1,

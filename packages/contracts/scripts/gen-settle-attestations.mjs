@@ -80,6 +80,18 @@ function signFrame(unsigned) {
 const orderVectors = read('typed-data', 'Order.json').vectors;
 const cantonOrder = orderVectors[0];
 const evmOrder = orderVectors[1];
+/**
+ * The filler of each fixture order, by name: the frame is addressed to it and the
+ * proof names it (CancoreRouter WrongFiller, Daml "Proof fillerId differs"). The
+ * order's fillerId is the source of truth; a name that no longer hashes to it is
+ * a stale vector, so refuse to write one.
+ */
+const fillerOf = (order, name) => {
+  if (utf8Hash(name) !== order.message.fillerId) throw new Error(`filler ${name}: keccak256 ${utf8Hash(name)} is not the order fillerId ${order.message.fillerId}`);
+  return name;
+};
+const EVM_FILLER = fillerOf(evmOrder, 'acme-markets');
+const CANTON_FILLER = fillerOf(cantonOrder, 'acme');
 const EVM_DOMAIN = { name: 'CancoreRouter', version: '1', chainId: evmOrder.chainId, verifyingContract: evmOrder.verifyingContract };
 const CANTON_DOMAIN = { name: 'CancoreRouter', version: '1', chainId: cantonOrder.chainId, verifyingContract: cantonOrder.verifyingContract };
 
@@ -108,8 +120,8 @@ function caseOf({ note, sourceChainId, domain, order, proof, threshold, signers,
 }
 
 const ACME_PAYOUT = '0x742d35cc6634c0532925a3b844bc454e4438f44e';
-/** The reserve filler's party on the Canton source: its keccak256 is the Canton-source repayTo (protocol §3.15). */
-const RESERVE_PARTY = `cancore-reserve::1220${'5e'.repeat(32)}`;
+/** The party of the filler acme on the Canton source: its keccak256 is the Canton-source repayTo (protocol §3.15). */
+const CANTON_FILLER_PARTY = `cancore-reserve::1220${'5e'.repeat(32)}`;
 const evmProof = {
   kind: 1,
   orderHash: evmOrder.digest,
@@ -119,7 +131,7 @@ const evmProof = {
   outputAsset: evmOrder.message.outputAsset,
   amountDelivered: evmOrder.message.minReceived,
   filledAt: '1790000100',
-  fillerId: utf8Hash('acme-markets'),
+  fillerId: utf8Hash(EVM_FILLER),
   repayTo: zeroPadValue(ACME_PAYOUT, 32),
   attempt: 0,
   setId: 1,
@@ -136,7 +148,7 @@ const evm = caseOf({
   refundAfter: '1790002400',
   sentAt: { ws: 1790000160000, rest: 1790000175000 },
   ids: { ws: 'g-sa-1', rest: 'g-sa-2' },
-  fillerId: 'acme-markets',
+  fillerId: EVM_FILLER,
 });
 const cantonProof = {
   kind: 1,
@@ -147,13 +159,13 @@ const cantonProof = {
   outputAsset: cantonOrder.message.outputAsset,
   amountDelivered: cantonOrder.message.minReceived,
   filledAt: '1789999700',
-  fillerId: utf8Hash('cancore-reserve'),
-  repayTo: utf8Hash(RESERVE_PARTY),
+  fillerId: utf8Hash(CANTON_FILLER),
+  repayTo: utf8Hash(CANTON_FILLER_PARTY),
   attempt: 1,
   setId: 3,
 };
 const canton = caseOf({
-  note: 'Canton source (spec/vectors/canton-order.json, mainnet origin id): 3 of 3, k = 2; each entry is a SigEntry of SwapIntent_SettleWithProof (pubKey, signature, without 0x on the ledger); repayTo = keccak256(utf8(partyId)) of the reserve filler party, the payee SwapIntent_SettleWithProof finds under fillerId; rsv: the 65-byte form of the same signatures, for cross-checks',
+  note: 'Canton source (spec/vectors/canton-order.json, mainnet origin id): 3 of 3, k = 2; each entry is a SigEntry of SwapIntent_SettleWithProof (pubKey, signature, without 0x on the ledger); repayTo = keccak256(utf8(partyId)) of the party of the filler acme, the payee SwapIntent_SettleWithProof finds under fillerId; rsv: the 65-byte form of the same signatures, for cross-checks',
   sourceChainId: 'canton:mainnet',
   domain: CANTON_DOMAIN,
   order: cantonOrder.message,
@@ -164,7 +176,7 @@ const canton = caseOf({
   refundAfter: '1790001800',
   sentAt: { ws: 1789999760000, rest: 1789999790000 },
   ids: { ws: 'g-sa-3', rest: 'g-sa-4' },
-  fillerId: 'cancore-reserve',
+  fillerId: CANTON_FILLER,
 });
 
 // Schema-valid payloads a receiver MUST refuse (T-7): each breaks one rule the schema cannot express.

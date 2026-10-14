@@ -455,6 +455,12 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.13` — `spec/protocol/vectors/settle-attestations.json` rebuilt on the 12-field
+  `Order` (CAN-2643): in both cases `proof.orderHash` is the hash of `order`, `proof.fillerId` is
+  `order.fillerId` and the frame is addressed to that filler (the Canton case: `acme`, was
+  `cancore-reserve`). `npm run vectors` now runs `gen-settle-attestations.mjs`, so CI catches a
+  stale copy. The `settle.attestations` examples in `messages.json` and `asyncapi.json` follow.
+  No API change.
 - `0.2.0-rc.12` — Canton operations of the filler party through Cancore (CAN-2649, operator
   decision T-1). Additive.
   - Frames `canton.prepare`, `canton.prepared`, `canton.submit`, `canton.submitted` (27 frame
