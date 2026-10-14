@@ -404,6 +404,11 @@ export const CANCORE_ROUTER_ABI = [
   },
   {
     "inputs": [],
+    "name": "ZeroFillerId",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "ZeroMinReceived",
     "type": "error"
   },
