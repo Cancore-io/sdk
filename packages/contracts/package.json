@@ -1,6 +1,6 @@
 {
   "name": "@cancore/contracts",
-  "version": "0.2.0-rc.12",
+  "version": "0.2.0-rc.13",
   "type": "module",
   "description": "The Cancore EVM contracts as data: the ABIs of the Cancore EVM contracts and their custom-error selectors, the EIP-712 FeeClaim voucher and FillProof, the network registry; and the filler protocol v1: EIP-712 types and domains, hashing helpers, JSON Schemas, AsyncAPI, golden vectors.",
   "exports": {
@@ -43,7 +43,7 @@
     "prepack": "tsup --silent",
     "prepublishOnly": "npm run build",
     "sync": "node scripts/sync.mjs && node scripts/sync-typed-data.mjs",
-    "vectors": "node scripts/gen-protocol-vectors.mjs && node scripts/gen-protocol-docs.mjs && node scripts/gen-router-vectors.mjs"
+    "vectors": "node scripts/gen-protocol-vectors.mjs && node scripts/gen-settle-attestations.mjs && node scripts/gen-protocol-docs.mjs && node scripts/gen-router-vectors.mjs"
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0"
