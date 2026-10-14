@@ -310,12 +310,12 @@ The API counts an owner and their bots as one person.
 
 | Rule | What you see |
 | --- | --- |
-| **No trading inside the family.** An owner and a bot, or two bots of one owner, cannot be the two sides of an order. | Taking the order is refused with `403`, `Self-trade is not allowed: the order initiator and acceptor belong to the same person.` |
+| **No trading inside the family.** An owner and a bot, or two bots of one owner, cannot be the two sides of an order, nor of a swap started by a proposal with no accepted order. | Taking the order is refused with `403`, `Self-trade is not allowed: the order initiator and acceptor belong to the same person.` Making or accepting such a proposal is refused with `403`, `Self-trade is not allowed: both sides of this trade belong to the same person.` |
 | **One request pool for all bots of one owner**, by default the size of one account's allowance. Each bot is guaranteed a fifth of it, so one bot cannot starve the others. The owner's own account is not part of the pool. | `429`, refused only when the pool is spent **and** this bot is past its share. The body carries `retryAfter` in seconds. |
 | **Order caps count the family together.** Where a stand caps orders placed per hour, or orders accepted per 24 hours, the owner and all their bots share one allowance. | `429`, `Rate limit: max N orders per hour per user` or `Rate limit: max N accepted orders per 24 hours per user` |
 | **The ordinary order guards** apply to a bot as to anyone: a minimum and a maximum order value, and a price too far from the market. | `400` when placing; the message names the guard. |
 | **Terms.** No orders until the account has accepted the stand's documents. | `403`, `The platform documents must be accepted before trading.` |
-| **Stopped by its owner.** The owner stopped the bot in the wallet. Its open orders were cancelled; a trade already under way runs to its end; `send` still works, so the bot can be emptied. | Placing or taking an order is refused with `403`, `errorCode: ACCOUNT_STOPPED`, until the owner resumes the bot. |
+| **Stopped by its owner.** The owner stopped the bot in the wallet. Its open orders were cancelled; a trade already under way runs to its end; `send` still works, so the bot can be emptied. | Placing or taking an order, and starting a swap by a proposal with no accepted order, is refused with `403`, `errorCode: ACCOUNT_STOPPED`, until the owner resumes the bot. |
 
 How these reach your code:
 
@@ -349,9 +349,8 @@ for DvP, an expired trade and how to release its funds) is in the
   withdraw the rest.
 - **Leaked, or in doubt: empty the bot at once** ([section 9](#9-withdraw-to-the-owner)), then
   stop using it. The key cannot be replaced or revoked, and no owner route moves a bot's funds.
-  Stopping the bot in the wallet ends its order trading, not its sends — and not yet a direct HTLC
-  proposal without an order ([CAN-2450](https://linear.app/cancore/issue/CAN-2450)): whoever holds
-  the key can still move what is on it. The wallet shows the same key again under **Show key** if
+  Stopping the bot in the wallet ends its trading — orders, and swaps started by a proposal with no
+  accepted order — but not its sends: whoever holds the key can still move what is on it. The wallet shows the same key again under **Show key** if
   you need it to withdraw.
 - **The key depends only on the phrase and the bot's number.** If you use one recovery phrase on
   two stands, the bot at index N has the same key on both: treat a key exposed on dev as exposed
