@@ -2,7 +2,7 @@ import Ajv2020 from 'ajv/dist/2020';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  DECLINE_REASONS, DRAW_CLOSED_BY, ERROR_CODES, ERROR_HTTP_STATUS, EXEMPT_REASONS, EXPIRED_RESULTS, PENALTY_STEPS, QUOTE_ACK_STATUSES,
+  CANTON_LEG_KINDS, CANTON_OPS, CANTON_REGISTRY_STATES, CANTON_TRANSFER_OUTCOMES, DECLINE_REASONS, DRAW_CLOSED_BY, ERROR_CODES, ERROR_HTTP_STATUS, EXEMPT_REASONS, EXPIRED_RESULTS, PENALTY_STEPS, QUOTE_ACK_STATUSES,
   QUOTE_FINAL_STATUSES, TICKET_LIST_STATUSES, TICKET_REFUSED_REASONS,
 } from './messages';
 import { MESSAGE_DIRECTIONS, messageSchemaRef, PROTOCOL_SCHEMAS, REST_ENDPOINTS, REST_ONLY_TYPES, SCHEMA_VOCABULARY } from './schemas';
@@ -24,10 +24,12 @@ const f2sExample = (type: string): Frame => structuredClone(examples[type]!.find
 const OPEN = { $ref: 'messages.schema.json#/$defs/futureEnumValue' };
 const OPEN_LOCAL = { $ref: '#/$defs/futureEnumValue' };
 const OPEN_FORM = { type: 'string', pattern: '^[a-z][a-z0-9-]*$' };
+/** A Canton op added within v1: dotted lowercase, like the known ones. */
+const OPEN_OP = { type: 'string', pattern: '^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$' };
 /** The known values of an open enum: `anyOf: [{enum: known}, futureEnumValue]`. */
 const known = (node: unknown) => {
   const [head, open] = (node as { anyOf: [{ enum: unknown[] }, unknown] }).anyOf;
-  expect([OPEN, OPEN_LOCAL, OPEN_FORM]).toContainEqual(open);
+  expect([OPEN, OPEN_LOCAL, OPEN_FORM, OPEN_OP]).toContainEqual(open);
   return head.enum;
 };
 
@@ -39,8 +41,8 @@ test('the three schemas compile in strict mode, every $def of every one', () => 
   }
 });
 
-test('23 frame types, each with a direction and at least one valid example', () => {
-  expect(Object.keys(MESSAGE_DIRECTIONS)).toHaveLength(23);
+test('27 frame types, each with a direction and at least one valid example', () => {
+  expect(Object.keys(MESSAGE_DIRECTIONS)).toHaveLength(27);
   expect(MESSAGE_DIRECTIONS['ticket.offer']).toBe('S2F');
   expect(MESSAGE_DIRECTIONS['ticket.intent']).toBe('F2S');
   expect(MESSAGE_DIRECTIONS.ping).toBe('both');
@@ -256,6 +258,11 @@ test('the enums of the schemas are the exported constants', () => {
   expect(known((m['ticket.issued']!.properties as Defs).form)).toEqual(['evm', 'canton']);
   expect((r.ticketListQuery!.properties as Defs).status!.enum).toEqual([...TICKET_LIST_STATUSES]);
   expect((PROTOCOL_SCHEMAS.rest as Record<string, unknown>)['x-error-status']).toEqual(ERROR_HTTP_STATUS);
+  expect(known(m.cantonOp)).toEqual([...CANTON_OPS]);
+  const transferResult = ((m['canton.submitted']!.allOf as Defs[]).find((b) => JSON.stringify(b).includes('"holdings.transfer"'))!.then as Defs);
+  expect(known(((transferResult.properties as Defs).result!.properties as Defs).outcome)).toEqual([...CANTON_TRANSFER_OUTCOMES]);
+  expect([(m.cantonLegTransaction!.properties as Defs).kind, (m.cantonLegTopology!.properties as Defs).kind]).toEqual(CANTON_LEG_KINDS.map((k) => ({ const: k })));
+  expect(known(((r.cantonParty!.properties as Defs).registry!.properties as Defs).state)).toEqual([...CANTON_REGISTRY_STATES]);
 });
 
 // A closed enum is allowed only where the gateway owns the value (a request filter); every other enum is open (V-2).
@@ -281,7 +288,7 @@ test('V-2: no object is closed, and no enum outside the allow-list is closed', (
 describe('REST', () => {
   const rest = (def: string, value: unknown) => ajv.validate(`https://cancore.io/schemas/filler-protocol/v1/rest.schema.json#/$defs/${def}`, value);
   test('every endpoint names schemas that resolve', () => {
-    expect(REST_ENDPOINTS).toHaveLength(14);
+    expect(REST_ENDPOINTS).toHaveLength(19);
     const base = 'https://cancore.io/schemas/filler-protocol/v1/';
     for (const e of REST_ENDPOINTS) {
       for (const ref of [e.request, e.query, e.response, e.errorBody].filter((x): x is string => !!x)) {
@@ -291,6 +298,7 @@ describe('REST', () => {
     }
     expect(REST_ENDPOINTS.find((e) => e.path === '/v1/gateway')?.auth).toBe('none');
     expect(REST_ENDPOINTS.filter((e) => e.path.startsWith('/v1/filler/tickets')).every((e) => e.auth === 'bearer')).toBe(true);
+    expect(REST_ENDPOINTS.filter((e) => e.path.startsWith('/v1/filler/canton/')).every((e) => e.auth === 'bearer' && !e.errorBody)).toBe(true);
   });
   test('the login is REST only: the challenge is asked for by fillerId; refusals before a signature check are unsigned', () => {
     expect([...REST_ONLY_TYPES].sort()).toEqual(['auth.challenge', 'auth.response']);
@@ -320,5 +328,108 @@ describe('REST', () => {
     expect(rest('ticketListQuery', { status: 'OFFERED', limit: '50' })).toBe(true);
     expect(rest('ticketListQuery', { status: 'EXPIRED' })).toBe(false); // a request filter: the gateway owns the list
     expect(rest('quoteRecord', { quote: example('quote'), ack: example('quote.ack'), status: 'EXPIRED_LATER' })).toBe(true);
+  });
+});
+
+describe('Canton operations of the filler party (§3.19)', () => {
+  const rest = (def: string, value: unknown) => ajv.validate(`https://cancore.io/schemas/filler-protocol/v1/rest.schema.json#/$defs/${def}`, value);
+  const ORDER_HASH = `0x${'ab'.repeat(32)}`;
+
+  test('canton.prepare: params are required by op; an op added within v1 passes with any params (V-2)', () => {
+    expect(errorsOf('canton.prepare', example('canton.prepare', 2))).toEqual([]);
+    expect(errorsOf('canton.prepare', { ...example('canton.prepare', 2), params: { orderHash: ORDER_HASH } })).not.toEqual([]);
+    expect(errorsOf('canton.prepare', { ...example('canton.prepare', 0), params: { publicKey: `0x${'11'.repeat(33)}` } })).not.toEqual([]);
+    expect(errorsOf('canton.prepare', { ...example('canton.prepare', 0), op: 'party.rotate-key', params: {} })).toEqual([]);
+    expect(errorsOf('canton.prepare', { ...example('canton.prepare', 0), op: 'PARTY_ALLOCATE' })).not.toEqual([]);
+    const { msgSig: _, ...unsigned } = example('canton.prepare', 1);
+    expect(errorsOf('canton.prepare', unsigned)).not.toEqual([]);
+  });
+
+  test('canton.prepared: every leg carries what it is over, the summary is checked by op', () => {
+    const prepared = example('canton.prepared', 1);
+    const leg = (prepared.legs as Frame[])[0]!;
+    expect(errorsOf('canton.prepared', prepared)).toEqual([]);
+    expect(errorsOf('canton.prepared', { ...prepared, legs: [] })).not.toEqual([]);
+    expect(errorsOf('canton.prepared', { ...prepared, legs: [{ ...leg, hash: '0xab' }] })).not.toEqual([]);
+    expect(errorsOf('canton.prepared', { ...prepared, summary: { orderHash: ORDER_HASH } })).not.toEqual([]);
+  });
+
+  test('a transaction leg cannot be signed blind: the prepared transaction and its hashing scheme are required', () => {
+    const prepared = example('canton.prepared', 1);
+    const { preparedTransaction: _p, ...noTx } = (prepared.legs as Frame[])[0]!;
+    const { hashingSchemeVersion: _h, ...noScheme } = (prepared.legs as Frame[])[0]!;
+    expect(errorsOf('canton.prepared', { ...prepared, legs: [noTx] })).not.toEqual([]);
+    expect(errorsOf('canton.prepared', { ...prepared, legs: [noScheme] })).not.toEqual([]);
+  });
+
+  test('a topology leg comes with party.allocate only, with the transactions its multihash is over', () => {
+    const allocate = example('canton.prepared', 0);
+    const topology = (allocate.legs as Frame[])[0]!;
+    expect(errorsOf('canton.prepared', allocate)).toEqual([]);
+    const { topologyTransactions: _t, ...bare } = topology;
+    expect(errorsOf('canton.prepared', { ...allocate, legs: [bare] })).not.toEqual([]);
+    // slipped into another op beside its transaction, or alone, it does not pass
+    const fill = example('canton.prepared', 1);
+    expect(errorsOf('canton.prepared', { ...fill, legs: [...(fill.legs as Frame[]), topology] })).not.toEqual([]);
+    expect(errorsOf('canton.prepared', { ...fill, legs: [topology] })).not.toEqual([]);
+    // and an op added within v1 prepares transactions only
+    expect(errorsOf('canton.prepared', { ...fill, op: 'party.rotate-key', summary: {}, legs: [topology] })).not.toEqual([]);
+  });
+
+  test('the kind of a leg is closed: an unknown kind is refused, not signed', () => {
+    const fill = example('canton.prepared', 1);
+    const leg = (fill.legs as Frame[])[0]!;
+    expect(errorsOf('canton.prepared', { ...fill, legs: [{ ...leg, kind: 'transaction-v2' }] })).not.toEqual([]);
+    expect(errorsOf('canton.prepared', { ...example('canton.prepared', 0), legs: [{ ...leg, kind: 'multisig' }] })).not.toEqual([]);
+  });
+
+  test('canton.submit: Ed25519 signatures, one per leg; canton.submitted names what was created', () => {
+    const submit = example('canton.submit');
+    expect(errorsOf('canton.submit', submit)).toEqual([]);
+    expect(errorsOf('canton.submit', { ...submit, signatures: [{ legId: 'delivery-fill-0', signature: `0x${'00'.repeat(64)}1b` }] })).not.toEqual([]);
+    expect(errorsOf('canton.submit', { ...submit, signatures: [] })).not.toEqual([]);
+    expect(errorsOf('canton.submitted', example('canton.submitted'))).toEqual([]);
+    expect(errorsOf('canton.submitted', { ...example('canton.submitted'), result: {} })).not.toEqual([]);
+    expect(errorsOf('canton.submitted', example('canton.submitted', 1))).toEqual([]);
+  });
+
+  test('holdings.transfer: asset, amount and receiver required; the summary names the holdings spent', () => {
+    const t = example('canton.prepare', 4);
+    expect(errorsOf('canton.prepare', t)).toEqual([]);
+    expect(errorsOf('canton.prepare', { ...t, params: { asset: (t.params as Frame).asset, amount: '1' } })).not.toEqual([]);
+    expect(errorsOf('canton.prepare', { ...t, params: { ...(t.params as Frame), amount: '-1' } })).not.toEqual([]);
+    expect(errorsOf('canton.submitted', example('canton.submitted', 2))).toEqual([]);
+    expect(errorsOf('canton.submitted', { ...example('canton.submitted', 2), result: {} })).not.toEqual([]);
+  });
+
+  test('party.allocate states the hosting the node checks: the Cancore participant, Confirmation, threshold 1', () => {
+    const allocate = example('canton.prepared', 0);
+    const summary = allocate.summary as Frame;
+    expect(errorsOf('canton.prepared', { ...allocate, summary: { ...summary, hosting: { ...(summary.hosting as Frame), permission: 'SUBMISSION' } } })).not.toEqual([]);
+    expect(errorsOf('canton.prepared', { ...allocate, summary: { ...summary, hosting: { ...(summary.hosting as Frame), threshold: 2 } } })).not.toEqual([]);
+    const { hosting: _h, ...noHosting } = summary;
+    expect(errorsOf('canton.prepared', { ...allocate, summary: noHosting })).not.toEqual([]);
+  });
+
+  test('the Canton refusals have their HTTP status', () => {
+    expect(ERROR_HTTP_STATUS.CANTON_NOT_READY).toBe(409);
+    expect(ERROR_HTTP_STATUS.CANTON_REFUSED).toBe(422);
+    expect(ERROR_HTTP_STATUS.CANTON_UNAVAILABLE).toBe(503);
+    expect(ERROR_HTTP_STATUS.OPERATION_EXPIRED).toBe(410);
+  });
+
+  test('reads: the party, its holdings and delivery orders', () => {
+    expect(rest('cantonParty', { party: null, publicKey: null, registry: { state: 'NONE', proposalCid: null, entryCid: null } })).toBe(true);
+    expect(rest('cantonParty', { party: 'acme::1220ab', publicKey: `0x${'11'.repeat(32)}`, registry: { state: 'ACTIVE', proposalCid: null, entryCid: '00ef' } })).toBe(true);
+    expect(rest('cantonParty', { party: 'acme::1220ab', publicKey: null, registry: { state: 'active', proposalCid: null, entryCid: null } })).toBe(false);
+    const cnrx = { admin: 'cancore-registry::1220aa', id: 'CNRX' };
+    expect(rest('cantonHoldingList', { items: [{ contractId: '00aa', asset: cnrx, amount: '1000.5', locked: false }], nextCursor: null })).toBe(true);
+    expect(rest('cantonHoldingList', { items: [{ contractId: '00aa', asset: cnrx, amount: '-1', locked: false }], nextCursor: null })).toBe(false);
+    const order = {
+      deliveryOrderCid: '00bb', orderHash: ORDER_HASH, attempt: 0, asset: cnrx, amount: '999.0', recipient: 'alice::1220ff',
+      repayTo: `0x${'cd'.repeat(32)}`, validUntil: '1790000400',
+    };
+    expect(rest('cantonDeliveryOrderList', { items: [order], nextCursor: 'c-2' })).toBe(true);
+    expect(rest('cantonDeliveryOrderList', { items: [{ ...order, validUntil: 1790000400 }], nextCursor: null })).toBe(false);
   });
 });

@@ -72,7 +72,7 @@
     },
     "errorCode": {
       "anyOf": [
-        { "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "STALE_MESSAGE", "REPLAYED_MESSAGE", "TICKET_REFUSED", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL", "ATTESTATIONS_NOT_READY"] },
+        { "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "STALE_MESSAGE", "REPLAYED_MESSAGE", "TICKET_REFUSED", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL", "ATTESTATIONS_NOT_READY", "CANTON_NOT_READY", "CANTON_REFUSED", "CANTON_UNAVAILABLE", "OPERATION_EXPIRED"] },
         { "$ref": "#/$defs/futureEnumValue" }
       ]
     },
@@ -537,6 +537,369 @@
         "setId": { "$ref": "#/$defs/uint32", "description": "equals proof.setId; EVM: attestationSetFor(orderHash)" },
         "threshold": { "type": "integer", "minimum": 1, "maximum": 4294967295, "description": "k of that set" },
         "refundAfter": { "$ref": "#/$defs/timeS", "description": "from this time settle reverts; the node gets its settle included before it" }
+      }
+    },
+    "cantonOp": {
+      "description": "A Canton operation of the filler's own external party on the Cancore participant (protocol §3.19): the backend prepares and submits it, the node signs it with its party key and never talks to a Ledger API. party.allocate creates the party (topology); registry.accept accepts the FillerRegistryEntryProposal of the fillerId; delivery.fill exercises DeliveryOrder_Fill of a Canton ticket issued to the filler; intent.settle exercises SwapIntent_SettleWithProof of a Canton-source order the filler delivered; holdings.transfer moves the party's own holdings to a party it names (TransferFactory_Transfer)",
+      "anyOf": [
+        { "enum": ["party.allocate", "registry.accept", "delivery.fill", "intent.settle", "holdings.transfer"] },
+        { "type": "string", "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$" }
+      ]
+    },
+    "operationId": {
+      "type": "string",
+      "pattern": "^[!-~]{1,64}$",
+      "description": "the handle canton.prepared hands out for canton.submit: opaque, 1..64 printable ASCII, valid until expiresAt"
+    },
+    "edPublicKey": { "type": "string", "pattern": "^0x[0-9a-f]{64}$", "description": "the raw 32-byte Ed25519 public key of the filler's Canton party, lowercase hex" },
+    "edSignature": { "type": "string", "pattern": "^0x[0-9a-f]{128}$", "description": "64-byte Ed25519 signature by the party key over the bytes of a leg's hash, lowercase hex" },
+    "cantonLegTransaction": {
+      "type": "object",
+      "description": "A prepared Canton transaction to sign. MUST before signing (protocol §3.19): the node recomputes `hash` from `preparedTransaction` with the participant's prepared-transaction hashing of `hashingSchemeVersion`, decodes the transaction and checks it against `summary` for the op of the message — template and choice, acting and receiving parties, instrument, amount; on any difference it does not sign. It signs the 32 hash bytes with its party key",
+      "required": ["legId", "kind", "hash", "preparedTransaction", "hashingSchemeVersion"],
+      "properties": {
+        "legId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "kind": { "const": "transaction" },
+        "hash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$", "description": "the 32-byte prepared-transaction hash" },
+        "preparedTransaction": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+          "description": "the prepared transaction (base64 protobuf) the hash is over. Never logged"
+        },
+        "hashingSchemeVersion": {
+          "type": "string",
+          "pattern": "^HASHING_SCHEME_VERSION_V[0-9]+$",
+          "description": "the participant's prepared-transaction hashing scheme the hash was computed with"
+        }
+      }
+    },
+    "cantonLegTopology": {
+      "type": "object",
+      "description": "The onboarding topology of the filler's party, in `party.allocate` only (a topology leg in any other op is refused by the schema). MUST before signing (protocol §3.19): the node recomputes the multihash over `topologyTransactions` and checks that they create the party of `summary.partyId` with the key of `summary.publicKey` as its only signing key, hosted on the Cancore participant; on any difference it does not sign. It signs the 34 multihash bytes with its party key",
+      "required": ["legId", "kind", "hash", "topologyTransactions"],
+      "properties": {
+        "legId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "kind": { "const": "topology" },
+        "hash": { "type": "string", "pattern": "^0x1220[0-9a-f]{64}$", "description": "the topology multihash: 0x1220 ‖ sha256" },
+        "topologyTransactions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9+/]+={0,2}$" },
+          "description": "the topology transactions (base64 protobuf) the multihash is over, in order"
+        }
+      }
+    },
+    "cantonSignature": {
+      "type": "object",
+      "required": ["legId", "signature"],
+      "properties": { "legId": { "type": "string", "minLength": 1, "maxLength": 128 }, "signature": { "$ref": "#/$defs/edSignature" } }
+    },
+    "canton.prepare": {
+      "x-direction": "F2S",
+      "type": "object",
+      "description": "Prepare a Canton operation of the sender's own party (§3.19); answered by canton.prepared (re = this id) or error. params select the operation only: the backend picks every contract itself (holdings, delivery order, intent, registry entry, disclosed contracts, attestor signatures). Admission: party.allocate — the fillerId has no party yet, or this key's party; registry.accept — a proposal for the fillerId and its party is live; delivery.fill — an ISSUED Canton ticket of this filler for (orderHash, attempt), before validUntil; intent.settle — a Canton-source order this filler delivered, with attestations held; holdings.transfer — enough unlocked holdings of the asset beyond what the party's open delivery orders need, to a party other than its own. Each prepare prepares afresh and replaces the filler's open operation of the same op and target",
+      "allOf": [
+        { "$ref": "#/$defs/f2sBase" },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "party.allocate" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["params"],
+            "properties": { "params": { "type": "object", "required": ["publicKey"], "properties": { "publicKey": { "$ref": "#/$defs/edPublicKey" } } } }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "registry.accept" } }, "required": ["op"] },
+          "then": { "type": "object", "required": ["params"], "properties": { "params": { "type": "object" } } }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "delivery.fill" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "type": "object",
+                "required": ["orderHash", "attempt"],
+                "properties": { "orderHash": { "$ref": "#/$defs/bytes32" }, "attempt": { "$ref": "#/$defs/uint32" } }
+              }
+            }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "intent.settle" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["params"],
+            "properties": { "params": { "type": "object", "required": ["orderHash"], "properties": { "orderHash": { "$ref": "#/$defs/bytes32" } } } }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "holdings.transfer" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "type": "object",
+                "required": ["asset", "amount", "toParty"],
+                "properties": {
+                  "asset": { "$ref": "#/$defs/cantonAsset" },
+                  "amount": { "type": "string", "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,10})?$", "description": "Daml Decimal, > 0" },
+                  "toParty": { "type": "string", "minLength": 1, "maxLength": 255, "description": "the receiving Canton party; never the filler's own" }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "required": ["type", "op", "params"],
+      "properties": { "type": { "const": "canton.prepare" }, "op": { "$ref": "#/$defs/cantonOp" }, "params": { "type": "object" } }
+    },
+    "canton.prepared": {
+      "x-direction": "S2F",
+      "type": "object",
+      "description": "A prepared operation. The node MUST verify every leg before it signs it (cantonLegTransaction, cantonLegTopology): what it signs is what Cancore assembled, and summary is only what Cancore says about it — a leg that does not match summary, or summary that does not match what the node expects of the op, is not signed. Topology legs come with party.allocate only; every other op prepares transactions. Then the node signs every leg's hash with its party key and sends canton.submit before expiresAt. An operationId stays valid until its own expiresAt whatever is prepared after it",
+      "allOf": [
+        { "$ref": "#/$defs/s2fBase" },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "party.allocate" } }, "required": ["op"] },
+          "then": { "type": "object", "properties": { "legs": { "type": "array", "items": { "$ref": "#/$defs/cantonLegTopology" } } } },
+          "else": { "type": "object", "properties": { "legs": { "type": "array", "items": { "$ref": "#/$defs/cantonLegTransaction" } } } }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "party.allocate" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["summary"],
+            "properties": {
+              "summary": {
+                "type": "object",
+                "required": ["partyId", "publicKey", "hosting"],
+                "properties": {
+                  "partyId": { "type": "string", "minLength": 1 },
+                  "publicKey": { "$ref": "#/$defs/edPublicKey" },
+                  "hosting": {
+                    "type": "object",
+                    "required": ["participantUid", "permission", "threshold"],
+                    "description": "how the topology hosts the party: on the Cancore participant alone, with Confirmation permission, threshold 1 — the node checks the decoded topology against it",
+                    "properties": { "participantUid": { "type": "string", "minLength": 1 }, "permission": { "const": "CONFIRMATION" }, "threshold": { "const": 1 } }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "registry.accept" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["summary"],
+            "properties": {
+              "summary": {
+                "type": "object",
+                "required": ["fillerId", "party", "operator", "proposalCid"],
+                "properties": {
+                  "fillerId": { "$ref": "#/$defs/fillerId" },
+                  "party": { "type": "string", "minLength": 1 },
+                  "operator": { "type": "string", "minLength": 1 },
+                  "proposalCid": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "delivery.fill" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["summary"],
+            "properties": {
+              "summary": {
+                "type": "object",
+                "required": [
+                  "orderHash",
+                  "attempt",
+                  "deliveryOrderCid",
+                  "recipient",
+                  "asset",
+                  "amount",
+                  "repayTo",
+                  "validUntil",
+                  "inputHoldingCids",
+                  "executeBefore",
+                  "transferFactoryCid"
+                ],
+                "properties": {
+                  "orderHash": { "$ref": "#/$defs/bytes32" },
+                  "attempt": { "$ref": "#/$defs/uint32" },
+                  "deliveryOrderCid": { "type": "string", "minLength": 1 },
+                  "recipient": { "type": "string", "minLength": 1, "description": "the Canton party the order delivers to" },
+                  "asset": { "$ref": "#/$defs/cantonAsset" },
+                  "amount": { "type": "string", "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,10})?$", "description": "DeliveryOrder.amount, Daml Decimal" },
+                  "repayTo": { "$ref": "#/$defs/repayTo" },
+                  "validUntil": { "$ref": "#/$defs/timeS" },
+                  "inputHoldingCids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "minLength": 1 },
+                    "description": "the party's holdings the transfer spends; whatever they hold beyond amount comes back as change"
+                  },
+                  "executeBefore": { "$ref": "#/$defs/timeS", "description": "the transfer's executeBefore: the order's fillDeadline" },
+                  "transferFactoryCid": { "type": "string", "minLength": 1, "description": "the registry factory the order pins" }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "intent.settle" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["summary"],
+            "properties": {
+              "summary": {
+                "type": "object",
+                "required": ["orderHash", "intentCid", "asset", "amount", "executeBefore", "payee", "giveAmount", "fee"],
+                "properties": {
+                  "orderHash": { "$ref": "#/$defs/bytes32" },
+                  "intentCid": { "type": "string", "minLength": 1 },
+                  "asset": { "$ref": "#/$defs/cantonAsset" },
+                  "amount": {
+                    "type": "string",
+                    "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,10})?$",
+                    "description": "what the settlement pays the payee: giveAmount less fee.amount, Daml Decimal"
+                  },
+                  "executeBefore": { "$ref": "#/$defs/timeS" },
+                  "payee": { "type": "string", "minLength": 1, "description": "the party paid: the filler's own" },
+                  "giveAmount": { "type": "string", "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,10})?$", "description": "the intent's committed give, fee-inclusive" },
+                  "fee": {
+                    "type": "object",
+                    "required": ["receiver", "amount"],
+                    "properties": {
+                      "receiver": { "type": "string", "minLength": 1, "description": "the operator party" },
+                      "amount": { "type": "string", "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,10})?$" }
+                    },
+                    "description": "the settlement's fee leg; amount 0 when there is none"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "holdings.transfer" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["summary"],
+            "properties": {
+              "summary": {
+                "type": "object",
+                "required": ["asset", "amount", "receiver", "inputHoldingCids", "executeBefore"],
+                "properties": {
+                  "asset": { "$ref": "#/$defs/cantonAsset" },
+                  "amount": { "type": "string", "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,10})?$" },
+                  "receiver": { "type": "string", "minLength": 1 },
+                  "inputHoldingCids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "minLength": 1 },
+                    "description": "the party's holdings the transfer spends; what they hold beyond amount comes back as change"
+                  },
+                  "executeBefore": { "$ref": "#/$defs/timeS" }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "required": ["type", "re", "operationId", "op", "legs", "summary", "expiresAt"],
+      "properties": {
+        "type": { "const": "canton.prepared" },
+        "re": { "$ref": "#/$defs/messageId" },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "op": { "$ref": "#/$defs/cantonOp" },
+        "legs": { "type": "array", "minItems": 1 },
+        "summary": { "type": "object" },
+        "expiresAt": { "$ref": "#/$defs/timeMs" }
+      }
+    },
+    "canton.submit": {
+      "x-direction": "F2S",
+      "type": "object",
+      "description": "Submit a prepared operation: one party-key signature per leg. Idempotent per operationId: a repeat (after a lost answer or CANTON_UNAVAILABLE) is answered with the same canton.submitted and never executes twice. OPERATION_EXPIRED: prepare again",
+      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
+      "required": ["type", "operationId", "signatures"],
+      "properties": {
+        "type": { "const": "canton.submit" },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "signatures": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/cantonSignature" } }
+      }
+    },
+    "canton.submitted": {
+      "x-direction": "S2F",
+      "type": "object",
+      "description": "The operation committed. updateId is its Canton update (absent for party.allocate, a topology change); result names what it created, by op",
+      "allOf": [
+        { "$ref": "#/$defs/s2fBase" },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "party.allocate" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["result"],
+            "properties": { "result": { "type": "object", "required": ["partyId"], "properties": { "partyId": { "type": "string", "minLength": 1 } } } }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "registry.accept" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["result"],
+            "properties": { "result": { "type": "object", "required": ["entryCid"], "properties": { "entryCid": { "type": "string", "minLength": 1 } } } }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "delivery.fill" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["result"],
+            "properties": { "result": { "type": "object", "required": ["receiptCid"], "properties": { "receiptCid": { "type": "string", "minLength": 1 } } } }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "intent.settle" } }, "required": ["op"] },
+          "then": { "type": "object", "required": ["result"], "properties": { "result": { "type": "object" } } }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "holdings.transfer" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["result"],
+            "properties": {
+              "result": {
+                "type": "object",
+                "required": ["outcome"],
+                "properties": {
+                  "outcome": {
+                    "anyOf": [{ "enum": ["COMPLETED", "PENDING"] }, { "$ref": "#/$defs/futureEnumValue" }],
+                    "description": "COMPLETED: the receiver holds it (a preapproval accepted it); PENDING: a TransferInstruction waits for the receiver to accept"
+                  },
+                  "transferInstructionCid": { "type": "string", "minLength": 1, "description": "with PENDING" }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "required": ["type", "re", "operationId", "op", "result"],
+      "properties": {
+        "type": { "const": "canton.submitted" },
+        "re": { "$ref": "#/$defs/messageId" },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "op": { "$ref": "#/$defs/cantonOp" },
+        "updateId": { "type": "string", "minLength": 1 },
+        "result": { "type": "object" }
       }
     }
   }

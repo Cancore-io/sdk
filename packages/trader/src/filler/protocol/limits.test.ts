@@ -5,6 +5,7 @@ describe('rate limits', () => {
   test('frames fall in the classes of filler-gateway', () => {
     expect(['quote', 'quote.reconfirm.reply'].map(rateClassOfFrame)).toEqual(['quote', 'quote']);
     expect(['ticket.intent', 'ticket.decline', 'ticket.receipt', 'fill.reported'].map(rateClassOfFrame)).toEqual(['ticket', 'ticket', 'ticket', 'ticket']);
+    expect(['canton.prepare', 'canton.submit'].map(rateClassOfFrame)).toEqual(['cantonPrepare', 'canton']);
     expect(['ping', 'pong', 'error', 'future.type'].map(rateClassOfFrame)).toEqual(['service', 'service', 'service', 'service']);
   });
 

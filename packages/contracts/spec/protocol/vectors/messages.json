@@ -463,6 +463,199 @@
         }
       }
     ],
+    "canton.prepare": [
+      {
+        "type": "canton.prepare",
+        "id": "cp-1",
+        "fillerId": "acme-markets",
+        "sentAt": 1789990000000,
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "op": "party.allocate",
+        "params": {
+          "publicKey": "0x1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      {
+        "type": "canton.prepare",
+        "id": "cp-2",
+        "fillerId": "acme-markets",
+        "sentAt": 1789990100000,
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "op": "registry.accept",
+        "params": {}
+      },
+      {
+        "type": "canton.prepare",
+        "id": "cp-3",
+        "fillerId": "acme-markets",
+        "sentAt": 1790000026000,
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "op": "delivery.fill",
+        "params": {
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
+          "attempt": 2
+        }
+      },
+      {
+        "type": "canton.prepare",
+        "id": "cp-4",
+        "fillerId": "acme-markets",
+        "sentAt": 1790000700000,
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "op": "intent.settle",
+        "params": {
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b"
+        }
+      },
+      {
+        "type": "canton.prepare",
+        "id": "cp-5",
+        "fillerId": "acme-markets",
+        "sentAt": 1790001000000,
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "op": "holdings.transfer",
+        "params": {
+          "asset": {
+            "admin": "cancore-registry::1220aa",
+            "id": "CNRX"
+          },
+          "amount": "250.5",
+          "toParty": "alice::1220f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a5968778695a4b3c2d1e0f"
+        }
+      }
+    ],
+    "canton.prepared": [
+      {
+        "type": "canton.prepared",
+        "id": "g-19",
+        "fillerId": "acme-markets",
+        "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "sentAt": 1789990000200,
+        "re": "cp-1",
+        "operationId": "op-1",
+        "op": "party.allocate",
+        "legs": [
+          {
+            "legId": "topology-0",
+            "kind": "topology",
+            "hash": "0x12203d71f7c09428bb0f75651436e3a1c92b3a12490049882ff50711337cf5c9de0a",
+            "topologyTransactions": [
+              "CgMyLjESBTAuMC4x",
+              "CgMyLjESBTAuMC4y"
+            ]
+          }
+        ],
+        "summary": {
+          "partyId": "acme-markets::1220a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          "publicKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+          "hosting": {
+            "participantUid": "PAR::cancore::1220c0ffee",
+            "permission": "CONFIRMATION",
+            "threshold": 1
+          }
+        },
+        "expiresAt": 1789990300200
+      },
+      {
+        "type": "canton.prepared",
+        "id": "g-20",
+        "fillerId": "acme-markets",
+        "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "sentAt": 1790000026300,
+        "re": "cp-3",
+        "operationId": "op-3",
+        "op": "delivery.fill",
+        "legs": [
+          {
+            "legId": "delivery-fill-0",
+            "kind": "transaction",
+            "hash": "0xf85381267321fc9b5122e45db048de3313dbc0dce8b36202673245d6c6d92840",
+            "preparedTransaction": "CgMyLjESBTAuMC4x",
+            "hashingSchemeVersion": "HASHING_SCHEME_VERSION_V2"
+          }
+        ],
+        "summary": {
+          "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
+          "attempt": 2,
+          "deliveryOrderCid": "00a1b2c3d4e5f6#fixture-delivery-order",
+          "recipient": "alice::1220f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a5968778695a4b3c2d1e0f",
+          "asset": {
+            "admin": "cancore-registry::1220aa",
+            "id": "CNRX"
+          },
+          "amount": "999.0",
+          "repayTo": "0x0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc",
+          "validUntil": "1790000400",
+          "inputHoldingCids": [
+            "00h1",
+            "00h2"
+          ],
+          "executeBefore": "1790000400",
+          "transferFactoryCid": "00tf"
+        },
+        "expiresAt": 1790000326300
+      }
+    ],
+    "canton.submit": [
+      {
+        "type": "canton.submit",
+        "id": "cs-3",
+        "fillerId": "acme-markets",
+        "sentAt": 1790000027000,
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "operationId": "op-3",
+        "signatures": [
+          {
+            "legId": "delivery-fill-0",
+            "signature": "0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+          }
+        ]
+      }
+    ],
+    "canton.submitted": [
+      {
+        "type": "canton.submitted",
+        "id": "g-21",
+        "fillerId": "acme-markets",
+        "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "sentAt": 1790000029000,
+        "re": "cs-3",
+        "operationId": "op-3",
+        "op": "delivery.fill",
+        "updateId": "1220ab0c",
+        "result": {
+          "receiptCid": "00c1d2"
+        }
+      },
+      {
+        "type": "canton.submitted",
+        "id": "g-22",
+        "fillerId": "acme-markets",
+        "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "sentAt": 1789990002000,
+        "re": "cs-1",
+        "operationId": "op-1",
+        "op": "party.allocate",
+        "result": {
+          "partyId": "acme-markets::1220a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90"
+        }
+      },
+      {
+        "type": "canton.submitted",
+        "id": "g-23",
+        "fillerId": "acme-markets",
+        "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "sentAt": 1790001002000,
+        "re": "cs-5",
+        "operationId": "op-5",
+        "op": "holdings.transfer",
+        "updateId": "1220ab0d",
+        "result": {
+          "outcome": "PENDING",
+          "transferInstructionCid": "00ti"
+        }
+      }
+    ],
     "settle.attestations": [
       {
         "type": "settle.attestations",
