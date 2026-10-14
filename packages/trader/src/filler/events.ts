@@ -93,6 +93,13 @@ export type FillerStage =
   /** Any other own transaction (`detail.kind`): replaced, or included. */
   | 'tx.replaced'
   | 'tx.confirmed'
+  /**
+   * A replacement was not sent (`detail.kind`, `detail.txHash`): `detail.reason`
+   * `relative-cap` (3× the first fee on the nonce; `fill`, `approve`, `cancel`)
+   * or `ceiling` (`maxFeePerGasWei`). The last transaction stays and is resent
+   * as is if a node drops it. Once per transaction.
+   */
+  | 'tx.capped'
   /** A `settle.attestations` kept for an attempt (`detail.channel`: `ws` or `rest`). */
   | 'attestations.received'
   /** Nothing sent: `detail.reason` (`SettleRefusal`), the revert or the mismatch in `detail.error` / `detail.detail`. */

@@ -12,7 +12,7 @@ import { TicketVerifier, type EscrowVerification } from './tickets/checks';
 import { DEFAULT_OFFER_REPLY_MARGIN_MS, TicketDesk, type TicketOfferHook } from './tickets/desk';
 import { FillerConfigError, NotImplementedError } from './errors';
 import { Executor, type DeliveryOptions } from './delivery/executor';
-import { Settler, type SettlementOptions } from './settlement/settler';
+import { DEFAULT_SETTLEMENT, Settler, type SettlementOptions } from './settlement/settler';
 import { FillerProtocolClient, DEFAULT_REST_POLL_INTERVAL_MS } from './protocol/client';
 import { createSealer } from './protocol/envelope';
 import { GatewayRest } from './protocol/rest';
@@ -545,6 +545,8 @@ export function createFiller(config: FillerConfig): Filler {
     logger,
     events,
     ...(config.delivery ? { delivery: config.delivery } : {}),
+    // R-14: a settle this close to refundAfter is priced at the fee ceiling.
+    settleUrgencyMs: config.settlement?.alertBeforeRefundMs ?? DEFAULT_SETTLEMENT.alertBeforeRefundMs,
     onFilled: (orderHash) => settler.onFilled(orderHash),
   });
   const delivery = executor;

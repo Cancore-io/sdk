@@ -52,7 +52,7 @@ import type { Cancel, Clock, Logger } from '../runtime';
 import type { FillSigner } from '../signer';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, TicketRecord } from '../store';
 import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from '../tickets/terms';
-import { FeeCeilingError, LeaseLostError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
+import { FeeCeilingError, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -145,7 +145,16 @@ export interface ExecutorOptions {
   delivery?: DeliveryOptions;
   /** Called once a fill is confirmed (settlement pulls its attestations at once). */
   onFilled?: (orderHash: Hex, attempt: number) => void;
+  /**
+   * A pending `settle` this close to `refundAfter`, ms, is replaced at
+   * `maxFeePerGasWei` at once (R-14; `settlement.alertBeforeRefundMs`).
+   * Default 1 h.
+   */
+  settleUrgencyMs?: number;
 }
+
+/** Default of `ExecutorOptions.settleUrgencyMs`: the settlement's refund alert margin. */
+export const DEFAULT_SETTLE_URGENCY_MS = 3_600_000;
 
 /** A `settle` of this replica's, `fillConfirmations` deep: success or revert (`receipt.status`). */
 export type SettleIncludedListener = (chain: EvmChainId, tx: InFlightTransaction, receipt: TransactionReceipt) => Promise<void>;
@@ -190,6 +199,8 @@ interface Tracker {
   spentTicks: number;
   /** `validUntil` (unix s) of the fill on this nonce, once read. */
   validUntil?: bigint;
+  /** The last transaction a replacement was refused for, and whether that refusal was already at urgent pricing. */
+  capped?: { hash: Hex; urgent: boolean };
   cancel?: Cancel;
 }
 
@@ -838,11 +849,15 @@ export class Executor {
     const stale = clock.now() - last.sentAtMs >= this.delivery.replaceAfterMs;
     if (fill && last.kind !== 'cancel') {
       const validUntil = (t.validUntil ??= await this.validUntilOf(fill));
-      if (validUntil !== undefined && (await driver.chainTime()) > validUntil) return this.cancel(t, last, fill).then(() => false);
-      if (stale && validUntil !== undefined && clock.now() <= Number(validUntil) * 1000) return this.replace(t, last, fill).then(() => false);
+      if (validUntil !== undefined && (await driver.chainTime()) > validUntil) {
+        if (await this.cancel(t, txs, fill)) return false;
+      } else if (stale && validUntil !== undefined && clock.now() <= Number(validUntil) * 1000) {
+        if (await this.replace(t, txs, fill)) return false;
+      }
     } else if (stale) {
-      return this.replace(t, last, fill).then(() => false);
+      if (await this.replace(t, txs, fill)) return false;
     }
+    // Nothing replaced it (not stale yet, or capped): the same bytes stay, resent if the node lost them.
     if (!(await driver.known(last.hash))) {
       // Dropped from the mempool or reorged out: the same bytes again (T-30: resend while the ticket is live).
       await driver.broadcast(last);
@@ -876,15 +891,23 @@ export class Executor {
     return this.included(t, ours, receipt, head - receipt.blockNumber + 1n, txs);
   }
 
-  /** Replace-by-fee: the same call on the same nonce, both fees raised. */
-  private async replace(t: Tracker, last: InFlightTransaction, fill: InFlightTransaction | undefined): Promise<void> {
+  /**
+   * Replace-by-fee: the same call on the same nonce, both fees raised. False
+   * when the price is capped (3× the first fee, or `maxFeePerGasWei`): the last
+   * transaction stays. A capped nonce is not priced again, except a `settle`
+   * that has since come close to `refundAfter`.
+   */
+  private async replace(t: Tracker, txs: readonly InFlightTransaction[], fill: InFlightTransaction | undefined): Promise<boolean> {
+    const last = txs.at(-1)!;
+    const urgent = last.kind === 'settle' && (await this.settleUrgent(t.driver.chain, last));
+    if (t.capped?.hash === last.hash && (t.capped.urgent || !urgent)) return false;
     let fees;
     try {
-      fees = await t.driver.replacementFees(last);
+      fees = await t.driver.replacementFees(last, { kind: last.kind, first: txs[0]!, urgent });
     } catch (error) {
-      if (!(error instanceof FeeCeilingError)) throw error;
-      this.options.logger.warn('delivery: replacement above the fee ceiling, not sent', { chain: t.driver.chain, nonce: t.lease.nonce.toString(), error: error.message });
-      return;
+      if (!(error instanceof FeeCeilingError || error instanceof ReplacementCapError)) throw error;
+      this.capped(t, last, error, urgent);
+      return false;
     }
     const tx = await t.driver.send(t.lease, { to: last.to, data: last.data, value: last.value }, last.gasLimit, fees, { kind: last.kind, ...(last.orderHash ? { orderHash: last.orderHash } : {}), ...(last.attempt !== undefined ? { attempt: last.attempt } : {}) }, this.options.clock.now());
     if (tx.kind === 'fill' && tx.orderHash && tx.attempt !== undefined) await this.setTxRef(tx.orderHash, tx.attempt, tx.hash);
@@ -896,21 +919,53 @@ export class Executor {
       txHash: tx.hash,
       maxFeePerGas: fees.maxFeePerGas.toString(),
       maxPriorityFeePerGas: fees.maxPriorityFeePerGas.toString(),
+      ...(urgent ? { urgent: true } : {}),
+    });
+    return true;
+  }
+
+  /** A replacement was refused by a cap: reported once per transaction (and once more if a `settle` turned urgent). */
+  private capped(t: Tracker, last: InFlightTransaction, error: FeeCeilingError | ReplacementCapError, urgent: boolean): void {
+    if (t.capped?.hash === last.hash && t.capped.urgent === urgent) return;
+    t.capped = { hash: last.hash, urgent };
+    const reason = error instanceof ReplacementCapError ? 'relative-cap' : 'ceiling';
+    this.options.logger.warn('delivery: replacement capped, the last transaction stays', { chain: t.driver.chain, nonce: t.lease.nonce.toString(), kind: last.kind, reason, error: error.message });
+    this.stage('tx.capped', last.orderHash, last.attempt, {
+      chain: t.driver.chain,
+      kind: last.kind,
+      nonce: t.lease.nonce.toString(),
+      txHash: last.hash,
+      maxFeePerGas: last.maxFeePerGas.toString(),
+      reason,
+      ...(urgent ? { urgent: true } : {}),
     });
   }
 
-  /** The fill can no longer succeed (the chain is past `validUntil`): free its nonce with a zero-value transfer to self. */
-  private async cancel(t: Tracker, last: InFlightTransaction, fill: InFlightTransaction): Promise<void> {
+  /** Whether `refundAfter` of the order a `settle` pays is within `settleUrgencyMs` (R-14). */
+  private async settleUrgent(chain: EvmChainId, settle: InFlightTransaction): Promise<boolean> {
+    const readers = this.options.chains.get(chain);
+    if (!settle.orderHash || !readers) return false;
+    const { refundAfter } = await readers.router.intents(settle.orderHash);
+    const urgency = BigInt(this.options.settleUrgencyMs ?? DEFAULT_SETTLE_URGENCY_MS);
+    return BigInt(this.options.clock.now()) + urgency >= refundAfter * 1000n;
+  }
+
+  /** The fill can no longer succeed (the chain is past `validUntil`): free its nonce with a zero-value transfer to self. False when the cancel is capped. */
+  private async cancel(t: Tracker, txs: readonly InFlightTransaction[], fill: InFlightTransaction): Promise<boolean> {
+    const last = txs.at(-1)!;
+    if (t.capped?.hash === last.hash) return false;
     let fees;
     try {
-      fees = await t.driver.replacementFees(last);
+      fees = await t.driver.replacementFees(last, { kind: 'cancel', first: txs[0]! });
     } catch (error) {
-      if (!(error instanceof FeeCeilingError)) throw error;
-      this.options.logger.warn('delivery: cancel above the fee ceiling, the expired fill stays to revert', { chain: t.driver.chain, nonce: t.lease.nonce.toString() });
-      return;
+      if (!(error instanceof FeeCeilingError || error instanceof ReplacementCapError)) throw error;
+      this.capped(t, last, error, false);
+      this.options.logger.warn('delivery: cancel capped, the expired fill stays to revert', { chain: t.driver.chain, nonce: t.lease.nonce.toString() });
+      return false;
     }
     const tx = await t.driver.send(t.lease, { to: t.driver.address, data: '0x', value: 0n }, TRANSFER_GAS, fees, { kind: 'cancel' }, this.options.clock.now());
     this.options.logger.warn('delivery: validUntil passed with the fill pending, cancelling it', { orderHash: fill.orderHash, attempt: fill.attempt, chain: t.driver.chain, txHash: tx.hash });
+    return true;
   }
 
   private async setTxRef(orderHash: Hex, attempt: number, txHash: Hex): Promise<void> {

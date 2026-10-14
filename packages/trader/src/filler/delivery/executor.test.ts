@@ -14,8 +14,8 @@ import {
   FakeClock,
   InMemoryFillerStore,
 } from '../testing';
-import { Executor, type DeliveryOptions } from './executor';
-import { LeaseLostError, TransactionDriver } from './transactions';
+import { Executor, type DeliveryOptions, type ExecutorOptions } from './executor';
+import { LeaseLostError, REPLACEMENT_FEE_CAP_MULTIPLE, TransactionDriver } from './transactions';
 
 const FILL_KEY: Hex = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
 const OTHER_KEY: Hex = '0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a';
@@ -106,8 +106,8 @@ async function world(options: WorldOptions = {}) {
     const r = await store.withOrder(hash, (tx) => tx.getTicket(attempt));
     return r?.state === 'receipted' && r.sentAtMs !== undefined && r.receipt ? r : undefined;
   };
-  const executor = (instanceId = 'r1', delivery: DeliveryOptions = { ...TIMING, ...options.delivery }) =>
-    new Executor({ store, chains, fillSigners: { [DST]: fillSigner }, fillerId: FILLER, receipted, instanceId, clock, logger, events, delivery });
+  const executor = (instanceId = 'r1', delivery: DeliveryOptions = { ...TIMING, ...options.delivery }, extra: Partial<ExecutorOptions> = {}) =>
+    new Executor({ store, chains, fillSigners: { [DST]: fillSigner }, fillerId: FILLER, receipted, instanceId, clock, logger, events, delivery, ...extra });
 
   /** Moves the process clock and the chain together, a second at a time: one block per second, mining the mempool. */
   const tick = async (ms: number, mine = true) => {
@@ -310,6 +310,125 @@ describe('Executor — replace-by-fee (T-29)', () => {
     expect(w.stages('fill.cancelled')).toHaveLength(1);
     expect(await fillOf(w)).toMatchObject({ state: 'failed', reason: expect.stringContaining('cancelled') });
     expect(await w.store.nonces.listOpen(DST, fillSigner.address.toLowerCase() as Hex)).toEqual([]);
+    executor.stop();
+  });
+});
+
+describe('Executor — replacement caps (F-3, R-14, CAN-2299)', () => {
+  const ME = fillSigner.address.toLowerCase() as Hex;
+  const openNonce = async (w: Awaited<ReturnType<typeof world>>) => (await w.store.nonces.listOpen(DST, ME))[0];
+
+  /** How many +15 % replacements fit under the 3× cap, from `first`. */
+  const replacementsUnderCap = (first: bigint): number => {
+    let fee = first;
+    let n = 0;
+    for (;;) {
+      const next = (fee * 115n + 99n) / 100n;
+      if (next > first * REPLACEMENT_FEE_CAP_MULTIPLE) return n;
+      fee = next;
+      n++;
+    }
+  };
+
+  test('a stuck fill is replaced up to 3× its first fee, then capped once; the last bytes stay and are resent when dropped', async () => {
+    const w = await world();
+    w.dst.minTip = 10n ** 12n; // nothing at any tip the cap allows is mined
+    const executor = w.executor();
+    await executor.start();
+    await executor.deliver(w.orderHash, 0);
+    const first = decodeSignedTransaction((await openNonce(w))!.transactions[0]!.raw);
+    await w.tick(150_000);
+
+    expect(w.stages('fill.replaced')).toHaveLength(replacementsUnderCap(first.maxFeePerGas));
+    const capped = w.stages('tx.capped');
+    expect(capped).toHaveLength(1);
+    expect(capped[0]!.detail).toMatchObject({ kind: 'fill', reason: 'relative-cap', nonce: '0' });
+    const record = (await openNonce(w))!;
+    for (const tx of record.transactions) expect(tx.maxFeePerGas).toBeLessThanOrEqual(first.maxFeePerGas * REPLACEMENT_FEE_CAP_MULTIPLE);
+    const last = record.transactions.at(-1)!;
+    expect(capped[0]!.detail).toMatchObject({ txHash: last.hash });
+
+    // The node drops it: the same bytes go out again, no new transaction and no second tx.capped.
+    w.dst.mempool.delete(`${ME}:0`);
+    await w.tick(3_000);
+    expect([...w.dst.mempool.values()].map((t) => t.hash)).toEqual([last.hash]);
+    expect((await openNonce(w))!.transactions).toHaveLength(record.transactions.length);
+    expect(w.stages('tx.capped')).toHaveLength(1);
+
+    w.dst.minTip = 0n;
+    await w.tick(3_000);
+    expect(await fillOf(w)).toMatchObject({ state: 'confirmed', txRef: last.hash });
+    executor.stop();
+  });
+
+  /** A settle of this replica's on the fake chain, priced at the market now and tracked by the executor. */
+  async function trackedSettle(w: Awaited<ReturnType<typeof world>>, executor: Executor) {
+    const driver = executor.driver(DST)!;
+    const lease = await executor.acquire(driver);
+    // To self with no data: the fake chain executes it as a plain transfer.
+    const tx = await driver.send(lease, { to: ME, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now());
+    executor.watch(driver, lease);
+    return tx;
+  }
+
+  test('base fee ×10: a settle keeps rising past 3× its first fee, up to maxFeePerGasWei, and lands before refundAfter', async () => {
+    const w = await world({ chain: { maxFeePerGasWei: 50_000_000_000n } });
+    const refundAfter = w.nowS + 7_200n;
+    w.dst.router(DST_ROUTER).openIntent(w.orderHash, { refundAfter, openedAt: w.nowS - 60n });
+    const executor = w.executor();
+    await executor.start();
+    const sent = await trackedSettle(w, executor);
+    w.dst.baseFeePerGas *= 10n; // the settle priced before the rise no longer pays the base fee
+    await w.tick(15_000);
+
+    const [replaced] = w.stages('tx.replaced');
+    expect(replaced!.detail).toMatchObject({ kind: 'settle', from: sent.hash });
+    expect(BigInt(replaced!.detail!.maxFeePerGas as string)).toBeGreaterThan(sent.maxFeePerGas * REPLACEMENT_FEE_CAP_MULTIPLE);
+    expect(BigInt(replaced!.detail!.maxFeePerGas as string)).toBeLessThanOrEqual(50_000_000_000n);
+    expect(w.stages('tx.capped')).toHaveLength(0);
+    const mined = [...w.dst.minedTransactions.values()].find((t) => t.from === ME && t.nonce === 0n);
+    expect(mined).toBeDefined();
+    expect(w.dst.timestampOf(mined!.blockNumber)).toBeLessThan(refundAfter);
+    executor.stop();
+  });
+
+  test('the same rise caps a fill at 3×: the policy differs by kind', async () => {
+    const w = await world({ chain: { maxFeePerGasWei: 50_000_000_000n } });
+    const executor = w.executor();
+    await executor.start();
+    await executor.deliver(w.orderHash, 0);
+    w.dst.baseFeePerGas *= 10n;
+    await w.tick(15_000);
+    expect(w.stages('fill.replaced')).toHaveLength(0);
+    expect(w.stages('tx.capped')[0]!.detail).toMatchObject({ kind: 'fill', reason: 'relative-cap' });
+    executor.stop();
+  });
+
+  test('a settle within settleUrgencyMs of refundAfter is priced at maxFeePerGasWei at once, then capped by it', async () => {
+    const ceiling = 50_000_000_000n;
+    const w = await world({ chain: { maxFeePerGasWei: ceiling } });
+    // Urgent 30 s from now: two ordinary replacements first.
+    const refundAfter = w.nowS + 3_630n;
+    w.dst.router(DST_ROUTER).openIntent(w.orderHash, { refundAfter, openedAt: w.nowS - 60n });
+    w.dst.minTip = 10n ** 12n;
+    const executor = w.executor('r1', TIMING, { settleUrgencyMs: 3_600_000 });
+    await executor.start();
+    await trackedSettle(w, executor);
+    await w.tick(25_000);
+    const ordinary = w.stages('tx.replaced');
+    expect(ordinary.length).toBeGreaterThanOrEqual(1);
+    for (const r of ordinary) expect(r.detail).not.toHaveProperty('urgent');
+
+    await w.tick(20_000);
+    const urgent = w.stages('tx.replaced').filter((r) => r.detail?.urgent === true);
+    expect(urgent).toHaveLength(1);
+    expect(urgent[0]!.detail).toMatchObject({ kind: 'settle', maxFeePerGas: ceiling.toString() });
+
+    await w.tick(20_000);
+    const capped = w.stages('tx.capped');
+    expect(capped).toHaveLength(1);
+    expect(capped[0]!.detail).toMatchObject({ kind: 'settle', reason: 'ceiling', urgent: true });
+    expect(w.stages('tx.replaced').filter((r) => r.detail?.urgent === true)).toHaveLength(1);
     executor.stop();
   });
 });

@@ -9,7 +9,11 @@
  *   it leaves the raw bytes for whoever drives the nonce next.
  * - **One nonce, many transactions.** A replacement (replace-by-fee) goes out
  *   on the same nonce with both fees raised by at least `feeBumpPercent`
- *   (nodes refuse less than +10 %), never above `maxFeePerGasWei`.
+ *   (nodes refuse less than +10 %), never above `maxFeePerGasWei`. A `fill`,
+ *   `approve` or `cancel` is also never replaced above
+ *   `REPLACEMENT_FEE_CAP_MULTIPLE` × the first fee on its nonce (F-3); a
+ *   `settle` is held to `maxFeePerGasWei` only, and close to `refundAfter` is
+ *   priced at it at once (R-14): a capped `settle` loses the filler its payout.
  * - **No gaps.** A held nonce with nothing recorded on it is reused before a
  *   new one is allocated, so a send abandoned after the nonce was taken never
  *   strands the transactions behind it.
@@ -30,6 +34,10 @@ import type { FillerStore, InFlightKind, InFlightTransaction, NonceLease, NonceR
 export const MIN_FEE_BUMP_PERCENT = 10;
 /** Gas of a plain transfer: the cancel transaction. */
 export const TRANSFER_GAS = 21_000n;
+/** A replacement of a `fill`, `approve` or `cancel` costs at most this many times the first `maxFeePerGas` on its nonce (F-3). */
+export const REPLACEMENT_FEE_CAP_MULTIPLE = 3n;
+/** The kinds held to the relative cap; `settle` is not (R-14). */
+const RELATIVE_CAP_KINDS: ReadonlySet<InFlightKind> = new Set<InFlightKind>(['fill', 'approve', 'cancel']);
 
 export interface FeePolicy {
   /** Both fees of a replacement are at least this much above the replaced one. */
@@ -90,6 +98,21 @@ export class LeaseLostError extends Error {
 /** A replacement would have to be priced above `maxFeePerGasWei`. */
 export class FeeCeilingError extends Error {
   override readonly name = 'FeeCeilingError';
+}
+
+/** A replacement would cost more than `REPLACEMENT_FEE_CAP_MULTIPLE` × the first fee on its nonce. */
+export class ReplacementCapError extends Error {
+  override readonly name = 'ReplacementCapError';
+}
+
+/** How a replacement is priced beyond the bump. */
+export interface ReplacementOptions {
+  /** Kind of the transaction that goes out; `fill`, `approve` and `cancel` are held to the relative cap. */
+  kind?: InFlightKind;
+  /** The first transaction on the nonce: the base of the relative cap. */
+  first?: Fees;
+  /** A `settle` close to `refundAfter`: `maxFeePerGas` straight to `maxFeePerGasWei` (R-14). */
+  urgent?: boolean;
 }
 
 export interface TransactionDriverOptions {
@@ -188,8 +211,13 @@ export class TransactionDriver {
     return fees;
   }
 
-  /** Fees for a replacement of `last`: the market or `last` raised by `feeBumpPercent`, whichever is higher; `FeeCeilingError` above the ceiling. */
-  async replacementFees(last: Fees): Promise<Fees> {
+  /**
+   * Fees for a replacement of `last`: the market or `last` raised by
+   * `feeBumpPercent`, whichever is higher — or the ceiling itself when
+   * `urgent`. `ReplacementCapError` above `REPLACEMENT_FEE_CAP_MULTIPLE` ×
+   * `first` for a kind held to it; `FeeCeilingError` above the ceiling.
+   */
+  async replacementFees(last: Fees, options: ReplacementOptions = {}): Promise<Fees> {
     const bump = Math.max(this.options.fees.feeBumpPercent, MIN_FEE_BUMP_PERCENT);
     let market: Fees;
     try {
@@ -204,6 +232,13 @@ export class TransactionDriver {
     };
     if (fees.maxPriorityFeePerGas > fees.maxFeePerGas) fees.maxFeePerGas = fees.maxPriorityFeePerGas;
     const ceiling = this.options.fees.maxFeePerGasWei;
+    if (options.urgent && ceiling !== undefined && fees.maxFeePerGas < ceiling) fees.maxFeePerGas = ceiling;
+    if (options.first && options.kind && RELATIVE_CAP_KINDS.has(options.kind)) {
+      const cap = options.first.maxFeePerGas * REPLACEMENT_FEE_CAP_MULTIPLE;
+      if (fees.maxFeePerGas > cap) {
+        throw new ReplacementCapError(`${this.chain}: a replacement needs maxFeePerGas ${fees.maxFeePerGas}, above ${REPLACEMENT_FEE_CAP_MULTIPLE}× the first fee ${options.first.maxFeePerGas}`);
+      }
+    }
     if (ceiling !== undefined && fees.maxFeePerGas > ceiling) throw new FeeCeilingError(`${this.chain}: a replacement needs maxFeePerGas ${fees.maxFeePerGas}, above the ceiling ${ceiling}`);
     return fees;
   }
