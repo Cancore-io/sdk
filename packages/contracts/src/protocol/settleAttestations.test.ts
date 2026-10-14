@@ -3,18 +3,21 @@ import { keccak256, recoverAddress, Signature, SigningKey } from 'ethers';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FILL_PROOF_TYPES, FILL_PROOF_TYPE_STRING, fillProofDomain } from '../eip712';
+import { hashOrder } from '../order';
 import { gatewayBodyHash, hashTypedData, jcs } from './hash';
+import { fillerIdHash } from './identity';
 import { ERROR_HTTP_STATUS } from './messages';
 import { messageSchemaRef, MESSAGE_DIRECTIONS, PROTOCOL_SCHEMAS, REST_ENDPOINTS, SCHEMA_VOCABULARY } from './schemas';
 import {
   cantonSigEntries, isCantonSource, settleAttestationsErrors, settleAttestationsPayload, settleAttestationsPayloadHash, settleSigs,
   type SettleAttestations, type SettleAttestationsPayload,
 } from './settleAttestations';
-import { FILLER_PROTOCOL_DOMAIN, GATEWAY_MESSAGE_TYPES, type Hex } from './typedData';
+import { FILLER_PROTOCOL_DOMAIN, GATEWAY_MESSAGE_TYPES, ORDER_TYPES, type Hex, type Order } from './typedData';
 
 type Case = {
   note: string;
   domain: { chainId: string; verifyingContract: Hex };
+  order: Order;
   digest: Hex;
   set: { setId: number; threshold: number; members: Hex[] };
   rsv?: Hex[];
@@ -137,6 +140,22 @@ describe.each(CASES)('%s vector', (_, c) => {
       expect(recoverAddress(digest, sig).toLowerCase()).toBe(vectors.gateway);
     }
   });
+  test('the order is the 12-field Order the router hashes, field for field', () => {
+    expect(Object.keys(c.order)).toEqual(ORDER_TYPES.Order.map((f) => f.name));
+  });
+  test('the proof is of this order: proof.orderHash and the frame orderHash are hashOrder(order) in the case domain', () => {
+    const orderHash = hashOrder(c.order, { chainId: BigInt(c.domain.chainId), verifyingContract: c.domain.verifyingContract });
+    expect(c.ws.proof.orderHash).toBe(orderHash);
+    expect(c.rest.proof.orderHash).toBe(orderHash);
+    expect(c.ws.orderHash).toBe(orderHash);
+    expect(c.rest.orderHash).toBe(orderHash);
+  });
+  test('the proof names the filler of the order (WrongFiller otherwise) and the frame is addressed to it', () => {
+    expect(c.ws.proof.fillerId).toBe(c.order.fillerId);
+    expect(c.rest.proof.fillerId).toBe(c.order.fillerId);
+    expect(fillerIdHash(c.ws.fillerId)).toBe(c.order.fillerId);
+    expect(fillerIdHash(c.rest.fillerId)).toBe(c.order.fillerId);
+  });
   test('the proof digest is reproduced by the shipped encoder', () => {
     expect(proofDigest(c)).toBe(c.digest);
   });
@@ -162,6 +181,11 @@ describe.each(CASES)('%s vector', (_, c) => {
       expect(SigningKey.recoverPublicKey(c.digest, sig)).toBe(`0x${entry.pubKey.slice(2 + 46)}`);
     });
   });
+});
+
+test('the Canton origin id exceeds 2^53: the order is hashed with BigInt(chainId), never a Number', () => {
+  expect(BigInt(Number(canton.domain.chainId))).not.toBe(BigInt(canton.domain.chainId));
+  expect(hashOrder(canton.order, { chainId: BigInt(canton.domain.chainId), verifyingContract: canton.domain.verifyingContract })).toBe(canton.ws.proof.orderHash);
 });
 
 describe('what the filler node submits', () => {
