@@ -1,18 +1,18 @@
 /**
  * The EIP-712 types and domains of the Cancore intent rail, filler protocol v1.
  *
- * Two families. The CODE types (`Order`, `Quote`, `FillTicket`; `FillProof`
- * lives in `../eip712`) are the router's own structs — here they are
- * provisional hand copies of `CancoreRouter.sol` until evm-contracts publishes
- * them under `abi/typed-data` (follow-up F-1); `Order` is pinned by the synced
- * `spec/vectors/canton-order.json`. `FillTicket` and `FillProof` carry the
- * variant A fields (`fillerId`, `deliveryKey`, `repayTo`) the router takes
- * before its first deployment (CAN-2140). The PROTOCOL types are off-chain,
+ * The CODE types (`Order`, `Quote`, `FillTicket`; `FillProof` lives in
+ * `../eip712`) come from evm-contracts/abi/typed-data through npm run sync.
+ * Their public names stay here so callers use the same synchronized schemas.
+ * The PROTOCOL types are off-chain,
  * signed in the `CancoreFillerProtocol` domain by the filler's one message key
  * (or the gateway key), and fixed by this package: a field reordered here
  * changes every digest, and the golden vectors under `spec/protocol/typed-data`
  * fail the moment it happens.
  */
+
+import { ORDER_DOMAIN } from '../generated/typedData';
+export { ORDER_TYPES, QUOTE_TYPES, FILL_TICKET_TYPES, FILL_TICKET_DOMAIN } from '../generated/typedData';
 
 export type Hex = `0x${string}`;
 
@@ -22,55 +22,10 @@ export type UintLike = bigint | number | string;
 /** Name and version of the domain every off-chain protocol struct is signed in — no chain id, no verifying contract. */
 export const FILLER_PROTOCOL_DOMAIN = { name: 'CancoreFillerProtocol', version: '1' } as const;
 
-/** The ticket domain (`CancoreRouter.sol:124-131`): the same ticket verifies on every router and off-chain. */
-export const FILL_TICKET_DOMAIN = { name: 'CancoreFillTicket', version: '1' } as const;
-
 /** The source-router domain `Order` and `Quote` are hashed in. Canton source: `CANTON_ORIGIN_ID` and the anchor. */
 export function routerDomain(chainId: UintLike, verifyingContract: Hex) {
-  return { name: 'CancoreRouter', version: '1', chainId, verifyingContract } as const;
+  return { ...ORDER_DOMAIN, chainId, verifyingContract } as const;
 }
-
-/** `Order(address user,uint64 originChainId,address inputToken,uint256 inputAmount,bytes32 destination,bytes32 outputAsset,uint256 minReceived,bytes32 recipient,uint64 createdAt,uint64 fillDeadline,uint16 feeBps,bytes32 fillerId)` */
-export const ORDER_TYPES = {
-  Order: [
-    { name: 'user', type: 'address' },
-    { name: 'originChainId', type: 'uint64' },
-    { name: 'inputToken', type: 'address' },
-    { name: 'inputAmount', type: 'uint256' },
-    { name: 'destination', type: 'bytes32' },
-    { name: 'outputAsset', type: 'bytes32' },
-    { name: 'minReceived', type: 'uint256' },
-    { name: 'recipient', type: 'bytes32' },
-    { name: 'createdAt', type: 'uint64' },
-    { name: 'fillDeadline', type: 'uint64' },
-    { name: 'feeBps', type: 'uint16' },
-    { name: 'fillerId', type: 'bytes32' },
-  ],
-} as const;
-
-/** `Quote(bytes32 orderHash,uint64 quoteDeadline)` — Cancore's quote signer, source-router domain. */
-export const QUOTE_TYPES = {
-  Quote: [
-    { name: 'orderHash', type: 'bytes32' },
-    { name: 'quoteDeadline', type: 'uint64' },
-  ],
-} as const;
-
-/**
- * `FillTicket(bytes32 orderHash,bytes32 fillerId,address deliveryKey,bytes32 repayTo,uint32 attempt,uint64 validFrom,uint64 validUntil)`
- * — signed by a Cancore ticket signer, ticket domain. `fill` requires `msg.sender == deliveryKey`.
- */
-export const FILL_TICKET_TYPES = {
-  FillTicket: [
-    { name: 'orderHash', type: 'bytes32' },
-    { name: 'fillerId', type: 'bytes32' },
-    { name: 'deliveryKey', type: 'address' },
-    { name: 'repayTo', type: 'bytes32' },
-    { name: 'attempt', type: 'uint32' },
-    { name: 'validFrom', type: 'uint64' },
-    { name: 'validUntil', type: 'uint64' },
-  ],
-} as const;
 
 /** `FillerQuote(bytes32 requestId,string fillerId,uint256 amountOut,uint64 validUntil,uint64 nonce)` — signed by the message key. */
 export const FILLER_QUOTE_TYPES = {

@@ -7,9 +7,8 @@
 //   node packages/contracts/scripts/gen-protocol-vectors.mjs
 //
 // Writes spec/protocol/typed-data/*.json (the protocol types),
-// spec/typed-data/{Order,Quote}.json (provisional copies of the router's
-// structs until evm-contracts publishes them, follow-up F-1) and
-// spec/protocol/vectors/{jcs,draw}.json. spec/typed-data/{FillTicket,FillProof}.json
+// spec/protocol/vectors/{jcs,draw}.json.
+// spec/typed-data/{Order,Quote,FillTicket,FillProof}.json
 // are evm-contracts' own (abi/typed-data, brought here by `npm run sync`): this
 // script recomputes their vectors and fails if the synced files differ, and
 // never writes them.
@@ -68,6 +67,7 @@ const TICKET = { name: 'CancoreFillTicket', version: '1' };
 const digest = (domain, name, message) => TypedDataEncoder.hash(domain, { [name]: TYPES[name] }, message);
 
 const EVM_DOMAIN = { chainId: '11155111', verifyingContract: '0x00000000000000000000000000000000cafe0001' };
+const HARDHAT_DOMAIN = { ...EVM_DOMAIN, chainId: '31337' };
 const canton = JSON.parse(readFileSync(join(pkg, 'spec', 'vectors', 'canton-order.json'), 'utf8')).vector;
 const lower = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === 'string' ? v.toLowerCase() : v]));
 const CANTON_DOMAIN = { chainId: canton.domain.chainId, verifyingContract: canton.domain.verifyingContract.toLowerCase() };
@@ -83,7 +83,7 @@ function routerVectors(name, rows) {
   }));
 }
 const flat = (domain, name) => (rows) => rows.map(({ note, message, ...extra }) => ({ note, ...extra, message, digest: digest(domain, name, message) }));
-const PROVISIONAL = 'PROVISIONAL hand copy of the CancoreRouter.sol struct (evm-contracts f936594) until evm-contracts publishes abi/typed-data for it with its own vectors (follow-up F-1); digests by ethers TypedDataEncoder, checked in this package by the shipped encoder as well.';
+const ROUTER_SCHEMA = 'Router schema synced from evm-contracts/abi/typed-data; vectors independently recomputed with ethers TypedDataEncoder.';
 const ROUTER_META = { name: 'CancoreRouter', version: '1', fields: ['name', 'version', 'chainId', 'verifyingContract'] };
 const FROZEN = (what) => `Filler protocol v1 (frozen, RC): ${what} Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.`;
 const NEXT_RC = (what) => `Filler protocol v1, settlement design (variant A, CAN-2139; protocol.md §3.3): ${what} Domain CancoreFillerProtocol v1, no chainId, no verifyingContract. Digests by ethers TypedDataEncoder.`;
@@ -98,18 +98,20 @@ const PAYOUT = '0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc';
 /** A filler party on the Canton source, shaped like canton-order.json's party ids; its hash is the Canton-source repayTo. */
 const FILLER_PARTY = `acme-markets::1220${'acde'.repeat(16)}`;
 
-// --- Code types (provisional copies)
-out('spec/typed-data/Order.json', file('Order', ROUTER_META, `${PROVISIONAL} The canton vector equals spec/vectors/canton-order.json (Solidity-pinned); the sepolia vector is the test-kit fixture order.`, routerVectors('Order', [
+// --- Code types (synced sources)
+synced('spec/typed-data/Order.json', file('Order', ROUTER_META, `${ROUTER_SCHEMA} The canton vector equals spec/vectors/canton-order.json (Solidity-pinned); the sepolia vector is the test-kit fixture order.`, routerVectors('Order', [
   { note: 'canton-source golden order (spec/vectors/canton-order.json)', domain: CANTON_DOMAIN, message: lower(canton.order) },
   { note: 'EVM-source fixture order of @cancore/test-kit (sepolia to arbitrum sepolia)', domain: EVM_DOMAIN, message: EVM_ORDER },
   { note: 'every integer at its maximum', domain: EVM_DOMAIN, message: { user: FF20, originChainId: U64, inputToken: FF20, inputAmount: U256, destination: FF32, outputAsset: FF32, minReceived: U256, recipient: FF32, createdAt: U64, fillDeadline: U64, feeBps: '65535', fillerId: FF32 } },
   { note: 'zero words and the zero address', domain: EVM_DOMAIN, message: { user: Z20, originChainId: '0', inputToken: Z20, inputAmount: '0', destination: Z32, outputAsset: Z32, minReceived: '0', recipient: Z32, createdAt: '0', fillDeadline: '0', feeBps: '0', fillerId: Z32 } },
+  { note: 'Hardhat source domain: production router golden digest', domain: HARDHAT_DOMAIN, message: EVM_ORDER },
 ])));
-out('spec/typed-data/Quote.json', file('Quote', ROUTER_META, PROVISIONAL, routerVectors('Quote', [
+synced('spec/typed-data/Quote.json', file('Quote', ROUTER_META, ROUTER_SCHEMA, routerVectors('Quote', [
   { note: 'quote signer approves the fixture order', domain: EVM_DOMAIN, message: { orderHash: evmOrderHash, quoteDeadline: '1790000030' } },
   { note: 'every integer at its maximum', domain: EVM_DOMAIN, message: { orderHash: FF32, quoteDeadline: U64 } },
   { note: 'zero', domain: EVM_DOMAIN, message: { orderHash: Z32, quoteDeadline: '0' } },
   { note: 'canton source domain', domain: CANTON_DOMAIN, message: { orderHash: canton.orderHash, quoteDeadline: '1789999430' } },
+  { note: 'Hardhat source domain: production router golden digest', domain: HARDHAT_DOMAIN, message: { orderHash: evmOrderHash, quoteDeadline: '1790000030' } },
 ])));
 const specTicket = { orderHash: WORKED_DRAW.orderHash, fillerId: fillerIdHash('acme'), deliveryKey: DELIVERY_KEY, repayTo: repayEvm(DELIVERY_KEY), attempt: 0, validFrom: '1789999000', validUntil: '1789999180' };
 const fixtureTicket = { orderHash: evmOrderHash, fillerId: fillerIdHash('acme-markets'), deliveryKey: DELIVERY_KEY, repayTo: repayEvm(PAYOUT), attempt: 0, validFrom: '1790000040', validUntil: '1790000400' };

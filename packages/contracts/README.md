@@ -198,7 +198,7 @@ manual key change by Cancore staff; there is no key-rotation type or message.
 | `TicketReceipt`, `StakeBinding`, `FillerAuth`, `GatewayMessage` | `CancoreFillerProtocol` v1 | v1 RC — vectors in `spec/protocol/typed-data/` |
 | `FillerQuote` (`string fillerId`), `TicketIntent` (with `fillerId`, `deliveryKey`, `repayTo`), `FillerMessage`, `FillerKeyRegistration` | `CancoreFillerProtocol` v1 | variant A — vectors in `spec/protocol/typed-data/` |
 | `CantonTicketReceipt` (`orderHash`, `attempt`, `deliveryOrderCidHash`, `validUntil`) | `CancoreFillerProtocol` v1 | receipt of a Canton-form ticket (§10 D-O), additive — vectors in `spec/protocol/typed-data/` |
-| `Order` (12 fields, with `createdAt`; `fillerId` last), `Quote` | `CancoreRouter` v1, source router | router code; provisional copies in `spec/typed-data/` until evm-contracts publishes them |
+| `Order` (12 fields, with `createdAt`; `fillerId` last), `Quote` | `CancoreRouter` v1, source router | `abi/typed-data/` in evm-contracts, synced byte for byte to `spec/typed-data/` |
 | `FillTicket` (`orderHash`, `fillerId`, `deliveryKey`, `repayTo`, `attempt`, `validFrom`, `validUntil`) | `CancoreFillTicket` v1 | variant A, synced from the router (CAN-2140) |
 | `FillProof` (twelve fields) | `CancoreRouter` v1, source router | variant A, synced from the router (above) |
 
@@ -378,16 +378,24 @@ EVM_CONTRACTS_DIR=../evm-contracts npm run sync   # then review the diff and rel
 
 `npm run sync` is two scripts: `scripts/sync.mjs` (ABIs, error tables, release identity, the
 router and AttestorSet constants in `spec/constants.json`) and
-`scripts/sync-typed-data.mjs` (`abi/typed-data/*.json`). Until evm-contracts publishes
-`abi/typed-data/` the second one fails; run the first one alone:
-
-```bash
-EVM_CONTRACTS_DIR=../evm-contracts node scripts/sync.mjs
-```
+`scripts/sync-typed-data.mjs` (all four `abi/typed-data/*.json` schemas). Use the
+full command above: the standalone typed-data script does not validate or stamp
+source provenance.
 
 `EVM_CONTRACTS_DIR` must be the root of a clean git checkout of `evm-contracts`: the sync records
 its `HEAD` as `CONTRACTS_RELEASE.commit` and refuses a directory that is not a checkout root or
 has uncommitted changes, so the release cannot name a commit its data did not come from.
+
+EVM [#108](https://github.com/Cancore-io/evm-contracts/pull/108) and
+[#114](https://github.com/Cancore-io/evm-contracts/pull/114), and SDK
+[#90](https://github.com/Cancore-io/sdk/pull/90), are merged. This snapshot is fully
+synced from the clean, merged EVM `main` commit
+[`4056e83`](https://github.com/Cancore-io/evm-contracts/commit/4056e83cd84a94d9d00eb4486d5cabf55dd71741),
+as recorded by `CONTRACTS_RELEASE.commit` and `spec/constants.json`. Before publishing
+rc.10, merge SDK [#91](https://github.com/Cancore-io/sdk/pull/91) and pass its checks.
+For every subsequent upstream change, run the full sync from a clean checkout of the
+actual merged `main` commit, commit the resulting pins, and rerun the checks before
+publishing. This resync is mandatory for merge, squash and rebase alike.
 
 It reads `abi/*.json` except the two manifests (`bytecode-hashes.json`, `versions.json`) and
 `vendor/*.json` (the `.abi` field), and refuses to run when `spec/abi/` holds a snapshot the

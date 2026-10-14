@@ -1,18 +1,20 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-// .gitattributes marks src/generated/<Name>.ts, index.ts and errors.ts as
+// .gitattributes marks ABI modules, index.ts, errors.ts and typedData.ts as
 // linguist-generated: folded in diffs, out of the review size budget. That is
 // only sound while CI re-derives them, so this suite renders each one from the
-// reviewed spec/abi JSON with the code sync.mjs writes them with and compares
-// the whole file, byte for byte. meta.ts and typedData.ts are not marked:
-// neither is derivable from spec/ alone, so a reviewer reads them.
+// reviewed spec/abi and spec/typed-data JSON with the code the sync scripts
+// write them with and compares the whole file, byte for byte. Only meta.ts is
+// not marked: it carries source release identity that spec/ alone cannot derive.
 
 type AbiEntry = { type: string; name?: string; inputs?: unknown[] };
+type TypedDataSchema = { primaryType: string; typeString: string; types: unknown; domain: { name: string; version: string } };
 type Render = {
   renderAbiModule(name: string, abi: AbiEntry[], source: string): string;
   renderIndex(names: string[]): string;
   renderErrors(entries: Array<[string, AbiEntry[]]>): string;
+  renderTypedData(entries: Array<[string, TypedDataSchema]>): string;
 };
 const render = require('../scripts/render.cjs') as Render;
 
@@ -42,4 +44,12 @@ test('index.ts is exactly what sync.mjs renders', () => {
 
 test('errors.ts is exactly what sync.mjs renders', () => {
   expect(generated('errors.ts')).toBe(render.renderErrors(names.map((n) => [n, abiOf(n)])));
+});
+
+test('typedData.ts is exactly what sync-typed-data.mjs renders from every spec/typed-data schema', () => {
+  const dir = join(__dirname, '..', 'spec', 'typed-data');
+  const files = readdirSync(dir).filter((file) => file.endsWith('.json')).sort();
+  expect(files.length).toBeGreaterThan(0);
+  const entries = files.map((file): [string, TypedDataSchema] => [file, JSON.parse(readFileSync(join(dir, file), 'utf8'))]);
+  expect(generated('typedData.ts')).toBe(render.renderTypedData(entries));
 });
