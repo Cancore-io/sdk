@@ -15,7 +15,7 @@ import {
   InMemoryFillerStore,
 } from '../testing';
 import { Executor, type DeliveryOptions } from './executor';
-import { LeaseLostError, TransactionDriver } from './transactions';
+import { LeaseLostError, TransactionDriver, type SuspectNonce } from './transactions';
 
 const FILL_KEY: Hex = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
 const OTHER_KEY: Hex = '0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a';
@@ -399,6 +399,53 @@ describe('Executor — one writer per nonce, restart (N-9, N-15, N-34)', () => {
     const first = await driver.acquire();
     const again = await driver.acquire();
     expect(again.nonce).toBe(first.nonce);
+  });
+});
+
+describe('Executor — a lying pending count (CAN-2636)', () => {
+  const ME = fillSigner.address.toLowerCase() as Hex;
+  const FEES = { feeBumpPercent: 15, gasLimitMarginPercent: 20 };
+
+  /** The fake chain answers `pending` as `inflated` from now on; every other call stays honest. */
+  const inflatePending = (w: Awaited<ReturnType<typeof world>>, inflated: bigint) => {
+    const honest = w.dst.request.bind(w.dst);
+    w.dst.request = (async (request) =>
+      request.method === 'eth_getTransactionCount' && request.params?.[1] === 'pending' ? `0x${inflated.toString(16)}` : honest(request)) as typeof w.dst.request;
+  };
+
+  test('an inflated pending answer does not move the counter: latest + open nonces is used, and it is reported', async () => {
+    const w = await world();
+    inflatePending(w, 100n);
+    const suspects: SuspectNonce[] = [];
+    const driver = new TransactionDriver({ chain: DST, client: w.chains.get(DST)!.client, signer: fillSigner, store: w.store, owner: 'r1', leaseTtlMs: 5_000, fees: FEES, logger: w.logger, onSuspectNonce: (s) => suspects.push(s) });
+    const lease = await driver.acquire();
+    expect(lease.nonce).toBe(0n);
+    expect(suspects).toEqual([{ chain: DST, address: ME, pending: 100n, latest: 0n, open: 0, used: 0n }]);
+    expect(w.logger.entries.some((e) => e.message.startsWith('tx: the pending nonce is above latest'))).toBe(true);
+  });
+
+  test('pending within latest + open nonces is taken as is: own transactions in flight are not a jump', async () => {
+    const w = await world();
+    const suspects: SuspectNonce[] = [];
+    const driver = new TransactionDriver({ chain: DST, client: w.chains.get(DST)!.client, signer: fillSigner, store: w.store, owner: 'r1', leaseTtlMs: 5_000, fees: FEES, logger: w.logger, onSuspectNonce: (s) => suspects.push(s) });
+    const first = await driver.acquire();
+    await driver.send(first, { to: ME, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'cancel' }, w.clock.now());
+    const second = await driver.acquire(); // pending 1 = latest 0 + 1 open nonce
+    expect(second.nonce).toBe(1n);
+    expect(suspects).toEqual([]);
+  });
+
+  test('the executor reports nonce.suspect and still fills on the true next nonce', async () => {
+    const w = await world();
+    inflatePending(w, 1_000n);
+    const executor = w.executor();
+    expect(await executor.deliver(w.orderHash, 0)).toMatchObject({ status: 'sent' });
+    expect(w.fills().map((t) => t.nonce)).toEqual([0n]);
+    const [suspect] = w.stages('nonce.suspect');
+    expect(suspect!.detail).toMatchObject({ chain: DST, address: ME, pending: '1000', latest: '0', open: 0, used: '0' });
+    await w.tick(3_000);
+    expect(await fillOf(w)).toMatchObject({ state: 'confirmed' });
+    executor.stop();
   });
 });
 

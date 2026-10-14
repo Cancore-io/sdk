@@ -236,7 +236,10 @@ receipted ──► pending ──► sent ──► included ──► confirme
   (`delivery.nonceLeaseTtlMs`, default 60 s), recorded before they are broadcast; the lease is re-checked
   at the record and renewed while the nonce is driven. Every lease TTL a replica claims the expired leases of
   dead replicas and drives their nonces from the chain. A held nonce with nothing recorded is reused, so an
-  abandoned send never strands the transactions behind it.
+  abandoned send never strands the transactions behind it. A new nonce is `max(pending on chain, last
+  allocated + 1)`, and the store never lowers its counter; so a `pending` above `latest` + the key's open
+  nonces is not believed — that bound is used and stage `nonce.suspect` raised (CAN-2636). A real jump means
+  something else sends from the delivery key.
 - **Restart** (N-15). The fill record, the nonce journal and `filled(orderHash)` decide: a fill already
   recorded on a nonce is driven, never sent a second time; a receipted attempt with nothing under way is
   delivered.
