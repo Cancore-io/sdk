@@ -231,6 +231,13 @@ receipted ──► pending ──► sent ──► included ──► confirme
   by `delivery.feeBumpPercent` (15 %, at least 10), while `validUntil` has not passed and never above
   `chains.<caip2>.maxFeePerGasWei`. Once the chain's own time is past `validUntil` the fill can never succeed,
   and its nonce is freed by a zero-value transfer to self.
+- **Replacement caps** (F-3, R-14). A `fill` or `approve` is never replaced above 3× the first
+  `maxFeePerGas` on its nonce (`REPLACEMENT_FEE_CAP_MULTIPLE`); a `cancel` counts from its own first
+  cancel, so a fill stuck at its cap can always be cancelled up to `maxFeePerGasWei`. A `settle` has no relative cap — capping it
+  would lose the payout when gas spikes — only `chains.<caip2>.maxFeePerGasWei`; within
+  `settlement.alertBeforeRefundMs` of `refundAfter` it is replaced at that ceiling at once, so set the ceiling
+  on every chain the filler settles on. A capped transaction stays as it is and is resent, same bytes, if a
+  node drops it; stage `tx.capped` (`reason`: `relative-cap` or `ceiling`) reports it once.
 - **Reorgs.** A fill is done `chains.<caip2>.fillConfirmations` deep (default `openConfirmations`). An
   inclusion that disappears is resent — the same bytes on the same nonce — while the ticket is live (T-30);
   the block header and receipt of the last inclusion seen stay on the fill record as evidence (R-3).
@@ -252,7 +259,7 @@ receipted ──► pending ──► sent ──► included ──► confirme
 - **Events.** `filled { orderHash, attempt, txHash, amount }` once confirmed; stages `fill.sent` (nonce,
   gas limit, fees), `fill.replaced`, `fill.included`, `fill.reorged`, `fill.reverted`, `fill.cancelled`,
   `fill.confirmed` (`gasUsed`, `effectiveGasPrice`, `latencyMs`, `replacements`), `fill.refused`,
-  `approve.sent`, `approve.confirmed`.
+  `approve.sent`, `approve.confirmed`, `tx.capped`.
 
 ## Settlement
 

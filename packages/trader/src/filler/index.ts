@@ -124,7 +124,8 @@ export type {
   TicketState,
 } from './store';
 
-export { DEFAULT_DELIVERY } from './delivery/executor';
+export { DEFAULT_DELIVERY, DEFAULT_SETTLE_URGENCY_MS } from './delivery/executor';
+export { FeeCeilingError, REPLACEMENT_FEE_CAP_MULTIPLE, ReplacementCapError } from './delivery/transactions';
 export type { DeliveryOptions, DeliveryResult, FillAmountHook, FillAmountInput, FillRefusal } from './delivery/executor';
 
 export { DEFAULT_SETTLEMENT, SettleError } from './settlement/settler';
