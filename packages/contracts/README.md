@@ -408,6 +408,13 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.11` — dev intent routers (CAN-2331). Additive.
+  - `EvmDeployment` gains `router` and `routerBlock`; `DEPLOYMENTS.devnet` names the router of
+    Sepolia, BNB testnet, Arbitrum Sepolia and Robinhood testnet as recorded and verified in
+    `evm-contracts` `deployments/router/dev/` (#120, CAN-2327).
+  - `FILLER_GATEWAYS.devnet.ticketSigners` is the ticket signer those routers register; the
+    gateway key stays `null` until the gateway release publishes it.
+
 - `0.2.0-rc.10` — the order names its filler (OD-1, OD-6; CAN-2496). **Breaking**: every order
   hash changes.
   - `Order` gains a twelfth and last field, `bytes32 fillerId` = `fillerIdHash(fillerId)` of the
