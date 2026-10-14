@@ -121,7 +121,7 @@ function caseOf({ note, sourceChainId, domain, order, proof, threshold, signers,
 
 const ACME_PAYOUT = '0x742d35cc6634c0532925a3b844bc454e4438f44e';
 /** The party of the filler acme on the Canton source: its keccak256 is the Canton-source repayTo (protocol §3.15). */
-const RESERVE_PARTY = `cancore-reserve::1220${'5e'.repeat(32)}`;
+const CANTON_FILLER_PARTY = `cancore-reserve::1220${'5e'.repeat(32)}`;
 const evmProof = {
   kind: 1,
   orderHash: evmOrder.digest,
@@ -160,7 +160,7 @@ const cantonProof = {
   amountDelivered: cantonOrder.message.minReceived,
   filledAt: '1789999700',
   fillerId: utf8Hash(CANTON_FILLER),
-  repayTo: utf8Hash(RESERVE_PARTY),
+  repayTo: utf8Hash(CANTON_FILLER_PARTY),
   attempt: 1,
   setId: 3,
 };
