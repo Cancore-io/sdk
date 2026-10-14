@@ -1,6 +1,7 @@
 import {
   FILLER_PROTOCOL_DOMAIN,
   FILLER_QUOTE_TYPES,
+  fillerIdHash,
   hashFillerMessage,
   hashTypedData,
   requestIdHash,
@@ -201,7 +202,7 @@ describe('quote.request → onQuoteRequest → FillerQuote', () => {
   test('the hook gets the payout with the fee taken (T = 105, feeBps = 500 → 100); the quote is signed by the quote key and stored', async () => {
     const h = desk();
     const result = await h.desk.onRequest(delivery(request(h.clock)));
-    expect(h.seenRequests[0]).toMatchObject({ requestId: 'rq-1', payout: 100n, fee: 5n, inputAmount: '105' });
+    expect(h.seenRequests[0]).toMatchObject({ requestId: 'rq-1', payout: 100n, fee: 5n, inputAmount: '105', shownToUser: true });
     expect(h.seenRequests[0]!.imbalanceHint).toBeUndefined();
 
     expect(result).toHaveProperty('sent');
@@ -354,6 +355,8 @@ const order = (over: Record<string, unknown> = {}) => ({
   createdAt: '1790000000',
   fillDeadline: '1790000600',
   feeBps: '500',
+  // The user picked this filler (filler-selection.md): the order names it.
+  fillerId: fillerIdHash(FILLER),
   ...over,
 });
 
@@ -403,6 +406,18 @@ describe('quote.reconfirm → onReconfirm → quote.reconfirm.reply (T-20)', () 
     ]);
     // a decline carries no FillerQuote, and is signed by its envelope alone
     expect(recoverAddress(hashFillerMessage(decline), decline.msgSig)).toBe(h.quoteSigner.address);
+  });
+
+  test("another filler's order: no answer at all and the hook is not asked (FS-14)", async () => {
+    const h = desk();
+    const result = await h.desk.onReconfirm(delivery(reconfirm(h.clock, { order: order({ fillerId: fillerIdHash('someone-else') }) })));
+    expect(result).toEqual({ skipped: 'not-ours' });
+    expect(h.seenReconfirms).toHaveLength(0);
+    expect(h.protocol.sent).toHaveLength(0);
+    const unnamed = order();
+    delete (unnamed as Record<string, unknown>).fillerId;
+    await expect(h.desk.onReconfirm(delivery(reconfirm(h.clock, { order: unnamed })))).resolves.toEqual({ skipped: 'not-ours' });
+    expect(h.protocol.sent).toHaveLength(0);
   });
 
   test('the hook says no → declined, no signature', async () => {
