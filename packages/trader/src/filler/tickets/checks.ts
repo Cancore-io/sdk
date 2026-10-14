@@ -14,8 +14,12 @@
  * | V-E2 | `intents(orderHash).status == Opened` at `openConfirmations` depth | `ESCROW_NOT_OPEN` |
  * | V-E3 | `refundAfter − fillDeadline ≥` the filler's own proof window for the destination | `PROOF_WINDOW_TOO_SHORT` |
  * | V-T1 | the ticket signer is pinned and `ticketSigners(signer)` on the destination router | `TICKET_SIGNER_UNKNOWN` |
- * | V-E4 | `repayTo` will be paid: the input token's blocklist view on the source is false for it | not read yet (CAN-2151); that `repayTo` is the node's own padded address is held by V-T2 |
+ * | V-E4 | `repayTo` will be paid: the input token's blocklist view on the source (USDC `isBlacklisted`, USDT `isBlackListed`) is false for it; that it is the node's own padded address is held by V-T2 | `OTHER` (detail `repayTo-blocklisted`) |
  * | V-E5 | `filled == false`; balance, allowance, gas at the delivery address | `OTHER` / `NO_INVENTORY` |
+ *
+ * V-E4 has no code of its own in protocol §3.5 either: a blocklisted payout
+ * address is declined `OTHER` (detail `repayTo-blocklisted`) — the filler
+ * names another `repayTo` in its next tickets (T-45).
  *
  * V-E5 has no code of its own in protocol §3.5: an order already filled is
  * declined `OTHER` (detail `already-filled`), a filler short of balance,
@@ -34,7 +38,7 @@
 import type { DeclineReason, Hex, TicketIntentMessage, TicketIssued, TicketIssuedEvm, TicketOffer } from '@cancore/contracts';
 import type { FillerChains } from '../chain';
 import { ChainReadError } from '../chain/client';
-import { erc20Allowance, erc20BalanceOf } from '../chain/erc20';
+import { erc20Allowance, erc20BalanceOf, erc20Blocklisted } from '../chain/erc20';
 import { hashOrder, hashTicket } from '../chain/hashes';
 import { INTENT_STATUS } from '../chain/router';
 import type { EvmChainId } from '../chains';
@@ -224,9 +228,16 @@ export class TicketVerifier {
     pass('V-T1');
 
     // -- V-E4: repayTo will be paid ----------------------------------------------------------------
-    // V-T2 already holds ticket.repayTo to the node's own padded address; the source token's
-    // blocklist view (USDC isBlacklisted, USDT isBlackListed) is not read yet.
-    pass('V-E4', 'not checked: the blocklist view of the input token is not read yet (CAN-2151); repayTo is the node\'s own, held by V-T2', 'skipped');
+    // V-T2 already holds ticket.repayTo to the node's own padded address: here, that the source
+    // token does not blocklist it — a blocklisted payee makes settle revert, and the advance is lost (R-8).
+    const repayTo = String(ticket.repayTo);
+    if (!/^0x0{24}[0-9a-fA-F]{40}$/.test(repayTo)) throw new Refusal('V-E4', 'TICKET_MISMATCH', 'repayTo of an EVM source is not a padded address');
+    const inputToken = String(offer.order.inputToken);
+    if (!/^0x[0-9a-fA-F]{40}$/.test(inputToken)) throw new Refusal('V-E4', 'OTHER', 'the input token is not an EVM address');
+    const payee = `0x${repayTo.slice(26)}`.toLowerCase() as Hex;
+    const blocklisted = await this.chainRead('V-E4', 'OTHER', () => erc20Blocklisted(source.client, inputToken.toLowerCase() as Hex, payee));
+    if (blocklisted) throw new Refusal('V-E4', 'OTHER', `repayTo-blocklisted: the input token ${inputToken} blocklists ${payee}`);
+    pass('V-E4');
 
     // -- V-E5: the filler can fill ---------------------------------------------------------------
     const filled = await this.chainRead('V-E5', 'OTHER', () => destination.router.filled(digest));

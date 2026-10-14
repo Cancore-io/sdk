@@ -92,6 +92,8 @@ const intentOf = (h: Awaited<ReturnType<typeof setup>>): TicketIntentMessage => 
   validFrom: h.offer.validFrom, validUntil: h.offer.validUntil, deliveryKey: fill.address.toLowerCase() as Hex, repayTo: repayToFromEvm(fill.address), sig: '0x',
 });
 
+const INPUT_TOKEN = '0x0000000000000000000000000000000000000056';
+
 const ORDER_OF_CHECKS = ['form', 'V-T4', 'V-T2', 'V-T3', 'V-E1', 'V-E2', 'V-E3', 'V-T1', 'V-E4', 'V-E5'];
 
 describe('all checks pass: { ok: true }, every check reported to the EventSink', () => {
@@ -100,27 +102,26 @@ describe('all checks pass: { ok: true }, every check reported to the EventSink',
     const result = await h.verifier.verify(h.input);
     expect(result).toMatchObject({ ok: true });
     expect(result.checks.map((c) => c.check)).toEqual(ORDER_OF_CHECKS);
-    expect(result.checks.filter((c) => c.check !== 'V-E4').every((c) => c.status === 'passed')).toBe(true);
-    // V-E4 is not checked yet: reported as skipped, never as passed.
-    expect(result.checks.find((c) => c.check === 'V-E4')).toMatchObject({ status: 'skipped', detail: expect.stringMatching(/CAN-2151/) });
+    expect(result.checks.every((c) => c.status === 'passed')).toBe(true);
     const stages = h.events.events.filter((e) => e.type === 'stage' && e.stage === 'ticket.checked');
     expect(stages).toHaveLength(ORDER_OF_CHECKS.length);
     expect(stages[0]).toMatchObject({ orderHash: h.orderHash, attempt: 0, detail: { check: 'form', status: 'passed' } });
-    expect(stages.find((e) => e.type === 'stage' && e.detail?.check === 'V-E4')).toMatchObject({ detail: { status: 'skipped' } });
+    expect(stages.find((e) => e.type === 'stage' && e.detail?.check === 'V-E4')).toMatchObject({ detail: { status: 'passed' } });
   });
 
-  test('only the pinned routers and the output token are read, with the node RPC', async () => {
+  test("only the pinned routers, the output token and the input token's blocklist are read, with the node RPC", async () => {
     const h = await setup();
     await h.verifier.verify(h.input);
     const targets = (chain: FakeChain) => new Set(chain.calls.filter((c) => c.method === 'eth_call').map((c) => (c.params![0] as { to: string }).to));
-    expect(targets(h.src)).toEqual(new Set([SRC_ROUTER]));
+    expect(targets(h.src)).toEqual(new Set([SRC_ROUTER, INPUT_TOKEN]));
     expect(targets(h.dst)).toEqual(new Set([DST_ROUTER, TOKEN]));
   });
 
   test('the escrow is read openConfirmations deep', async () => {
     const h = await setup();
     await h.verifier.verify(h.input);
-    expect(h.src.calls.filter((c) => c.method === 'eth_call').map((c) => h.src.numberOfHash((c.params![1] as { blockHash: string }).blockHash))).toEqual([97n]);
+    const escrowReads = h.src.calls.filter((c) => c.method === 'eth_call' && (c.params![0] as { to: string }).to === SRC_ROUTER);
+    expect(escrowReads.map((c) => h.src.numberOfHash((c.params![1] as { blockHash: string }).blockHash))).toEqual([97n]);
   });
 });
 
@@ -219,11 +220,36 @@ describe('boundaries pass', () => {
   });
 });
 
-describe('V-E4 until the blocklist read (CAN-2151)', () => {
-  test('the ticket carries repayTo, V-T2 holds it to the node\'s own; the blocklist part of V-E4 is reported skipped, never passed', async () => {
+describe('V-E4: the input token does not blocklist repayTo (CAN-2151)', () => {
+  test.each(['isBlacklisted', 'isBlackListed'] as const)('a payee blocklisted through %s: declined OTHER, nothing after it runs', async (view) => {
     expect(FILL_TICKET_TYPES.FillTicket.map((f) => f.name)).toContain('repayTo');
     const h = await setup();
+    h.src.token(INPUT_TOKEN).block(fill.address, view);
     const result = await h.verifier.verify(h.input);
-    expect(result.checks.find((c) => c.check === 'V-E4')).toMatchObject({ status: 'skipped', detail: expect.stringMatching(/blocklist.*CAN-2151/) });
+    expect(result).toMatchObject({ ok: false, reason: 'OTHER', detail: expect.stringMatching(/^V-E4: repayTo-blocklisted/) });
+    expect(result.checks.find((c) => c.check === 'V-E4')).toMatchObject({ status: 'failed' });
+    expect(result.checks.some((c) => c.check === 'V-E5')).toBe(false);
+  });
+
+  test('a blocklist that holds others, or a token without one: passed', async () => {
+    const h = await setup();
+    h.src.token(INPUT_TOKEN).block(`0x${'77'.repeat(20)}`, 'isBlackListed');
+    await expect(h.verifier.verify(h.input)).resolves.toMatchObject({ ok: true });
+    const bare = await setup();
+    bare.src.token(INPUT_TOKEN);
+    await expect(bare.verifier.verify(bare.input)).resolves.toMatchObject({ ok: true });
+  });
+
+  test('a blocklist that cannot be read is unverifiable: declined, never passed (N-12)', async () => {
+    const h = await setup();
+    const honest = h.src.request.bind(h.src);
+    h.src.request = (async (request) => {
+      const to = (request.params?.[0] as { to?: string } | undefined)?.to;
+      if (request.method === 'eth_call' && to === INPUT_TOKEN) throw new Error('connection reset');
+      return honest(request);
+    }) as typeof h.src.request;
+    const result = await h.verifier.verify(h.input);
+    expect(result).toMatchObject({ ok: false, reason: 'OTHER', detail: expect.stringMatching(/^V-E4: unverifiable/) });
+    expect(result.checks.find((c) => c.check === 'V-E4')).toMatchObject({ status: 'failed' });
   });
 });

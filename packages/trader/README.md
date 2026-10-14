@@ -289,12 +289,12 @@ They stop at the first failure, and the failure is the `ticket.decline` reason:
 | V-E2 | `intents(orderHash).status == Opened`, read `openConfirmations` deep on the source | `ESCROW_NOT_OPEN` |
 | V-E3 | `refundAfter − fillDeadline ≥ requiredProofWindowSec` of the destination | `PROOF_WINDOW_TOO_SHORT` |
 | V-T1 | the ticket signer is in `ticketSigners` of the config and `ticketSigners(signer)` on the destination router | `TICKET_SIGNER_UNKNOWN` |
-| V-E4 | `repayTo` will be paid: the input token's blocklist view on the source is false for it | not read yet (CAN-2151): reported `skipped`; that `repayTo` is the node's own is held by V-T2 |
+| V-E4 | `repayTo` will be paid: the input token's blocklist view on the source (USDC `isBlacklisted`, USDT `isBlackListed`) is false for it; a token without one passes; that `repayTo` is the node's own is held by V-T2 | `OTHER` (`repayTo-blocklisted`) |
 | V-E5 | not `filled` on the destination; balance and allowance ≥ `amountOut`, gas ≥ `minGasWei` | `OTHER` (`already-filled`), `NO_INVENTORY` |
 
 A fact that cannot be read declines with the code of the check that needed it (`unverifiable: …` in the
 detail): an unverifiable ticket is never receipted. No setting turns a check off. Each check's result —
-`passed`, `failed` or `skipped` (V-E4 for now) — is emitted as stage `ticket.checked`. V-T4 compares the
+`passed`, `failed` or `skipped` — is emitted as stage `ticket.checked`. V-T4 compares the
 time `ticket.issued` arrived, which the protocol client writes on the attempt when the frame is received; a
 ticket whose arrival is not recorded is refused as unverifiable. A Canton source and a Canton-form ticket are declined `OTHER` until their
 checks land; V1 does not check the draw.
