@@ -4,10 +4,10 @@
 // package's copy: the JSON, golden vectors included, under spec/typed-data/, and
 // the types as `as const` TypeScript under src/generated/typedData.ts.
 //
-// Separate from sync.mjs so a schema can be refreshed without re-syncing every
-// ABI; `npm run sync` runs both. Nothing here is edited by hand.
+// This is the typed-data phase of full `npm run sync`; releases must run both
+// scripts so ABI and schema provenance share one source. Nothing is edited by hand.
 //
-//   EVM_CONTRACTS_DIR=../evm-contracts node scripts/sync-typed-data.mjs
+//   EVM_CONTRACTS_DIR=../evm-contracts npm run sync
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
