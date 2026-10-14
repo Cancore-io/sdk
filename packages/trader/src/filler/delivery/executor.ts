@@ -237,6 +237,15 @@ export class Executor {
           ...(readers.config.maxFeePerGasWei !== undefined ? { maxFeePerGasWei: readers.config.maxFeePerGasWei } : {}),
         },
         logger: this.options.logger,
+        onSuspectNonce: (suspect) =>
+          this.stage('nonce.suspect', undefined, undefined, {
+            chain: suspect.chain,
+            address: suspect.address,
+            pending: suspect.pending.toString(),
+            latest: suspect.latest.toString(),
+            open: suspect.open,
+            used: suspect.used.toString(),
+          }),
       });
       this.drivers.set(chain, driver);
     }
