@@ -75,11 +75,13 @@ export interface FillerGateway {
 /**
  * The published gateway key and ticket signers per environment — the release
  * data a taker checks every S→F signature and every ticket against, and never
- * takes from a gateway message. Empty in the RC: the keys do not exist yet
- * (O-6); the gateway release fills them in. Test keys never appear here.
+ * takes from a gateway message. A key that does not exist yet is null or
+ * absent (O-6); the gateway release fills it in. Test keys never appear here.
  */
 export const FILLER_GATEWAYS: Readonly<Record<DeploymentEnv, FillerGateway>> = {
   mainnet: { gateway: null, ticketSigners: [] },
   testnet: { gateway: null, ticketSigners: [] },
-  devnet: { gateway: null, ticketSigners: [] },
+  // The ticket signer every dev router registers (evm-contracts deployments/router/dev/*.input.json, CAN-2331).
+  // The gateway key is published with the gateway release.
+  devnet: { gateway: null, ticketSigners: ['0x9a3fc3f44cddbdfb036a8c8a528a903d0c835c1c'] },
 };

@@ -150,6 +150,24 @@ describe('deployments', () => {
     expect(deploymentOf('mainnet', 'ethereum')?.htlc).toBe('0xB3f8BD762fa2a895Ba8Cd35142b7b82b8b413F76');
     expect(deploymentOf('devnet', 'ethereum')).toBeUndefined();
   });
+
+  test('every devnet chain has its intent router at its deployment block (evm-contracts deployments/router/dev, CAN-2331)', () => {
+    // Values as recorded in evm-contracts deployments/router/dev/<network>.json and export.env.
+    const records: Record<string, [router: string, block: number]> = {
+      sepolia: ['0xfd227a0de77807206f4eEF9eE6eDd5795a45EF95', 11913649],
+      bnb_testnet: ['0x57A8ad8392C5fF21aF52Fc3Cf246C1a464aCc6B1', 136752813],
+      arbitrum_sepolia: ['0x7e27831316F7Ee8E44B96056F4354A6D1a22953a', 319105856],
+      robinhood_testnet: ['0xF833A980ae858fe3cD14a79a9f610525AbB95BF9', 135089078],
+    };
+    expect(DEPLOYMENTS.devnet.map((d) => d.network).sort()).toEqual(Object.keys(records).sort());
+    for (const [network, [router, block]] of Object.entries(records)) {
+      expect(deploymentOf('devnet', network)).toMatchObject({ router, routerBlock: block });
+    }
+    const routers = DEPLOYMENTS.devnet.map((d) => d.router!.toLowerCase());
+    expect(new Set(routers).size).toBe(routers.length);
+    // Routers are not on testnet or mainnet yet.
+    for (const env of ['mainnet', 'testnet'] as const) expect(DEPLOYMENTS[env].every((d) => d.router === undefined)).toBe(true);
+  });
 });
 
 test('the FeeClaim struct is the contract’s, field for field, in order', () => {
