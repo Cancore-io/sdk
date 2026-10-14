@@ -34,14 +34,14 @@ export const ERROR_CODES = [
   'BAD_REQUEST', 'UNAUTHENTICATED', 'UNSUPPORTED_VERSION', 'UNSUPPORTED_TYPE', 'BAD_SIGNATURE',
   'STALE_MESSAGE', 'REPLAYED_MESSAGE', 'TICKET_REFUSED',
   'UNKNOWN_REQUEST', 'UNKNOWN_TICKET', 'TICKET_CLOSED', 'NOT_ELIGIBLE', 'RATE_LIMITED', 'INTERNAL',
-  'ATTESTATIONS_NOT_READY',
+  'ATTESTATIONS_NOT_READY', 'CANTON_NOT_READY', 'CANTON_REFUSED', 'CANTON_UNAVAILABLE', 'OPERATION_EXPIRED',
 ] as const;
 /** HTTP status of each error code on the REST fallback. */
 export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   BAD_REQUEST: 400, UNAUTHENTICATED: 401, UNSUPPORTED_VERSION: 400, UNSUPPORTED_TYPE: 400, BAD_SIGNATURE: 422,
   STALE_MESSAGE: 400, REPLAYED_MESSAGE: 409, TICKET_REFUSED: 409,
   UNKNOWN_REQUEST: 404, UNKNOWN_TICKET: 404, TICKET_CLOSED: 409, NOT_ELIGIBLE: 403, RATE_LIMITED: 429, INTERNAL: 500,
-  ATTESTATIONS_NOT_READY: 404,
+  ATTESTATIONS_NOT_READY: 404, CANTON_NOT_READY: 409, CANTON_REFUSED: 422, CANTON_UNAVAILABLE: 503, OPERATION_EXPIRED: 410,
 };
 /** `error.reason` with `TICKET_REFUSED`: the pre-ticket check that failed (S-21). */
 export const TICKET_REFUSED_REASONS = [
@@ -57,6 +57,12 @@ export const QUOTE_FINAL_STATUSES = [...QUOTE_ACK_STATUSES, 'REPLACED', 'BAD_SIG
 export const PENALTY_STEPS = ['L1', 'L2', 'L3', 'L4'] as const;
 export const DRAW_CLOSED_BY = ['OFFER_TIMEOUT', 'OFFER_DECLINE', 'TICKET_DECLINE', 'TICKET_EXPIRED', 'FILLED'] as const;
 export const TICKET_LIST_STATUSES = ['OFFERED', 'ISSUED'] as const;
+/** The Canton operations of the filler's own party (§3.19): the backend prepares and submits, the node signs with its party key. */
+export const CANTON_OPS = ['party.allocate', 'registry.accept', 'delivery.fill', 'intent.settle', 'holdings.transfer'] as const;
+/** `holdings.transfer` result: the receiver holds it, or a TransferInstruction waits for it to accept. */
+export const CANTON_TRANSFER_OUTCOMES = ['COMPLETED', 'PENDING'] as const;
+export const CANTON_LEG_KINDS = ['transaction', 'topology'] as const;
+export const CANTON_REGISTRY_STATES = ['NONE', 'PROPOSED', 'ACTIVE', 'REMOVED'] as const;
 
 export type DeclineReason = (typeof DECLINE_REASONS)[number];
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -67,6 +73,9 @@ export type QuoteAckStatus = (typeof QUOTE_ACK_STATUSES)[number];
 export type QuoteFinalStatus = (typeof QUOTE_FINAL_STATUSES)[number];
 export type PenaltyStep = (typeof PENALTY_STEPS)[number];
 export type DrawClosedBy = (typeof DRAW_CLOSED_BY)[number];
+export type CantonOp = (typeof CANTON_OPS)[number];
+export type CantonLegKind = (typeof CANTON_LEG_KINDS)[number];
+export type CantonRegistryState = (typeof CANTON_REGISTRY_STATES)[number];
 
 /** `ICancoreRouter.Order` on the wire: every numeric field a decimal string, as `canton-order.json`. */
 export interface OrderJson {
@@ -207,11 +216,112 @@ export interface OrderSettled extends S2FBase {
 }
 export interface PenaltyApplied extends S2FBase { type: 'penalty.applied'; violationId: string; code: string; step: PenaltyStep; details: Record<string, unknown> }
 
+// --- Canton operations of the filler's own party (§3.19). Hashes and party-key material are lowercase hex; the
+// node signs the bytes of each leg's hash with its Ed25519 party key and never talks to a Ledger API.
+
+/** A Canton asset: the instrument admin party and its id. */
+export interface CantonAsset { admin: string; id: string }
+/** What each op takes: the backend picks every contract itself. */
+export interface CantonOpParams {
+  'party.allocate': { publicKey: Hex };
+  'registry.accept': Record<string, never>;
+  'delivery.fill': { orderHash: Hex; attempt: number };
+  'intent.settle': { orderHash: Hex };
+  /** To a party other than the filler's own; never what the party's open delivery orders need. */
+  'holdings.transfer': { asset: CantonAsset; amount: string; toParty: string };
+}
+/** What the prepared legs do, by op: the node checks it before it signs. */
+export interface CantonOpSummary {
+  'party.allocate': {
+    partyId: string; publicKey: Hex;
+    /** On the Cancore participant alone, Confirmation, threshold 1: the node checks the decoded topology against it. */
+    hosting: { participantUid: string; permission: 'CONFIRMATION'; threshold: 1 };
+  };
+  'registry.accept': { fillerId: string; party: string; operator: string; proposalCid: string };
+  'delivery.fill': {
+    orderHash: Hex; attempt: number; deliveryOrderCid: string; recipient: string; asset: CantonAsset; amount: string; repayTo: Hex; validUntil: DecString;
+    /** The party's holdings the transfer spends; what they hold beyond `amount` comes back as change. */
+    inputHoldingCids: string[];
+    /** The transfer's executeBefore: the order's fillDeadline. */
+    executeBefore: DecString;
+    /** The registry factory the order pins. */
+    transferFactoryCid: string;
+  };
+  'intent.settle': {
+    orderHash: Hex; intentCid: string; asset: CantonAsset;
+    /** What the payee is paid: `giveAmount` less `fee.amount`. */
+    amount: string;
+    executeBefore: DecString;
+    /** The filler's own party. */
+    payee: string;
+    /** The intent's committed give, fee-inclusive. */
+    giveAmount: string;
+    /** The fee leg to the operator; amount 0 when there is none. */
+    fee: { receiver: string; amount: string };
+  };
+  'holdings.transfer': { asset: CantonAsset; amount: string; receiver: string; inputHoldingCids: string[]; executeBefore: DecString };
+}
+/** What the committed operation created, by op. */
+export interface CantonOpResult {
+  'party.allocate': { partyId: string };
+  'registry.accept': { entryCid: string };
+  'delivery.fill': { receiptCid: string };
+  'intent.settle': Record<string, never>;
+  'holdings.transfer': { outcome: (typeof CANTON_TRANSFER_OUTCOMES)[number]; transferInstructionCid?: string };
+}
+/**
+ * A prepared transaction to sign. The node MUST, before signing (§3.19): recompute `hash` from
+ * `preparedTransaction` with the hashing of `hashingSchemeVersion`, decode the transaction and check it against
+ * the `summary` of the op (template and choice, parties, instrument, amount); on any difference, not sign.
+ */
+export interface CantonLegTransaction {
+  legId: string;
+  kind: 'transaction';
+  /** 32 bytes. */
+  hash: Hex;
+  /** Base64 protobuf. Never logged. */
+  preparedTransaction: string;
+  /** e.g. `HASHING_SCHEME_VERSION_V2`. */
+  hashingSchemeVersion: string;
+}
+/**
+ * The party's onboarding topology, in `party.allocate` only. The node MUST, before signing (§3.19): recompute
+ * the multihash over `topologyTransactions` and check they create `summary.partyId` with `summary.publicKey` as
+ * its only signing key, hosted on the Cancore participant; on any difference, not sign.
+ */
+export interface CantonLegTopology {
+  legId: string;
+  kind: 'topology';
+  /** `0x1220` ‖ sha256: 34 bytes. */
+  hash: Hex;
+  /** Base64 protobuf, in order. */
+  topologyTransactions: string[];
+}
+/** One thing to sign. The kind is closed: a leg of any other kind is refused, never signed. */
+export type CantonLeg = CantonLegTransaction | CantonLegTopology;
+export interface CantonSignature { legId: string; signature: Hex }
+export type CantonPrepare = { [K in CantonOp]: F2SBase & { type: 'canton.prepare'; op: K; params: CantonOpParams[K] } }[CantonOp];
+export type CantonPrepared = {
+  [K in CantonOp]: S2FBase & {
+    type: 'canton.prepared'; fillerId: string; re: string; operationId: string; op: K;
+    /** Topology legs with `party.allocate` only. */
+    legs: K extends 'party.allocate' ? CantonLegTopology[] : CantonLegTransaction[];
+    summary: CantonOpSummary[K]; expiresAt: TimeMs;
+  };
+}[CantonOp];
+/** Idempotent per `operationId`: a repeat gets the same `canton.submitted`. */
+export interface CantonSubmit extends F2SBase { type: 'canton.submit'; operationId: string; signatures: CantonSignature[] }
+export type CantonSubmitted = {
+  [K in CantonOp]: S2FBase & { type: 'canton.submitted'; fillerId: string; re: string; operationId: string; op: K; updateId?: string; result: CantonOpResult[K] };
+}[CantonOp];
+
 export type S2FMessage =
   | AuthChallenge | AuthOk | PingS2F | PongS2F | ErrorMessage | EpochWeights | QuoteRequest | QuoteAck | QuoteReconfirm
-  | TicketOffer | TicketIntentAck | TicketIssued | TicketExpired | OrderSettled | PenaltyApplied | SettleAttestations;
+  | TicketOffer | TicketIntentAck | TicketIssued | TicketExpired | OrderSettled | PenaltyApplied | SettleAttestations
+  | CantonPrepared | CantonSubmitted;
 export type F2SMessage =
-  | AuthResponse | PingF2S | PongF2S | ErrorF2S | QuoteMessage | QuoteReconfirmReply | TicketIntentMessage | TicketDecline | TicketReceiptMessage | FillReported;
+  | AuthResponse | PingF2S | PongF2S | ErrorF2S | QuoteMessage | QuoteReconfirmReply | TicketIntentMessage | TicketDecline | TicketReceiptMessage | FillReported
+  | CantonPrepare | CantonSubmit;
 
 // --- REST (protocol §3.6); an error body is the `error` message itself.
 
@@ -229,6 +339,20 @@ export interface StakeBindingRequest extends F2SEnvelope { partnerId: string; st
 export interface FillerStats { won: number; delivered: number; noShow: number; reliability: number; capacityUsd: string; inFlightUsd: string }
 export interface PenaltyRecord { violationId: string; code: string; step: PenaltyStep; orderHash?: Hex; attempt?: number; at: TimeMs; details: Record<string, unknown> }
 export type PenaltyList = Page<PenaltyRecord>;
+/** `GET /v1/filler/canton/party`: the party registered for the fillerId and its `FillerRegistryEntry`. */
+export interface CantonParty {
+  party: string | null;
+  publicKey: Hex | null;
+  registry: { state: CantonRegistryState; proposalCid: string | null; entryCid: string | null };
+}
+export interface CantonHolding { contractId: string; asset: CantonAsset; amount: string; locked: boolean }
+/** `GET /v1/filler/canton/holdings`. */
+export type CantonHoldingList = Page<CantonHolding>;
+export interface CantonDeliveryOrder {
+  deliveryOrderCid: string; orderHash: Hex; attempt: number; asset: CantonAsset; amount: string; recipient: string; repayTo: Hex; validUntil: DecString;
+}
+/** `GET /v1/filler/canton/delivery-orders`. */
+export type CantonDeliveryOrderList = Page<CantonDeliveryOrder>;
 
 // --- Public records (auction-and-draw §3.3–3.4) and the gateway identity.
 

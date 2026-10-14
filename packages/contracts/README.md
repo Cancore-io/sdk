@@ -277,7 +277,12 @@ A filler logs in over REST and only then opens the WebSocket:
 The same token authenticates REST (`Authorization: Bearer`). `auth.challenge` and
 `auth.response` never travel on the socket (`REST_ONLY_TYPES`). Over a per-fillerId rate limit
 the gateway answers `error RATE_LIMITED` with `retryAfterMs` (on REST: 429, always unsigned, with
-`retryAfterMs` and `Retry-After`); send nothing of that rate class before it has passed.
+`retryAfterMs` and `Retry-After`); send nothing of that rate class before it has passed. The
+classes: `quote`, `ticket` (ticket and fill messages), `service` (ping, pong, error), `read` (every
+bearer GET), `login`, and two for §3.19, whose Canton traffic Cancore pays: `cantonPrepare` —
+`canton.prepare`, an hourly budget per filler (60 by default, staff may change it per filler;
+operator decision A2-1) — and `canton` — `canton.submit`. A spent prepare budget pauses new
+prepares only: the submit of an operation already prepared keeps its own class.
 
 ### Attestation signatures for `settle`
 
@@ -302,6 +307,48 @@ settleSigs(payload); // EVM: the sigs of settle(order, proof, sigs); Canton: can
 
 Recover every signer and check it against `attestationSetFor(orderHash)` with your own
 secp256k1 library (T-7). `scripts/gen-settle-attestations.mjs` writes the vectors.
+
+### Canton operations of the filler party
+
+A filler's Canton party is an external party on the Cancore participant; its Ed25519 key stays
+in the node, and the node never talks to a Ledger API (protocol §3.19). Cancore prepares each
+transaction, the node signs the prepared hash with its party key, Cancore submits it and pays
+the Canton traffic. Two messages, on the WebSocket or as REST bodies:
+
+| Op (`CANTON_OPS`) | `params` | What it does |
+|---|---|---|
+| `party.allocate` | `publicKey` | creates the party (topology legs, `kind: 'topology'`) |
+| `registry.accept` | — | accepts the `FillerRegistryEntryProposal` of the fillerId |
+| `delivery.fill` | `orderHash`, `attempt` | `DeliveryOrder_Fill` of a Canton ticket issued to the filler |
+| `intent.settle` | `orderHash` | `SwapIntent_SettleWithProof` of a Canton-source order the filler delivered |
+| `holdings.transfer` | `asset`, `amount`, `toParty` | `TransferFactory_Transfer` of its own holdings to a party it names; what its open delivery orders need stays |
+
+`canton.prepare` → `canton.prepared` (`operationId`, `legs`, `summary`, `expiresAt`);
+`canton.submit` (one Ed25519 signature per leg) → `canton.submitted`.
+
+**The node never signs blind.** What its party key signs is what Cancore assembled, and `summary`
+is only what Cancore says about it, so before signing a leg the node MUST:
+
+- `kind: 'transaction'` — recompute `hash` from `preparedTransaction` with the participant's
+  prepared-transaction hashing of `hashingSchemeVersion`, decode the transaction and check it
+  against `summary` for the op: template and choice, acting and receiving parties, instrument,
+  amount;
+- `kind: 'topology'` (only in `party.allocate`; the schema refuses it in any other op) — recompute
+  the multihash over `topologyTransactions` and check that they create `summary.partyId` with
+  `summary.publicKey` as its only signing key, hosted on the Cancore participant.
+
+Checking against `summary` means the economics too, decoded from the transaction's child nodes,
+never taken from `summary` alone: for `delivery.fill` the `TransferFactory_Transfer` under
+`DeliveryOrder_Fill` — sender (its party), receiver, instrument, amount, the `inputHoldingCids`,
+`executeBefore`, the pinned factory — against the order the node itself accepted; for
+`intent.settle` the settlement's legs — the payee is its party and receives `amount`, the only
+other leg is the fee to the operator — against the intent it delivered for.
+
+On any difference it does not sign. The kind of a leg is closed: an unknown kind is refused. Submit is idempotent per `operationId`. REST: `POST /v1/filler/canton/prepare`,
+`POST /v1/filler/canton/submit`; reads of the own party: `GET /v1/filler/canton/party`,
+`/holdings`, `/delivery-orders`. Refusals: `CANTON_NOT_READY` (409), `CANTON_REFUSED` (422),
+`CANTON_UNAVAILABLE` (503, retry), `OPERATION_EXPIRED` (410, prepare again), plus
+`UNKNOWN_TICKET`, `TICKET_CLOSED` and `NOT_ELIGIBLE` for an operation on someone else's ticket or party.
 
 `FILLER_GATEWAYS` is where the gateway key and the ticket signers of each environment are
 published. It is empty in the RC: no gateway key exists yet.
@@ -408,6 +455,20 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.12` — Canton operations of the filler party through Cancore (CAN-2649, operator
+  decision T-1). Additive.
+  - Frames `canton.prepare`, `canton.prepared`, `canton.submit`, `canton.submitted` (27 frame
+    types); REST `POST /v1/filler/canton/{prepare,submit}`, `GET /v1/filler/canton/{party,holdings,delivery-orders}`.
+  - Error codes `CANTON_NOT_READY`, `CANTON_REFUSED`, `CANTON_UNAVAILABLE`, `OPERATION_EXPIRED`.
+  - `CANTON_OPS`, `CANTON_LEG_KINDS`, `CANTON_REGISTRY_STATES` and their types.
+  - Legs carry what they are over and are verified before signing: `CantonLegTransaction`
+    (`preparedTransaction` and `hashingSchemeVersion` required), `CantonLegTopology`
+    (`topologyTransactions`, `party.allocate` only); the leg kind is closed.
+  - Fifth op `holdings.transfer` (operator decision Yu-1); `party.allocate` states its `hosting`
+    (Cancore participant, Confirmation, threshold 1); rate class `cantonPrepare`, the hourly budget
+    of `canton.prepare` (A2-1), apart from `canton` of `canton.submit`.
+  - Rate classes `canton` (`canton.submit`, operator decision Sh-2) and `cantonPrepare`; the trader
+    SDK pauses each on a 429 like the other classes.
 - `0.2.0-rc.11` — dev intent routers (CAN-2331). Additive.
   - `EvmDeployment` gains `router` and `routerBlock`; `DEPLOYMENTS.devnet` names the router of
     Sepolia, BNB testnet, Arbitrum Sepolia and Robinhood testnet as recorded and verified in

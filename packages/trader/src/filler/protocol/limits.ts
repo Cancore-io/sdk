@@ -11,10 +11,10 @@ import { GatewayError } from '../errors';
 import type { Clock } from '../runtime';
 
 /** The rate classes of filler-gateway. */
-export type RateClass = 'quote' | 'ticket' | 'service' | 'read' | 'login';
+export type RateClass = 'quote' | 'ticket' | 'service' | 'read' | 'login' | 'canton' | 'cantonPrepare';
 
 /** The classes a WebSocket frame can fall in; a refusal that names no frame of ours pauses them all. */
-export const WS_RATE_CLASSES: readonly RateClass[] = ['quote', 'ticket', 'service'];
+export const WS_RATE_CLASSES: readonly RateClass[] = ['quote', 'ticket', 'service', 'canton', 'cantonPrepare'];
 
 const FRAME_CLASSES: Readonly<Record<string, RateClass>> = {
   quote: 'quote',
@@ -23,6 +23,10 @@ const FRAME_CLASSES: Readonly<Record<string, RateClass>> = {
   'ticket.decline': 'ticket',
   'ticket.receipt': 'ticket',
   'fill.reported': 'ticket',
+  // The Canton operations of the filler's party (protocol §3.19): the traffic is Cancore's. Prepares draw on an
+  // hourly budget of their own, so a spent budget pauses new prepares only, never the submit of a prepared one.
+  'canton.prepare': 'cantonPrepare',
+  'canton.submit': 'canton',
 };
 
 /** The class a filler → filler-gateway frame counts in; `ping`, `pong`, `error` and unknown types are `service`. */
