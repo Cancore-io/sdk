@@ -35,6 +35,9 @@
  *   before `acceptBy − offerReplyMarginMs`, or throws, declines `OTHER`; so does
  *   a signer that fails. The kill-switch declines `PAUSED` without the hook.
  * - **Restart.** After every login the open attempts are resumed from the store.
+ * - **One attempt per order** (filler-selection.md). The user picks the filler;
+ *   there is no redraw. An offer of a later attempt of an order this filler was
+ *   already offered is stale and declined without asking the hook.
  */
 import type { DeclineReason, Hex, PenaltyApplied, TicketDecline, TicketExpired, TicketIntentMessage, TicketIssued, TicketOffer, TicketReceiptMessage } from '@cancore/contracts';
 import { EXPIRED_RESULTS } from '@cancore/contracts';
@@ -284,6 +287,8 @@ export class TicketDesk {
     const decline = (reason: OfferDeclineReason, detail: string) => this.decline(orderHash, attempt, ['offered'], reason, detail);
     if (clock.now() > offer.acceptBy) return this.giveUp(orderHash, attempt, 'acceptBy passed before an answer');
     if ((await this.options.store.getOverrides()).paused) return decline('PAUSED', 'the kill-switch is on');
+    const earlier = await this.options.store.withOrder(orderHash, async (tx) => (await tx.listTickets()).some((r) => r.attempt < attempt));
+    if (earlier) return decline('OTHER', 'stale: one attempt per order, and an earlier attempt of this order exists');
     const identity = identityFor(offer.order, this.options);
     if (!identity) return decline('OTHER', 'no fill key or payee of this filler for the order');
 

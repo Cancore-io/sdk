@@ -62,8 +62,8 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 
 | Member | Returns | Does | Task |
 |---|---|---|---|
-| `onQuoteRequest(hook)` | `void` | price for a `quote.request` (with `payout` and `fee` added): `{ amountOut, validUntil }` or `null` | CAN-1852 |
-| `onReconfirm(hook)` | `void` | stand behind `order.minReceived` for an opened order (with `payout` and `fee` added): `boolean` | CAN-1852 |
+| `onQuoteRequest(hook)` | `void` | price for a `quote.request` (with `payout`, `fee` and `shownToUser: true` added — the user sees the quote with this filler's profile and picks the filler): `{ amountOut, validUntil }` or `null` | CAN-1852, CAN-2482 |
+| `onReconfirm(hook)` | `void` | stand behind `order.minReceived` for an opened order this filler was picked for (with `payout` and `fee` added): `boolean`. A no or silence is a `RECONFIRM_DECLINE` (statistics only); a signed `ticket.decline` of the offer that follows is a `PICKED_DECLINE`, which counts towards a ban | CAN-1852, CAN-2482 |
 | `onTicketOffer(hook)` | `void` | take the ticket: `'accept'`, `'decline'` (`OTHER`) or `{ decline: reason, detail? }` | CAN-1861 |
 | `start()` | `Promise<void>` | login over REST, then the WebSocket with the token; heartbeat, reconnect, REST fallback; reconcile from the store; then quote, take tickets, fill, settle. Needs all three hooks. Resolves at the first `auth.ok` | CAN-1847 |
 | `stop()` | `Promise<void>` | closes the session; in-flight work stays in the store for any replica | CAN-1847 |
@@ -206,6 +206,8 @@ offered ──► intent-sent ──► intent-acked ──► checking ──�
 - **Outcome.** `ticket.expired` is stored on the attempt and reported as stage `ticket.expired` with its result
   (an unknown result as `OTHER`); `penalty.applied` and `order.settled` become the `penalty` and `settled`
   events; every decline the `declined` event.
+- **One attempt per order** (filler-selection.md). The user picks the filler; there is no redraw. An offer
+  of a later attempt of an order this filler was already offered is stale: declined `OTHER` without the hook.
 
 ## Delivery
 
@@ -324,7 +326,9 @@ checks land; V1 does not check the draw.
   and restarts, so a later quote in the window replaces the earlier one.
 - **Firm price.** Each sent quote is stored before it goes out and stays there as the firm price until its
   `validUntil` (T-4); its `quote.ack` is attached when it arrives.
-- **Reconfirm.** `quote.reconfirm` is accepted only at `order.minReceived` — a frame whose `amountOut`
+- **Reconfirm.** filler-gateway asks only the filler the user picked, when its price expired before the
+  offer (FS-14): a `quote.reconfirm` whose `order.fillerId` is not this filler's is dropped unanswered, the
+  hook not asked. It is accepted only at `order.minReceived` — a frame whose `amountOut`
   differs is declined without asking the hook (T-20) — and only before `replyBy`. An accepted reply signs
   `FillerQuote{requestId, filler, minReceived, validUntil, nonce}` with a fresh nonce and
   `validUntil = ⌈replyBy / 1000⌉ + ticketTtl + 30 s`. Declines carry no signature.
