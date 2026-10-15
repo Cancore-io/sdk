@@ -27,9 +27,9 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
   let ticker: (() => void) | undefined;
   const audited: { method: string; decision: string; reason?: string }[] = [];
   let hooks: Parameters<Deps['createEngine']>[1] | undefined;
-  const crash = { make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0 };
+  const crash = { hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0 };
   const deps = (): Deps => ({
-    keystore: { init: jest.fn(), initSeed: jest.fn(), unlock: async () => ({ destroy: () => undefined }) as never, lock: () => undefined, isLocked: () => false, publicKey: async () => 'ab' },
+    keystore: { init: jest.fn(), initSeed: jest.fn(), unlock: async () => ({ destroy: () => undefined }) as never, lock: () => void (crash.wiped = true), isLocked: () => false, publicKey: async () => 'ab' },
     audit: {
       append: async (e) => (audited.push(e as never), e as never),
       verify: async () => ({ ok: true as const, entries: 0 }),
@@ -45,6 +45,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         make: async (p) => {
           const orderId = `o${++seq}`;
           // The API created the order, the answer never reached the daemon.
+          if (crash.hang) return new Promise(() => undefined);
           if (crash.make) throw new Error('socket hang up');
           // The API answered and refused: no order exists.
           if (crash.refuse) throw Object.assign(new Error('POST /orders → 400'), { status: 400 });
@@ -95,7 +96,12 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
       hooks!.onSettled(orderId);
       await new Promise((r) => setTimeout(r, 0));
     },
-    unlock: () => call('unlock', { passphrase: 'x' }),
+    // Unlock reconciles in the background; a macrotask lets it finish.
+    unlock: async () => {
+      const r = await call('unlock', { passphrase: 'x' });
+      await new Promise((res) => setTimeout(res, 0));
+      return r;
+    },
     restart: async () => {
       await d.lock();
       d = createDispatcher(deps());
@@ -352,9 +358,14 @@ describe('an order whose answer was lost', () => {
     w.advance(61_000);
     await w.restart();
     await w.unlock();
+    // One empty lookup is not proof: the order may not be listed yet. A second, a minute later, is.
+    expect(w.state().intents).toHaveLength(1);
+    w.advance(61_000);
+    await w.tick();
     expect(w.state().intents).toEqual([]);
-    expect(w.state().openOrders).toEqual([]);
-    expect(strategyOf(w).placed).toEqual([]);
+    // The dropped placement is undone; the same tick places the slot again, once.
+    expect(w.state().openOrders).toEqual([expect.objectContaining({ orderId: 'o2', strategy: expect.objectContaining({ slot: '0:buy' }) })]);
+    expect(strategyOf(w).placed).toHaveLength(1);
   });
 
   it('keeps its strategy running as unconfirmed, and a later tick adopts the order without a restart', async () => {
@@ -386,11 +397,27 @@ describe('an order whose answer was lost', () => {
     expect(w.state().intents).toHaveLength(1);
     w.advance(61_000);
     await w.tick();
+    expect(w.state().intents).toHaveLength(1);
+    w.advance(61_000);
+    await w.tick();
     await w.tick();
     expect(w.state().intents).toEqual([]);
     expect(w.made.map((m) => m.side)).toContain('buy');
     expect(w.state().openOrders.some((o) => o.strategy?.slot === '0:buy')).toBe(true);
     expect(strategyOf(w)).toMatchObject({ status: 'running' });
+  });
+
+  it('an adopted order that filled while it was an intent goes into the position', async () => {
+    const w = world();
+    await w.unlock();
+    w.crash.make = true;
+    await expect(w.call('order.make', make, false)).rejects.toMatchObject({ message: 'unconfirmed' });
+    w.crash.found = 'o1';
+    w.statuses.o1 = 'completed';
+    w.advance(61_000);
+    await w.tick();
+    expect(w.state().openOrders).toEqual([]);
+    expect(w.state().positions).toMatchObject({ CC: '1' });
   });
 
   it('backs off a lookup that keeps failing', async () => {
@@ -425,6 +452,22 @@ describe('an order whose answer was lost', () => {
     await expect(w.call('order.make', make, false)).rejects.toBeDefined();
     expect(w.state().orderTimes).toHaveLength(1);
   });
+});
+
+describe('lock', () => {
+  it('wipes the key at once and returns, even with a strategy stuck on a hung API call', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('strategy.start', grid, false);
+    w.crash.hang = true;
+    w.tick();
+    await new Promise((r) => setTimeout(r, 10));
+    const started = Date.now();
+    await expect(w.call('lock')).resolves.toMatchObject({ result: { locked: true } });
+    expect(w.crash.wiped).toBe(true);
+    // Bounded by the drain timeout, not by the hung call.
+    expect(Date.now() - started).toBeLessThan(7_000);
+  }, 10_000);
 });
 
 describe('onboarding', () => {

@@ -73,3 +73,17 @@ describe('engine.register', () => {
     await expect(e.register('X')).rejects.toThrow(/bad invite/);
   });
 });
+
+describe('engine.make', () => {
+  const params = { base: 'CC', quote: 'USDCx', side: 'buy' as const, amount: '10', price: '0.15', clientKey: 'k1' };
+
+  it('turns a DvP refusal (SettleError, no swap) into a definite 4xx, and leaves any other error alone', async () => {
+    let fail: unknown;
+    const e = await engineOver({ swap: { create: async () => Promise.reject(fail) } });
+    const { SettleError } = await import('@cancore/client/selfcustody');
+    fail = new SettleError('placing the order: allocation-DvP is not open', null);
+    await expect(e.make(params)).rejects.toMatchObject({ status: 400 });
+    fail = new Error('socket hang up');
+    await expect(e.make(params)).rejects.not.toHaveProperty('status');
+  });
+});

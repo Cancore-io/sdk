@@ -246,14 +246,15 @@ with a client key, before the API is called; the key rides on the order as its d
 unconfirmed intent counts as an open order for the risk gate. On the next unlock the daemon looks
 for the order among one page of 100 of the bot's orders (the API's default order): by the key, or, if the API rewrote the description,
 by the same pair, side and amounts created within 10 minutes of the intent. A match is adopted onto
-the book (and settles or ends like any other); no match drops the intent. Limit: two identical
+the book (and settles or ends like any other, including a fill that happened while it was an intent);
+no match twice, a minute apart, drops the intent. Intents younger than 60 s are not looked up at all. Limit: two identical
 orders within that window, both with their description rewritten, cannot be told apart.
 
 **Lost answers.** A make whose answer never arrives (network error, timeout, 5xx) returns
 `unconfirmed` (code -32005) and keeps its intent; a strategy stays `running` and its slot stays held.
-Each tick looks up intents older than 60 s the same way an unlock does; a lookup that fails backs off
+Each tick looks them up the same way an unlock does (unlock does it in the background); a lookup that fails backs off
 (2, 4, 8 … minutes, at most 15). A dropped intent frees the slot, so the strategy places it again. A
-4xx refusal is a definite no: the intent and its hourly slot are dropped at once. An agent must not
+4xx refusal (including a DvP refusal) is a definite no: the intent and its hourly slot are dropped at once. An agent must not
 repeat an `unconfirmed` make: that is how duplicates happen.
 
 ## Day to day

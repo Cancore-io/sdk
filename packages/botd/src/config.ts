@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -40,14 +41,29 @@ export const DEFAULTS: BotConfig = {
   baseUrl: 'https://api.cancore.io',
 };
 
+const str = z.string().min(1);
+/** Strict: a misspelt key or a wrong type is an error at start, not a silently ignored pin. */
+const configSchema = z
+  .object({
+    daemonUser: str, clientsGroup: str, stateDir: str, agentSocket: str, ownerSocket: str, baseUrl: z.string().url(),
+    ownerParty: str, venuePartyId: str, maxFeeRate: str, feeRecipientPartyId: z.union([str, z.array(str)]),
+    network: z.enum(['devnet', 'testnet', 'mainnet']), maxFee: str, ordersPerHour: z.number().int().positive(),
+  })
+  .partial()
+  .strict();
+
 /** A missing file at the default path means defaults; a missing explicit path is an error. */
 export function loadConfig(path?: string): BotConfig {
+  let raw: unknown;
   try {
-    return { ...DEFAULTS, ...(JSON.parse(readFileSync(path ?? DEFAULT_CONFIG_PATH, 'utf8')) as Partial<BotConfig>) };
+    raw = JSON.parse(readFileSync(path ?? DEFAULT_CONFIG_PATH, 'utf8'));
   } catch (err) {
     if (!path && (err as NodeJS.ErrnoException).code === 'ENOENT') return { ...DEFAULTS };
     throw err;
   }
+  const parsed = configSchema.safeParse(raw);
+  if (!parsed.success) throw new Error(`config: ${parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; ')}`);
+  return { ...DEFAULTS, ...parsed.data };
 }
 
 export const paths = (config: BotConfig) => ({

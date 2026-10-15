@@ -1,4 +1,4 @@
-import { createSelfCustody, DEFAULT_VENUES, networkOf, type DvpNetwork, type ServeHandle, type SessionOptions } from '@cancore/client/selfcustody';
+import { createSelfCustody, DEFAULT_VENUES, SettleError, networkOf, type DvpNetwork, type ServeHandle, type SessionOptions } from '@cancore/client/selfcustody';
 import { dec, fmt, mul, SCALE } from '../decimal';
 import { guardSigning } from '../verify';
 import type { BotSigner, Engine, EngineHooks } from '../types';
@@ -26,6 +26,9 @@ export interface EngineOptions {
 /** Where an intent may have landed: an order created this long before or after it was recorded. */
 const INTENT_WINDOW_MS = 10 * 60_000;
 
+/** A call with no answer by then is given up (an order make becomes unconfirmed), so no tick hangs forever. */
+const FETCH_TIMEOUT_MS = 20_000;
+
 /** The client key as it rides on the order. */
 export const intentTag = (key: string) => `cancore-botd:${key}`;
 
@@ -49,7 +52,7 @@ export function createEngine(options: EngineOptions): Engine {
   // A venue taken from the API's fee-config would let the API pick who settles: pinned, or no engine.
   const venuePartyId = pinnedVenue(options);
   if (!venuePartyId) throw new Error(`no venue is pinned for ${options.baseUrl}: set venuePartyId (or network) in the config`);
-  const guarded = guardSigning(options.signer, options.fetchImpl ?? ((url, init) => globalThis.fetch(url, init)), hooks.onVerifyFailed);
+  const guarded = guardSigning(options.signer, options.fetchImpl ?? ((url, init) => globalThis.fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS) })), hooks.onVerifyFailed);
   const acct = createSelfCustody({
     baseUrl: options.baseUrl,
     signer: guarded.signer,
@@ -72,6 +75,9 @@ export function createEngine(options: EngineOptions): Engine {
         dvp: true,
         description: intentTag(clientKey),
         ...(ttlSeconds && { expirationHours: Math.max(1, Math.ceil(ttlSeconds / 3600)) }),
+      }).catch((err: unknown) => {
+        // A DvP refusal (4xx) comes back as a SettleError without a swap and without the status: still a "no".
+        throw err instanceof SettleError && err.swapId === null ? Object.assign(new Error(err.message), { status: 400 }) : err;
       });
       return { orderId: order.id };
     },

@@ -34,8 +34,12 @@ export async function promptSecret(question: string): Promise<string> {
   out._writeToOutput = (s) => {
     if (!muted) process.stdout.write(s);
   };
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    let answered = false;
+    // Ctrl-D / EOF closes the interface without an answer: fail instead of hanging.
+    rl.once('close', () => answered || reject(new Error('no input')));
     rl.question(question, (answer) => {
+      answered = true;
       rl.close();
       process.stdout.write('\n');
       resolve(answer);

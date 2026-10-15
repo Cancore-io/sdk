@@ -170,6 +170,8 @@ describe('cancore-botd end to end', () => {
     try {
       expect(await owner('status')).toMatchObject({ locked: true, paused: false });
       await owner('unlock', { passphrase: 'pass' });
+      // Unlock reconciles in the background.
+      for (let i = 0; i < 100 && state().openOrders.length > 0; i++) await new Promise((r) => setTimeout(r, 20));
       expect(state()).toMatchObject({ openOrders: [], positions: { CC: '10' }, dailyVolume: { CC: '10' } });
     } finally {
       await stop();

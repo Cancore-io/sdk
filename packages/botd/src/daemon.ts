@@ -55,6 +55,9 @@ const withoutOne = (list: number[], value: number) => {
   return i < 0 ? list : [...list.slice(0, i), ...list.slice(i + 1)];
 };
 
+/** How long a lock waits for background work after the key is wiped. */
+const LOCK_DRAIN_MS = 5_000;
+
 /** An intent younger than this may still be in flight: no lookup can tell it was never made. */
 const INTENT_SETTLE_MS = 60_000;
 /** Ceiling of the backoff between lookups of one intent while the API keeps failing. */
@@ -193,44 +196,48 @@ export function createDispatcher(deps: Deps): Dispatcher {
     onVerifyFailed: (detail) => later(() => append({ ...settleEntry, decision: 'deny', reason: 'verify_failed', params: { detail } })),
   };
 
-  /**
-   * Orders that settled or ended while the daemon was down. A failed lookup leaves the order as it was.
-   * An intent first: the order it made (if any) is adopted, so the loop below settles or ends it too.
-   */
-  /** Per-intent lookup backoff, in memory: a restart retries at once, which is what an unlock wants. */
-  const lookups = new Map<string, { failures: number; next: number }>();
+  /** Per-intent lookup state, in memory: failed lookups back off, an empty one is confirmed once more. */
+  const lookups = new Map<string, { failures: number; misses: number; next: number }>();
+
+  /** An order of ours that settled or ended while nobody listened goes through the same hooks as a live one. */
+  async function settleIfDone(e: Engine, orderId: string) {
+    const info = await e.order(orderId).catch(() => undefined);
+    if (info?.status === 'completed') hooks.onSettled(orderId);
+    else if (info && ENDED.has(info.status)) hooks.onEnded(orderId, info.status);
+  }
 
   /**
-   * Adopts the order an intent made, or drops an intent the API never saw. Intents possibly still in flight
-   * wait; `periodic` (a tick) also honours each intent's lookup backoff, an unlock does not.
+   * Adopts the order an intent made, or drops an intent the API never saw. An intent possibly still in
+   * flight waits; one is dropped only after two empty lookups INTENT_SETTLE_MS apart.
    */
-  async function reconcileIntents(e: Engine, periodic = false) {
+  async function reconcileIntents(e: Engine) {
     const now = deps.now();
     for (const intent of (await deps.state.load()).intents ?? []) {
-      const backoff = lookups.get(intent.key);
-      // Too young to judge even on unlock: a make from before a fast lock/unlock may still be in flight.
-      if (now - intent.at < INTENT_SETTLE_MS || (periodic && backoff && now < backoff.next)) continue;
+      const seen = lookups.get(intent.key) ?? { failures: 0, misses: 0, next: 0 };
+      if (now - intent.at < INTENT_SETTLE_MS || now < seen.next) continue;
       const known = (await deps.state.load()).openOrders.map((o) => o.orderId);
       const found = await e.findIntent(intent, known).then((id) => ({ id }), () => undefined);
       if (!found) {
-        const failures = (backoff?.failures ?? 0) + 1;
-        lookups.set(intent.key, { failures, next: now + Math.min(INTENT_SETTLE_MS * 2 ** failures, LOOKUP_BACKOFF_MAX_MS) });
+        const failures = seen.failures + 1;
+        lookups.set(intent.key, { ...seen, failures, next: now + Math.min(INTENT_SETTLE_MS * 2 ** failures, LOOKUP_BACKOFF_MAX_MS) });
+        continue;
+      }
+      if (!found.id && seen.misses === 0) {
+        lookups.set(intent.key, { ...seen, misses: 1, next: now + INTENT_SETTLE_MS });
         continue;
       }
       lookups.delete(intent.key);
       await mutate((s) => (found.id ? adoptIntent(s, intent, found.id) : dropIntent(s, intent)));
       await append({ ...settleEntry, decision: 'allow', params: { event: found.id ? 'intent_adopted' : 'intent_dropped', key: intent.key, ...(found.id && { orderId: found.id }) } });
+      // It may have filled while it was an intent: its settle event found nothing on the book then.
+      if (found.id) await settleIfDone(e, found.id);
     }
   }
 
+  /** Orders that settled or ended while the daemon was down. A failed lookup leaves the order as it was. */
   async function reconcile(e: Engine) {
     await reconcileIntents(e);
-    for (const o of (await deps.state.load()).openOrders) {
-      const info = await e.order(o.orderId).catch(() => undefined);
-      if (info?.status === 'completed') hooks.onSettled(o.orderId);
-      else if (info && ENDED.has(info.status)) hooks.onEnded(o.orderId, info.status);
-    }
-    await background;
+    for (const o of (await deps.state.load()).openOrders) await settleIfDone(e, o.orderId);
   }
 
   const needEngine = () => {
@@ -283,7 +290,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
   async function tick() {
     if (!engine) return;
     const [state, limits] = await Promise.all([deps.state.load(), deps.limits.load()]);
-    await reconcileIntents(engine, true);
+    await reconcileIntents(engine);
     for (const rec of (state.strategies ?? []).filter(active)) await step(rec, limits);
   }
 
@@ -307,11 +314,14 @@ export function createDispatcher(deps: Deps): Dispatcher {
     // Strategies stay `running` on disk: the next unlock resumes them.
     stopTicks?.();
     stopTicks = undefined;
-    await engine?.stop().catch(() => undefined);
-    await background;
+    const running = engine;
+    // The key goes first: a hung network call in a tick must never keep it in memory.
     signer?.destroy();
     signer = engine = undefined;
     deps.keystore.lock();
+    await running?.stop().catch(() => undefined);
+    // Bounded: hooks still in flight finish or are left behind, the lock does not wait on the network.
+    await Promise.race([background, new Promise((r) => setTimeout(r, LOCK_DRAIN_MS).unref())]);
     await mutate((s) => ({ ...s, locked: true }));
   }
 
@@ -457,7 +467,9 @@ export function createDispatcher(deps: Deps): Dispatcher {
         engine = deps.createEngine(signer, hooks);
         await mutate((s) => ({ ...s, locked: false }));
         engine.start();
-        await reconcile(engine);
+        // In the background: a slow API must not time the unlock out after the key is already loaded.
+        const unlocked = engine;
+        later(() => reconcile(unlocked));
         // First unlock of an account registered elsewhere (the web app): onboard it and learn its party.
         // A new account needs `register` (owner) first; until then this fails quietly and is logged.
         if (!(await deps.state.load()).partyId) {
