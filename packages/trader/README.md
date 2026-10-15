@@ -378,8 +378,18 @@ failure, three attempts in all. A prepare is never sent twice for one call. Prep
 `cantonPrepare` rate class (an hourly budget) and submits in `canton`, so a spent budget pauses new
 prepares only.
 
-`allocateParty()` carries the topology check built in. `party()`, `holdings()` and `deliveryOrders()`
-read the party's own state. `createCantonOperations` gives a node command a client with its own REST
+`allocateParty()`, `acceptRegistry(fillerId)` and `transfer(params)` carry their checks built in.
+The party is recognised by its namespace, the fingerprint of the node key:
+
+- `acceptRegistry`: one root, `FillerRegistryEntryProposal_Accept` on the stated proposal, acting as
+  the party alone, creating exactly the `FillerRegistryEntry` of this fillerId and party, signed by
+  the operator and the party;
+- `transfer`: one root, `TransferFactory_Transfer` through the token-standard interface, acting as
+  the party alone, moving the asked amount of the asked instrument to the asked party, spending only
+  the stated holdings, with the stated `executeBefore` still ahead; no contract in it is created for
+  a third party.
+
+`party()`, `holdings()` and `deliveryOrders()` read the party's own state. `createCantonOperations` gives a node command a client with its own REST
 login.
 
 ## Injected interfaces
