@@ -1,17 +1,7 @@
 import { promises as fs } from 'fs';
 import { z } from 'zod';
+import { dec } from './decimal';
 import type { Limits } from './types';
-
-/** Fixed-point scale: 10 decimals, the ledger's Numeric 10. */
-export const SCALE = 10n ** 10n;
-
-/** A signed decimal string as exact 1e-10 units; throws on anything else, never rounds. */
-export function dec(text: string): bigint {
-  const m = /^(-?)(\d{1,20})(?:\.(\d{1,10}))?$/.exec(text);
-  if (!m) throw new Error(`not a decimal: ${text}`);
-  const v = BigInt(m[2]!) * SCALE + BigInt((m[3] ?? '').padEnd(10, '0'));
-  return m[1] ? -v : v;
-}
 
 // Positive, at most 10 decimals, below 1e15: a cap the owner could mean.
 const cap = z

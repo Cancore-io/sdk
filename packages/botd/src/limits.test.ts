@@ -1,7 +1,8 @@
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { dec, emptyLimits, loadLimits, parseLimits } from './limits';
+import { dec } from './decimal';
+import { emptyLimits, loadLimits, parseLimits } from './limits';
 
 const good = {
   allowedPairs: ['CC/USDCx'],

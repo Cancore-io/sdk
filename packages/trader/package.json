@@ -9,6 +9,11 @@
       "import": "./dist/filler/index.js",
       "default": "./dist/filler/index.js"
     },
+    "./filler/canton/hashing": {
+      "types": "./dist/filler/canton/hashing.d.ts",
+      "import": "./dist/filler/canton/hashing.js",
+      "default": "./dist/filler/canton/hashing.js"
+    },
     "./filler/testing": {
       "types": "./dist/filler/testing/index.d.ts",
       "import": "./dist/filler/testing/index.js",

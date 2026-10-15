@@ -26,7 +26,8 @@ export interface AuditEntry {
   seq: number;
   /** ISO-8601 UTC. */
   at: string;
-  method: Method;
+  /** `settle`: what the background settlement loop did (a fill, an expiry, a refused signature). */
+  method: Method | 'settle';
   riskClass: RiskClass;
   decision: 'allow' | 'deny' | 'error';
   reason?: DenyReason | string;
@@ -43,6 +44,8 @@ export interface AuditLog {
   /** Re-walks the chain; `brokenAt` is the first seq whose hash or prev does not match. */
   verify(): Promise<{ ok: true; entries: number } | { ok: false; brokenAt: number }>;
   tail(n: number): Promise<AuditEntry[]>;
+  /** Flushes pending appends and closes the file. */
+  close(): Promise<void>;
 }
 
 /** Owner-set limits. Amounts are decimal strings. Absent = not allowed (default-deny). */
@@ -70,7 +73,8 @@ export interface BotState {
   paused: boolean;
   pauseReason?: string;
   partyId?: string;
-  openOrders: { orderId: string; pair: string; side: 'buy' | 'sell'; amount: string; price: string }[];
+  /** Orders this bot made, and orders of others it took (`taken`), until they settle or end. */
+  openOrders: { orderId: string; pair: string; side: 'buy' | 'sell'; amount: string; price: string; taken?: boolean }[];
   /** Per-instrument net position, decimal string. */
   positions: Record<string, string>;
   /** Per-instrument traded amount in the rolling 24h window. */
@@ -79,6 +83,11 @@ export interface BotState {
   recentCommands: number[];
   /** Reference prices per pair, decimal string. */
   referencePrices: Record<string, string>;
+  /** Fills of the last 24h, the source of `dailyVolume`. Epoch ms, base instrument, base amount. */
+  fills?: { at: number; instrument: string; amount: string }[];
+  /** The last audit entry this state has seen: a log that no longer holds it was truncated. */
+  lastAuditSeq?: number;
+  lastAuditHash?: string;
 }
 
 export interface Command<M extends Method = Method> {
@@ -97,11 +106,43 @@ export interface StrategyHandle {
   stop(): Promise<void>;
 }
 
-/** Self-custody trading over the client; every order goes through verify before signing. */
+/** An order of someone else's, as the API lists it: `source` is what its maker gives. */
+export interface OrderInfo {
+  orderId: string;
+  status: string;
+  source: string;
+  sourceAmount: string;
+  target: string;
+  targetAmount: string;
+}
+
+/** Self-custody trading over the client; every signature goes through the verifying signer (verify.ts). */
 export interface Engine {
   make(params: Params<'order.make'>): Promise<{ orderId: string }>;
+  /** Queues the taker side on the settlement loop; resolves once queued, not once settled. */
   take(params: Params<'order.take'>): Promise<{ orderId: string; filled: string }>;
   cancel(orderId: string): Promise<void>;
+  /** Any order by id: one to take, or one of ours to reconcile. */
+  order(orderId: string): Promise<OrderInfo>;
+  balances(instruments: string[]): Promise<{ instrument: string; amount: string; locked: string }[]>;
+  /** Market rate per `BASE/QUOTE`, both directions of every listed pair. */
+  referencePrices(): Promise<Record<string, string>>;
+  /** Sends `amount` of `instrument` to `to`; the daemon has already held `to` to the pinned owner party. */
+  withdraw(to: string, instrument: string, amount: string): Promise<void>;
+  /** Starts the background DvP settlement loop (make and take sides, autoWithdraw of expired allocations). */
+  start(): void;
+  /** Stops the settlement loop; a step already being signed finishes. */
+  stop(): Promise<void>;
   /** Runs the strategy loop until stopped. */
   serve(strategy: Params<'strategy.start'>): Promise<StrategyHandle>;
+}
+
+/** What the engine reports back to the daemon. */
+export interface EngineHooks {
+  /** A trade this account was in settled. */
+  onSettled(orderId: string): void;
+  /** A trade ended unsettled (expired, cancelled). */
+  onEnded(orderId: string, reason: string): void;
+  /** A prepared transaction's hash did not match its bytes, or a hash nobody verified was given to sign. */
+  onVerifyFailed(reason: string): void;
 }

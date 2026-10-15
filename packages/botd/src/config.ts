@@ -17,6 +17,14 @@ export interface BotConfig {
   baseUrl: string;
   /** The only party `withdraw` may send to. */
   ownerParty?: string;
+  /** Pinned trust boundary for the engine: the API's fee-config cannot move these. */
+  venuePartyId?: string;
+  maxFeeRate?: string;
+  feeRecipientPartyId?: string | string[];
+  /** Which pinned instrument admins and fee pools apply; derived from baseUrl for Cancore's hosts. */
+  network?: 'devnet' | 'testnet' | 'mainnet';
+  /** Ceiling of one withdraw's network fee, in CC; unset refuses every withdraw. */
+  maxFee?: string;
 }
 
 export const DEFAULT_CONFIG_PATH = '/etc/cancore-bot/config.json';

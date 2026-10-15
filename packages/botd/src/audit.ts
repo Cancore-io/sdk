@@ -139,5 +139,6 @@ export async function openAuditLog(path: string): Promise<OpenedAuditLog> {
       }),
     tail: (n) =>
       serial(async () => (n <= 0 ? [] : (await readTail(path, n)).lines.map((l) => JSON.parse(l) as AuditEntry))),
+    close: () => serial(() => fh.close()),
   };
 }

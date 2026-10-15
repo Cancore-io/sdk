@@ -15,7 +15,8 @@ const USAGE = `usage: cancore-bot [--config <path>] <command>
   status
   limits show | limits set <file.json>
   pause [reason] | resume
-  withdraw --to <party>    only the owner party pinned in config
+  withdraw --to <party> --instrument <id> --amount <n>
+                           only to the owner party pinned in config
   audit verify
   install [--human <user>] [--exec <path>] [--dry-run]`;
 
@@ -84,11 +85,11 @@ export async function main(argv: string[]): Promise<number> {
         if (sub === 'set' && arg) return print(await rpc(config, 'limits.set', { limits: JSON.parse(readFileSync(arg, 'utf8')) as Record<string, unknown> })), 0;
         break;
       case 'withdraw': {
-        const to = flag(args, 'to');
-        if (!config.ownerParty) throw new Error('no ownerParty pinned in config; withdraw is disabled');
-        if (to !== config.ownerParty) throw new Error(`withdraw only to the pinned owner party ${config.ownerParty}`);
-        // shortcut: the protocol has no withdraw method yet; add one (owner class) before this can move funds.
-        throw new Error('withdraw is not supported by this daemon version');
+        const [to, instrument, amount] = [flag(args, 'to'), flag(args, 'instrument'), flag(args, 'amount')];
+        if (!to || !instrument || !amount) break;
+        // The daemon refuses any `to` but the owner party pinned in its config.
+        print(await rpc(config, 'withdraw', { to, instrument, amount }));
+        return 0;
       }
       case 'audit':
         if (sub === 'verify') {

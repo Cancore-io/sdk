@@ -37,7 +37,7 @@ describe('@cancore/botd/protocol', () => {
 
   test('parseRequest validates envelope, method and params', () => {
     expect(parseRequest({ jsonrpc: '2.0', id: 1, method: 'status' })).toMatchObject({ ok: true });
-    expect(parseRequest({ jsonrpc: '2.0', id: 1, method: 'withdraw' })).toMatchObject({ ok: false, error: { code: -32601 } });
+    expect(parseRequest({ jsonrpc: '2.0', id: 1, method: 'transfer' })).toMatchObject({ ok: false, error: { code: -32601 } });
     expect(parseRequest({ jsonrpc: '2.0', id: 1, method: 'order.take', params: { orderId: 'x', amount: '-1' } })).toMatchObject({
       ok: false,
       error: { code: -32602 },

@@ -16,6 +16,7 @@ const moduleNameMapper = {
   '^@cancore/wallet/operations$': '<rootDir>/packages/wallet/src/operations.ts',
   '^@cancore/contracts$': '<rootDir>/packages/contracts/src/index.ts',
   '^@cancore/client/selfcustody$': '<rootDir>/packages/client/src/selfcustody.ts',
+  '^@cancore/trader/filler/canton/hashing$': '<rootDir>/packages/trader/src/filler/canton/hashing.ts',
   '^@cancore/botd/protocol$': '<rootDir>/packages/botd/src/protocol/index.ts',
   '^@cancore/botd/ipc/client$': '<rootDir>/packages/botd/src/ipc/client.ts',
 };

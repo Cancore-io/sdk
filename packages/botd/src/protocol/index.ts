@@ -50,6 +50,8 @@ export const PARAMS = {
   lock: z.object({}).strict(),
   resume: z.object({}).strict(),
   'limits.set': z.object({ limits: z.record(z.unknown()) }).strict(),
+  /** Only to the owner party pinned in the daemon's config; anything else is refused. */
+  withdraw: z.object({ to: z.string().min(1), instrument, amount }).strict(),
 } as const;
 
 export type Method = keyof typeof PARAMS;
@@ -72,6 +74,7 @@ export const RISK_CLASS: Record<Method, RiskClass> = {
   lock: 'owner',
   resume: 'owner',
   'limits.set': 'owner',
+  withdraw: 'owner',
 };
 
 export const METHODS = Object.keys(PARAMS) as Method[];
@@ -115,6 +118,7 @@ export interface Results {
   lock: { locked: true };
   resume: { paused: false };
   'limits.set': { limits: Record<string, unknown> };
+  withdraw: { to: string; instrument: string; amount: string };
 }
 
 export type Result<M extends Method> = Results[M];

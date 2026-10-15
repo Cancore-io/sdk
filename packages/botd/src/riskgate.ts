@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { RISK_CLASS, type DenyReason, type Params } from './protocol/index';
-import { dec, SCALE } from './limits';
+import { dec, SCALE } from './decimal';
 import type { BotState, Command, Decision, Limits, RiskGate } from './types';
 
 /**

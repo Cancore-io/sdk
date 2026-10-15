@@ -28,10 +28,11 @@ function fakeDeps(log: string[]) {
         audited.push(e);
         return e as never;
       }),
-      verify: jest.fn(),
+      verify: jest.fn(async () => ({ ok: true as const, entries: 0 })),
       tail: jest.fn(async () => []),
+      close: jest.fn(async () => undefined),
     },
-    state: { load: async () => state, save: async (s) => void (state = s) },
+    state: { load: async () => state, save: async (s) => void (state = s), recordAudit: async () => undefined },
     limits: { load: async () => limits, save: jest.fn() },
     riskgate: jest.fn((cmd) => {
       log.push('riskgate');
@@ -42,6 +43,12 @@ function fakeDeps(log: string[]) {
       take: jest.fn(),
       cancel: jest.fn(async () => void log.push('engine:cancel')),
       serve: jest.fn(),
+      order: jest.fn(),
+      balances: jest.fn(),
+      referencePrices: async () => ({}),
+      withdraw: jest.fn(),
+      start: jest.fn(),
+      stop: jest.fn(async () => undefined),
     }),
     now: () => 1_000_000,
   };
