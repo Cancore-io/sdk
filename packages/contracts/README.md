@@ -455,6 +455,11 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.14` — `CANTON_PARTICIPANTS`: the Cancore participant per environment, next to
+  `FILLER_GATEWAYS` (decision Ын-1, CAN-2352). A filler node checks its party's hosting against it
+  when it signs `party.allocate`. Devnet `Cancore-devnet-1::1220…524b`; testnet and mainnet `null`.
+  Additive.
+
 - `0.2.0-rc.13` — `spec/protocol/vectors/settle-attestations.json` rebuilt on the 12-field
   `Order` (CAN-2643): in both cases `proof.orderHash` is the hash of `order`, `proof.fillerId` is
   `order.fillerId` and the frame is addressed to that filler (the Canton case: `acme`, was

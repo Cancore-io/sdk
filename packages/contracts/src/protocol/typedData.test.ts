@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { FILL_PROOF_TYPES } from '../eip712';
 import { encodeType, hashDomain, hashStruct, hashTypedData, type TypedDataDomain, type TypedDataTypes, typeHash } from './hash';
-import { FILLER_GATEWAYS, PROTOCOL_VERSION } from './gateway';
+import { CANTON_PARTICIPANTS, FILLER_GATEWAYS, PROTOCOL_VERSION } from './gateway';
 import {
   FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, CANTON_TICKET_RECEIPT_TYPES, FILLER_AUTH_TYPES, FILLER_KEY_REGISTRATION_TYPES, FILLER_MESSAGE_TYPES, FILLER_PROTOCOL_DOMAIN,
   FILLER_QUOTE_TYPES, GATEWAY_MESSAGE_TYPES, ORDER_TYPES, QUOTE_TYPES, routerDomain, STAKE_BINDING_TYPES, TICKET_INTENT_TYPES, TICKET_RECEIPT_TYPES,
@@ -142,4 +142,13 @@ test('the published gateway keys: devnet names the ticket signer of its routers,
   expect(PROTOCOL_VERSION).toBe('1');
   for (const env of ['mainnet', 'testnet'] as const) expect(FILLER_GATEWAYS[env]).toEqual({ gateway: null, ticketSigners: [] });
   expect(FILLER_GATEWAYS.devnet).toEqual({ gateway: null, ticketSigners: ['0x9a3fc3f44cddbdfb036a8c8a528a903d0c835c1c'] });
+});
+
+test('the Cancore participant: devnet only, a participant id without the PAR:: prefix', () => {
+  expect(CANTON_PARTICIPANTS).toEqual({
+    mainnet: null,
+    testnet: null,
+    devnet: 'Cancore-devnet-1::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b',
+  });
+  for (const id of Object.values(CANTON_PARTICIPANTS)) if (id !== null) expect(id).toMatch(/^[A-Za-z0-9_-]+::1220[0-9a-f]{64}$/);
 });
