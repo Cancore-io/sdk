@@ -6,8 +6,8 @@
  *
  *   CANCORE_INTENT_JSON=<meta>/docker/modules/genesis/out/intent.json npm run test:int
  *
- * Without CANCORE_INTENT_JSON the suite is skipped: CI of this repository has
- * no stand (the stand in CI is CAN-1876).
+ * Without CANCORE_INTENT_JSON the suite is skipped. In this repository's CI the
+ * `stand` job brings the stand up on anvil (test/stand/up.mjs) and runs it.
  */
 import { readFileSync } from 'node:fs';
 import { fillerIdHash, repayToFromEvm, type FillProof, type FillTicket, type Hex, type Order } from '@cancore/contracts';
