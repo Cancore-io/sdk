@@ -10,6 +10,11 @@ The packages a third-party dApp, an AI agent, or a wallet build installs from np
 | [`@cancore/client`](packages/client) | [`@cancore/client`](https://www.npmjs.com/package/@cancore/client) | A typed client for the API: orders and pool trades (`./swap`), the USDCx bridge (`./bridge`), live order updates over the gateway's socket (`./realtime`), scoped trading grants by device flow (`./auth`). Hands out hashes to sign, never holds a key. |
 | [`@cancore/wallet`](packages/wallet) | [`@cancore/wallet`](https://www.npmjs.com/package/@cancore/wallet) | The wallet core: key material, signing, storage contracts, the operations-envelope client. |
 | [`@cancore/trader`](packages/trader) | [`@cancore/trader`](https://www.npmjs.com/package/@cancore/trader) | Programmatic trading. `./filler`: filler protocol v1 for a filler node over injected signers, RPC, ledger and store. Holds no keys and no state of its own. Skeleton; not published yet. |
+| [`@cancore/botd`](packages/botd) | [`@cancore/botd`](https://www.npmjs.com/package/@cancore/botd) | A self-custody trading daemon (Linux, systemd): holds one bot account's key in an encrypted keystore, trades behind owner-set default-deny limits, keeps a hash-chained audit log. Release candidate. |
+| [`@cancore/bot-mcp`](packages/bot-mcp) | [`@cancore/bot-mcp`](https://www.npmjs.com/package/@cancore/bot-mcp) | An MCP server that lets an AI agent drive a local `cancore-botd` within those limits. No key, no withdraw, no limit changes. Release candidate. |
+
+**Agent skills** live in [`skills/`](skills): [`cancore-trading`](skills/cancore-trading/SKILL.md)
+teaches an agent to trade through `@cancore/bot-mcp`.
 
 **Full documentation: <https://docs.cancore.io/sdk/overview>.**
 
@@ -39,6 +44,11 @@ person unlocked. There is no code path here that moves funds a person has not
 approved. The approval is either one trade at a time, or a trading grant whose
 scopes and limits they read on the consent page and can revoke. That asymmetry
 is the design rather than an omission.
+
+The exception is **botd**, by design: it holds a bot account's key and signs that account's
+trades without asking each time. The owner chooses that for one bot wallet with its own small
+balance, sets the limits it signs within, and alone can unlock, resume, change limits or withdraw
+(to the owner's own party only). bot-mcp gives an agent none of those.
 
 ## Working in this repository
 

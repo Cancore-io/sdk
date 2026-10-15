@@ -9,8 +9,8 @@ export interface BotClient {
 
 /**
  * The daemon methods an agent may reach. Owner-class methods (unlock, lock,
- * resume, limits.set) are absent by construction, and there is no withdraw,
- * send or key export on the socket at all.
+ * resume, limits.set, withdraw) are absent by construction: withdraw exists only
+ * on the owner socket, to the pinned owner party. No key export exists at all.
  */
 export const AGENT_METHODS: readonly Method[] = (Object.keys(RISK_CLASS) as Method[]).filter(
   (method) => RISK_CLASS[method] !== 'owner',

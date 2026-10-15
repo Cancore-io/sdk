@@ -6,7 +6,9 @@ npm install @cancore/bot-mcp
 
 A stdio MCP server that lets an AI agent drive a local `cancore-botd` within the owner's limits. It is a thin client of the daemon's unix socket: no key, no signer, no strategy engine in this package.
 
-It can read state, reduce risk and trade within limits. It has no tool to withdraw, send, export a key, change limits, unlock or resume: those are owner-only and live in the `cancore-bot` CLI.
+It can read state, reduce risk and trade within limits. It has no tool to withdraw, send, export a key, change limits, unlock, lock or resume. `withdraw` exists, but only as an owner method on the daemon's owner socket, to the owner party pinned in the daemon's config, through the `cancore-bot` CLI; the agent socket refuses every owner method (`FORBIDDEN`). No key export exists anywhere.
+
+Install and secure the daemon first: [`@cancore/botd`](../botd). For agents, the [`cancore-trading` skill](../../skills/cancore-trading/SKILL.md) explains how to use these tools.
 
 ## Tools
 
@@ -26,7 +28,18 @@ It can read state, reduce risk and trade within limits. It has no tool to withdr
 | `trade_strategy_start` | trade | starts a grid or dca strategy |
 | `trade_tools` | read | this table, for the agent |
 
-Limits are enforced by the daemon. A refusal comes back as structured content `{ "denied": "<reason>" }`; a locked or paused daemon answers with an instruction for the owner. Results carry whitelisted fields only — memos, metadata and other counterparty text are dropped before the model sees them.
+Limits are enforced by the daemon. Errors come back as structured content with `isError`:
+
+| Reply | Meaning |
+|---|---|
+| `{ "denied": "<reason>" }` | the risk gate refused; `reason` is one of `DENY_REASONS` in `@cancore/botd/protocol` |
+| `{ "error": "locked", "instruction": … }` | the keystore is locked; the owner runs `cancore-bot unlock` |
+| `{ "error": "paused", "instruction": … }` | trading is paused; the owner runs `cancore-bot resume` |
+| `{ "error": "forbidden" }` | the method is not allowed on this socket |
+| `{ "error": "invalid_params", "issues": [...] }` | arguments failed the strict schema before reaching the socket |
+| `{ "error": "socket_unavailable", "instruction": … }` | no daemon at the socket, or this user is not in `cancore-bot-clients` |
+| `{ "error": "daemon_error", "code": n }` | anything else (for example the not-yet-implemented grid/dca loops) |
+ Results carry whitelisted fields only — memos, metadata and other counterparty text are dropped before the model sees them.
 
 ## Setup
 
