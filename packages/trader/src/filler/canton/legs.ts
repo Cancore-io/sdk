@@ -11,7 +11,8 @@
  *   (TopologyTransactionSignature), the set with purpose 55
  *   (MultiTopologyTransaction) — and the transactions must create exactly the
  *   party of the summary: its namespace is the fingerprint of the node key, the
- *   node key is its only signing key at threshold 1, and it is hosted on the
+ *   node key is its only signing key at threshold 1 (legacy mappings or a
+ *   self-signed PartyToParticipant), and it is hosted on the
  *   Cancore participant alone, with Confirmation permission. The backend checks
  *   only its own participant's hosting; everything else is checked here alone.
  * - Any other leg kind is refused.
@@ -22,6 +23,7 @@ import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { cantonHash, decodePreparedTransaction, fromBase64, hashPreparedTransactionV2, multiHashInput } from './hashing';
 import { type CantonTransaction, transactionView } from './transaction';
+import { partySigningKeys } from './party-signing-keys';
 
 /** The only hashing scheme a transaction leg may name. */
 export const HASHING_SCHEME_V2 = 'HASHING_SCHEME_VERSION_V2';
@@ -149,6 +151,7 @@ export async function verifyTopologyLeg(leg: CantonLegTopology, expect: PartyExp
   if (bytesToHex(multi) !== strip0x(leg.hash)) refuse('the hash is not the multihash of the topology transactions');
 
   const seen = new Set<string>();
+  let selfSigned = false;
   for (const bytes of raw) {
     let tx: TopologyTransaction;
     try {
@@ -179,6 +182,17 @@ export async function verifyTopologyLeg(leg: CantonLegTopology, expect: PartyExp
       }
       case 'partyToParticipant': {
         const p = mapping.partyToParticipant;
+        let signing: ReturnType<typeof partySigningKeys>;
+        try {
+          signing = partySigningKeys(p);
+        } catch {
+          return refuse('unsupported party hosting fields');
+        }
+        if (signing) {
+          if (signing.threshold !== 1) refuse(`the key threshold is ${signing.threshold}, not 1`);
+          if (signing.keys.length !== 1 || rawEd25519(signing.keys[0]) !== key) refuse('the party has another signing key than the node key alone');
+          selfSigned = true;
+        }
         if (p.party !== expect.partyId) refuse('the hosting is for another party');
         if (p.threshold !== 1) refuse(`the hosting threshold is ${p.threshold}, not 1`);
         const [only, ...more] = p.participants;
@@ -192,7 +206,8 @@ export async function verifyTopologyLeg(leg: CantonLegTopology, expect: PartyExp
         refuse(`a ${String(mapping.oneofKind)} mapping is not part of a party allocation`);
     }
   }
-  for (const needed of ['namespaceDelegation', 'partyToKeyMapping', 'partyToParticipant']) {
+  if (selfSigned && seen.size !== 1) refuse('the allocation mixes self-signed and legacy key mappings');
+  for (const needed of selfSigned ? ['partyToParticipant'] : ['namespaceDelegation', 'partyToKeyMapping', 'partyToParticipant']) {
     if (!seen.has(needed)) refuse(`no ${needed} mapping`);
   }
 }
