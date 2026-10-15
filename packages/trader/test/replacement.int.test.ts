@@ -98,25 +98,25 @@ live('CAN-2299: replacement cap against anvil', () => {
     expect((await d.record(lease))?.transactions.map((t) => t.hash)).toEqual([tx.hash]);
   });
 
-  test('TC-SDK-2299-02: at the cap the same bytes stay pending, go out again once the base fee falls, and are mined', async () => {
+  test('TC-SDK-2299-02: the same bytes broadcast again while the node holds them are no error and add nothing to the nonce', async () => {
     const d = driver();
-    const { tx, fees } = await first(d, 'fill');
-    await mineAt(fees.maxFeePerGas * 10n);
-    expect(await d.known(tx.hash)).toBe(true);
-    expect(await mined(d, tx.hash)).toBeUndefined();
-    await nextBaseFee(GWEI);
+    const { lease, tx } = await first(d, 'fill');
     // The node already holds these bytes: the driver takes "already known" as a success.
     await expect(d.broadcast(tx)).resolves.toBeUndefined();
+    expect(await d.known(tx.hash)).toBe(true);
+    expect((await d.record(lease))?.transactions.map((t) => t.hash)).toEqual([tx.hash]);
     await call('evm_mine');
     expect(await mined(d, tx.hash)).toBe(1);
   });
 
-  test('TC-SDK-2299-03: at the cap a transaction dropped from the mempool is broadcast again, the same bytes, and mined', async () => {
+  test('TC-SDK-2299-03: at the cap a transaction the node no longer holds is broadcast again, the same bytes, and mined', async () => {
     const d = driver();
     const { tx, fees } = await first(d, 'fill');
     await mineAt(fees.maxFeePerGas * 10n);
-    await call('anvil_dropTransaction', [tx.hash]);
+    // anvil evicts a transaction priced under the base fee; drop it explicitly so the case holds on any node.
+    await call('anvil_dropTransaction', [tx.hash]).catch(() => undefined);
     expect(await d.known(tx.hash)).toBe(false);
+    await expect(d.replacementFees(fees, { kind: 'fill', first: fees })).rejects.toBeInstanceOf(ReplacementCapError);
     await nextBaseFee(GWEI);
     await d.broadcast(tx);
     expect(await d.known(tx.hash)).toBe(true);
