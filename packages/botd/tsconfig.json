@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // A daemon runs on a machine, so Node types are allowed here (as for @cancore/mcp).
+    "types": ["jest", "node"],
+    // The sibling package's source, not its unbuilt `dist/`: typecheck runs before build.
+    "paths": {
+      "@cancore/client/selfcustody": ["../client/src/selfcustody.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  // The root config excludes this package (it is typechecked here instead);
+  // that exclude is inherited and would swallow these inputs too.
+  "exclude": []
+}
