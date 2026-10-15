@@ -17,6 +17,11 @@
       "types": "./dist/protocol/index.d.ts",
       "import": "./dist/protocol/index.js",
       "default": "./dist/protocol/index.js"
+    },
+    "./ipc/client": {
+      "types": "./dist/ipc/client.d.ts",
+      "import": "./dist/ipc/client.js",
+      "default": "./dist/ipc/client.js"
     }
   },
   "sideEffects": false,

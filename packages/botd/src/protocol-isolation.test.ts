@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { builtinModules } from 'module';
 import { parseRequest, RISK_CLASS, METHODS } from './protocol/index';
 
 const SRC = __dirname;
@@ -10,7 +11,7 @@ function reachable(file: string, seen = new Set<string>()): Set<string> {
   if (seen.has(file)) return seen;
   seen.add(file);
   const text = fs.readFileSync(file, 'utf8');
-  for (const [, spec] of text.matchAll(/(?:import|export)[^'"]*from\s+['"](\.[^'"]+)['"]/g)) {
+  for (const [, spec] of text.matchAll(/(?:import|export)(?:[^'"]*from)?\s*['"](\.[^'"]+)['"]/g)) {
     const base = path.resolve(path.dirname(file), spec!.replace(/\.js$/, ''));
     const next = [`${base}.ts`, `${base}.js`, path.join(base, 'index.ts'), path.join(base, 'index.js')].find((f) => fs.existsSync(f));
     if (next) reachable(next, seen);
@@ -41,5 +42,23 @@ describe('@cancore/botd/protocol', () => {
       ok: false,
       error: { code: -32602 },
     });
+  });
+});
+
+describe('@cancore/botd/ipc/client', () => {
+  test('source entry reaches only the protocol', () => {
+    const files = [...reachable(path.join(SRC, 'ipc/client.ts'))].map((f) => path.relative(SRC, f)).sort();
+    expect(files).toEqual(['ipc/client.ts', 'protocol/index.ts']);
+  });
+
+  const built = path.join(SRC, '..', 'dist', 'ipc', 'client.js');
+  (fs.existsSync(built) ? test : test.skip)('built entry imports only node built-ins and zod', () => {
+    const files = [...reachable(built)].map((f) => fs.readFileSync(f, 'utf8'));
+    for (const text of files) {
+      expect(text).not.toMatch(/not implemented|createKeystore|createSigner/);
+      for (const [, spec] of text.matchAll(/(?:import|export)[^'"]*from\s+['"]([^.'"][^'"]*)['"]/g)) {
+        expect(builtinModules.includes(spec!.replace(/^node:/, '')) || spec === 'zod' ? spec : `forbidden: ${spec}`).toBe(spec);
+      }
+    }
   });
 });
