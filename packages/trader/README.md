@@ -378,8 +378,27 @@ failure, three attempts in all. A prepare is never sent twice for one call. Prep
 `cantonPrepare` rate class (an hourly budget) and submits in `canton`, so a spent budget pauses new
 prepares only.
 
-`allocateParty()` carries the topology check built in. `party()`, `holdings()` and `deliveryOrders()`
-read the party's own state. `createCantonOperations` gives a node command a client with its own REST
+`allocateParty()`, `acceptRegistry(fillerId)` and `transfer(params)` carry their checks built in.
+The party is recognised by its namespace, the fingerprint of the node key (its hint, the part before
+`::`, is not checked):
+
+- `acceptRegistry`: one root, `FillerRegistryEntryProposal_Accept` on the stated proposal, acting as
+  the party alone, creating exactly the `FillerRegistryEntry` of this fillerId and party, signed by
+  the operator and the party;
+- `transfer`: one root, `TransferFactory_Transfer` through the token-standard interface, acting as
+  the party alone, moving the asked amount of the asked instrument to the asked party, spending the
+  stated holdings, with the stated `executeBefore` still ahead. Under the root, by the decoded
+  subtree:
+  - the factory's template is pinned for the instrument admin, by package id and template
+    (`CANTON_TRANSFER_FACTORIES`); an admin with no entry, or another factory, is refused;
+  - the only exercises on the sender's contracts archive the stated inputs, each once and all of
+    them (or are a service choice the entry lists);
+  - every holding created is of the asked instrument and owned by the sender or the receiver;
+  - direct: the receiver is credited exactly the amount; pending: nothing yet, the amount is locked
+    to the sender under one offer of exactly this transfer;
+  - the change to the sender is at most the stated inputs minus the amount.
+
+`party()`, `holdings()` and `deliveryOrders()` read the party's own state. `createCantonOperations` gives a node command a client with its own REST
 login.
 
 ## Injected interfaces

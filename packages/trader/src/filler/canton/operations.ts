@@ -35,6 +35,7 @@ import { createSealer, type Sealer, type Unsealed } from '../protocol/envelope';
 import { GatewayRest } from '../protocol/rest';
 import { silentLogger, systemClock, type Clock, type HttpFetch, type Logger } from '../runtime';
 import type { QuoteSigner } from '../signer';
+import { checkHoldingsTransfer, checkRegistryAccept } from './checks';
 import { CantonRefusal, legKind, verifyTopologyLeg, verifyTransactionLeg } from './legs';
 import type { CantonTransaction } from './transaction';
 
@@ -91,6 +92,16 @@ export class CantonOperations {
    */
   allocateParty(): Promise<SubmittedOf<'party.allocate'>> {
     return this.run('party.allocate', { publicKey: this.publicKey }, () => undefined);
+  }
+
+  /** Accepts the party's `FillerRegistryEntry` for `fillerId`, proposed by Cancore (CAN-2316). */
+  acceptRegistry(fillerId: string): Promise<SubmittedOf<'registry.accept'>> {
+    return this.run('registry.accept', {}, checkRegistryAccept({ fillerId, publicKey: this.publicKey }));
+  }
+
+  /** Moves the party's own holdings to another party (operator decision Yu-1): exactly what is asked, checked. */
+  transfer(params: CantonOpParams['holdings.transfer']): Promise<SubmittedOf<'holdings.transfer'>> {
+    return this.run('holdings.transfer', params, checkHoldingsTransfer({ params, publicKey: this.publicKey, nowMs: this.options.clock.now() }));
   }
 
   /** Reads the party registered for this fillerId and its registry entry. */
