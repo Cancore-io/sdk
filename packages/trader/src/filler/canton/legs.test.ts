@@ -1,102 +1,22 @@
-import type { CantonLegTopology, CantonLegTransaction, Hex } from '@cancore/contracts';
-import {
-  CryptoKeyFormat,
-  Enums_ParticipantPermission,
-  Enums_TopologyChangeOp,
-  PreparedTransaction,
-  SigningKeyScheme,
-  SigningKeySpec,
-  type SigningPublicKey,
-  TopologyTransaction,
-} from '@canton-network/core-ledger-proto';
-import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
-import { ed25519 } from '@noble/curves/ed25519';
-import { sha256 } from '@noble/hashes/sha256';
+import type { Hex } from '@cancore/contracts';
+import { Enums_ParticipantPermission, Enums_TopologyChangeOp, TopologyTransaction } from '@canton-network/core-ledger-proto';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import {
-  CantonRefusal,
-  cantonFingerprint,
-  decodeTopology,
-  HASHING_SCHEME_V2,
-  legKind,
-  verifyTopologyLeg,
-  verifyTransactionLeg,
-} from './legs';
+  allocation,
+  b64,
+  cantonHash,
+  cat,
+  multiHash,
+  NODE_KEY,
+  OTHER_KEY,
+  PARTICIPANT,
+  party,
+  topologyLeg,
+  transactionLeg,
+  tx,
+} from './fixtures';
+import { CantonRefusal, cantonFingerprint, decodeTopology, legKind, verifyTopologyLeg, verifyTransactionLeg } from './legs';
 
-// A key generated for the test only; it never signs anything outside it.
-const NODE_KEY = bytesToHex(ed25519.getPublicKey(ed25519.utils.randomPrivateKey()));
-const OTHER_KEY = bytesToHex(ed25519.getPublicKey(ed25519.utils.randomPrivateKey()));
-const PARTICIPANT = 'PAR::cancore-participant::1220aaaa';
-const party = (key = NODE_KEY) => `cancore-dev-1::${cantonFingerprint(key)}`;
-const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64');
-
-const int32 = (n: number) => {
-  const b = new Uint8Array(4);
-  new DataView(b.buffer).setInt32(0, n, false);
-  return b;
-};
-const cat = (...parts: Uint8Array[]) => {
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
-  let at = 0;
-  for (const p of parts) {
-    out.set(p, at);
-    at += p.length;
-  }
-  return out;
-};
-/** Canton's hash with purpose, computed here independently of the library under use. */
-const cantonHash = (purpose: number, bytes: Uint8Array) => cat(new Uint8Array([0x12, 0x20]), sha256(cat(int32(purpose), bytes)));
-/** MultiTopologyTransaction: purpose 55 over int32(n) ‖ (int32(len) ‖ hash) for the hashes sorted. */
-const multiHash = (txs: Uint8Array[]) => {
-  const hashes = txs.map((t) => cantonHash(11, t)).sort((a, b) => bytesToHex(a).localeCompare(bytesToHex(b)));
-  return cantonHash(55, cat(int32(hashes.length), ...hashes.flatMap((h) => [int32(h.length), h])));
-};
-
-const signingKey = (hex: string, der = false): SigningPublicKey => ({
-  format: der ? CryptoKeyFormat.DER : CryptoKeyFormat.RAW,
-  publicKey: hexToBytes(der ? `302a300506032b6570032100${hex}` : hex),
-  scheme: SigningKeyScheme.ED25519,
-  usage: [],
-  keySpec: SigningKeySpec.EC_CURVE25519,
-});
-
-type Mapping = NonNullable<NonNullable<TopologyTransaction['mapping']>['mapping']>;
-const tx = (mapping: Mapping, operation = Enums_TopologyChangeOp.ADD_REPLACE, serial = 1) =>
-  TopologyTransaction.toBinary(TopologyTransaction.create({ operation, serial, mapping: { mapping } }));
-
-/** The three transactions of an honest allocation; `over` replaces parts of them. */
-function allocation(over: { ns?: Partial<{ namespace: string; key: string }>; keys?: Partial<{ party: string; threshold: number; keys: string[] }>; hosting?: Partial<{ party: string; threshold: number; participants: Array<{ uid: string; permission: Enums_ParticipantPermission }> }> } = {}) {
-  return [
-    tx({
-      oneofKind: 'namespaceDelegation',
-      namespaceDelegation: {
-        namespace: over.ns?.namespace ?? cantonFingerprint(NODE_KEY),
-        targetKey: signingKey(over.ns?.key ?? NODE_KEY, true),
-        isRootDelegation: true,
-        restriction: { oneofKind: undefined },
-      } as never,
-    }),
-    tx({
-      oneofKind: 'partyToKeyMapping',
-      partyToKeyMapping: { party: over.keys?.party ?? party(), threshold: over.keys?.threshold ?? 1, signingKeys: (over.keys?.keys ?? [NODE_KEY]).map((k) => signingKey(k)) },
-    }),
-    tx({
-      oneofKind: 'partyToParticipant',
-      partyToParticipant: {
-        party: over.hosting?.party ?? party(),
-        threshold: over.hosting?.threshold ?? 1,
-        participants: (over.hosting?.participants ?? [{ uid: PARTICIPANT, permission: Enums_ParticipantPermission.CONFIRMATION }]).map((p) => ({ participantUid: p.uid, permission: p.permission })),
-      } as never,
-    }),
-  ];
-}
-
-const topologyLeg = (txs: Uint8Array[], hash = multiHash(txs)): CantonLegTopology => ({
-  legId: 'topology-0',
-  kind: 'topology',
-  hash: `0x${bytesToHex(hash)}` as Hex,
-  topologyTransactions: txs.map(b64),
-});
 const expect_ = { partyId: party(), publicKey: `0x${NODE_KEY}` as Hex, participantUid: PARTICIPANT };
 const refusedWith = async (p: Promise<unknown>, detail: RegExp) => {
   await expect(p).rejects.toBeInstanceOf(CantonRefusal);
@@ -185,36 +105,18 @@ describe('a topology leg is refused, never signed, when', () => {
 });
 
 describe('transaction legs', () => {
-  async function leg(over: Partial<CantonLegTransaction> = {}): Promise<CantonLegTransaction> {
-    const message = PreparedTransaction.create({
-      transaction: { version: '2.1', roots: [], nodes: [], nodeSeeds: [] },
-      metadata: {
-        submitterInfo: { actAs: [party()], commandId: 'legs-test' },
-        synchronizerId: 'global-domain::1220dso',
-        mediatorGroup: 0,
-        transactionUuid: '00000000-0000-4000-8000-000000000000',
-        preparationTime: 1000000000000000n,
-        inputContracts: [],
-        globalKeyMapping: [],
-      },
-    });
-    const preparedTransaction = b64(PreparedTransaction.toBinary(message));
-    const hash = `0x${await hashPreparedTransaction(preparedTransaction, 'hex')}` as Hex;
-    return { legId: 'tx-0', kind: 'transaction', hash, preparedTransaction, hashingSchemeVersion: HASHING_SCHEME_V2, ...over };
-  }
-
   test('the hash is recomputed and the decoded transaction returned', async () => {
-    const decoded = await verifyTransactionLeg(await leg());
+    const decoded = await verifyTransactionLeg(await transactionLeg());
     expect(decoded.commandId).toBe('legs-test');
     expect(decoded.actAs).toEqual([party()]);
   });
 
   test('a hash the transaction does not have, a scheme other than V2 or none, and undecodable bytes are refused', async () => {
-    await refusedWith(verifyTransactionLeg(await leg({ hash: `0x${'00'.repeat(32)}` })), /not the hash of the prepared transaction/);
-    await refusedWith(verifyTransactionLeg(await leg({ hashingSchemeVersion: 'HASHING_SCHEME_VERSION_V1' })), /hashing scheme/);
-    await refusedWith(verifyTransactionLeg(await leg({ hashingSchemeVersion: undefined as never })), /hashing scheme/);
-    await refusedWith(verifyTransactionLeg(await leg({ preparedTransaction: '' })), /no prepared transaction/);
-    await refusedWith(verifyTransactionLeg(await leg({ preparedTransaction: b64(new Uint8Array([0xff, 0xff, 0xff])) })), /does not decode/);
+    await refusedWith(verifyTransactionLeg(await transactionLeg({ hash: `0x${'00'.repeat(32)}` })), /not the hash of the prepared transaction/);
+    await refusedWith(verifyTransactionLeg(await transactionLeg({ hashingSchemeVersion: 'HASHING_SCHEME_VERSION_V1' })), /hashing scheme/);
+    await refusedWith(verifyTransactionLeg(await transactionLeg({ hashingSchemeVersion: undefined as never })), /hashing scheme/);
+    await refusedWith(verifyTransactionLeg(await transactionLeg({ preparedTransaction: '' })), /no prepared transaction/);
+    await refusedWith(verifyTransactionLeg(await transactionLeg({ preparedTransaction: b64(new Uint8Array([0xff, 0xff, 0xff])) })), /does not decode/);
   });
 
   test('the leg kind is closed', () => {

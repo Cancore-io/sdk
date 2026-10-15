@@ -366,6 +366,22 @@ never signs blind. Before signing, every leg passes these checks (`verifyTransac
   only its own participant's hosting; everything else is checked here alone.
 - **Any other leg kind** is refused (`legKind`).
 
+`CantonOperations` runs one operation end to end:
+1. `canton.prepare`, then the verified `canton.prepared` answering it;
+2. the leg checks above, then the operation's own check (`CantonOpCheck`) of the decoded transactions
+   against what the node itself knows. The summary states the economics but is never trusted alone;
+3. one Ed25519 signature per leg from the injected `CantonPartySigner` (the SDK holds no key);
+4. `canton.submit`, and the verified `canton.submitted` for the same `operationId`.
+
+A submit is retried with the same `operationId` on `CANTON_UNAVAILABLE`, `INTERNAL` or a transport
+failure, three attempts in all. A prepare is never sent twice for one call. Prepares count in the
+`cantonPrepare` rate class (an hourly budget) and submits in `canton`, so a spent budget pauses new
+prepares only.
+
+`allocateParty()` carries the topology check built in. `party()`, `holdings()` and `deliveryOrders()`
+read the party's own state. `createCantonOperations` gives a node command a client with its own REST
+login.
+
 ## Injected interfaces
 
 ### Signers — `TypedDataSigner`, `FillSigner`, `QuoteSigner`, `StakingSigner`

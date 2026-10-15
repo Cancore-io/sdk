@@ -31,6 +31,11 @@ import {
   PROTOCOL_VERSION,
   type AuthResponse,
   type AuthToken,
+  type CantonDeliveryOrder,
+  type CantonHolding,
+  type CantonParty,
+  type CantonPrepare,
+  type CantonSubmit,
   type Hex,
   type QuoteAck,
   type QuoteFinalStatus,
@@ -196,6 +201,48 @@ export class GatewayRest {
       throw new GatewayError('UNVERIFIED_RESPONSE', false, `${path}: the body failed verification (${check.ok ? check.verified.frame.type : check.reason})`);
     }
     return check.verified;
+  }
+
+  // -- Canton operations of the filler's own party (§3.19) ---------------------
+
+  /**
+   * `POST /v1/filler/canton/prepare` or `/submit`: the sealed message out, the
+   * verified `canton.prepared` / `canton.submitted` back. A prepare counts in
+   * the `cantonPrepare` class (an hourly budget), a submit in `canton`: a spent
+   * prepare budget never holds back the submit of a prepared operation.
+   */
+  async postCanton(action: 'prepare' | 'submit', message: CantonPrepare | CantonSubmit): Promise<VerifiedFrame> {
+    const path = `/v1/filler/canton/${action}`;
+    const { text } = await this.authed('POST', path, action === 'prepare' ? 'cantonPrepare' : 'canton', JSON.stringify(message));
+    const expected = action === 'prepare' ? 'canton.prepared' : 'canton.submitted';
+    const check = verifyGatewayObject(parseJson(text, path), utf8(text), this.expect);
+    if (!check.ok || check.verified.frame.type !== expected) {
+      throw new GatewayError('UNVERIFIED_RESPONSE', false, `${path}: the answer failed verification (${check.ok ? check.verified.frame.type : check.reason})`);
+    }
+    return check.verified;
+  }
+
+  /** `GET /v1/filler/canton/party`: the party registered for this fillerId and its registry entry. */
+  async getCantonParty(): Promise<CantonParty> {
+    const path = '/v1/filler/canton/party';
+    const { text } = await this.authed('GET', path, 'read');
+    const body = parseJson(text, path);
+    if (!isObject(body) || !isObject(body.registry) || !('party' in body)) throw new GatewayError('BAD_RESPONSE', false, `${path}: expected {party, publicKey, registry}`);
+    return body as unknown as CantonParty;
+  }
+
+  /** `GET /v1/filler/canton/holdings`: every page. */
+  async listCantonHoldings(): Promise<CantonHolding[]> {
+    const out: CantonHolding[] = [];
+    await this.pages('/v1/filler/canton/holdings', {}, (item) => out.push(item as CantonHolding));
+    return out;
+  }
+
+  /** `GET /v1/filler/canton/delivery-orders`: every page. */
+  async listCantonDeliveryOrders(): Promise<CantonDeliveryOrder[]> {
+    const out: CantonDeliveryOrder[] = [];
+    await this.pages('/v1/filler/canton/delivery-orders', {}, (item) => out.push(item as CantonDeliveryOrder));
+    return out;
   }
 
   // -------------------------------------------------------------------------
