@@ -54,7 +54,8 @@ export const EXEMPT_REASONS = ['DESTINATION_HALTED', 'GATEWAY_FAULT', 'REORGED_A
 export const QUOTE_ACK_STATUSES = ['COUNTED', 'LATE', 'SHORT_TTL'] as const;
 /** Final status of a quote, `GET /v1/filler/quotes`. */
 export const QUOTE_FINAL_STATUSES = [...QUOTE_ACK_STATUSES, 'REPLACED', 'BAD_SIG', 'OUTLIER', 'IN_BAND', 'OUT_OF_BAND', 'WON', 'LOST'] as const;
-export const PENALTY_STEPS = ['L1', 'L2', 'L3', 'L4'] as const;
+/** `penalty.applied.step`: a violation recorded, a ban, a ban lifted by Cancore staff (penalties.md §4.2). */
+export const PENALTY_STEPS = ['RECORDED', 'BANNED', 'UNBANNED'] as const;
 export const DRAW_CLOSED_BY = ['OFFER_TIMEOUT', 'OFFER_DECLINE', 'TICKET_DECLINE', 'TICKET_EXPIRED', 'FILLED'] as const;
 export const TICKET_LIST_STATUSES = ['OFFERED', 'ISSUED'] as const;
 /** The Canton operations of the filler's own party (§3.19): the backend prepares and submits, the node signs with its party key. */

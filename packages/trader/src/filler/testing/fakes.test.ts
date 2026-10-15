@@ -103,7 +103,7 @@ describe('recording sinks', () => {
     logger.info('i');
     expect(logger.entries).toEqual([{ level: 'warn', message: 'w', fields: { a: 1 } }, { level: 'info', message: 'i' }]);
     const sink = createRecordingEventSink();
-    sink.emit({ type: 'penalty', violationId: 'v', code: 'NO_SHOW', step: 'L1' });
+    sink.emit({ type: 'penalty', violationId: 'v', code: 'NO_SHOW', step: 'RECORDED' });
     expect(sink.events).toHaveLength(1);
   });
 });

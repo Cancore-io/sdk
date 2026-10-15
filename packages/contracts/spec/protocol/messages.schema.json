@@ -86,7 +86,7 @@
     "expiredResult": { "anyOf": [{ "enum": ["FILLED", "NO_SHOW", "NO_SHOW_UNCONFIRMED", "EXEMPT"] }, { "$ref": "#/$defs/futureEnumValue" }] },
     "exemptReason": { "anyOf": [{ "enum": ["DESTINATION_HALTED", "GATEWAY_FAULT", "REORGED_AFTER_INCLUSION", "RECIPIENT_NOT_READY", "OTHER"] }, { "$ref": "#/$defs/futureEnumValue" }] },
     "quoteAckStatus": { "anyOf": [{ "enum": ["COUNTED", "LATE", "SHORT_TTL"] }, { "$ref": "#/$defs/futureEnumValue" }], "description": "verdict at receipt time; the final status is on GET /v1/filler/quotes" },
-    "penaltyStep": { "anyOf": [{ "enum": ["L1", "L2", "L3", "L4"] }, { "$ref": "#/$defs/futureEnumValue" }] },
+    "penaltyStep": { "anyOf": [{ "enum": ["RECORDED", "BANNED", "UNBANNED"] }, { "$ref": "#/$defs/futureEnumValue" }] },
     "s2fEnvelope": {
       "type": "object",
       "required": ["type", "id", "sentAt", "sig"],
