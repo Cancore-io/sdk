@@ -427,9 +427,9 @@ describe('review sdk#66', () => {
     expect(await w.settlement()).toMatchObject({ state: 'confirmed', txHash: retry!.detail!.txHash });
   });
 
-  test('load(): a stored frame that does not parse gets a reason, so the next frame replaces it', async () => {
+  test.each(['{not json', '{"type":"settle.attestations"}', '{"proof":null,"signatures":[]}', '[]'])('load(): a stored frame that does not parse (%s) gets a reason, so the next frame replaces it', async (raw) => {
     const w = await world();
-    await w.store.withOrder(w.orderHash, (tx) => tx.putAttestations({ orderHash: w.orderHash, attempt: 0, channel: 'ws', raw: new TextEncoder().encode('{not json'), verified: false, receivedAtMs: w.clock.now() }));
+    await w.store.withOrder(w.orderHash, (tx) => tx.putAttestations({ orderHash: w.orderHash, attempt: 0, channel: 'ws', raw: new TextEncoder().encode(raw), verified: false, receivedAtMs: w.clock.now() }));
     await expect(w.settler.selfSettle(w.orderHash)).rejects.toMatchObject({ reason: 'mismatch' });
     expect(await w.attestation()).toMatchObject({ reason: expect.stringContaining('does not parse') });
     await w.push(w.delivery({}, 'rest'));

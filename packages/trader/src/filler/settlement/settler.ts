@@ -582,7 +582,10 @@ export class Settler {
         let unreadable: string | undefined;
         if (record && (record.verified || !record.reason)) {
           try {
-            payload = settleAttestationsPayload(JSON.parse(decoder.decode(record.raw)) as object);
+            const parsed = settleAttestationsPayload(JSON.parse(decoder.decode(record.raw)) as object);
+            // Valid JSON is not yet a frame: without a proof object and a signature list every later rule throws a TypeError.
+            if (typeof parsed.proof !== 'object' || parsed.proof === null || !Array.isArray(parsed.signatures)) throw new TypeError('no proof or no signatures');
+            payload = parsed;
           } catch (error) {
             // A stored frame that does not parse is a failed set: the reason lets the next frame on either channel replace it.
             unreadable = `mismatch: the stored settle.attestations does not parse (${reasonOf(error)})`;
