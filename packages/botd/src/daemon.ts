@@ -103,6 +103,8 @@ function userCancelled(s: BotState, orderIds: string[]): BotState {
 
 /** An intent the API never saw: off the books, and its strategy's placement undone. */
 function dropIntent(s: BotState, intent: OrderIntent): BotState {
+  // Resolved already (by a tick or by the make itself): resolving it twice would double the book.
+  if (!(s.intents ?? []).some((i) => i.key === intent.key)) return s;
   return {
     ...s,
     intents: (s.intents ?? []).filter((i) => i.key !== intent.key),
@@ -114,6 +116,7 @@ function dropIntent(s: BotState, intent: OrderIntent): BotState {
 
 /** An intent whose order exists: on the book under its id. */
 function adoptIntent(s: BotState, intent: OrderIntent, orderId: string): BotState {
+  if (!(s.intents ?? []).some((i) => i.key === intent.key)) return s;
   const { key: _k, at: _a, ...order } = intent;
   return { ...s, intents: (s.intents ?? []).filter((i) => i.key !== intent.key), openOrders: [...s.openOrders, { orderId, ...order }] };
 }

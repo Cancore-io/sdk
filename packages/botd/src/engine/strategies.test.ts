@@ -27,7 +27,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
   let ticker: (() => void) | undefined;
   const audited: { method: string; decision: string; reason?: string }[] = [];
   let hooks: Parameters<Deps['createEngine']>[1] | undefined;
-  const crash = { hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0 };
+  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0 };
   const deps = (): Deps => ({
     keystore: { init: jest.fn(), initSeed: jest.fn(), unlock: async () => ({ destroy: () => undefined }) as never, lock: () => void (crash.wiped = true), isLocked: () => false, publicKey: async () => 'ab' },
     audit: {
@@ -46,6 +46,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
           const orderId = `o${++seq}`;
           // The API created the order, the answer never reached the daemon.
           if (crash.hang) return new Promise(() => undefined);
+          if (crash.slow) return crash.slow;
           if (crash.make) throw new Error('socket hang up');
           // The API answered and refused: no order exists.
           if (crash.refuse) throw Object.assign(new Error('POST /orders → 400'), { status: 400 });
@@ -418,6 +419,21 @@ describe('an order whose answer was lost', () => {
     await w.tick();
     expect(w.state().openOrders).toEqual([]);
     expect(w.state().positions).toMatchObject({ CC: '1' });
+  });
+
+  it('a make that answers after a tick adopted its intent does not put the order on the book twice', async () => {
+    const w = world();
+    await w.unlock();
+    let answer: (v: { orderId: string }) => void = () => undefined;
+    w.crash.slow = new Promise((r) => (answer = r));
+    const making = w.call('order.make', make, false);
+    await new Promise((r) => setTimeout(r, 0));
+    w.crash.found = 'o1';
+    w.advance(61_000);
+    await w.tick();
+    answer({ orderId: 'o1' });
+    await making;
+    expect(w.state().openOrders.filter((o) => o.orderId === 'o1')).toHaveLength(1);
   });
 
   it('backs off a lookup that keeps failing', async () => {
