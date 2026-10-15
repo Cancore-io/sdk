@@ -85,3 +85,18 @@ export const FILLER_GATEWAYS: Readonly<Record<DeploymentEnv, FillerGateway>> = {
   // The gateway key is published with the gateway release.
   devnet: { gateway: null, ticketSigners: ['0x9a3fc3f44cddbdfb036a8c8a528a903d0c835c1c'] },
 };
+
+/**
+ * The Cancore participant per environment: the participant a filler's Canton
+ * party is hosted on (protocol §3.19, decision Ын-1). The node checks the
+ * hosting of its party against this release value when it signs
+ * `party.allocate`, never against a value the backend sends. A participant id
+ * as the JSON Ledger API prints it (`<name>::<fingerprint>`, no `PAR::`);
+ * null where there is none yet.
+ */
+export const CANTON_PARTICIPANTS: Readonly<Record<DeploymentEnv, string | null>> = {
+  mainnet: null,
+  testnet: null,
+  // GET /v2/parties/participant-id on the devnet Ledger API, 15.10.2026.
+  devnet: 'Cancore-devnet-1::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b',
+};
