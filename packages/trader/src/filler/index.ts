@@ -159,3 +159,8 @@ export type {
   Logger,
   WebSocketFactory,
 } from './runtime';
+
+// Canton operations of the filler's own party (§3.19, CAN-2352): what the node checks before its party key signs.
+export { CantonRefusal, cantonFingerprint, HASH_PURPOSE, HASHING_SCHEME_V2, legKind, participantId, verifyTopologyLeg, verifyTransactionLeg } from './canton/legs';
+export type { PartyExpectation } from './canton/legs';
+export type { CantonTransaction, CreateNode, DamlValue, ExerciseNode, FetchNode, RollbackNode, TransactionNode } from './canton/transaction';
