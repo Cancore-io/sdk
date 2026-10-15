@@ -14,8 +14,8 @@
  *
  * `evm.json` (the stand's test tokens) is read next to `intent.json` unless
  * CANCORE_EVM_JSON names it. Keys come from the stand's actor file (test keys:
- * FILLER1 delivers, TICKETSIGNER signs tickets). Skipped without the stand:
- * CI of this repository has none (CAN-1876).
+ * FILLER1 delivers, TICKETSIGNER signs tickets). Skipped without the stand; in
+ * this repository's CI the `stand` job brings it up on anvil (test/stand/up.mjs).
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
