@@ -5,7 +5,8 @@
     "types": ["jest", "node"],
     // The sibling package's source, not its unbuilt `dist/`: typecheck runs before build.
     "paths": {
-      "@cancore/client/selfcustody": ["../client/src/selfcustody.ts"]
+      "@cancore/client/selfcustody": ["../client/src/selfcustody.ts"],
+      "@cancore/wallet": ["../wallet/src/index.ts"]
     }
   },
   "include": ["src/**/*.ts"],
