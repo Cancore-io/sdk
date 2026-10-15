@@ -199,9 +199,14 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - uses: foundry-rs/foundry-toolchain@c7450ba673e133f5ee30098b3b54f444d3a2ca2d # v1.8.0
-        with:
-          version: v1.8.3
+      # anvil from the foundry release tarball, pinned by its sha256 (the release asset digest): no installer script.
+      - name: Install anvil (foundry v1.8.3)
+        run: |
+          set -euo pipefail
+          curl -fsSLo "$RUNNER_TEMP/foundry.tgz" https://github.com/foundry-rs/foundry/releases/download/v1.8.3/foundry_v1.8.3_linux_amd64.tar.gz
+          echo "7ca48e6ca3cac1bce1403ca67e5bc1dc3bc1fd818199c9957c7165079c228568  $RUNNER_TEMP/foundry.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/foundry" && tar -xzf "$RUNNER_TEMP/foundry.tgz" -C "$RUNNER_TEMP/foundry" anvil
+          echo "$RUNNER_TEMP/foundry" >> "$GITHUB_PATH"
       - name: Start anvil without a fork
         run: |
           nohup anvil --chain-id 11155111 --port 8545 > "$RUNNER_TEMP/anvil.log" 2>&1 &
