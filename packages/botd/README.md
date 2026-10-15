@@ -244,7 +244,7 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
 **Crash safety.** Every `order.make` (agent or strategy) is written to the state file as an intent,
 with a client key, before the API is called; the key rides on the order as its description. An
 unconfirmed intent counts as an open order for the risk gate. On the next unlock the daemon looks
-for the order among the bot's newest 100 orders: by the key, or, if the API rewrote the description,
+for the order among one page of 100 of the bot's orders (the API's default order): by the key, or, if the API rewrote the description,
 by the same pair, side and amounts created within 10 minutes of the intent. A match is adopted onto
 the book (and settles or ends like any other); no match drops the intent. Limit: two identical
 orders within that window, both with their description rewritten, cannot be told apart.

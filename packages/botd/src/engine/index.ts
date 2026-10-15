@@ -78,8 +78,9 @@ export function createEngine(options: EngineOptions): Engine {
     async findIntent(intent, known) {
       const [base = '', quote = ''] = intent.pair.split('/');
       const { give, giveAmount, get, getAmount } = legs({ base, quote, side: intent.side, amount: intent.amount, price: intent.price });
-      // shortcut: the newest page only (100 orders); an intent older than that many orders is dropped, not found.
-      const { items } = await acct.swap.listMine({ pageSize: 100, sortBy: 'id', sortDir: 'desc', statusFilter: 'all' });
+      // shortcut: one page of 100 in the API's default order (no created-at sort exists; ids are UUIDs), so an
+      // intent's order outside it is dropped, not found; page through if bots ever hold that many orders.
+      const { items } = await acct.swap.listMine({ pageSize: 100, statusFilter: 'all' });
       const mine = items.filter((o) => !known.includes(o.id));
       const tagged = mine.find((o) => o.description === intentTag(intent.key));
       if (tagged) return tagged.id;
