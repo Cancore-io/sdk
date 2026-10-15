@@ -1,4 +1,7 @@
 #!/usr/bin/env node
-import { startServer } from './index';
+import { createRequire } from 'node:module';
+import { resolveSocketPath, startServer } from './index';
 
-await startServer({ socketPath: process.env.CANCORE_BOTD_SOCKET ?? '/run/cancore-botd/botd.sock' });
+const version = (createRequire(import.meta.url)('../package.json') as { version: string }).version;
+
+await startServer({ socketPath: resolveSocketPath(process.argv.slice(2), process.env), version });
