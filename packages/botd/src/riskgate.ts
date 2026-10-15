@@ -74,6 +74,9 @@ function checkLegs(legs: Leg[], state: BotState, limits: Limits, now: number): D
 
 const amt = z.string().regex(/^\d{1,20}(\.\d{1,10})?$/);
 
+/** The platform allows 5 new orders an hour per user: a strategy waits (`rate_limited`) rather than hit it. */
+const ordersPerHour = z.number().int().min(1).max(60).default(5);
+
 /** Grid: `levels` orders of `amountPerLevel`, evenly spaced from lowerPrice to upperPrice. */
 export const gridConfig = z
   .object({
@@ -82,6 +85,7 @@ export const gridConfig = z
     amountPerLevel: amt,
     lowerPrice: amt,
     upperPrice: amt,
+    ordersPerHour,
   })
   .strict();
 
@@ -92,6 +96,7 @@ export const dcaConfig = z
     amountPerOrder: amt,
     intervalSeconds: z.number().int().min(60).max(30 * 86_400),
     maxOrders: z.number().int().min(1).max(10_000),
+    ordersPerHour,
   })
   .strict();
 
