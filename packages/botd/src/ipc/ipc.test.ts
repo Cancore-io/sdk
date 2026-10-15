@@ -1,9 +1,8 @@
-import { createServer } from 'net';
 import { mkdtempSync, rmSync, statSync, writeFileSync } from 'fs';
-import { createConnection } from 'net';
+import { createConnection, createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ERROR, JSONRPC_VERSION } from '../protocol/index';
+import { ERROR, JSONRPC_VERSION, type RpcRequest, type RpcResponse } from '../protocol/index';
 import { listen, RpcFault, type IpcServer } from './server';
 import { connect, RpcCallError } from './client';
 
@@ -105,13 +104,20 @@ describe('ipc server', () => {
     client.close();
   });
 
-  it('refuses requests beyond the in-flight cap of one connection', async () => {
+  it('runs at most maxInFlight requests of one connection at once; the rest wait their turn', async () => {
     const path = join(dir, 's.sock');
-    server = await listen(path, () => new Promise(() => undefined), { requestTimeoutMs: 200, maxInFlight: 2 });
+    let running = 0;
+    let peak = 0;
+    const handler = async (r: RpcRequest) => {
+      peak = Math.max(peak, ++running);
+      await new Promise((res) => setTimeout(res, 10));
+      running--;
+      return { jsonrpc: JSONRPC_VERSION, id: r.id, result: {} } as RpcResponse;
+    };
+    server = await listen(path, handler, { maxInFlight: 2 });
     const client = await connect(path);
-    const calls = [client.call('status', {}), client.call('status', {}), client.call('status', {})].map((c) => c.catch((e) => e));
-    const [, , third] = await Promise.all(calls);
-    expect(third).toMatchObject({ error: { code: ERROR.INVALID_REQUEST, message: 'too many requests in flight' } });
+    await Promise.all(Array.from({ length: 6 }, () => client.call('status', {})));
+    expect(peak).toBe(2);
     client.close();
   });
 

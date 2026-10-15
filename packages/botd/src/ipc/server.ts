@@ -17,7 +17,7 @@ export interface ListenOptions {
   maxMessageBytes?: number;
   /** Per-request handler timeout; default 30 s. */
   requestTimeoutMs?: number;
-  /** Requests one connection may have running at once; more are refused. Default 8. */
+  /** Requests one connection may have running at once; more wait their turn. Default 8. */
   maxInFlight?: number;
   /** Concurrent connections beyond this are dropped; default unlimited. */
   maxConnections?: number;
@@ -77,8 +77,22 @@ export async function listen(socketPath: string, handler: Handler, options: List
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => socket.destroy());
     let buffer = Buffer.alloc(0);
-    // One peer cannot queue unbounded work (and audit entries) by pipelining requests.
+    // One peer cannot run unbounded work at once by pipelining: at most maxInFlight run, the rest wait,
+    // and the socket stops reading while any wait, so the queue never outgrows one read.
     let inFlight = 0;
+    const waiting: RpcRequest[] = [];
+    const pump = () => {
+      while (inFlight < maxInFlight && waiting.length > 0) {
+        inFlight++;
+        void run(handler, waiting.shift()!, timeoutMs).then((r) => {
+          inFlight--;
+          reply(socket, r);
+          pump();
+        });
+      }
+      if (waiting.length > 0) socket.pause();
+      else socket.resume();
+    };
     socket.on('data', (chunk: Buffer) => {
       buffer = Buffer.concat([buffer, chunk]);
       let nl: number;
@@ -96,13 +110,9 @@ export async function listen(socketPath: string, handler: Handler, options: List
         }
         const parsed = parseRequest(raw);
         if (!parsed.ok) reply(socket, fail(parsed.id, parsed.error));
-        else if (inFlight >= maxInFlight) reply(socket, fail(parsed.request.id, { code: ERROR.INVALID_REQUEST, message: 'too many requests in flight' }));
         else {
-          inFlight++;
-          void run(handler, parsed.request, timeoutMs).then((r) => {
-            inFlight--;
-            reply(socket, r);
-          });
+          waiting.push(parsed.request);
+          pump();
         }
       }
       if (buffer.length > max) socket.end(`${JSON.stringify(fail(null, { code: ERROR.INVALID_REQUEST, message: 'message too large' }))}\n`);

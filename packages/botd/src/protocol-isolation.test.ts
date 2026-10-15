@@ -26,7 +26,7 @@ describe('@cancore/botd/protocol', () => {
   });
 
   const built = path.join(SRC, '..', 'dist', 'protocol', 'index.js');
-  (fs.existsSync(built) ? test : test.skip)('built entry imports no key-handling chunk', () => {
+  (fs.existsSync(built) || process.env.CI ? test : test.skip)('built entry imports no key-handling chunk', () => {
     const files = [...reachable(built)].map((f) => fs.readFileSync(f, 'utf8'));
     for (const text of files) expect(text).not.toMatch(/not implemented|createKeystore|createSigner/);
   });
@@ -52,7 +52,7 @@ describe('@cancore/botd/ipc/client', () => {
   });
 
   const built = path.join(SRC, '..', 'dist', 'ipc', 'client.js');
-  (fs.existsSync(built) ? test : test.skip)('built entry imports only node built-ins and zod', () => {
+  (fs.existsSync(built) || process.env.CI ? test : test.skip)('built entry imports only node built-ins and zod', () => {
     const files = [...reachable(built)].map((f) => fs.readFileSync(f, 'utf8'));
     for (const text of files) {
       expect(text).not.toMatch(/not implemented|createKeystore|createSigner/);

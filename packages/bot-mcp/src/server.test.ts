@@ -5,6 +5,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ERROR, METHODS, RISK_CLASS } from '@cancore/botd/protocol';
 import { RpcCallError } from '@cancore/botd/ipc/client';
+import type { DenyReason, ErrorCode } from '@cancore/botd/protocol';
 import { AGENT_METHODS, createServer, toolName, type BotClient } from './server';
 import { resolveSocketPath, socketErrorMessage } from './socket';
 
@@ -83,7 +84,7 @@ test('DENIED is structured {denied: reason}; LOCKED/PAUSED tell the owner to act
 });
 
 test('RpcCallError from the ipc client is unwrapped', async () => {
-  const reject = (code: number, reason?: string) =>
+  const reject = (code: ErrorCode, reason?: DenyReason) =>
     fake(() => Promise.reject(new RpcCallError({ code, message: 'm', ...(reason && { data: { reason } }) }))).client;
   const take = { name: 'trade_order_take', arguments: { orderId: 'o1', amount: '1' } };
   expect((await (await connected(reject(ERROR.DENIED, 'rate_limited'))).callTool(take)).structuredContent).toEqual({ denied: 'rate_limited' });
@@ -142,7 +143,7 @@ test('socket path: flag, env, default; errors say what to do', () => {
 
 describe('built bundle', () => {
   const dist = path.join(__dirname, '..', 'dist');
-  (fs.existsSync(dist) ? test : test.skip)('imports no keystore, signer or engine code', () => {
+  (fs.existsSync(dist) || process.env.CI ? test : test.skip)('imports no keystore, signer or engine code', () => {
     const specs = new Set<string>();
     for (const f of fs.readdirSync(dist).filter((f) => f.endsWith('.js'))) {
       const text = fs.readFileSync(path.join(dist, f), 'utf8');

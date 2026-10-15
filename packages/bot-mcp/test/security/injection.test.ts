@@ -94,7 +94,7 @@ describe('security: bot-mcp', () => {
   });
 
   const dist = path.join(__dirname, '..', '..', 'dist');
-  (fs.existsSync(dist) ? it : it.skip)('the built bundle contains no key-handling code', () => {
+  (fs.existsSync(dist) || process.env.CI ? it : it.skip)('the built bundle contains no key-handling code', () => {
     for (const f of fs.readdirSync(dist).filter((x) => x.endsWith('.js'))) {
       const text = fs.readFileSync(path.join(dist, f), 'utf8');
       expect(text).not.toMatch(/createKeystore|createSigner|createCipheriv|aes-256-gcm|scrypt|signPreparedHash|@cancore\/wallet|@cancore\/client|keystore\.json/);
