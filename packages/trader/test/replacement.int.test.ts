@@ -66,9 +66,12 @@ live('CAN-2299: replacement cap against anvil', () => {
 
   /** Mines one block whose base fee is `baseFee`. */
   async function mineAt(baseFee: bigint): Promise<void> {
-    await call('anvil_setNextBlockBaseFeePerGas', [hex(baseFee)]);
+    await nextBaseFee(baseFee);
     await call('evm_mine');
   }
+
+  /** The base fee of the next block; anvil admits a transaction only at or above it. */
+  const nextBaseFee = (baseFee: bigint) => call('anvil_setNextBlockBaseFeePerGas', [hex(baseFee)]);
 
   function driver(fees: Partial<FeePolicy> = {}) {
     const store = new InMemoryFillerStore();
@@ -95,25 +98,29 @@ live('CAN-2299: replacement cap against anvil', () => {
     expect((await d.record(lease))?.transactions.map((t) => t.hash)).toEqual([tx.hash]);
   });
 
-  test('TC-SDK-2299-02: at the cap the same bytes go out again and are mined once the base fee falls', async () => {
+  test('TC-SDK-2299-02: at the cap the same bytes stay pending, go out again once the base fee falls, and are mined', async () => {
     const d = driver();
     const { tx, fees } = await first(d, 'fill');
     await mineAt(fees.maxFeePerGas * 10n);
-    await expect(d.broadcast(tx)).resolves.toBeUndefined();
     expect(await d.known(tx.hash)).toBe(true);
-    await mineAt(GWEI);
+    expect(await mined(d, tx.hash)).toBeUndefined();
+    await nextBaseFee(GWEI);
+    // The node already holds these bytes: the driver takes "already known" as a success.
+    await expect(d.broadcast(tx)).resolves.toBeUndefined();
+    await call('evm_mine');
     expect(await mined(d, tx.hash)).toBe(1);
   });
 
-  test('TC-SDK-2299-03: at the cap a transaction dropped from the mempool is broadcast again and mined', async () => {
+  test('TC-SDK-2299-03: at the cap a transaction dropped from the mempool is broadcast again, the same bytes, and mined', async () => {
     const d = driver();
     const { tx, fees } = await first(d, 'fill');
     await mineAt(fees.maxFeePerGas * 10n);
     await call('anvil_dropTransaction', [tx.hash]);
     expect(await d.known(tx.hash)).toBe(false);
+    await nextBaseFee(GWEI);
     await d.broadcast(tx);
     expect(await d.known(tx.hash)).toBe(true);
-    await mineAt(GWEI);
+    await call('evm_mine');
     expect(await mined(d, tx.hash)).toBe(1);
   });
 
