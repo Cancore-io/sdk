@@ -5,7 +5,7 @@ export const CONTRACTS_RELEASE = {
   "version": "1.4.0-dev",
   "releaseChannel": "dev",
   "updatedAt": "2026-07-24T19:55:00Z",
-  "commit": "4056e83cd84a94d9d00eb4486d5cabf55dd71741"
+  "commit": "2f681b9bb74db55c0fe9fec31282bca54b997985"
 } as const;
 
 /**

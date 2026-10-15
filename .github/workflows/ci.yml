@@ -183,3 +183,36 @@ jobs:
           export const build = (config: Omit<FillerConfig, 'store' | 'webSocket'>): Filler => createFiller({ ...config, store, webSocket });
           TS
           "$GITHUB_WORKSPACE/node_modules/.bin/tsc" -p .
+
+  # CAN-2331: the published @cancore/contracts, installed from the npm registry into a stranger's project, and its
+  # devnet routers read on their own chains over public RPCs (read-only, no key, no secret). The manifest's version
+  # when the registry has it, else `next`. ubuntu-latest for the reason given on `check` (CAN-1120).
+  deployments:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install @cancore/contracts from the registry
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./packages/contracts/package.json').version")
+          if npm view "@cancore/contracts@$version" version >/dev/null 2>&1; then spec="$version"; else spec=next; fi
+          mkdir -p "$RUNNER_TEMP/consumer" && cd "$RUNNER_TEMP/consumer"
+          npm init -y >/dev/null
+          npm install "@cancore/contracts@$spec" --no-audit --no-fund
+          node -p "'installed @cancore/contracts@' + require('./node_modules/@cancore/contracts/package.json').version"
+      - name: Dev routers of the installed package on their chains, none skipped
+        env:
+          CANCORE_CONTRACTS_INSTALLED: ${{ runner.temp }}/consumer
+        run: |
+          npx jest --selectProjects int --runInBand --verbose --json --outputFile="$RUNNER_TEMP/int.json" packages/contracts/src/deployments.int.test.ts
+          node -e "
+            const r = require(process.env.RUNNER_TEMP + '/int.json');
+            console.log(r.numPassedTests, 'passed,', r.numPendingTests + r.numTodoTests, 'skipped');
+            if (r.numTotalTestSuites !== 1 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
+          "
