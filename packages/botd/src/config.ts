@@ -25,6 +25,8 @@ export interface BotConfig {
   network?: 'devnet' | 'testnet' | 'mainnet';
   /** Ceiling of one withdraw's network fee, in CC; unset refuses every withdraw. */
   maxFee?: string;
+  /** New orders an hour, agent and strategies together; default 5, the platform's per-user limit. */
+  ordersPerHour?: number;
 }
 
 export const DEFAULT_CONFIG_PATH = '/etc/cancore-bot/config.json';

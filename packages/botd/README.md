@@ -10,7 +10,7 @@ limits the owner set.
 
 - `cancore-botd` — the daemon: encrypted keystore, default-deny risk gate, hash-chained audit log,
   two local unix-socket JSON-RPC 2.0 endpoints (agent and owner).
-- `cancore-bot` — the owner CLI: `init`, `unlock`/`lock`, `status`, `limits show|set`,
+- `cancore-bot` — the owner CLI: `init`, `unlock`/`lock`, `register`, `status`, `limits show|set`,
   `pause`/`resume`, `withdraw`, `audit verify`, `install`.
 - `@cancore/botd/protocol` — the command and response schemas only, with no key-handling code:
 
@@ -68,7 +68,9 @@ hash (V2 hashing, `@cancore/trader`'s port) of every prepared transaction the AP
 a hash only if it saw bytes with exactly that hash, each once. A mismatch or an unseen hash is
 refused and logged as `verify_failed`. The SDK's own checks of what each DvP or transfer does run
 underneath. The API cannot move the pinned trust boundary either: `venuePartyId`, `maxFeeRate`,
-`feeRecipientPartyId` and `network` come from the config.
+`feeRecipientPartyId` and `network` come from the config. The venue is the SDK's pinned venue for the
+network (`network`, or the one Cancore's `baseUrl` implies) unless `venuePartyId` is set; on a stand
+with neither the daemon refuses to start.
 
 **Risk gate.** Default-deny: omitted limits allow nothing. Every trade command is checked against
 fresh reference prices; if the price feed is unreachable there is no reference and the gate
@@ -138,52 +140,59 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
    `ownerParty` is your own party (the Wallet page shows it). Defaults: `daemonUser` `cancore-bot`,
    `clientsGroup` `cancore-bot-clients`, `stateDir` `/var/lib/cancore-bot`, `agentSocket`
    `/run/cancore-bot/bot.sock`, `ownerSocket` `/run/cancore-bot/owner.sock`, `baseUrl`
-   `https://api.cancore.io`. Pinned fee fields (`venuePartyId`, `maxFeeRate`, `feeRecipientPartyId`)
-   default to the SDK's values for Cancore's hosts.
+   `https://api.cancore.io`, `ordersPerHour` `5` (new orders an hour, agent and strategies together;
+   the platform's per-user limit). Pinned fee fields (`venuePartyId`, `maxFeeRate`,
+   `feeRecipientPartyId`) default to the SDK's values for Cancore's hosts; on any other `baseUrl`
+   set `network` or `venuePartyId`, or the daemon does not start.
 
-4. **Create the keystore.** `init` asks for a recovery phrase and a passphrase. It derives the key
-   at account 0 of that phrase, so **use a new phrase made for this bot, never your wallet's phrase**
-   (account 0 of your wallet phrase is your own wallet). `init` does not generate a phrase yet; make
-   one with the wallet package and write it down offline — it is the only backup of the key:
-
-   ```sh
-   node --input-type=module -e "import('@cancore/wallet').then(w => console.log(w.newMnemonic(256)))"
-   sudo -u cancore-bot cancore-bot init
-   ```
-
-   It prints the bot's public key. Pick a long passphrase; it is what stands between a copy of
-   `keystore.json` and the key.
-
-5. **Register and onboard the account.** The daemon does **not** register an account or onboard a
-   party (it never signs topology). Do it once with the SDK, with the same phrase, in a short script
-   you run by hand and delete (the phrase typed in, never saved):
-
-   ```ts
-   import { providerFromMnemonic } from '@cancore/wallet';
-   import { createSelfCustody } from '@cancore/client/selfcustody';
-
-   const signer = await providerFromMnemonic(process.env.PHRASE!); // account 0, as `init` derives
-   const bot = createSelfCustody({ baseUrl: 'https://api.cancore.io', signer });
-   await bot.session.register({ inviteCode: process.env.CANCORE_INVITE_CODE! });
-   const me = await bot.onboard();
-   console.log('party', me.partyId);
-   ```
+4. **Create the keystore.** Three ways, each asking for a passphrase at the end. Pick a long one; it
+   is what stands between a copy of `keystore.json` and the key.
 
    ```sh
-   read -rs PHRASE && PHRASE="$PHRASE" npx tsx onboard.ts && unset PHRASE
+   sudo -u cancore-bot cancore-bot init                         # new phrase (recommended)
+   sudo -u cancore-bot cancore-bot init --import                # a phrase you already have
+   sudo -u cancore-bot cancore-bot init --import-key <file>     # the key from Cancore "My bots"
    ```
 
-   See the [partner guide, section 4](../../docs/partner-guide.md#4-registration-and-onboarding) for
-   registration (invite code, `409`, `FAILED`) and [Run a bot, section 5](../../docs/run-a-bot.md#5-onboard)
-   for what `onboard()` checks. The printed `partyId` is the bot's address. `cancore-bot status`
-   does not show it yet.
+   - **New phrase.** `init` generates a 24-word phrase, shows it once on the terminal, and asks
+     three random words of it back before it writes anything. Write it down offline: it is the only
+     backup of the key. The screen is cleared after.
+   - **`--import`** takes a phrase you type and derives account 0 of it, with a warning: **use a
+     phrase made for this bot, never your wallet's** (account 0 of your wallet phrase is your wallet).
+   - **`--import-key <file>`** takes the 64-hex key the web app's "My bots" page gives. It is read
+     from a file, never from an argument or the environment, and the file must be owned by
+     `cancore-bot` with mode `0600`:
 
-6. **Start the daemon.**
+     ```sh
+     sudo install -o cancore-bot -g cancore-bot -m 600 /dev/stdin /var/lib/cancore-bot/import.key  # paste, Ctrl-D
+     sudo -u cancore-bot cancore-bot init --import-key /var/lib/cancore-bot/import.key
+     sudo shred -u /var/lib/cancore-bot/import.key
+     ```
+
+     The keystore stores the raw key either way; a key has no phrase, so keep the file's content as
+     the backup.
+
+   It prints the bot's public key.
+
+5. **Start the daemon.**
 
    ```sh
    sudo systemctl enable --now cancore-botd
    journalctl -u cancore-botd -f    # "cancore-botd listening on …"
    ```
+
+6. **Unlock, register and onboard the account:**
+
+   ```sh
+   sudo -u cancore-bot cancore-bot unlock
+   sudo -u cancore-bot cancore-bot register      # prompts for the invite code; Enter for none
+   ```
+
+   It registers the account (an already registered one is fine), creates its Canton party and
+   enables CC receipts (`onboard()` of the SDK, with the daemon's signer; see
+   [Run a bot, section 5](../../docs/run-a-bot.md#5-onboard)), and prints the `partyId`. A bot made
+   in the web app's "My bots" is already registered: the first `unlock` onboards it by itself.
+   `status` shows the `partyId` from then on; it is the bot's address.
 
 7. **Fund the bot** with a small amount: from your own wallet, send CC (and the tokens you will
    trade) to the bot's `partyId`.
@@ -223,20 +232,27 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
    Amounts are decimal strings, at most 15 integer and 10 fraction digits. Unknown fields are
    rejected.
 
-9. **Unlock**, and check:
+9. **Check** (after a restart, `unlock` again first):
 
    ```sh
-   sudo -u cancore-bot cancore-bot unlock
    sudo -u cancore-bot cancore-bot status
    ```
 
    On unlock the daemon starts the settlement loop and reconciles orders that settled or ended while
-   it was down.
+   it was down, and orders whose creation it could not confirm (below).
+
+**Crash safety.** Every `order.make` (agent or strategy) is written to the state file as an intent,
+with a client key, before the API is called; the key rides on the order as its description. An
+unconfirmed intent counts as an open order for the risk gate. On the next unlock the daemon looks
+for the order among the bot's newest 100 orders: by the key, or, if the API rewrote the description,
+by the same pair, side and amounts created within 10 minutes of the intent. A match is adopted onto
+the book (and settles or ends like any other); no match drops the intent. Limit: two identical
+orders within that window, both with their description rewritten, cannot be told apart.
 
 ## Day to day
 
 ```sh
-sudo -u cancore-bot cancore-bot status                 # locked, paused, strategies, version
+sudo -u cancore-bot cancore-bot status                 # locked, paused, partyId, strategies, version
 sudo -u cancore-bot cancore-bot pause "going on holiday"
 sudo -u cancore-bot cancore-bot resume
 sudo -u cancore-bot cancore-bot lock                   # stops strategies, wipes the key
@@ -257,9 +273,9 @@ sudo -u cancore-bot cancore-bot audit verify           # exit 3 if the chain is 
 - **grid** places `amountPerLevel` on the configured side at `levels` prices spaced evenly from `lowerPrice` to `upperPrice`. A filled buy is sold one level up, a filled sell bought back one level down.
 - **dca** places `amountPerOrder` at the reference price every `intervalSeconds`, `maxOrders` in total.
 
-Every strategy order is an `order.make` through the same risk gate, audit log and engine as an agent's. A refusal stops the strategy (`status: "denied"`, `reason` in `status`); the daemon keeps running. Strategy state lives in the state file, and running strategies resume on unlock without placing a level (grid) or seq (dca) twice. `pause` and `strategy.stop` stop the loop and cancel the strategy's resting orders; a strategy order cancelled by hand is placed again.
+Every strategy order is an `order.make` through the same trade lock, risk gate, audit log and engine as an agent's. A refusal stops the strategy (`status: "denied"`, `reason` in `status`); the daemon keeps running. Strategy state lives in the state file, and running strategies resume on unlock without placing a level (grid) or seq (dca) twice. `pause` and `strategy.stop` stop the loop and cancel the strategy's resting orders. A strategy order cancelled by hand (`order.cancel`, `orders.cancelAll`, or in the web app) is not placed again: its slot is listed in the strategy's `cancelledByUser` in `status`.
 
-**Rate limit.** The platform accepts 5 new orders an hour per user. Each strategy has an `ordersPerHour` budget (default 5): once spent it waits with `status: "rate_limited"` instead of sending orders the API would refuse. The platform limit is per user, not per strategy, so keep the sum of budgets of concurrent strategies at or under it.
+**Rate limit.** The platform accepts 5 new orders an hour per user. The daemon keeps one budget, `ordersPerHour` in the config (default 5), for the agent and every strategy together. A strategy that finds it spent waits with `status: "rate_limited"`; an agent's `order.make` past it is refused with `rate_limited`.
 
 ## Troubleshooting
 
@@ -273,16 +289,17 @@ Every strategy order is an `order.make` through the same risk gate, audit log an
 | CLI `connect ENOENT` / `EACCES` | daemon not running, or CLI not run as `cancore-bot` | `systemctl status cancore-botd`; use `sudo -u cancore-bot` |
 | agent gets `socket_unavailable` | not in `cancore-bot-clients`, or no relogin | `id` should list the group |
 | every trade `rate_limited` | `maxCommandsPerMinute` is `0` | set it |
+| `order.make` `rate_limited` with `maxCommandsPerMinute` set | the hourly `ordersPerHour` budget is spent | wait; it is the platform's limit |
+| daemon exits `no venue is pinned for …` | a `baseUrl` that is not one of Cancore's hosts | set `network` or `venuePartyId` |
+| `register` fails, or the first unlock logs `not registered: run cancore-bot register` | a new account, or a wrong invite code | `cancore-bot register` with the right code |
 | every trade `price_deviation_exceeded` | no market rate for the pair (feed down, unknown pair), or price too far | check the pair is listed; widen `maxPriceDeviationBps` |
 | starts `paused` with `audit log truncated or broken` | the log lost entries the state had seen | `audit verify`, investigate, then `resume` |
 | `withdraw goes only to the owner party pinned in the config` | `--to` differs, or no `ownerParty` | set `ownerParty`, restart the daemon |
-| `strategy.start` returns an internal error | grid and dca loops are not implemented yet | place orders with `order.make` |
 
 ## Not implemented yet
 
-- The grid and dca strategy loops: `strategy.start` passes the risk gate and then fails.
-- `init` does not generate a phrase; registration and onboarding are done with the SDK (step 5).
-- `status` does not report the bot's `partyId`.
 - `orders.list` knows only the daemon's open orders: `filled` and `cancelled` return an empty list.
-- `balances` reports `locked` as `0`.
+- `balances` has no `locked` amount: the SDK does not list a party's allocations.
+- `quote` for a buy sizes the pool request from the market rate, so the base amount it returns is
+  close to the one asked, not exact.
 - Platforms other than Linux with systemd.

@@ -52,6 +52,10 @@ export function fakeEngine(): FakeEngine {
     async balances() { return []; },
     async referencePrices() { return { 'CC/USDCx': '0.15', 'USDCx/CC': '6.6666666666' }; },
     async withdraw() {},
+    async findIntent() { return undefined; },
+    async quote(p) { return { ...p, price: '0.15', total: '0', expiresInSec: 30 }; },
+    async register() { return 'bot::1220'; },
+    async onboard() { return 'bot::1220'; },
     start() {},
     async stop() {},
   };
@@ -81,6 +85,7 @@ export async function rig(limits: unknown = LIMITS, keystore?: Deps['keystore'])
     ...real,
     keystore: keystore ?? {
       init: async () => undefined,
+      initSeed: async () => undefined,
       unlock: async (p) => {
         if (p !== 'right') throw new Error('bad');
         return fakeSigner();

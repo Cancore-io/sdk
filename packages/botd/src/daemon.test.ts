@@ -8,12 +8,13 @@ import { ERROR, JSONRPC_VERSION, type Method, type RpcRequest } from './protocol
 import type { BotState, Limits } from './types';
 
 function fakeDeps(log: string[]) {
-  let state: BotState = { locked: true, paused: false, openOrders: [], positions: {}, dailyVolume: {}, recentCommands: [], referencePrices: {} };
+  let state: BotState = { partyId: 'bot::1220', locked: true, paused: false, openOrders: [], positions: {}, dailyVolume: {}, recentCommands: [], referencePrices: {} };
   const limits = { allowedPairs: ['CC/USDCx'] } as Limits;
   const audited: Record<string, unknown>[] = [];
   const deps: Deps = {
     keystore: {
       init: jest.fn(),
+      initSeed: jest.fn(),
       unlock: jest.fn(async (pass: string) => {
         if (pass !== 'right') throw new Error('bad');
         return { destroy: jest.fn() } as never;
@@ -46,6 +47,10 @@ function fakeDeps(log: string[]) {
       balances: jest.fn(),
       referencePrices: async () => ({}),
       withdraw: jest.fn(),
+      findIntent: async () => undefined,
+      quote: jest.fn(),
+      register: async () => 'bot::1220',
+      onboard: async () => 'bot::1220',
       start: jest.fn(),
       stop: jest.fn(async () => undefined),
     }),

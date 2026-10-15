@@ -1,10 +1,12 @@
 import type { KeySigner } from '@cancore/client/selfcustody';
-import type { DenyReason, Method, Params, RiskClass } from './protocol/index';
+import type { DenyReason, Method, Params, Result, RiskClass } from './protocol/index';
 
 /** Encrypted-at-rest key storage. The plaintext key exists only between unlock and lock. */
 export interface Keystore {
   /** Creates a new keystore file from a mnemonic; refuses to overwrite. */
   init(mnemonic: string, passphrase: string): Promise<void>;
+  /** Creates a new keystore file from a raw 32-byte Ed25519 key; refuses to overwrite. Wipes `seed`. */
+  initSeed(seed: Uint8Array, passphrase: string): Promise<void>;
   /** Decrypts the key into memory; throws on a wrong passphrase. */
   unlock(passphrase: string): Promise<BotSigner>;
   /** Wipes the in-memory key. Idempotent. */
@@ -65,6 +67,20 @@ export interface Limits {
   maxPriceDeviationBps: number;
   /** Max trade commands per minute. */
   maxCommandsPerMinute: number;
+  /** New orders per hour, all sources together (the platform's per-user limit). Set by the daemon from its config, never from limits.json; default 5. */
+  ordersPerHour?: number;
+}
+
+/** An `order.make` recorded before the API is called, so a crash between the two leaves a trace to reconcile. */
+export interface OrderIntent {
+  /** Client idempotency key; sent as the order's description. */
+  key: string;
+  pair: string;
+  side: 'buy' | 'sell';
+  amount: string;
+  price: string;
+  at: number;
+  strategy?: { id: string; slot: string };
 }
 
 /** Everything the risk gate needs to decide; the daemon owns and persists it. */
@@ -75,6 +91,10 @@ export interface BotState {
   partyId?: string;
   /** Orders this bot made, and orders of others it took (`taken`), until they settle or end. */
   openOrders: { orderId: string; pair: string; side: 'buy' | 'sell'; amount: string; price: string; taken?: boolean; strategy?: { id: string; slot: string } }[];
+  /** Orders sent to the API whose id is not known yet; they count as open orders for the gate. */
+  intents?: OrderIntent[];
+  /** Epoch ms of every new order of the last hour, agent and strategies alike: the `ordersPerHour` budget. */
+  orderTimes?: number[];
   /** Every strategy started, with what it placed; a running one resumes on unlock. */
   strategies?: StrategyRecord[];
   /** Per-instrument net position, decimal string. */
@@ -115,9 +135,11 @@ export interface StrategyRecord {
   reason?: string;
   /** grid: the `level:side` slots that should have an open order. */
   want: string[];
-  /** Epoch ms of every order placed: dca's next seq is its length; the last hour is the `ordersPerHour` budget. */
+  /** Epoch ms of every order placed: dca's next seq is its length. */
   placed: number[];
   fills: number;
+  /** Slots whose order the user cancelled by hand: never placed again. */
+  cancelled?: string[];
 }
 
 /** One order a strategy wants placed; `slot` keeps it idempotent across restarts. */
@@ -140,13 +162,22 @@ export interface OrderInfo {
 
 /** Self-custody trading over the client; every signature goes through the verifying signer (verify.ts). */
 export interface Engine {
-  make(params: Params<'order.make'>): Promise<{ orderId: string }>;
+  /** `clientKey` rides on the order (its description), so `findIntent` can find it after a crash. */
+  make(params: Params<'order.make'> & { clientKey: string }): Promise<{ orderId: string }>;
+  /** The id of this account's order an intent created, if any; `known` ids are skipped. Throws when the lookup fails. */
+  findIntent(intent: OrderIntent, known: string[]): Promise<string | undefined>;
+  /** A pool quote, with the token that would execute it stripped. */
+  quote(params: Params<'quote'>): Promise<Result<'quote'>>;
+  /** Registers the account (an existing one is fine) and onboards its party; resolves with the party id. */
+  register(inviteCode?: string): Promise<string>;
+  /** Onboards an already registered account; resolves with the party id. */
+  onboard(): Promise<string>;
   /** Queues the taker side on the settlement loop; resolves once queued, not once settled. */
   take(params: Params<'order.take'>): Promise<{ orderId: string; filled: string }>;
   cancel(orderId: string): Promise<void>;
   /** Any order by id: one to take, or one of ours to reconcile. */
   order(orderId: string): Promise<OrderInfo>;
-  balances(instruments: string[]): Promise<{ instrument: string; amount: string; locked: string }[]>;
+  balances(instruments: string[]): Promise<{ instrument: string; amount: string }[]>;
   /** Market rate per `BASE/QUOTE`, both directions of every listed pair. */
   referencePrices(): Promise<Record<string, string>>;
   /** Sends `amount` of `instrument` to `to`; the daemon has already held `to` to the pinned owner party. */

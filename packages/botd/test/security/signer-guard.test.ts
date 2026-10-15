@@ -1,3 +1,6 @@
+import { chmodSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { selfSendLeg } from '../../../client/src/dvp-prepared.fixture';
 import { guardSigning, VerifyError } from '../../src/verify';
 import type { BotSigner } from '../../src/types';
@@ -75,15 +78,36 @@ describe('security: verifying signer', () => {
 });
 
 describe('security: pinned trust boundary', () => {
-  // Without `venuePartyId` in the daemon config, the SDK takes a trade's venue from the API's
-  // /htlc/fee-config (selfcustody.ts dvpTerms), even on a network with a pinned default venue.
-  // Fixing it belongs in @cancore/client (prefer DEFAULT_VENUES[network]) or in the daemon (refuse to start unpinned).
-  test.failing('a DvP trade venue is pinned even when the config omits venuePartyId', async () => {
+  // Without `venuePartyId` in the config the SDK would take a trade's venue from the API's /htlc/fee-config;
+  // the engine pins DEFAULT_VENUES[network] instead, and refuses a stand it has no venue for.
+  const engineWith = async (options: { baseUrl: string; venuePartyId?: string }) => {
     jest.resetModules();
     const seen: Record<string, unknown>[] = [];
-    jest.doMock('@cancore/client/selfcustody', () => ({ createSelfCustody: (o: Record<string, unknown>) => (seen.push(o), {}) }));
+    jest.doMock('@cancore/client/selfcustody', () => ({
+      ...jest.requireActual('@cancore/client/selfcustody'),
+      createSelfCustody: (o: Record<string, unknown>) => (seen.push(o), {}),
+    }));
     const { createEngine } = await import('../../src/engine/index');
-    createEngine({ signer: inner(), baseUrl: 'https://api.cancore.io', hooks: { onSettled: () => undefined, onEnded: () => undefined, onVerifyFailed: () => undefined } });
-    expect(seen[0]?.venuePartyId).toEqual(expect.any(String));
+    createEngine({ signer: inner(), ...options, hooks: { onSettled: () => undefined, onEnded: () => undefined, onVerifyFailed: () => undefined } });
+    return seen[0];
+  };
+
+  it('a DvP trade venue is pinned even when the config omits venuePartyId', async () => {
+    const { DEFAULT_VENUES } = jest.requireActual('@cancore/client/selfcustody');
+    expect((await engineWith({ baseUrl: 'https://api.cancore.io' }))?.venuePartyId).toBe(DEFAULT_VENUES.mainnet);
+    expect((await engineWith({ baseUrl: 'https://api.cancore.io', venuePartyId: 'v::1' }))?.venuePartyId).toBe('v::1');
+  });
+
+  it('a stand with no pinned venue is refused, by the engine and by the daemon at start', async () => {
+    await expect(engineWith({ baseUrl: 'https://api.example.com' })).rejects.toThrow(/no venue is pinned/);
+    const { defaultDeps } = await import('../../src/daemon');
+    const { DEFAULTS } = await import('../../src/config');
+    const dir = mkdtempSync(join(tmpdir(), 'botd-venue-'));
+    chmodSync(dir, 0o700);
+    try {
+      await expect(defaultDeps({ ...DEFAULTS, stateDir: dir, baseUrl: 'https://api.example.com' })).rejects.toThrow(/no venue is pinned/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -14,8 +14,9 @@ Install and secure the daemon first: [`@cancore/botd`](../botd). For agents, the
 
 | Tool | Risk class | Effect |
 |---|---|---|
-| `trade_status` | read | daemon state: locked, paused, running strategies, version |
-| `trade_balances` | read | balances per instrument: amount and locked |
+| `trade_status` | read | daemon state: locked, paused, the bot's party, strategies (with slots cancelled by hand), version |
+| `trade_balances` | read | balances per instrument |
+| `trade_quote` | read | a live pool price for an amount of base; nothing is traded |
 | `trade_orders_list` | read | the bot's orders, filtered by status (default open) |
 | `trade_limits_get` | read | the limits the owner set, read-only |
 | `trade_audit_tail` | read | the last n audit-log entries |

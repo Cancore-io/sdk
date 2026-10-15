@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCb, type BinaryLike, type ScryptOptions } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, linkSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { deriveWalletKey, hexToBytes, isValidMnemonic, newMnemonic } from '@cancore/wallet';
+import { bytesToHex, deriveWalletKey, ed25519PublicKeyFromSeed, hexToBytes, isValidMnemonic, newMnemonic } from '@cancore/wallet';
 import { createSigner } from './signer';
 import type { BotSigner, Keystore } from './types';
 
@@ -68,41 +68,54 @@ function readChecked(path: string): KeystoreFile {
 /** Encrypted keystore file at `path` (mode 0600). */
 export function createKeystore(path: string): Keystore {
   let signer: BotSigner | undefined;
+  /** Encrypts `raw` (wiped) under `passphrase` into a new file at `path`. */
+  async function write(raw: Uint8Array, passphrase: string) {
+    const seed = Buffer.from(raw);
+    raw.fill(0);
+    if (!passphrase) {
+      seed.fill(0);
+      throw new Error('keystore: empty passphrase');
+    }
+    const salt = randomBytes(32);
+    const iv = randomBytes(12);
+    const kdf = { name: 'scrypt' as const, ...KDF, salt: salt.toString('base64') };
+    const header = { version: VERSION, kdf, publicKey: bytesToHex(ed25519PublicKeyFromSeed(seed)) };
+    const kek = await scrypt(passphrase, salt, KDF);
+    try {
+      const cipher = createCipheriv('aes-256-gcm', kek, iv);
+      cipher.setAAD(aad(header));
+      const ciphertext = Buffer.concat([cipher.update(seed), cipher.final()]);
+      const file: KeystoreFile = {
+        ...header,
+        cipher: { name: 'aes-256-gcm', iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') },
+      };
+      const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+      writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600, flag: 'wx' });
+      // link(2) is atomic and fails with EEXIST, so an existing keystore is never overwritten.
+      try {
+        linkSync(tmp, path);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') throw new KeystoreFileError(`${path} already exists; refusing to overwrite`);
+        throw err;
+      } finally {
+        unlinkSync(tmp);
+      }
+    } finally {
+      kek.fill(0);
+      seed.fill(0);
+    }
+  }
   return {
     async init(mnemonic, passphrase) {
       if (!isValidMnemonic(mnemonic)) throw new Error('keystore: not a valid BIP39 recovery phrase');
-      if (!passphrase) throw new Error('keystore: empty passphrase');
-      const derived = deriveWalletKey(mnemonic);
-      const seed = Buffer.from(derived.seed);
-      derived.seed.fill(0);
-      const salt = randomBytes(32);
-      const iv = randomBytes(12);
-      const kdf = { name: 'scrypt' as const, ...KDF, salt: salt.toString('base64') };
-      const header = { version: VERSION, kdf, publicKey: derived.publicKeyHex };
-      const kek = await scrypt(passphrase, salt, KDF);
-      try {
-        const cipher = createCipheriv('aes-256-gcm', kek, iv);
-        cipher.setAAD(aad(header));
-        const ciphertext = Buffer.concat([cipher.update(seed), cipher.final()]);
-        const file: KeystoreFile = {
-          ...header,
-          cipher: { name: 'aes-256-gcm', iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64') },
-        };
-        const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-        writeFileSync(tmp, JSON.stringify(file, null, 2), { mode: 0o600, flag: 'wx' });
-        // link(2) is atomic and fails with EEXIST, so an existing keystore is never overwritten.
-        try {
-          linkSync(tmp, path);
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code === 'EEXIST') throw new KeystoreFileError(`${path} already exists; refusing to overwrite`);
-          throw err;
-        } finally {
-          unlinkSync(tmp);
-        }
-      } finally {
-        kek.fill(0);
+      await write(deriveWalletKey(mnemonic).seed, passphrase);
+    },
+    async initSeed(seed, passphrase) {
+      if (seed.length !== 32) {
         seed.fill(0);
+        throw new Error('keystore: expected a 32-byte Ed25519 key');
       }
+      await write(seed, passphrase);
     },
     async unlock(passphrase) {
       const file = readChecked(path);

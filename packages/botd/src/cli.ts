@@ -1,17 +1,22 @@
 #!/usr/bin/env node
 /** cancore-bot: the owner CLI. Talks to the owner socket, so run it as the daemon user: `sudo -u cancore-bot cancore-bot …`. */
-import { readFileSync } from 'fs';
+import { randomInt } from 'crypto';
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'fs';
 import { createInterface } from 'readline';
+import { hexToBytes } from '@cancore/wallet';
 import { connect, RpcCallError } from './ipc/client';
-import { createKeystore } from './keystore';
+import { createKeystore, generateMnemonic } from './keystore';
 import { openAuditLog } from './audit';
 import { flag, loadConfig, paths, type BotConfig } from './config';
 import { install } from './service/index';
 import type { Method, Params, Result } from './protocol/index';
 
 const USAGE = `usage: cancore-bot [--config <path>] <command>
-  init                     create the keystore (mnemonic + passphrase prompted)
+  init                     create the keystore from a new 24-word phrase (shown once, then checked)
+  init --import            ... from an existing phrase instead (never your wallet's)
+  init --import-key <file> ... from the 64-hex key Cancore "My bots" gives (file mode 0600)
   unlock | lock            decrypt / wipe the key in the daemon
+  register                 register the account (invite code prompted) and onboard its party
   status
   limits show | limits set <file.json>
   pause [reason] | resume
@@ -39,6 +44,41 @@ export async function promptSecret(question: string): Promise<string> {
   });
 }
 
+/** Asks for `count` random words of the phrase back; throws on the first wrong one. */
+export async function confirmBackup(mnemonic: string, ask: (question: string) => Promise<string>, pick = randomInt, count = 3): Promise<void> {
+  const words = mnemonic.split(' ');
+  const positions = new Set<number>();
+  while (positions.size < count) positions.add(pick(words.length));
+  for (const i of [...positions].sort((a, b) => a - b)) {
+    if ((await ask(`word #${i + 1}: `)).trim().toLowerCase() !== words[i]) throw new Error('that word does not match; nothing was written, run init again');
+  }
+}
+
+/** The 32-byte key from a file only this user can read: 64 hex characters, nothing else. */
+export function readKeyFile(path: string): Uint8Array {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const st = fstatSync(fd);
+    if (st.mode & 0o077) throw new Error(`${path} is readable by group/others (mode ${(st.mode & 0o777).toString(8)}); chmod 600 it`);
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) throw new Error(`${path} is not owned by the current user`);
+    const hex = readFileSync(fd, 'utf8').trim();
+    if (!/^[0-9a-f]{64}$/i.test(hex)) throw new Error(`${path}: expected a 32-byte key as 64 hex characters`);
+    return hexToBytes(hex.toLowerCase());
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Shows the new phrase once on the TTY, waits until it is written down, then clears the screen. */
+async function showOnce(mnemonic: string): Promise<void> {
+  if (!process.stdout.isTTY) throw new Error('a TTY is required to show the recovery phrase');
+  const words = mnemonic.split(' ').map((w, i) => `${String(i + 1).padStart(2)}. ${w}`);
+  process.stdout.write(`\nRecovery phrase of the bot's key. Write it down offline; it is shown once and is the only backup.\n\n`);
+  for (let i = 0; i < words.length; i += 4) process.stdout.write(`  ${words.slice(i, i + 4).map((w) => w.padEnd(18)).join('')}\n`);
+  await promptSecret('\npress Enter once it is written down ');
+  process.stdout.write('\x1b[2J\x1b[3J\x1b[H');
+}
+
 async function rpc<M extends Method>(config: BotConfig, method: M, params: Params<M>): Promise<Result<M>> {
   const client = await connect(config.ownerSocket);
   try {
@@ -57,12 +97,33 @@ export async function main(argv: string[]): Promise<number> {
   try {
     switch (cmd) {
       case 'init': {
-        const mnemonic = await promptSecret('mnemonic: ');
-        const passphrase = await promptSecret('passphrase: ');
-        if (passphrase !== (await promptSecret('repeat passphrase: '))) throw new Error('passphrases do not match');
-        const keystore = createKeystore(paths(config).keystore);
-        await keystore.init(mnemonic.trim(), passphrase);
-        print({ publicKey: await keystore.publicKey() });
+        const keyFile = flag(args, 'import-key');
+        let seed: Uint8Array | undefined;
+        let mnemonic: string | undefined;
+        if (keyFile) {
+          seed = readKeyFile(keyFile);
+        } else if (args.includes('--import')) {
+          process.stderr.write('warning: importing a phrase. Use one made for this bot, never your wallet\'s: account 0 of your wallet phrase is your wallet.\n');
+          mnemonic = (await promptSecret('recovery phrase: ')).trim();
+        } else {
+          mnemonic = generateMnemonic();
+          await showOnce(mnemonic);
+          await confirmBackup(mnemonic, promptSecret);
+        }
+        try {
+          const passphrase = await promptSecret('passphrase: ');
+          if (passphrase !== (await promptSecret('repeat passphrase: '))) throw new Error('passphrases do not match');
+          const keystore = createKeystore(paths(config).keystore);
+          await (seed ? keystore.initSeed(seed, passphrase) : keystore.init(mnemonic!, passphrase));
+          print({ publicKey: await keystore.publicKey() });
+        } finally {
+          seed?.fill(0);
+        }
+        return 0;
+      }
+      case 'register': {
+        const inviteCode = (await promptSecret('invite code (Enter for none): ')).trim();
+        print(await rpc(config, 'register', inviteCode ? { inviteCode } : {}));
         return 0;
       }
       case 'unlock':

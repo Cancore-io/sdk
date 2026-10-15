@@ -6,15 +6,15 @@ import { createKeystore } from './keystore';
 import { openAuditLog } from './audit';
 import { applyFill, auditIntact, createStateStore, rollDaily, type StateStore } from './state';
 import { emptyLimits, loadLimits, parseLimits } from './limits';
-import { check, checkTake, dcaConfig, gridConfig } from './riskgate';
+import { check, checkTake, dcaConfig, DEFAULT_ORDERS_PER_HOUR, gridConfig, ordersLastHour } from './riskgate';
 import { dcaNext } from './engine/dca';
 import { gridNext, gridRefill, gridSlots } from './engine/grid';
-import { createEngine, type EngineOptions } from './engine/index';
+import { createEngine, pinnedVenue, type EngineOptions } from './engine/index';
 import { dec, fmt, SCALE } from './decimal';
 import { listen, RpcFault, type IpcServer } from './ipc/server';
 import { flag, loadConfig, paths, type BotConfig } from './config';
 import { ERROR, JSONRPC_VERSION, RISK_CLASS, type Method, type RiskClass, type Params, type Result, type RpcRequest, type RpcResponse } from './protocol/index';
-import type { AuditEntry, AuditLog, BotSigner, BotState, Decision, Engine, EngineHooks, Keystore, Limits, OrderInfo, RiskGate, StrategyOrder, StrategyRecord } from './types';
+import type { AuditEntry, AuditLog, BotSigner, BotState, Decision, Engine, EngineHooks, Keystore, Limits, OrderInfo, OrderIntent, RiskGate, StrategyOrder, StrategyRecord } from './types';
 
 const VERSION = '0.1.0-rc.0';
 
@@ -30,6 +30,8 @@ export interface Deps {
   now(): number;
   /** The only party `withdraw` may send to (config `ownerParty`); unset disables withdraw. */
   ownerParty?: string;
+  /** New orders an hour, agent and strategies together (config `ordersPerHour`); default 5, the platform's limit. */
+  ordersPerHour?: number;
   /** Runs `fn` periodically until the returned stop is called; drives the strategy loop. Default: every 5s. */
   every?(fn: () => void): () => void;
 }
@@ -42,12 +44,11 @@ export interface Dispatcher {
 }
 
 /** Params as they may be written to the audit log: secrets dropped. */
-const auditable = (request: RpcRequest) => (request.method === 'unlock' ? undefined : request.params);
+const auditable = (request: RpcRequest) => (request.method === 'unlock' || request.method === 'register' ? undefined : request.params);
 
 /** Order statuses after which an order of ours will never fill. */
 const ENDED = new Set(['cancelled', 'refunded', 'delivery_failed']);
 
-const HOUR_MS = 3_600_000;
 const active = (s: StrategyRecord) => s.status === 'running' || s.status === 'rate_limited';
 const everyFiveSeconds = (fn: () => void) => {
   const t = setInterval(fn, 5000);
@@ -64,6 +65,37 @@ function strategyFilled(strategies: StrategyRecord[] | undefined, tag: { id: str
     const want = s.want.filter((w) => w !== tag.slot);
     return { ...s, fills: s.fills + 1, want: refill === undefined || want.includes(refill) ? want : [...want, refill] };
   });
+}
+
+/** Orders the user cancelled by hand: a grid never places their slot again. */
+function userCancelled(s: BotState, orderIds: string[]): BotState {
+  const tags = s.openOrders.flatMap((o) => (o.strategy && orderIds.includes(o.orderId) ? [o.strategy] : []));
+  if (tags.length === 0) return s;
+  return {
+    ...s,
+    strategies: s.strategies?.map((r) => {
+      const slots = tags.filter((t) => t.id === r.strategyId).map((t) => t.slot);
+      if (slots.length === 0) return r;
+      return { ...r, want: r.want.filter((w) => !slots.includes(w)), cancelled: [...new Set([...(r.cancelled ?? []), ...slots])] };
+    }),
+  };
+}
+
+/** An intent the API never saw: off the books, and its strategy's placement undone. */
+function dropIntent(s: BotState, intent: OrderIntent): BotState {
+  return {
+    ...s,
+    intents: (s.intents ?? []).filter((i) => i.key !== intent.key),
+    strategies: intent.strategy
+      ? s.strategies?.map((r) => (r.strategyId === intent.strategy!.id ? { ...r, placed: r.placed.filter((t) => t !== intent.at) } : r))
+      : s.strategies,
+  };
+}
+
+/** An intent whose order exists: on the book under its id. */
+function adoptIntent(s: BotState, intent: OrderIntent, orderId: string): BotState {
+  const { key: _k, at: _a, ...order } = intent;
+  return { ...s, intents: (s.intents ?? []).filter((i) => i.key !== intent.key), openOrders: [...s.openOrders, { orderId, ...order }] };
 }
 
 /** `a / b` in 1e-10 units, as a decimal string. */
@@ -134,14 +166,28 @@ export function createDispatcher(deps: Deps): Dispatcher {
       }),
     onEnded: (orderId, reason) =>
       later(async () => {
-        await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) }));
+        // Cancelled outside the daemon (the web app): by hand, so a grid does not place it again.
+        await mutate((s) => {
+          const next = reason === 'cancelled' ? userCancelled(s, [orderId]) : s;
+          return { ...next, openOrders: next.openOrders.filter((o) => o.orderId !== orderId) };
+        });
         await append({ ...settleEntry, decision: 'allow', params: { orderId, event: reason } });
       }),
     onVerifyFailed: (detail) => later(() => append({ ...settleEntry, decision: 'deny', reason: 'verify_failed', params: { detail } })),
   };
 
-  /** Orders that settled or ended while the daemon was down. A failed lookup leaves the order as it was. */
+  /**
+   * Orders that settled or ended while the daemon was down. A failed lookup leaves the order as it was.
+   * An intent first: the order it made (if any) is adopted, so the loop below settles or ends it too.
+   */
   async function reconcile(e: Engine) {
+    for (const intent of (await deps.state.load()).intents ?? []) {
+      const known = (await deps.state.load()).openOrders.map((o) => o.orderId);
+      const found = await e.findIntent(intent, known).then((id) => ({ id }), () => undefined);
+      if (!found) continue;
+      await mutate((s) => (found.id ? adoptIntent(s, intent, found.id) : dropIntent(s, intent)));
+      await append({ ...settleEntry, decision: 'allow', params: { event: found.id ? 'intent_adopted' : 'intent_dropped', key: intent.key, ...(found.id && { orderId: found.id }) } });
+    }
     for (const o of (await deps.state.load()).openOrders) {
       const info = await e.order(o.orderId).catch(() => undefined);
       if (info?.status === 'completed') hooks.onSettled(o.orderId);
@@ -164,16 +210,16 @@ export function createDispatcher(deps: Deps): Dispatcher {
     const now = deps.now();
     const state = await deps.state.load();
     if (rec.kind === 'dca' && rec.placed.length >= dcaConfig.parse(rec.config).maxOrders) return setStrategy(rec.strategyId, { status: 'done' });
-    const cfg = rec.kind === 'grid' ? gridConfig.parse(rec.config) : dcaConfig.parse(rec.config);
-    // The platform's order limit is per user: waiting here beats a refused order from the API.
-    if (rec.placed.filter((t) => t > now - HOUR_MS).length >= cfg.ordersPerHour) {
+    // The platform's order limit is per user, one budget for every source: waiting here beats a refused order.
+    if (ordersLastHour(state, now) >= (deps.ordersPerHour ?? DEFAULT_ORDERS_PER_HOUR)) {
       if (rec.status !== 'rate_limited') await setStrategy(rec.strategyId, { status: 'rate_limited', reason: 'rate_limited' });
       return;
     }
-    if (state.openOrders.length >= limits.maxOpenOrders) return;
+    const book = [...state.openOrders, ...(state.intents ?? [])];
+    if (book.length >= limits.maxOpenOrders) return;
     let next: StrategyOrder | undefined;
     if (rec.kind === 'grid') {
-      const open = state.openOrders.flatMap((o) => (o.strategy?.id === rec.strategyId ? [o.strategy.slot] : []));
+      const open = book.flatMap((o) => (o.strategy?.id === rec.strategyId ? [o.strategy.slot] : []));
       next = gridNext(gridConfig.parse(rec.config), rec.want, open);
     } else {
       const ref = (await engine!.referencePrices().catch(() => ({}) as Record<string, string>))[`${rec.base}/${rec.quote}`];
@@ -240,6 +286,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
           ...(state.partyId && { partyId: state.partyId }),
           strategies: (state.strategies ?? []).map((s) => ({
             strategyId: s.strategyId, kind: s.kind, running: active(s), status: s.status, ...(s.reason && { reason: s.reason }), placed: s.placed.length, fills: s.fills,
+            cancelledByUser: s.cancelled ?? [],
           })),
           version: VERSION,
         };
@@ -258,6 +305,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
           }),
         };
       }
+      case 'quote':
+        return needEngine().quote(p as Params<'quote'>);
       case 'balances': {
         const instruments = [...new Set((await deps.limits.load()).allowedPairs.flatMap((pair) => pair.split('/')))];
         return { balances: await needEngine().balances(instruments) };
@@ -265,7 +314,10 @@ export function createDispatcher(deps: Deps): Dispatcher {
       case 'order.cancel': {
         const { orderId } = p as Params<'order.cancel'>;
         await needEngine().cancel(orderId);
-        await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) }));
+        await mutate((s) => {
+          const next = userCancelled(s, [orderId]);
+          return { ...next, openOrders: next.openOrders.filter((o) => o.orderId !== orderId) };
+        });
         return { orderId, cancelled: true };
       }
       case 'orders.cancelAll': {
@@ -275,7 +327,10 @@ export function createDispatcher(deps: Deps): Dispatcher {
           await e.cancel(o.orderId);
           cancelled.push(o.orderId);
         }
-        await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => !cancelled.includes(o.orderId)) }));
+        await mutate((s) => {
+          const next = userCancelled(s, cancelled);
+          return { ...next, openOrders: next.openOrders.filter((o) => !cancelled.includes(o.orderId)) };
+        });
         return { cancelled };
       }
       case 'pause': {
@@ -304,14 +359,20 @@ export function createDispatcher(deps: Deps): Dispatcher {
       }
       case 'order.make': {
         const params = p as Params<'order.make'>;
-        const { orderId } = await needEngine().make(params);
-        const pair = `${params.base}/${params.quote}`;
-        // A strategy's order and its seq land in one write: a resumed strategy sees it placed.
+        const e = needEngine();
+        const at = deps.now();
+        const intent: OrderIntent = { key: randomUUID(), pair: `${params.base}/${params.quote}`, side: params.side, amount: params.amount, price: params.price, at, ...(tag && { strategy: tag }) };
+        // The intent, the hourly budget and a strategy's seq land before the API call: a crash after it leaves the
+        // intent to reconcile, never an order the daemon does not know about.
         await mutate((s) => ({
           ...s,
-          openOrders: [...s.openOrders, { orderId, pair, side: params.side, amount: params.amount, price: params.price, ...(tag && { strategy: tag }) }],
-          ...(tag && { strategies: s.strategies?.map((x) => (x.strategyId === tag.id ? { ...x, placed: [...x.placed, deps.now()] } : x)) }),
+          intents: [...(s.intents ?? []), intent],
+          orderTimes: [...(s.orderTimes ?? []).filter((t) => t > at - 3_600_000), at],
+          ...(tag && { strategies: s.strategies?.map((x) => (x.strategyId === tag.id ? { ...x, placed: [...x.placed, at] } : x)) }),
         }));
+        // A failed call keeps the intent: the order may exist anyway, and the next unlock finds out.
+        const { orderId } = await e.make({ ...params, clientKey: intent.key });
+        await mutate((s) => adoptIntent(s, intent, orderId));
         return { order: { orderId, base: params.base, quote: params.quote, side: params.side, amount: params.amount, price: params.price, filled: '0', status: 'open', createdAt: new Date(deps.now()).toISOString() } };
       }
       case 'order.take': {
@@ -334,6 +395,11 @@ export function createDispatcher(deps: Deps): Dispatcher {
         await mutate((s) => ({ ...s, strategies: [...(s.strategies ?? []), rec] }));
         return { strategyId: rec.strategyId };
       }
+      case 'register': {
+        const partyId = await needEngine().register((p as Params<'register'>).inviteCode);
+        await mutate((s) => ({ ...s, partyId }));
+        return { partyId };
+      }
       case 'unlock': {
         signer = await deps.keystore.unlock((p as Params<'unlock'>).passphrase).catch(() => {
           throw new RpcFault(ERROR.LOCKED, 'unlock failed');
@@ -342,6 +408,16 @@ export function createDispatcher(deps: Deps): Dispatcher {
         await mutate((s) => ({ ...s, locked: false }));
         engine.start();
         await reconcile(engine);
+        // First unlock of an account registered elsewhere (the web app): onboard it and learn its party.
+        // A new account needs `register` (owner) first; until then this fails quietly and is logged.
+        if (!(await deps.state.load()).partyId) {
+          const e = engine;
+          later(async () => {
+            const partyId = await e.onboard().catch(() => undefined);
+            if (partyId) await mutate((s) => ({ ...s, partyId }));
+            await append({ ...settleEntry, decision: partyId ? 'allow' : 'error', params: { event: 'onboard' }, ...(!partyId && { reason: 'not registered: run cancore-bot register' }) });
+          });
+        }
         stopTicks?.();
         stopTicks = (deps.every ?? everyFiveSeconds)(() => later(tick));
         return { locked: false };
@@ -392,11 +468,14 @@ export function createDispatcher(deps: Deps): Dispatcher {
     let taken: Taken | undefined;
     if (!engine) await deny(ERROR.LOCKED, 'locked');
     const now = deps.now();
-    const [loaded, limits] = await Promise.all([deps.state.load(), deps.limits.load()]);
+    const [loaded, stored] = await Promise.all([deps.state.load(), deps.limits.load()]);
+    const limits: Limits = { ...stored, ordersPerHour: deps.ordersPerHour ?? DEFAULT_ORDERS_PER_HOUR };
     if (loaded.paused) await deny(ERROR.PAUSED, 'paused');
     // Fresh prices for every decision: an unreachable price feed leaves none, and the gate then refuses.
     const referencePrices = await engine!.referencePrices().catch(() => ({}));
-    const state: BotState = { ...rollDaily(loaded, now), referencePrices };
+    // An unconfirmed intent may be an order on the book: it counts as one.
+    const intents = (loaded.intents ?? []).map(({ key, at: _at, ...o }) => ({ ...o, orderId: `intent:${key}` }));
+    const state: BotState = { ...rollDaily(loaded, now), referencePrices, openOrders: [...loaded.openOrders, ...intents] };
     let decision: Decision;
     if (request.method === 'order.take') {
       const params = request.params as Params<'order.take'>;
@@ -459,6 +538,8 @@ export async function defaultDeps(config: BotConfig, engine: Partial<Pick<Engine
   if (!dir.isDirectory() || dir.uid !== process.getuid?.() || dir.mode & 0o077) {
     throw new Error(`${config.stateDir}: must be a directory owned by this user with mode 0700 (mode ${(dir.mode & 0o777).toString(8)})`);
   }
+  // The venue settles every trade: one the API could name is refused here, before anything listens.
+  if (!pinnedVenue(config)) throw new Error(`no venue is pinned for ${config.baseUrl}: set venuePartyId (or network) in the config`);
   return {
     keystore: createKeystore(p.keystore),
     audit: await openAuditLog(p.audit),
@@ -478,6 +559,7 @@ export async function defaultDeps(config: BotConfig, engine: Partial<Pick<Engine
         ...(config.maxFee && { maxFee: config.maxFee }),
       }),
     now: Date.now,
+    ...(config.ordersPerHour !== undefined && { ordersPerHour: config.ordersPerHour }),
     ...(config.ownerParty && { ownerParty: config.ownerParty }),
   };
 }

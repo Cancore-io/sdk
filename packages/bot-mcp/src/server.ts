@@ -19,8 +19,9 @@ export const AGENT_METHODS: readonly Method[] = (Object.keys(RISK_CLASS) as Meth
 export const toolName = (method: Method): string => `trade_${method.replace(/\./g, '_')}`;
 
 const EFFECT: Record<Method, string> = {
-  status: 'daemon state: locked, paused, running strategies, version',
-  balances: 'balances per instrument: amount and locked',
+  status: "daemon state: locked, paused, the bot's party, strategies (with slots cancelled by hand), version",
+  balances: 'balances per instrument',
+  quote: 'a live pool price for an amount of base; nothing is traded',
   'orders.list': "the bot's orders, filtered by status (default open)",
   'limits.get': 'the limits the owner set, read-only',
   'audit.tail': 'the last n audit-log entries',
@@ -32,6 +33,7 @@ const EFFECT: Record<Method, string> = {
   'order.take': 'fills an existing order (taker)',
   'strategy.start': 'starts a grid or dca strategy',
   unlock: '',
+  register: '',
   lock: '',
   resume: '',
   'limits.set': '',
@@ -88,9 +90,13 @@ const order = (o: unknown) => pick(o, ORDER);
 const VIEW: Record<Method, (r: any) => unknown> = {
   status: (r) => ({
     ...pick(r, ['locked', 'paused', 'partyId', 'version']),
-    strategies: list(r?.strategies).map((s) => pick(s, ['strategyId', 'kind', 'running'])),
+    strategies: list(r?.strategies).map((s: any) => ({
+      ...pick(s, ['strategyId', 'kind', 'running', 'status', 'reason', 'placed', 'fills']),
+      cancelledByUser: list(s?.cancelledByUser).map(token).filter((v) => v !== undefined),
+    })),
   }),
-  balances: (r) => ({ balances: list(r?.balances).map((b) => pick(b, ['instrument', 'amount', 'locked'])) }),
+  balances: (r) => ({ balances: list(r?.balances).map((b) => pick(b, ['instrument', 'amount'])) }),
+  quote: (r) => pick(r, ['base', 'quote', 'side', 'amount', 'price', 'total', 'expiresInSec']),
   'orders.list': (r) => ({ orders: list(r?.orders).map(order) }),
   'limits.get': (r) => ({ limits: limits(r?.limits) }),
   'audit.tail': (r) => ({ entries: list(r?.entries).map((e) => pick(e, AUDIT)) }),
@@ -102,6 +108,7 @@ const VIEW: Record<Method, (r: any) => unknown> = {
   'order.take': (r) => pick(r, ['orderId', 'filled']),
   'strategy.start': (r) => pick(r, ['strategyId']),
   unlock: () => ({}),
+  register: () => ({}),
   lock: () => ({}),
   resume: () => ({}),
   'limits.set': () => ({}),

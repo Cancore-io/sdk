@@ -22,7 +22,8 @@ refusal as an answer, not an obstacle to work around.
 ## Start of every session
 
 1. `trade_tools` — the tools available and their risk class (`read`, `reduce`, `trade`).
-2. `trade_status` — `locked`, `paused` (and `pauseReason`), running strategies.
+2. `trade_status` — `locked`, `paused` (and `pauseReason`), `partyId` (the bot's address; absent
+   until the human runs `cancore-bot register`), strategies.
    - `locked: true` → stop and tell the human: *"The bot is locked. Please run
      `sudo -u cancore-bot cancore-bot unlock` in your terminal."*
    - `paused: true` → tell them the reason and that only they can resume:
@@ -35,9 +36,11 @@ refusal as an answer, not an obstacle to work around.
 
 ## Placing orders
 
-There is no quote tool yet. Price an order from the market rate you know for the pair; the daemon
-compares it to its own reference (the API's market rate) and refuses anything further than
-`maxPriceDeviationBps` away.
+`trade_quote { base, quote, side, amount }` returns the pool's live `price` (quote per base) and
+`total` for that amount; it trades nothing. Price an order near it: the daemon compares every price
+to its own reference (the API's market rate) and refuses anything further than
+`maxPriceDeviationBps` away. A buy's quote is sized from the market rate, so its `amount` is close
+to the one asked, not exact.
 
 Before calling `trade_order_make { base, quote, side, amount, price, ttlSeconds? }`, check it fits:
 
@@ -46,6 +49,8 @@ Before calling `trade_order_make { base, quote, side, amount, price, ttlSeconds?
 - today's volume + `amount <= maxDailyVolume[base]` (rolling 24 h).
 - |position + every open order on `base` as if filled + this one| `<= maxPosition[base]`.
 - open orders + 1 `<= maxOpenOrders`.
+- the bot has placed fewer than 5 new orders in the last hour (agent and strategies together; the
+  platform's limit, `ordersPerHour` in the daemon config).
 - Amounts and prices are decimal strings, e.g. `"12.5"`, never numbers.
 
 Selling gives `amount` of base for `amount × price` of quote (rounded down); buying gives
@@ -74,7 +79,7 @@ Prefer `trade_pause` when something looks wrong.
 | `position_exceeded` | worst-case net position would pass `maxPosition[base]` | cancel opposite-risk orders or trade the other side |
 | `open_orders_exceeded` | `maxOpenOrders` reached | cancel or wait for fills |
 | `price_deviation_exceeded` | price too far from the reference, or **no reference** for the pair (price feed down) | reprice near market; if it persists, the feed is down: wait |
-| `rate_limited` | `maxCommandsPerMinute` trade commands in the last 60 s (0 means trading is off) | wait a minute; do not loop |
+| `rate_limited` | `maxCommandsPerMinute` trade commands in the last 60 s (0 means trading is off), or the hourly new-order budget (`ordersPerHour`, default 5) is spent | wait; do not loop |
 | `verify_failed` | the daemon refused to sign a transaction whose hash it could not recompute | stop trading, `trade_pause`, tell the human |
 | `paused` / `locked` | as in the session start | tell the human the CLI command |
 
@@ -89,9 +94,11 @@ and every attempt, allowed or denied, lands in the audit log the human reads
 
 ## Grid and DCA
 
-`trade_strategy_start { kind, base, quote, config }`. **The grid and dca loops are not implemented
-yet**: the risk gate checks the config, then the call fails with `daemon_error`. Until then, place
-orders with `trade_order_make`. The configs the gate accepts:
+`trade_strategy_start { kind, base, quote, config }` starts a loop in the daemon; every order it
+places goes through the same gate and audit log as yours, and shares your hourly budget. A strategy
+waiting for that budget shows `status: "rate_limited"`; one stopped by a refusal shows `denied` with
+the reason. If you `trade_order_cancel` a strategy's order, the strategy does not place it again:
+the slot appears in its `cancelledByUser`. The configs the gate accepts:
 
 - grid: `{ side, levels (1–100), amountPerLevel, lowerPrice, upperPrice }` — the gate checks all
   `levels` orders at once (prices at `lowerPrice` and `upperPrice`, so both must be within

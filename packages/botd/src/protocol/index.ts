@@ -32,6 +32,8 @@ export const PARAMS = {
   'orders.list': z.object({ status: z.enum(['open', 'filled', 'cancelled', 'all']).default('open') }).strict(),
   'limits.get': z.object({}).strict(),
   'audit.tail': z.object({ n: z.number().int().positive().max(1000).default(50) }).strict(),
+  /** A live pool price for `amount` of base; a quote only, nothing is traded. */
+  quote: z.object({ base: instrument, quote: instrument, side, amount }).strict(),
   // reduce
   'order.cancel': z.object({ orderId: z.string().min(1) }).strict(),
   'orders.cancelAll': z.object({}).strict(),
@@ -47,6 +49,8 @@ export const PARAMS = {
     .strict(),
   // owner
   unlock: z.object({ passphrase: z.string().min(1) }).strict(),
+  /** Registers the bot's account (with an invite code, if the stand needs one) and onboards its party. */
+  register: z.object({ inviteCode: z.string().min(1).max(200).optional() }).strict(),
   lock: z.object({}).strict(),
   resume: z.object({}).strict(),
   'limits.set': z.object({ limits: z.record(z.unknown()) }).strict(),
@@ -63,6 +67,7 @@ export const RISK_CLASS: Record<Method, RiskClass> = {
   'orders.list': 'read',
   'limits.get': 'read',
   'audit.tail': 'read',
+  quote: 'read',
   'order.cancel': 'reduce',
   'orders.cancelAll': 'reduce',
   pause: 'reduce',
@@ -71,6 +76,7 @@ export const RISK_CLASS: Record<Method, RiskClass> = {
   'order.take': 'trade',
   'strategy.start': 'trade',
   unlock: 'owner',
+  register: 'owner',
   lock: 'owner',
   resume: 'owner',
   'limits.set': 'owner',
@@ -97,16 +103,19 @@ export interface StatusResult {
   paused: boolean;
   pauseReason?: string;
   partyId?: string;
-  strategies: { strategyId: string; kind: 'grid' | 'dca'; running: boolean; status: string; reason?: string; placed: number; fills: number }[];
+  /** `cancelledByUser`: grid slots whose order was cancelled by hand; the strategy does not place them again. */
+  strategies: { strategyId: string; kind: 'grid' | 'dca'; running: boolean; status: string; reason?: string; placed: number; fills: number; cancelledByUser: string[] }[];
   version: string;
 }
 
 export interface Results {
   status: StatusResult;
-  balances: { balances: { instrument: string; amount: string; locked: string }[] };
+  balances: { balances: { instrument: string; amount: string }[] };
   'orders.list': { orders: OrderView[] };
   'limits.get': { limits: Record<string, unknown> };
   'audit.tail': { entries: Record<string, unknown>[] };
+  /** `price` is quote per base; `total` the quote side of the trade. */
+  quote: { base: string; quote: string; side: 'buy' | 'sell'; amount: string; price: string; total: string; expiresInSec: number };
   'order.cancel': { orderId: string; cancelled: true };
   'orders.cancelAll': { cancelled: string[] };
   pause: { paused: true };
@@ -115,6 +124,7 @@ export interface Results {
   'order.take': { orderId: string; filled: string };
   'strategy.start': { strategyId: string };
   unlock: { locked: false };
+  register: { partyId: string };
   lock: { locked: true };
   resume: { paused: false };
   'limits.set': { limits: Record<string, unknown> };

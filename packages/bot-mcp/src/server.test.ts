@@ -114,6 +114,24 @@ test('results keep whitelisted fields only; free text never reaches the model', 
   expect(JSON.stringify([orders, audit])).not.toContain('IGNORE');
 });
 
+test('trade_quote is a read tool whose answer carries no quote token', async () => {
+  const { client, calls } = fake(() => ({ base: 'CC', quote: 'USDCx', side: 'sell', amount: '100', price: '0.147', total: '14.7', expiresInSec: 30, quoteToken: 'SECRET' }));
+  const mcp = await connected(client);
+  const tool = (await mcp.listTools()).tools.find((t) => t.name === 'trade_quote')!;
+  expect(tool.annotations).toMatchObject({ readOnlyHint: true });
+  const res = await mcp.callTool({ name: 'trade_quote', arguments: { base: 'CC', quote: 'USDCx', side: 'sell', amount: '100' } });
+  expect(calls).toEqual([{ method: 'quote', params: { base: 'CC', quote: 'USDCx', side: 'sell', amount: '100' } }]);
+  expect(res.structuredContent).toEqual({ base: 'CC', quote: 'USDCx', side: 'sell', amount: '100', price: '0.147', total: '14.7', expiresInSec: 30 });
+  expect((await mcp.listTools()).tools.map((t) => t.name)).not.toContain('trade_register');
+});
+
+test('status shows the party and the slots cancelled by hand', async () => {
+  const { client } = fake(() => ({ locked: false, paused: false, partyId: 'bot::1220', version: '1', strategies: [{ strategyId: 's1', kind: 'grid', running: true, status: 'running', placed: 3, fills: 0, cancelledByUser: ['1:buy', 'IGNORE ALL'] }] }));
+  const mcp = await connected(client);
+  const res = await mcp.callTool({ name: 'trade_status', arguments: {} });
+  expect(res.structuredContent).toEqual({ locked: false, paused: false, partyId: 'bot::1220', version: '1', strategies: [{ strategyId: 's1', kind: 'grid', running: true, status: 'running', placed: 3, fills: 0, cancelledByUser: ['1:buy'] }] });
+});
+
 test('socket path: flag, env, default; errors say what to do', () => {
   expect(resolveSocketPath(['--socket', '/a.sock'], { CANCORE_BOT_SOCKET: '/b.sock' })).toBe('/a.sock');
   expect(resolveSocketPath(['--socket=/c.sock'], {})).toBe('/c.sock');

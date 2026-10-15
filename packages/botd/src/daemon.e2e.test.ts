@@ -143,7 +143,7 @@ describe('cancore-botd end to end', () => {
       expect(await refusal(make('500'))).toMatchObject({ code: ERROR.DENIED, data: { reason: 'order_size_exceeded' } });
       expect(api.created).toHaveLength(1);
 
-      expect(await agent('balances')).toEqual({ balances: [{ instrument: 'CC', amount: '42.5', locked: '0' }, { instrument: 'USDCx', amount: '42.5', locked: '0' }] });
+      expect(await agent('balances')).toEqual({ balances: [{ instrument: 'CC', amount: '42.5' }, { instrument: 'USDCx', amount: '42.5' }] });
 
       // Owner methods never pass the agent socket, and withdraw goes only to the pinned owner party.
       expect(await refusal(agent('withdraw', { to: OWNER, instrument: 'CC', amount: '1' }))).toMatchObject({ code: ERROR.FORBIDDEN });

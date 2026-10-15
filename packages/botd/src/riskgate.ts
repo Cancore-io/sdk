@@ -75,8 +75,12 @@ function checkLegs(legs: Leg[], state: BotState, limits: Limits, now: number): D
 
 const amt = z.string().regex(/^\d{1,20}(\.\d{1,10})?$/);
 
-/** The platform allows 5 new orders an hour per user: a strategy waits (`rate_limited`) rather than hit it. */
-const ordersPerHour = z.number().int().min(1).max(60).default(5);
+/** The platform's per-user limit on new orders an hour; one budget for the agent and every strategy. */
+export const DEFAULT_ORDERS_PER_HOUR = 5;
+const HOUR_MS = 3_600_000;
+
+/** New orders in the last hour, of every source. */
+export const ordersLastHour = (state: BotState, now: number) => (state.orderTimes ?? []).filter((t) => t > now - HOUR_MS && t <= now).length;
 
 /** Grid: `levels` orders of `amountPerLevel`, evenly spaced from lowerPrice to upperPrice. */
 export const gridConfig = z
@@ -86,7 +90,6 @@ export const gridConfig = z
     amountPerLevel: amt,
     lowerPrice: amt,
     upperPrice: amt,
-    ordersPerHour,
   })
   .strict();
 
@@ -97,7 +100,6 @@ export const dcaConfig = z
     amountPerOrder: amt,
     intervalSeconds: z.number().int().min(60).max(30 * 86_400),
     maxOrders: z.number().int().min(1).max(10_000),
-    ordersPerHour,
   })
   .strict();
 
@@ -148,7 +150,9 @@ export const check: RiskGate = (cmd, state, limits, now) => {
   try {
     if (cmd.method === 'order.make') {
       const p = cmd.params as Params<'order.make'>;
-      return checkLegs([{ base: p.base, quote: p.quote, side: p.side, amount: dec(p.amount), price: dec(p.price) }], state, limits, now);
+      const legs = checkLegs([{ base: p.base, quote: p.quote, side: p.side, amount: dec(p.amount), price: dec(p.price) }], state, limits, now);
+      if (legs.allow && ordersLastHour(state, now) >= (limits.ordersPerHour ?? DEFAULT_ORDERS_PER_HOUR)) return deny('rate_limited');
+      return legs;
     }
     if (cmd.method === 'strategy.start') {
       const p = cmd.params as Params<'strategy.start'>;
