@@ -17,21 +17,11 @@
  * - Any other leg kind is refused.
  */
 import type { CantonLeg, CantonLegTopology, CantonLegTransaction, Hex } from '@cancore/contracts';
-import {
-  Enums_ParticipantPermission,
-  Enums_TopologyChangeOp,
-  type PreparedTransaction,
-  type SigningPublicKey,
-  TopologyTransaction,
-} from '@canton-network/core-ledger-proto';
-import {
-  computeMultiHashForTopology,
-  computeSha256CantonHash,
-  decodePreparedTransaction,
-  hashPreparedTransaction,
-} from '@canton-network/core-tx-visualizer';
+import { Enums_ParticipantPermission, Enums_TopologyChangeOp, type SigningPublicKey, TopologyTransaction } from '@canton-network/core-ledger-proto';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { cantonHash, decodePreparedTransaction, fromBase64, hashPreparedTransactionV2, multiHashInput } from './hashing';
+import { type CantonTransaction, transactionView } from './transaction';
 
 /** The only hashing scheme a transaction leg may name. */
 export const HASHING_SCHEME_V2 = 'HASHING_SCHEME_VERSION_V2';
@@ -54,7 +44,6 @@ export class CantonRefusal extends Error {
 /** A participant id with or without the `PAR::` member prefix: topology writes it with, the JSON Ledger API without. */
 export const participantId = (uid: string): string => (uid.startsWith('PAR::') ? uid.slice(5) : uid);
 const strip0x = (hex: string): string => (hex.startsWith('0x') ? hex.slice(2) : hex).toLowerCase();
-const fromBase64 = (b64: string): Uint8Array => Uint8Array.from(Buffer.from(b64, 'base64'));
 
 /** Fingerprint of an Ed25519 public key as a party id carries it after `::`: `1220` ‖ sha256(int32BE(12) ‖ key). */
 export function cantonFingerprint(publicKey: string | Uint8Array): string {
@@ -83,38 +72,49 @@ function rawEd25519(key: SigningPublicKey | undefined): string | undefined {
  */
 export function decodeTopology(bytes: Uint8Array): TopologyTransaction {
   if (bytes[0] !== 0x0a) return TopologyTransaction.fromBinary(bytes);
-  let length = 0;
-  let shift = 0;
-  let i = 1;
-  for (; i < bytes.length && i < 6; i++) {
-    const b = bytes[i] as number;
-    length |= (b & 0x7f) << shift;
-    shift += 7;
-    if ((b & 0x80) === 0) break;
+  const [length, start] = varint(bytes, 1);
+  const end = start + length;
+  if (end > bytes.length) throw new TypeError('truncated versioned topology transaction');
+  // After `data` only the `version` field (2, varint) may follow, once; anything else is refused.
+  if (end < bytes.length) {
+    if (bytes[end] !== 0x10) throw new TypeError('unexpected field after the versioned topology transaction');
+    const [, after] = varint(bytes, end + 1);
+    if (after !== bytes.length) throw new TypeError('unexpected bytes after the version of the topology transaction');
   }
-  const start = i + 1;
-  if (start + length > bytes.length) throw new TypeError('truncated versioned topology transaction');
-  return TopologyTransaction.fromBinary(bytes.subarray(start, start + length));
+  return TopologyTransaction.fromBinary(bytes.subarray(start, end));
 }
 
-/** Recomputes the hash of a transaction leg; returns the decoded transaction for the op's checks. */
-export async function verifyTransactionLeg(leg: CantonLegTransaction): Promise<PreparedTransaction> {
+/** A protobuf varint (≤ 5 bytes: a length or an int32) at `at`: its value and the index after it. */
+function varint(bytes: Uint8Array, at: number): [number, number] {
+  let value = 0;
+  for (let i = 0; i < 5; i++) {
+    const b = bytes[at + i];
+    if (b === undefined) throw new TypeError('truncated varint');
+    value |= (b & 0x7f) << (7 * i);
+    if ((b & 0x80) === 0) return [value >>> 0, at + i + 1];
+  }
+  throw new TypeError('varint longer than 5 bytes');
+}
+
+/** Recomputes the hash of a transaction leg; returns the decoded transaction, as plain data, for the op's checks. */
+export async function verifyTransactionLeg(leg: CantonLegTransaction): Promise<CantonTransaction> {
   if (leg.hashingSchemeVersion !== HASHING_SCHEME_V2) {
     throw new CantonRefusal(leg.legId, `hashing scheme ${String(leg.hashingSchemeVersion)} is not ${HASHING_SCHEME_V2}`);
   }
   if (typeof leg.preparedTransaction !== 'string' || leg.preparedTransaction.length === 0) {
     throw new CantonRefusal(leg.legId, 'no prepared transaction to check');
   }
-  let decoded: PreparedTransaction;
+  let view: CantonTransaction;
   let hash: string;
   try {
-    decoded = decodePreparedTransaction(leg.preparedTransaction);
-    hash = await hashPreparedTransaction(decoded, 'hex');
+    const decoded = decodePreparedTransaction(leg.preparedTransaction);
+    hash = bytesToHex(hashPreparedTransactionV2(decoded));
+    view = transactionView(decoded);
   } catch {
     throw new CantonRefusal(leg.legId, 'the prepared transaction does not decode');
   }
   if (strip0x(hash) !== strip0x(leg.hash)) throw new CantonRefusal(leg.legId, 'the hash is not the hash of the prepared transaction');
-  return decoded;
+  return view;
 }
 
 export interface PartyExpectation {
@@ -138,9 +138,14 @@ export async function verifyTopologyLeg(leg: CantonLegTopology, expect: PartyExp
     refuse('the party is not in the namespace of the node key');
   }
 
-  const raw = leg.topologyTransactions.map((tx) => fromBase64(tx));
-  const hashes = await Promise.all(raw.map((bytes) => computeSha256CantonHash(HASH_PURPOSE.topologyTransaction, bytes)));
-  const multi = await computeSha256CantonHash(HASH_PURPOSE.multiTopologyTransaction, await computeMultiHashForTopology(hashes));
+  let raw: Uint8Array[] = [];
+  try {
+    raw = leg.topologyTransactions.map((tx) => fromBase64(tx));
+  } catch {
+    refuse('a topology transaction is not base64');
+  }
+  const hashes = raw.map((bytes) => cantonHash(HASH_PURPOSE.topologyTransaction, bytes));
+  const multi = cantonHash(HASH_PURPOSE.multiTopologyTransaction, multiHashInput(hashes));
   if (bytesToHex(multi) !== strip0x(leg.hash)) refuse('the hash is not the multihash of the topology transactions');
 
   const seen = new Set<string>();
@@ -152,6 +157,8 @@ export async function verifyTopologyLeg(leg: CantonLegTopology, expect: PartyExp
       return refuse('a topology transaction does not decode');
     }
     if (tx.operation !== Enums_TopologyChangeOp.ADD_REPLACE) refuse('a topology transaction is not ADD_REPLACE');
+    // A new party's mappings are at serial 1: a higher serial re-hosts or re-keys one that exists.
+    if (tx.serial !== 1) refuse(`a topology transaction is at serial ${tx.serial}, not 1`);
     const mapping = tx.mapping?.mapping;
     if (!mapping) return refuse('a topology transaction has no mapping');
     if (seen.has(mapping.oneofKind ?? '')) refuse(`two ${mapping.oneofKind} mappings`);

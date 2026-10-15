@@ -61,8 +61,8 @@ const signingKey = (hex: string, der = false): SigningPublicKey => ({
 });
 
 type Mapping = NonNullable<NonNullable<TopologyTransaction['mapping']>['mapping']>;
-const tx = (mapping: Mapping, operation = Enums_TopologyChangeOp.ADD_REPLACE) =>
-  TopologyTransaction.toBinary(TopologyTransaction.create({ operation, serial: 1, mapping: { mapping } }));
+const tx = (mapping: Mapping, operation = Enums_TopologyChangeOp.ADD_REPLACE, serial = 1) =>
+  TopologyTransaction.toBinary(TopologyTransaction.create({ operation, serial, mapping: { mapping } }));
 
 /** The three transactions of an honest allocation; `over` replaces parts of them. */
 function allocation(over: { ns?: Partial<{ namespace: string; key: string }>; keys?: Partial<{ party: string; threshold: number; keys: string[] }>; hosting?: Partial<{ party: string; threshold: number; participants: Array<{ uid: string; permission: Enums_ParticipantPermission }> }> } = {}) {
@@ -125,6 +125,12 @@ describe('the fingerprint and the multihash are Canton’s', () => {
     }
     const wrapped = cat(new Uint8Array([0x0a, ...varint]), raw!, new Uint8Array([0x10, 0x1e]));
     expect(decodeTopology(wrapped)).toEqual(decodeTopology(raw!));
+    // Only the version field may follow the data, once; nothing after it.
+    const head = cat(new Uint8Array([0x0a, ...varint]), raw!);
+    expect(decodeTopology(head)).toEqual(decodeTopology(raw!));
+    expect(() => decodeTopology(cat(head, new Uint8Array([0x18, 0x01])))).toThrow(/unexpected field/);
+    expect(() => decodeTopology(cat(head, new Uint8Array([0x10, 0x1e, 0x00])))).toThrow(/unexpected bytes/);
+    expect(() => decodeTopology(cat(new Uint8Array([0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]), raw!))).toThrow(/varint/);
   });
 });
 
@@ -160,6 +166,12 @@ describe('a topology leg is refused, never signed, when', () => {
     await expect(verifyTopologyLeg(topologyLeg(hostedBare), expect_)).resolves.toBeUndefined();
   });
 
+  test('a mapping above serial 1: it would re-host or re-key a party that exists', async () => {
+    const [ns, keys, hosting] = allocation();
+    const again = tx(TopologyTransaction.fromBinary(hosting!).mapping!.mapping, Enums_TopologyChangeOp.ADD_REPLACE, 2);
+    await refusedWith(verifyTopologyLeg(topologyLeg([ns!, keys!, again]), expect_), /serial 2, not 1/);
+  });
+
   test('a mapping is missing, repeated, removed or of another kind', async () => {
     const [ns, keys, hosting] = allocation();
     await refusedWith(verifyTopologyLeg(topologyLeg([ns!, keys!]), expect_), /no partyToParticipant/);
@@ -193,7 +205,8 @@ describe('transaction legs', () => {
 
   test('the hash is recomputed and the decoded transaction returned', async () => {
     const decoded = await verifyTransactionLeg(await leg());
-    expect(decoded.metadata?.submitterInfo?.commandId).toBe('legs-test');
+    expect(decoded.commandId).toBe('legs-test');
+    expect(decoded.actAs).toEqual([party()]);
   });
 
   test('a hash the transaction does not have, a scheme other than V2 or none, and undecodable bytes are refused', async () => {

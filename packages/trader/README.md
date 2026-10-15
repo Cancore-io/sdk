@@ -350,11 +350,14 @@ never signs blind. Before signing, every leg passes these checks (`verifyTransac
 `verifyTopologyLeg`); a leg that fails one throws `CantonRefusal` and nothing is signed:
 
 - **Transaction leg.** `hashingSchemeVersion` must be `HASHING_SCHEME_VERSION_V2`, and `hash` must be
-  the hash recomputed from `preparedTransaction`. The decoded transaction is returned, so the operation
-  can check its economics against the node's own ticket or order.
+  the hash recomputed from `preparedTransaction`. The decoded transaction is returned as plain data
+  (`CantonTransaction`: nodes, tagged `DamlValue`s), so the operation can check its economics against
+  the node's own ticket or order. The V2 hashing is the SDK's own, on `@noble/hashes`, and is held by
+  tests to `@canton-network/core-tx-visualizer`: no Node or DOM types are needed by a consumer.
 - **Topology leg** (`party.allocate` only). `hash` must be the multihash recomputed from the topology
-  transactions: each hashed with purpose 11, the set with purpose 55. The transactions must create the
-  summary's party and nothing else:
+  transactions: each hashed with purpose 11, the set with purpose 55. The transactions (bare, or in
+  Canton's versioned wrapper with nothing after its version) must create the summary's party and
+  nothing else, all at serial 1:
   - the namespace is the fingerprint of the node key (`cantonFingerprint`);
   - the node key is the party's only signing key, threshold 1;
   - the party is hosted on the Cancore participant alone, with Confirmation, threshold 1.
