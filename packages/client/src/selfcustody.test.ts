@@ -943,10 +943,10 @@ describe('the paths where a mistake costs money', () => {
   ] as const)('a taker refused at take for want of a fee holding is told to split its own balance (%s)', async (_, coded, accounts) => {
     const api = venue({ refuseAt: { accept: 'feeHolding' }, coded });
     const { taker } = await tradingPair(api, [...accounts]);
-    const error = await taker.take('o1').catch((e: unknown) => e);
+    const error = await taker.take('o1', { autoSplitForFee: false }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SettleError);
     expect((error as Error).message).toMatch(/^taking order o1: the platform fee \(24.8756218905\) needs a holding of its own, and this account keeps its CC in a single holding.*splitForFee\(tokenId, '24.8756218905'\).*then take\(\) again/);
-    // autoSplitForFee is off by default: nothing is sent.
+    // autoSplitForFee: false only reports the refusal: nothing is sent.
     expect(api.asked).not.toContain('tokens.send');
   });
 
@@ -966,6 +966,14 @@ describe('the paths where a mistake costs money', () => {
     // Exactly the fee, to itself, CC by omission, signed by the taker's key (the venue verifies every leg).
     expect(selfSends(api)).toEqual([{ type: 'tokens.send', params: { receiverPartyId: api.party('taker'), amount: '24.8756218905' } }]);
     expect(api.order.opponent).toEqual({ partyId: api.party('taker') });
+  });
+
+  test('autoSplitForFee is on by default: a verifiable split goes through without opting in (CAN-2735)', async () => {
+    const api = venue({ refuseAt: { accept: 'feeHoldingUntilSplit' }, coded: true, sendBytes: 'honest' });
+    const { maker, taker } = await tradingPair(api, [220, 221]);
+    const [, taken] = await Promise.all([maker.make('o1'), taker.take('o1')]);
+    expect(taken.swap.status).toBe('dvp_settled');
+    expect(selfSends(api)).toHaveLength(1);
   });
 
   test('a self-send whose bytes pay anyone else is refused before the key signs it', async () => {
@@ -1223,7 +1231,7 @@ describe('a taker that funded and a maker that did not', () => {
     await taker.swap.accept('o1');
     // The maker records and proposes, then goes away before funding.
     const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
-    const error = await taker.take('o1').catch((e: unknown) => e);
+    const error = await taker.take('o1', { autoSplitForFee: false }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SettleError);
     expect(error).toMatchObject({
       swapId: 's1',
@@ -1240,7 +1248,7 @@ describe('a taker that funded and a maker that did not', () => {
     const { maker, taker } = await tradingPair(api, [48, 49]);
     await taker.swap.accept('o1');
     const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
-    const error = await taker.take('o1').catch((e: unknown) => e);
+    const error = await taker.take('o1', { autoSplitForFee: false }).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(SettleError);
     expect((error as Error).message).toMatch(/\(counter, fee\) are still locked after the venue's recovery \(abort refused\).*withdrawAllocation\('s1'\).*autoWithdraw/);
     expect(error).toMatchObject({ withdrawable: true });
@@ -1267,7 +1275,7 @@ describe('withdrawing an allocation the venue could not release (BUG-1291)', () 
     const { maker, taker } = await tradingPair(api, accounts);
     await taker.swap.accept('o1');
     const making = maker.make('o1', { deadlineMs: 3_000 }).catch((e: unknown) => e);
-    const error = await taker.take('o1').catch((e: unknown) => e);
+    const error = await taker.take('o1', { autoSplitForFee: false }).catch((e: unknown) => e);
     await making;
     return { api, taker, maker, error };
   }

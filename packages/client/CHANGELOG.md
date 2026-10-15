@@ -1,5 +1,15 @@
 # Changelog — `@cancore/client`
 
+## 0.10.0
+
+### Changed
+
+- `SettleOptions.autoSplitForFee` now defaults to `true` (CAN-2735): `take` refused with
+  `DVP_FEE_HOLDING_REQUIRED` splits the fee off itself and takes once more. Pass
+  `{ autoSplitForFee: false }` to keep the old behaviour (a `SettleError` naming the fee).
+  `allowUnverifiedSplit` still defaults to `false`, so a split whose send cannot be verified is
+  still refused.
+
 ## 0.9.0
 
 ### Changed

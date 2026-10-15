@@ -267,7 +267,7 @@ export interface SettleOptions {
    * `take` only: when the venue refuses the take because this account has no holding for the
    * platform fee separate from the one funding the trade (`DVP_FEE_HOLDING_REQUIRED`), split one
    * off (`splitForFee`, CC only) and take once more. The fee amount the venue names must be within
-   * the order's target amount × `maxFeeRate`. Default false.
+   * the order's target amount × `maxFeeRate`. Default true; `false` only reports the refusal.
    */
   autoSplitForFee?: boolean;
   /**
@@ -1264,7 +1264,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    */
   async function acceptOrder(order: Order, self: string | undefined, opts: SettleOptions): Promise<Order> {
     const what = `taking order ${order.id}`;
-    const autoSplit = opts.autoSplitForFee ?? false;
+    const autoSplit = opts.autoSplitForFee ?? true;
     let split: string | null = null;
     for (;;) {
       try {
