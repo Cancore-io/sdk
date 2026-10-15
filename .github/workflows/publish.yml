@@ -1,77 +1,170 @@
 name: Publish
 
-# Tag-driven, never manual: the tarball on npm has to be traceable to a commit
-# somebody can read. `<package>-v<version>` so one repository can release two
-# packages on their own clocks.
+# Every published tarball is traceable to a commit somebody can read.
+#
+# Two ways in, one rule: a package is published when the version in its
+# package.json is not on npm yet.
+#   - push to main: every package whose version is new is published, then the
+#     commit is tagged `<package>-v<version>`. Releasing a package is merging a
+#     version bump; nobody has to remember a tag.
+#   - push of a `<package>-v<version>` tag: that one package (the original,
+#     manual path — still works, e.g. to retry).
+# A version already on npm is skipped, never an error, so a tag pushed for a
+# version main already released is a no-op rather than a red run.
+#
+# The file name matters: npm trusted publishing is configured per package
+# against this exact workflow file. Renaming it breaks every publisher.
 on:
   push:
+    branches: [main]
     tags: ['*-v*']
+  workflow_dispatch:
 
-# Deliberately no `concurrency` block. Each tag publishes its own package and
-# version, so two tag runs never contend — and cancelling one mid-publish is
-# worse than any minutes it saves: the tag is pushed, the version is fixed in
-# the manifest, and a retry under the same tag is impossible.
+# Pushes to main queue, never cancel: a publish aborted half-way leaves the
+# version fixed in the manifest with nothing on npm, and two runs racing for one
+# version would have the second fail on "cannot publish over". Tag runs keep
+# their own group per tag, so two tags still publish side by side.
+concurrency:
+  group: publish-${{ github.ref }}
 
 jobs:
-  publish:
+  plan:
     # ubuntu-latest, not cancore-runners — rationale in ci.yml (CAN-1120).
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
       contents: read
-      # The whole credential. npm trusted publishing exchanges this OIDC token
+    outputs:
+      packages: ${{ steps.plan.outputs.packages }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - name: Find versions that are not on npm
+        id: plan
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          node <<'EOF'
+          const fs = require('fs');
+          const { execFileSync } = require('child_process');
+
+          // On a tag push the tag names the one package; it must agree with the
+          // manifest, or the version on npm is not the version the tag claims.
+          let dirs = fs.readdirSync('packages').filter((d) => fs.existsSync(`packages/${d}/package.json`));
+          if (process.env.REF_TYPE === 'tag') {
+            const tag = process.env.REF_NAME;
+            const dir = tag.slice(0, tag.lastIndexOf('-v'));
+            const version = tag.slice(tag.lastIndexOf('-v') + 2);
+            if (!dirs.includes(dir)) throw new Error(`no such package: packages/${dir} (from tag ${tag})`);
+            const manifest = JSON.parse(fs.readFileSync(`packages/${dir}/package.json`, 'utf8')).version;
+            if (manifest !== version) throw new Error(`tag says ${version}, packages/${dir}/package.json says ${manifest}`);
+            dirs = [dir];
+          }
+
+          const lines = [];
+          const plan = [];
+          for (const dir of dirs) {
+            const pkg = JSON.parse(fs.readFileSync(`packages/${dir}/package.json`, 'utf8'));
+            if (pkg.private) continue;
+            let published = [];
+            let exists = true;
+            try {
+              published = JSON.parse(execFileSync('npm', ['view', pkg.name, 'versions', '--json'], { encoding: 'utf8' }));
+              if (!Array.isArray(published)) published = [published];
+            } catch (e) {
+              if (!/E404/.test(String(e.stderr))) throw e;
+              exists = false;
+            }
+            if (!exists) {
+              // Trusted publishing cannot create a package; its first release is
+              // a manual `npm publish`, after which a publisher can be attached.
+              lines.push(`- \`${pkg.name}@${pkg.version}\`: not on npm at all — first release is manual, skipped`);
+              continue;
+            }
+            if (published.includes(pkg.version)) {
+              lines.push(`- \`${pkg.name}@${pkg.version}\`: already on npm, skipped`);
+              continue;
+            }
+            // A prerelease goes out under `next`: without it npm either refuses
+            // or moves `latest` onto the release candidate.
+            const distTag = pkg.version.includes('-') ? 'next' : 'latest';
+            plan.push({ dir, name: pkg.name, version: pkg.version, distTag });
+            lines.push(`- \`${pkg.name}@${pkg.version}\`: will publish under \`${distTag}\``);
+          }
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `packages=${JSON.stringify(plan)}\ncount=${plan.length}\n`);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `### Release plan\n${lines.join('\n') || '- nothing to release'}\n`);
+          console.log(lines.join('\n'));
+          EOF
+
+  publish:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # One package failing must not stop the others: each is its own release.
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.plan.outputs.packages) }}
+    permissions:
+      # Tags the released commit `<package>-v<version>` after a publish from main.
+      # A tag pushed with GITHUB_TOKEN does not start another workflow run, so
+      # this cannot loop back into a second publish.
+      contents: write
+      # The whole npm credential. Trusted publishing exchanges this OIDC token
       # for a short-lived publish right, so there is no NPM_TOKEN in this
       # repository to leak, rotate or forget — and no 2FA prompt a CI job cannot
-      # answer, which is exactly what stopped the first attempt.
+      # answer.
       id-token: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           # Trusted publishing needs Node >= 22.14 and npm >= 11.5.1; 24 ships
-          # both, and the version is printed below so a runner image that drifts
-          # says so in the log rather than failing at the last step.
+          # both, and the versions are printed below so a runner image that
+          # drifts says so in the log rather than failing at the last step.
           node-version: 24
           cache: npm
           registry-url: https://registry.npmjs.org
-
-      - name: Resolve the package this tag releases
-        id: target
-        run: |
-          set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          pkg="${tag%-v*}"
-          version="${tag##*-v}"
-          dir="packages/$pkg"
-          test -d "$dir" || { echo "no such package: $dir (from tag $tag)"; exit 1; }
-          # The tag and the manifest must agree, or the version on npm is not the
-          # version the tag claims — and nobody can tell afterwards.
-          manifest=$(node -p "require('./$dir/package.json').version")
-          test "$manifest" = "$version" || { echo "tag says $version, $dir/package.json says $manifest"; exit 1; }
-          echo "dir=$dir" >> "$GITHUB_OUTPUT"
-          echo "name=$(node -p "require('./$dir/package.json').name")" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
 
-      - name: Publish to npm
-        working-directory: ${{ steps.target.outputs.dir }}
-        # No token, and no `--provenance`: with trusted publishing npm mints the
+      - name: Publish ${{ matrix.package.name }}@${{ matrix.package.version }}
+        working-directory: packages/${{ matrix.package.dir }}
+        # No token and no `--provenance`: with trusted publishing npm mints the
         # credential from the OIDC token and attaches provenance by itself.
-        # A prerelease (`1.2.0-rc.1`) goes out under the `next` dist-tag: without
-        # it npm either refuses or moves `latest` onto the release candidate.
         env:
-          VERSION: ${{ steps.target.outputs.version }}
+          DIST_TAG: ${{ matrix.package.distTag }}
         run: |
           echo "npm $(npm --version), node $(node --version)"
-          tag=latest
-          case "$VERSION" in *-*) tag=next ;; esac
-          npm publish --access public --tag "$tag"
+          npm publish --access public --tag "$DIST_TAG"
+
+      - name: Tag the released commit
+        if: github.ref_type == 'branch'
+        env:
+          TAG: ${{ matrix.package.dir }}-v${{ matrix.package.version }}
+        run: |
+          set -euo pipefail
+          # An earlier failed tag run may already have pushed this tag; the
+          # version is on npm now either way, which is what the tag records.
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "tag $TAG already exists, left as is"
+            exit 0
+          fi
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
 
       - name: Say what shipped
         run: |
-          echo "### Published \`${{ steps.target.outputs.name }}@${{ steps.target.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "https://www.npmjs.com/package/${{ steps.target.outputs.name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Published \`${{ matrix.package.name }}@${{ matrix.package.version }}\` under \`${{ matrix.package.distTag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "https://www.npmjs.com/package/${{ matrix.package.name }}/v/${{ matrix.package.version }}" >> "$GITHUB_STEP_SUMMARY"
