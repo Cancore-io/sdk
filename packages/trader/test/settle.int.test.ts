@@ -17,7 +17,8 @@
  *   CANCORE_ACTORS_ENV=<meta>/docker/modules/genesis/out/local-actors.env \
  *   npm run test:int
  *
- * Skipped without the stand: CI of this repository has none (CAN-1876).
+ * Skipped without the stand. In this repository's CI the `stand` job brings it
+ * up on anvil (test/stand/up.mjs) and runs it.
  */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
