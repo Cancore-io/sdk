@@ -4,7 +4,8 @@
     "types": ["jest", "node"],
     // The sibling package's source, not its unbuilt `dist/`: typecheck runs before build.
     "paths": {
-      "@cancore/botd/protocol": ["../botd/src/protocol/index.ts"]
+      "@cancore/botd/protocol": ["../botd/src/protocol/index.ts"],
+      "@cancore/botd/ipc/client": ["../botd/src/ipc/client.ts"]
     }
   },
   "include": ["src/**/*.ts"],
