@@ -108,7 +108,9 @@ const OWNER_ACTS = 'The owner must act via the cancore-bot CLI; no tool here can
 
 /** Daemon errors to tool replies. DENIED is an answer, not a crash: the agent should read the reason. */
 export function errorReply(err: unknown): ToolReply {
-  const e = (err ?? {}) as { code?: number; data?: { reason?: unknown }; message?: unknown };
+  // ipc/client rejects with RpcCallError { error: RpcError }; duck-typed so this file needs no ipc import.
+  const rpc = err !== null && typeof err === 'object' && 'error' in err ? (err as { error: unknown }).error : err;
+  const e = (rpc ?? {}) as { code?: number; data?: { reason?: unknown }; message?: unknown };
   switch (e.code) {
     case ERROR.DENIED:
       return reply({ denied: token(e.data?.reason) ?? 'no_rule' }, true);
