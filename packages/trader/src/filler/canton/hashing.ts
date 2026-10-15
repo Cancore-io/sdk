@@ -1,12 +1,19 @@
+/*!
+ * Portions derived from canton-network/wallet core/tx-visualizer
+ * (@canton-network/core-tx-visualizer 1.13.0, src/hashing_scheme_v2.ts):
+ * Copyright (c) 2025-2026 Digital Asset (Switzerland) GmbH and/or its affiliates. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ * Modified by Cancore: rewritten synchronous on @noble/hashes; int64 encoded from its exact decimal;
+ * an exercise node without a seed is an error.
+ */
 /**
  * Canton's hashes the node recomputes before it signs (interactive submission
  * hashing scheme V2, topology multihash), synchronous and platform-neutral:
  * `@noble/hashes` only, no Node or DOM globals, so a consumer of the package
  * needs neither.
  *
- * The V2 encoding follows `@canton-network/core-tx-visualizer` 1.13
- * (`hashing_scheme_v2.ts`, Apache-2.0, Digital Asset), with two deliberate
- * differences: an `int64` value is encoded from its exact decimal (the
+ * The V2 encoding follows `@canton-network/core-tx-visualizer` 1.13 (see the
+ * notice above), with two deliberate differences: an `int64` value is encoded from its exact decimal (the
  * library parses it through a double), and an exercise node without a seed is
  * an error instead of an undefined read. The tests hold this port to the
  * library on the shapes both handle.
