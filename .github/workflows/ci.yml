@@ -224,7 +224,7 @@ jobs:
           CANCORE_INTENT_JSON: ${{ runner.temp }}/stand/intent.json
           CANCORE_ACTORS_ENV: ${{ runner.temp }}/stand/local-actors.env
         run: |
-          npx jest --selectProjects int --json --outputFile="$RUNNER_TEMP/int.json" \
+          npx jest --selectProjects int --runInBand --json --outputFile="$RUNNER_TEMP/int.json" \
             packages/trader/test/router.int.test.ts packages/trader/test/escrow.int.test.ts \
             packages/trader/test/executor.int.test.ts packages/trader/test/settle.int.test.ts
           node -e "
