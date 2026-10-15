@@ -183,3 +183,44 @@ jobs:
           export const build = (config: Omit<FillerConfig, 'store' | 'webSocket'>): Filler => createFiller({ ...config, store, webSocket });
           TS
           "$GITHUB_WORKSPACE/node_modules/.bin/tsc" -p .
+
+  # Transaction pricing of @cancore/trader against a real node (CAN-2299): an anvil of its own, no contracts and no
+  # secret. The suite toggles automine, so no other suite shares this anvil. ubuntu-latest for the reason given on
+  # `check` (CAN-1120).
+  anvil:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # anvil from the foundry release tarball, pinned by its sha256 (the release asset digest): no installer script.
+      - name: Install anvil (foundry v1.8.3)
+        run: |
+          set -euo pipefail
+          curl -fsSLo "$RUNNER_TEMP/foundry.tgz" https://github.com/foundry-rs/foundry/releases/download/v1.8.3/foundry_v1.8.3_linux_amd64.tar.gz
+          echo "7ca48e6ca3cac1bce1403ca67e5bc1dc3bc1fd818199c9957c7165079c228568  $RUNNER_TEMP/foundry.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/foundry" && tar -xzf "$RUNNER_TEMP/foundry.tgz" -C "$RUNNER_TEMP/foundry" anvil
+          echo "$RUNNER_TEMP/foundry" >> "$GITHUB_PATH"
+      - name: Start anvil
+        run: |
+          nohup anvil --port 8545 > "$RUNNER_TEMP/anvil.log" 2>&1 &
+          for _ in $(seq 1 100); do
+            curl -sf -X POST -H 'content-type: application/json' \
+              --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}' http://127.0.0.1:8545 >/dev/null && exit 0
+            sleep 0.2
+          done
+          cat "$RUNNER_TEMP/anvil.log"; exit 1
+      - name: Replacement cap against anvil, none skipped
+        env:
+          ANVIL_RPC_URL: http://127.0.0.1:8545
+        run: |
+          npx jest --selectProjects int --runInBand --verbose --json --outputFile="$RUNNER_TEMP/int.json" packages/trader/test/replacement.int.test.ts
+          node -e "
+            const r = require(process.env.RUNNER_TEMP + '/int.json');
+            console.log(r.numPassedTests, 'passed,', r.numPendingTests + r.numTodoTests, 'skipped');
+            if (r.numTotalTestSuites !== 1 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
+          "
