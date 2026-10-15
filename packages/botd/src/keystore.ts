@@ -56,6 +56,8 @@ function readChecked(path: string): KeystoreFile {
     const file = JSON.parse(readFileSync(fd, 'utf8')) as KeystoreFile;
     if (file.version !== VERSION || file.kdf?.name !== 'scrypt' || file.cipher?.name !== 'aes-256-gcm') throw new KeystoreFileError('unsupported file format');
     if (!(file.kdf.N >= MIN_N && file.kdf.r >= 8 && file.kdf.p >= 1)) throw new KeystoreFileError('scrypt parameters below the minimum');
+    // An absurd cost in the file would hang unlock for hours: bounded above as well as below.
+    if (!(file.kdf.N <= 2 ** 20 && file.kdf.r <= 16 && file.kdf.p <= 4)) throw new KeystoreFileError('scrypt parameters above the maximum');
     return file;
   } catch (err) {
     if (err instanceof KeystoreFileError) throw err;

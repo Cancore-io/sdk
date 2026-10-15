@@ -123,10 +123,12 @@ function reply(payload: Record<string, unknown>, isError = false): ToolReply {
   return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], structuredContent: payload, ...(isError && { isError }) };
 }
 
+const UNCONFIRMED_ACT = 'The order may exist. Do not place it again: the daemon confirms or drops it within minutes; check trade_orders_list.';
+
 const OWNER_ACTS = 'The owner must act via the cancore-bot CLI; no tool here can change this.';
 
 /** Daemon errors to tool replies. DENIED is an answer, not a crash: the agent should read the reason. */
-export function errorReply(err: unknown): ToolReply {
+export function errorReply(err: unknown, method?: Method): ToolReply {
   // ipc/client rejects with RpcCallError { error: RpcError }; duck-typed so this file needs no ipc import.
   const rpc = err !== null && typeof err === 'object' && 'error' in err ? (err as { error: unknown }).error : err;
   const e = (rpc ?? {}) as { code?: number; data?: { reason?: unknown }; message?: unknown };
@@ -142,9 +144,10 @@ export function errorReply(err: unknown): ToolReply {
     case ERROR.INVALID_PARAMS:
       return reply({ error: 'invalid_params' }, true);
     case ERROR.UNCONFIRMED:
-      return reply({ error: 'unconfirmed', instruction: 'The order may exist. Do not place it again: the daemon confirms or drops it within minutes; check trade_orders_list.' }, true);
+      return reply({ error: 'unconfirmed', instruction: UNCONFIRMED_ACT }, true);
     default:
-      return reply({ error: 'daemon_error', ...(typeof e.code === 'number' && { code: e.code }) }, true);
+      // A trade that died mid-call (connection dropped, daemon error) may still have placed its order.
+      return reply({ error: 'daemon_error', ...(typeof e.code === 'number' && { code: e.code }), ...(method && RISK_CLASS[method] === 'trade' && { instruction: UNCONFIRMED_ACT }) }, true);
   }
 }
 
@@ -162,7 +165,7 @@ export async function callTool(getClient: () => Promise<BotClient>, method: Meth
     return reply(view(method, result) as Record<string, unknown>);
   } catch (err) {
     if (err instanceof SocketError) return reply({ error: 'socket_unavailable', instruction: err.message }, true);
-    return errorReply(err);
+    return errorReply(err, method);
   }
 }
 

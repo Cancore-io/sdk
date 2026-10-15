@@ -46,7 +46,8 @@ function checkLegs(legs: Leg[], state: BotState, limits: Limits, now: number): D
   const maxPos = capOf(limits.maxPosition, base);
 
   let total = 0n;
-  let delta = 0n;
+  let buys = 0n;
+  let sells = 0n;
   for (const leg of legs) {
     if (leg.amount <= 0n || leg.price <= 0n) return deny('no_rule');
     // |price - ref| / ref <= bps / 10000
@@ -55,19 +56,24 @@ function checkLegs(legs: Leg[], state: BotState, limits: Limits, now: number): D
     // amount * price carries 20 decimals; the cap is lifted to the same scale.
     if (maxNotional === undefined || leg.amount * leg.price > maxNotional * SCALE) return deny('notional_exceeded');
     total += leg.amount;
-    delta += leg.side === 'buy' ? leg.amount : -leg.amount;
+    if (leg.side === 'buy') buys += leg.amount;
+    else sells += leg.amount;
   }
 
-  // Worst case: every open order on this base fills too, inside the same 24h window.
+  // Worst case: every open order on this base fills too, inside the same 24h window. Buys and sells are
+  // summed apart: only one side may fill, so opposite orders never net each other out.
   let daily = Object.hasOwn(state.dailyVolume, base) ? dec(state.dailyVolume[base]!) : 0n;
-  let pos = Object.hasOwn(state.positions, base) ? dec(state.positions[base]!) : 0n;
+  const pos = Object.hasOwn(state.positions, base) ? dec(state.positions[base]!) : 0n;
+  let [openBuys, openSells] = [0n, 0n];
   for (const o of state.openOrders) {
     if (o.pair.split('/')[0] !== base) continue;
     daily += dec(o.amount);
-    pos += o.side === 'buy' ? dec(o.amount) : -dec(o.amount);
+    if (o.side === 'buy') openBuys += dec(o.amount);
+    else openSells += dec(o.amount);
   }
   if (maxDaily === undefined || daily + total > maxDaily) return deny('daily_volume_exceeded');
-  if (maxPos === undefined || abs(pos + delta) > maxPos) return deny('position_exceeded');
+  // Only the side the new legs add to is checked: a sell never makes the long worst case worse.
+  if (maxPos === undefined || (buys > 0n && pos + openBuys + buys > maxPos) || (sells > 0n && pos - openSells - sells < -maxPos)) return deny('position_exceeded');
 
   if (state.openOrders.length + legs.length > limits.maxOpenOrders) return deny('open_orders_exceeded');
   return ALLOW;

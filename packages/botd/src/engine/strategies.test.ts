@@ -330,6 +330,7 @@ describe('an order whose answer was lost', () => {
     w.crash.make = false;
     await w.restart();
     w.crash.found = 'o1';
+    w.advance(61_000);
     await w.unlock();
     expect(w.state().intents).toEqual([]);
     expect(w.state().openOrders).toEqual([expect.objectContaining({ orderId: 'o1', pair: 'CC/USDCx' })]);
@@ -344,6 +345,11 @@ describe('an order whose answer was lost', () => {
     await w.tick();
     expect(w.state().intents?.[0]?.strategy?.slot).toBe('0:buy');
     w.crash.make = false;
+    await w.restart();
+    // A fast lock/unlock leaves a young intent alone: its make may still be in flight.
+    await w.unlock();
+    expect(w.state().intents).toHaveLength(1);
+    w.advance(61_000);
     await w.restart();
     await w.unlock();
     expect(w.state().intents).toEqual([]);
@@ -412,6 +418,12 @@ describe('an order whose answer was lost', () => {
     await expect(w.call('order.make', make, false)).rejects.toBeDefined();
     expect(w.state().intents).toEqual([]);
     expect(w.state().orderTimes).toEqual([]);
+    // Another order in the same millisecond keeps its hourly slot.
+    w.crash.refuse = false;
+    await w.call('order.make', make, false);
+    w.crash.refuse = true;
+    await expect(w.call('order.make', make, false)).rejects.toBeDefined();
+    expect(w.state().orderTimes).toHaveLength(1);
   });
 });
 

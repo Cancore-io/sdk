@@ -4,6 +4,7 @@ import { builtinModules } from 'module';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ERROR, METHODS, RISK_CLASS } from '@cancore/botd/protocol';
+import { RpcCallError } from '@cancore/botd/ipc/client';
 import { AGENT_METHODS, createServer, toolName, type BotClient } from './server';
 import { resolveSocketPath, socketErrorMessage } from './socket';
 
@@ -81,13 +82,6 @@ test('DENIED is structured {denied: reason}; LOCKED/PAUSED tell the owner to act
   expect(paused.structuredContent).toMatchObject({ error: 'paused', instruction: expect.stringMatching(/resume/) });
 });
 
-// Same shape as RpcCallError in @cancore/botd/ipc/client, which this branch cannot import yet.
-class RpcCallError extends Error {
-  constructor(readonly error: { code: number; message: string; data?: { reason?: string } }) {
-    super(error.message);
-  }
-}
-
 test('RpcCallError from the ipc client is unwrapped', async () => {
   const reject = (code: number, reason?: string) =>
     fake(() => Promise.reject(new RpcCallError({ code, message: 'm', ...(reason && { data: { reason } }) }))).client;
@@ -97,6 +91,9 @@ test('RpcCallError from the ipc client is unwrapped', async () => {
   expect((await (await connected(reject(ERROR.PAUSED))).callTool(take)).structuredContent).toMatchObject({ error: 'paused' });
   // A lost answer must not read as "try again": a second make would be a duplicate order.
   expect((await (await connected(reject(ERROR.UNCONFIRMED))).callTool(take)).structuredContent).toMatchObject({ error: 'unconfirmed', instruction: expect.stringMatching(/Do not place it again/) });
+  // Any other failure of a trade tool (dropped connection, daemon error) carries the same warning; a read does not.
+  expect((await (await connected(reject(ERROR.INTERNAL))).callTool(take)).structuredContent).toMatchObject({ error: 'daemon_error', instruction: expect.stringMatching(/Do not place it again/) });
+  expect((await (await connected(reject(ERROR.INTERNAL))).callTool({ name: 'trade_status', arguments: {} })).structuredContent).not.toHaveProperty('instruction');
 });
 
 test('results keep whitelisted fields only; free text never reaches the model', async () => {

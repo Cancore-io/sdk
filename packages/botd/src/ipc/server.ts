@@ -1,6 +1,6 @@
 import { chmodSync, chownSync, readFileSync, rmSync, statSync } from 'fs';
 import { createServer, type Socket } from 'net';
-import { ERROR, JSONRPC_VERSION, parseRequest, type RpcError, type RpcRequest, type RpcResponse } from '../protocol/index';
+import { ERROR, JSONRPC_VERSION, parseRequest, RISK_CLASS, type RpcError, type RpcRequest, type RpcResponse } from '../protocol/index';
 
 export type Handler = (request: RpcRequest) => Promise<RpcResponse>;
 
@@ -17,6 +17,8 @@ export interface ListenOptions {
   maxMessageBytes?: number;
   /** Per-request handler timeout; default 30 s. */
   requestTimeoutMs?: number;
+  /** Requests one connection may have running at once; more are refused. Default 8. */
+  maxInFlight?: number;
   /** Concurrent connections beyond this are dropped; default unlimited. */
   maxConnections?: number;
 }
@@ -49,7 +51,9 @@ async function run(handler: Handler, request: RpcRequest, timeoutMs: number): Pr
     return await Promise.race([
       handler(request),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new RpcFault(ERROR.INTERNAL, 'request timed out')), timeoutMs);
+        // A trade still running behind the timeout may yet place its order: the caller must not repeat it.
+        const late = RISK_CLASS[request.method] === 'trade' ? new RpcFault(ERROR.UNCONFIRMED, 'unconfirmed') : new RpcFault(ERROR.INTERNAL, 'request timed out');
+        timer = setTimeout(() => reject(late), timeoutMs);
       }),
     ]);
   } catch (err) {
@@ -65,6 +69,7 @@ export async function listen(socketPath: string, handler: Handler, options: List
   const mode = options.mode ?? 0o600;
   const max = options.maxMessageBytes ?? 64 * 1024;
   const timeoutMs = options.requestTimeoutMs ?? 30_000;
+  const maxInFlight = options.maxInFlight ?? 8;
   const sockets = new Set<Socket>();
 
   const server = createServer((socket) => {
@@ -72,6 +77,8 @@ export async function listen(socketPath: string, handler: Handler, options: List
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => socket.destroy());
     let buffer = Buffer.alloc(0);
+    // One peer cannot queue unbounded work (and audit entries) by pipelining requests.
+    let inFlight = 0;
     socket.on('data', (chunk: Buffer) => {
       buffer = Buffer.concat([buffer, chunk]);
       let nl: number;
@@ -89,7 +96,14 @@ export async function listen(socketPath: string, handler: Handler, options: List
         }
         const parsed = parseRequest(raw);
         if (!parsed.ok) reply(socket, fail(parsed.id, parsed.error));
-        else void run(handler, parsed.request, timeoutMs).then((r) => reply(socket, r));
+        else if (inFlight >= maxInFlight) reply(socket, fail(parsed.request.id, { code: ERROR.INVALID_REQUEST, message: 'too many requests in flight' }));
+        else {
+          inFlight++;
+          void run(handler, parsed.request, timeoutMs).then((r) => {
+            inFlight--;
+            reply(socket, r);
+          });
+        }
       }
       if (buffer.length > max) socket.end(`${JSON.stringify(fail(null, { code: ERROR.INVALID_REQUEST, message: 'message too large' }))}\n`);
     });

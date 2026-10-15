@@ -28,7 +28,15 @@ export function connect(socketPath: string): Promise<IpcClient> {
       buffer += chunk;
       let nl: number;
       while ((nl = buffer.indexOf('\n')) >= 0) {
-        const response = JSON.parse(buffer.slice(0, nl)) as RpcResponse;
+        let response: RpcResponse;
+        try {
+          response = JSON.parse(buffer.slice(0, nl)) as RpcResponse;
+        } catch {
+          // A garbled line means the stream is no longer trustworthy: fail every call and drop it.
+          failAll(new Error('malformed response'));
+          socket.destroy();
+          return;
+        }
         buffer = buffer.slice(nl + 1);
         const p = typeof response.id === 'number' ? pending.get(response.id) : undefined;
         if (!p) {

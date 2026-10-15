@@ -58,6 +58,15 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+ProtectProc=invisible
+ProtectKernelLogs=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+PrivateIPC=yes
+RemoveIPC=yes
+KeyringMode=private
+SystemCallFilter=~@privileged
 
 [Install]
 WantedBy=multi-user.target

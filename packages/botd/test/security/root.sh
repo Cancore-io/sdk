@@ -5,6 +5,11 @@
 #   docker run --rm -v "$PWD":/sdk -w /sdk node:22 bash -c 'npm ci && npm run build && npm run test:security:root'
 set -euo pipefail
 
+# CI sets CANCORE_ROOT_TESTS: there a skip would be a false green, so not being root fails.
+if [[ -n "${CANCORE_ROOT_TESTS:-}" && $EUID -ne 0 ]]; then
+  echo "CANCORE_ROOT_TESTS is set but this is not root"
+  exit 1
+fi
 if [[ $EUID -ne 0 || ! ( -f /.dockerenv || -f /run/.containerenv || -n "${CANCORE_ROOT_TESTS:-}" ) ]]; then
   echo "skip: test:security:root needs root inside a disposable container (or CANCORE_ROOT_TESTS=1)"
   exit 0

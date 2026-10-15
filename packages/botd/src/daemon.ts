@@ -49,6 +49,12 @@ const auditable = (request: RpcRequest) => (request.method === 'unlock' || reque
 /** Order statuses after which an order of ours will never fill. */
 const ENDED = new Set(['cancelled', 'refunded', 'delivery_failed']);
 
+/** `list` without one occurrence of `value`: two orders in the same millisecond keep the other's slot. */
+const withoutOne = (list: number[], value: number) => {
+  const i = list.indexOf(value);
+  return i < 0 ? list : [...list.slice(0, i), ...list.slice(i + 1)];
+};
+
 /** An intent younger than this may still be in flight: no lookup can tell it was never made. */
 const INTENT_SETTLE_MS = 60_000;
 /** Ceiling of the backoff between lookups of one intent while the API keeps failing. */
@@ -195,14 +201,15 @@ export function createDispatcher(deps: Deps): Dispatcher {
   const lookups = new Map<string, { failures: number; next: number }>();
 
   /**
-   * Adopts the order an intent made, or drops an intent the API never saw. `periodic` (a tick) skips intents
-   * still possibly in flight and those backing off; an unlock looks every one up.
+   * Adopts the order an intent made, or drops an intent the API never saw. Intents possibly still in flight
+   * wait; `periodic` (a tick) also honours each intent's lookup backoff, an unlock does not.
    */
   async function reconcileIntents(e: Engine, periodic = false) {
     const now = deps.now();
     for (const intent of (await deps.state.load()).intents ?? []) {
       const backoff = lookups.get(intent.key);
-      if (periodic && (now - intent.at < INTENT_SETTLE_MS || (backoff && now < backoff.next))) continue;
+      // Too young to judge even on unlock: a make from before a fast lock/unlock may still be in flight.
+      if (now - intent.at < INTENT_SETTLE_MS || (periodic && backoff && now < backoff.next)) continue;
       const known = (await deps.state.load()).openOrders.map((o) => o.orderId);
       const found = await e.findIntent(intent, known).then((id) => ({ id }), () => undefined);
       if (!found) {
@@ -356,9 +363,9 @@ export function createDispatcher(deps: Deps): Dispatcher {
       case 'orders.cancelAll': {
         const e = needEngine();
         const cancelled: string[] = [];
+        // One that will not cancel stays on the book; the rest still come off it.
         for (const o of state.openOrders) {
-          await e.cancel(o.orderId);
-          cancelled.push(o.orderId);
+          if (await e.cancel(o.orderId).then(() => true, () => false)) cancelled.push(o.orderId);
         }
         await mutate((s) => {
           const next = userCancelled(s, cancelled);
@@ -409,7 +416,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
         } catch (err) {
           if (refused(err)) {
             // The API answered no: nothing to reconcile, and the hourly slot is given back.
-            await mutate((s) => ({ ...dropIntent(s, intent), orderTimes: (s.orderTimes ?? []).filter((t) => t !== at) }));
+            await mutate((s) => ({ ...dropIntent(s, intent), orderTimes: withoutOne(s.orderTimes ?? [], at) }));
             throw err;
           }
           // No answer (network, timeout, 5xx): the order may exist. The intent stays; a tick resolves it.

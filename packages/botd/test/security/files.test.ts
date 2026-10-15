@@ -43,6 +43,9 @@ describe('security: keystore and state files', () => {
     const file = JSON.parse(readFileSync(ks(), 'utf8'));
     writeFileSync(ks(), JSON.stringify({ ...file, kdf: { ...file.kdf, N: 1024 } }), { mode: 0o600 });
     await expect(createKeystore(ks()).unlock(PASS)).rejects.toThrow(/below the minimum/);
+    // A cost that would hang unlock is refused before scrypt runs.
+    writeFileSync(ks(), JSON.stringify({ ...file, kdf: { ...file.kdf, p: 1_000_000 } }), { mode: 0o600 });
+    await expect(createKeystore(ks()).unlock(PASS)).rejects.toThrow(/above the maximum/);
     writeFileSync(ks(), JSON.stringify({ ...file, publicKey: 'ff'.repeat(32) }), { mode: 0o600 });
     await expect(createKeystore(ks()).unlock(PASS)).rejects.toThrow(/wrong passphrase/);
   });

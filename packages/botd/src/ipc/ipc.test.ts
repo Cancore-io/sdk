@@ -1,3 +1,4 @@
+import { createServer } from 'net';
 import { mkdtempSync, rmSync, statSync, writeFileSync } from 'fs';
 import { createConnection } from 'net';
 import { tmpdir } from 'os';
@@ -101,6 +102,34 @@ describe('ipc server', () => {
     server = await listen(path, () => new Promise(() => undefined), { requestTimeoutMs: 50 });
     const client = await connect(path);
     await expect(client.call('status', {})).rejects.toMatchObject({ error: { code: ERROR.INTERNAL, message: 'request timed out' } });
+    client.close();
+  });
+
+  it('refuses requests beyond the in-flight cap of one connection', async () => {
+    const path = join(dir, 's.sock');
+    server = await listen(path, () => new Promise(() => undefined), { requestTimeoutMs: 200, maxInFlight: 2 });
+    const client = await connect(path);
+    const calls = [client.call('status', {}), client.call('status', {}), client.call('status', {})].map((c) => c.catch((e) => e));
+    const [, , third] = await Promise.all(calls);
+    expect(third).toMatchObject({ error: { code: ERROR.INVALID_REQUEST, message: 'too many requests in flight' } });
+    client.close();
+  });
+
+  it('a garbled response fails the call instead of crashing the client', async () => {
+    const path = join(dir, 'g.sock');
+    const raw = createServer((s) => s.on('data', () => s.write('not json\n')));
+    await new Promise<void>((r) => raw.listen(path, r));
+    const client = await connect(path);
+    await expect(client.call('status', {})).rejects.toThrow('malformed response');
+    raw.close();
+  });
+
+  it('a trade that times out is unconfirmed, not an error to retry: its order may still be placed', async () => {
+    const path = join(dir, 's.sock');
+    server = await listen(path, () => new Promise(() => undefined), { requestTimeoutMs: 50 });
+    const client = await connect(path);
+    const make = { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' } as const;
+    await expect(client.call('order.make', make)).rejects.toMatchObject({ error: { code: ERROR.UNCONFIRMED, message: 'unconfirmed' } });
     client.close();
   });
 });

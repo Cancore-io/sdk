@@ -70,6 +70,8 @@ describe('check: order.make', () => {
     ['short position cap', make({ amount: '10', side: 'sell' }), { positions: { CC: '-490.0000000001' } }, {}, 'position_exceeded'],
     ['sell reduces long', make({ amount: '10', side: 'sell' }), { positions: { CC: '500' } }, {}, null],
     ['open orders count toward position', make({ amount: '10' }), { positions: { CC: '400' }, openOrders: [order('90.0000000001')] }, {}, 'position_exceeded'],
+    // Opposite open orders do not net out: if only the buys fill, the long is 0 + 490 + 10 + 1e-10.
+    ['an open sell does not offset open buys', make({ amount: '10' }), { openOrders: [order('490.0000000001'), order('490', 'sell')] }, {}, 'position_exceeded'],
     ['no position cap', make(), {}, { maxPosition: {} }, 'position_exceeded'],
     ['open orders below cap', make(), { openOrders: [order('1'), order('1')] }, {}, null],
     ['open orders at cap', make(), { openOrders: [order('1'), order('1'), order('1')] }, {}, 'open_orders_exceeded'],
