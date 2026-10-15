@@ -118,7 +118,7 @@ export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHas
       { type: 'ticket.expired', id: 'g-15', ...S, sentAt: 1790000460000, ...t, result: 'EXEMPT', exemptReason: 'DESTINATION_HALTED' },
     ],
     'order.settled': [{ type: 'order.settled', id: 'g-16', ...S, sentAt: 1790000900000, orderHash, payout: '1000000000', fee: '3000000', penaltyWithheld: '0', txRef: tx('cancore:test-kit:fixture-settle-tx') }],
-    'penalty.applied': [{ type: 'penalty.applied', id: 'g-17', ...S, sentAt: 1790001000000, violationId: 'v-1', code: 'NO_SHOW', step: 'L1', details: { orderHash, attempt: 0 } }],
+    'penalty.applied': [{ type: 'penalty.applied', id: 'g-17', ...S, sentAt: 1790001000000, violationId: 'v-1', code: 'NO_SHOW', step: 'RECORDED', details: { orderHash, attempt: 0 } }],
     'canton.prepare': [
       { type: 'canton.prepare', ...F('cp-1', 1789990000000), op: 'party.allocate', params: { publicKey: PARTY_KEY } },
       { type: 'canton.prepare', ...F('cp-2', 1789990100000), op: 'registry.accept', params: {} },

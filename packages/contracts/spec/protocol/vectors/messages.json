@@ -456,7 +456,7 @@
         "sentAt": 1790001000000,
         "violationId": "v-1",
         "code": "NO_SHOW",
-        "step": "L1",
+        "step": "RECORDED",
         "details": {
           "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
           "attempt": 0
