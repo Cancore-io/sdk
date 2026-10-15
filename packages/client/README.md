@@ -326,10 +326,11 @@ refusal is a `SettleError` that says why, before anything is signed:
   (`swap.create` / `createForPair`), when taking it (`take`), or when the maker records the trade.
 - The pair not enabled for DvP on this stand: `make` refuses before the trade is recorded.
 - The taker's wallet keeps the order's target token in a single holding
-  (`DVP_FEE_HOLDING_REQUIRED`): the platform fee needs a holding of its own. By default `take`
-  ends with a `SettleError` naming the fee; run `splitForFee(tokenId, feeAmount)`, which sends the
-  fee amount to this account and leaves the fee and the change in two holdings, then `take()`
-  again. With `{ autoSplitForFee: true }` `take` does it itself and takes once more — once; a
+  (`DVP_FEE_HOLDING_REQUIRED`): the platform fee needs a holding of its own. By default
+  (`autoSplitForFee` is `true`) `take` runs `splitForFee(tokenId, feeAmount)` itself, which sends the
+  fee amount to this account and leaves the fee and the change in two holdings, and takes once
+  more. With `{ autoSplitForFee: false }` `take` ends with a `SettleError` naming the fee; split,
+  then `take()` again. The automatic split happens once; a
   second refusal or a failed split is a `SettleError`. It first holds the fee the venue names to
   the order (at most the target amount × `maxFeeRate`) and checks the change still covers the
   trade leg; nothing is sent otherwise. The split's send is read before it is signed, like a DvP
@@ -595,7 +596,8 @@ An `onEvent` listener that throws is ignored.
 | `concurrency` | 4 | orders being looked at, or with a step being signed, at once; waiting trades hold no slot |
 | `autoWithdraw` | **true** | release this account's allocation of an expired trade. On by default here, off for `make` / `take`: nobody watches a serve loop, and funds left locked are what it exists to prevent. Pass `false` to only be told (`expired`) |
 | `acceptIncoming` | false | `true`, or a filter: accept incoming transfers (registry-token deliveries, cashback payouts) on every poll |
-| `autoSplitForFee`, `allowUnverifiedSplit` | false | as for `take`, for orders taken through `loop.take` |
+| `autoSplitForFee` | true | as for `take`, for orders taken through `loop.take` |
+| `allowUnverifiedSplit` | false | as for `take`, for orders taken through `loop.take` |
 | `deadlineMs`, `timeoutHours`, `maxFeeRate`… | as `make` / `take` | passed through; an order whose wait runs out is an `error`, then picked up again |
 | `signal` | none | an `AbortSignal` that stops the loop like `stop()` |
 

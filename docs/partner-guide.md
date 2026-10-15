@@ -339,7 +339,7 @@ const settled = await other.take(order.id, { autoSplitForFee: true, autoWithdraw
 ```
 
 `SettleOptions`: `deadlineMs` (default 45 minutes: stop waiting for the other side), `autoWithdraw`
-(default `false`), `autoSplitForFee` / `allowUnverifiedSplit` (taker, default `false`),
+(default `false`), `autoSplitForFee` (taker, default `true`), `allowUnverifiedSplit` (taker, default `false`),
 `timeoutHours`, and `signal` (an `AbortSignal`). `make` and `take` resume a trade from its first
 unfinished step, so you can run them again after a crash. Inside one process, a second
 `make`/`take` of an order that is already settling joins the run in progress and never signs a step
