@@ -433,14 +433,11 @@ source provenance.
 its `HEAD` as `CONTRACTS_RELEASE.commit` and refuses a directory that is not a checkout root or
 has uncommitted changes, so the release cannot name a commit its data did not come from.
 
-EVM [#108](https://github.com/Cancore-io/evm-contracts/pull/108) and
-[#114](https://github.com/Cancore-io/evm-contracts/pull/114), and SDK
-[#90](https://github.com/Cancore-io/sdk/pull/90), are merged. This snapshot is fully
-synced from the clean, merged EVM `main` commit
-[`4056e83`](https://github.com/Cancore-io/evm-contracts/commit/4056e83cd84a94d9d00eb4486d5cabf55dd71741),
-as recorded by `CONTRACTS_RELEASE.commit` and `spec/constants.json`. Before publishing
-rc.10, merge SDK [#91](https://github.com/Cancore-io/sdk/pull/91) and pass its checks.
-For every subsequent upstream change, run the full sync from a clean checkout of the
+This snapshot is fully synced from the clean, merged EVM `main` commit
+[`2f681b9`](https://github.com/Cancore-io/evm-contracts/commit/2f681b9bb74db55c0fe9fec31282bca54b997985)
+(EVM [#120](https://github.com/Cancore-io/evm-contracts/pull/120), the dev router records), as recorded
+by `CONTRACTS_RELEASE.commit` and `spec/constants.json`. For every subsequent upstream change, run
+the full sync from a clean checkout of the
 actual merged `main` commit, commit the resulting pins, and rerun the checks before
 publishing. This resync is mandatory for merge, squash and rebase alike.
 
