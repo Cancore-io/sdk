@@ -71,7 +71,15 @@ export function guardSigning(inner: BotSigner, fetchImpl: FetchLike, onFailed: (
 
   const signer: BotSigner = {
     public_key: inner.public_key,
-    signMessage: (m) => inner.signMessage(m),
+    // Text only (consent, faucet terms): raw bytes here would be a prepared-transaction hash signed past the check below.
+    async signMessage(m) {
+      if (!/^[\x20-\x7e\n]*$/.test(m)) {
+        const reason = 'refused to sign a non-text message: hashes are signed only through signPreparedHash';
+        onFailed(reason);
+        throw new VerifyError(reason);
+      }
+      return inner.signMessage(m);
+    },
     ...(inner.signChallenge && { signChallenge: (c: string) => inner.signChallenge!(c) }),
     async signPreparedHash(hash) {
       if (!verified.delete(hash)) {

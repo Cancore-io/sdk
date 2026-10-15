@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
-import { ERROR, PARAMS, RISK_CLASS, type Method, type RiskClass } from '@cancore/botd/protocol';
+import { DENY_REASONS, ERROR, PARAMS, RISK_CLASS, type Method, type RiskClass } from '@cancore/botd/protocol';
 
 /** The slice of the ipc client this server uses; injected so tests need no socket. */
 export interface BotClient {
@@ -35,6 +35,7 @@ const EFFECT: Record<Method, string> = {
   lock: '',
   resume: '',
   'limits.set': '',
+  withdraw: '',
 };
 
 const ANNOTATIONS: Record<Exclude<RiskClass, 'owner'>, ToolAnnotations> = {
@@ -66,6 +67,16 @@ function scalars(source: unknown): Record<string, unknown> {
   return source !== null && typeof source === 'object' ? pick(source, Object.keys(source)) : {};
 }
 
+const LIMIT_NUMBERS = ['maxOpenOrders', 'maxPriceDeviationBps', 'maxCommandsPerMinute'] as const;
+const LIMIT_CAPS = ['maxOrderAmount', 'maxOrderNotional', 'maxDailyVolume', 'maxPosition'] as const;
+const limits = (l: any) => ({
+  ...pick(l, LIMIT_NUMBERS),
+  allowedPairs: list(l?.allowedPairs).map(token).filter((v) => v !== undefined),
+  ...Object.fromEntries(LIMIT_CAPS.map((k) => [k, scalars(l?.[k])])),
+});
+const AUDIT = ['seq', 'at', 'method', 'riskClass', 'decision', 'reason'] as const;
+const denyReason = (v: unknown) => (typeof v === 'string' && (DENY_REASONS as readonly string[]).includes(v) ? v : undefined);
+
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 const ORDER = ['orderId', 'base', 'quote', 'side', 'amount', 'price', 'filled', 'status', 'createdAt'] as const;
 const order = (o: unknown) => pick(o, ORDER);
@@ -81,8 +92,8 @@ const VIEW: Record<Method, (r: any) => unknown> = {
   }),
   balances: (r) => ({ balances: list(r?.balances).map((b) => pick(b, ['instrument', 'amount', 'locked'])) }),
   'orders.list': (r) => ({ orders: list(r?.orders).map(order) }),
-  'limits.get': (r) => ({ limits: scalars(r?.limits) }),
-  'audit.tail': (r) => ({ entries: list(r?.entries).map(scalars) }),
+  'limits.get': (r) => ({ limits: limits(r?.limits) }),
+  'audit.tail': (r) => ({ entries: list(r?.entries).map((e) => pick(e, AUDIT)) }),
   'order.cancel': (r) => pick(r, ['orderId', 'cancelled']),
   'orders.cancelAll': (r) => ({ cancelled: list(r?.cancelled).map(token).filter((v) => v !== undefined) }),
   pause: (r) => pick(r, ['paused']),
@@ -94,6 +105,7 @@ const VIEW: Record<Method, (r: any) => unknown> = {
   lock: () => ({}),
   resume: () => ({}),
   'limits.set': () => ({}),
+  withdraw: () => ({}),
 };
 
 export const view = (method: Method, result: unknown): unknown => VIEW[method](result);
@@ -113,7 +125,7 @@ export function errorReply(err: unknown): ToolReply {
   const e = (rpc ?? {}) as { code?: number; data?: { reason?: unknown }; message?: unknown };
   switch (e.code) {
     case ERROR.DENIED:
-      return reply({ denied: token(e.data?.reason) ?? 'no_rule' }, true);
+      return reply({ denied: denyReason(e.data?.reason) ?? 'no_rule' }, true);
     case ERROR.LOCKED:
       return reply({ error: 'locked', instruction: `The keystore is locked. ${OWNER_ACTS} (cancore-bot unlock)` }, true);
     case ERROR.PAUSED:

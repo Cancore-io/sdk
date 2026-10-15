@@ -87,8 +87,8 @@ describe('check: order.make', () => {
 });
 
 describe('checkTake', () => {
-  const o = { base: 'CC', quote: 'USDCx', side: 'buy' as const };
-  it('prices at reference', () => expect(checkTake({ orderId: 'x', amount: '100' }, o, state(), limits, NOW)).toEqual({ allow: true }));
+  const o = { base: 'CC', quote: 'USDCx', side: 'buy' as const, price: '0.15' };
+  it('prices at the maker price, held to reference', () => expect(checkTake({ orderId: 'x', amount: '100' }, o, state(), limits, NOW)).toEqual({ allow: true }));
   it('notional cap + 1 unit', () =>
     expect(checkTake({ orderId: 'x', amount: '100.0000000001' }, o, state(), { ...limits, maxOrderAmount: { CC: '200' } }, NOW)).toEqual({ allow: false, reason: 'notional_exceeded' }));
   it('no reference price', () =>
@@ -142,7 +142,7 @@ describe('property: emptyLimits allows no trade', () => {
       ]);
       const s = state({ referencePrices: { [`${base}/${quote}`]: num() } });
       expect(check(cmd, s, emptyLimits(), NOW).allow).toBe(false);
-      expect(checkTake({ orderId: 'x', amount: num() }, { base, quote, side: 'buy' }, s, emptyLimits(), NOW).allow).toBe(false);
+      expect(checkTake({ orderId: 'x', amount: num() }, { base, quote, side: 'buy', price: num() }, s, emptyLimits(), NOW).allow).toBe(false);
     }
   });
 });
