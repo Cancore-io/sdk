@@ -26,6 +26,8 @@
     "packages/contracts/**",
     "packages/mcp/**",
     "packages/wallet/**",
-    "packages/trader/**"
+    "packages/trader/**",
+    "packages/botd/**",
+    "packages/bot-mcp/**"
   ]
 }
