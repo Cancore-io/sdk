@@ -1,5 +1,6 @@
 import type { Hex } from '@cancore/contracts';
 import { canonicalDecimal, checkHoldingsTransfer, checkRegistryAccept, isOwnParty } from './checks';
+import { CANTON_TRANSFER_FACTORIES } from './factories';
 import { NODE_KEY, OTHER_KEY, party } from './fixtures';
 import { CantonRefusal } from './legs';
 import type { PreparedOf } from './operations';
@@ -127,9 +128,7 @@ describe('holdings.transfer', () => {
   const prepared = (s = summary) => ({ summary: s }) as unknown as PreparedOf<'holdings.transfer'>;
   const check = checkHoldingsTransfer({ params, publicKey: KEY, nowMs: NOW });
 
-  test('the honest transfer passes, change and receiver holdings included', () => {
-    expect(() => check(prepared(), [honest({ children: [holding('1', ME), holding('2', RECEIVER)] })])).not.toThrow();
-  });
+  // An honest transfer passes only through a pinned factory with its subtree accounted for: TC-SDK-2352-01, -02 below.
 
   test.each([
     ['another receiver stated', () => check(prepared({ ...summary, receiver: 'evil::1220ee' }), [honest()]), /receiver is not the one asked/],
@@ -141,7 +140,7 @@ describe('holdings.transfer', () => {
     ['another amount in the transfer', () => check(prepared(), [honest({ arg: transferArg({ amount: v.numeric('250') }) })]), /another amount/],
     ['other holdings spent', () => check(prepared(), [honest({ arg: transferArg({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h9')]) }) })]), /other holdings/],
     ['another executeBefore', () => check(prepared(), [honest({ arg: transferArg({ executeBefore: v.time(1n) }) })]), /executeBefore is not/],
-    ['a contract for a third party', () => check(prepared(), [honest({ children: [holding('1', 'evil::1220ee')] })]), /third party/],
+    ['a factory not pinned for the admin', () => check(prepared(), [honest({ children: [holding('1', ME)] })]), /not a pinned factory/],
   ])('%s: refused', (_name, run, detail) => refused(run, detail));
 
   test('an executeBefore already passed is refused', () => {
@@ -251,5 +250,22 @@ describe('holdings.transfer: the subtree under an honest root (TC-SDK-2352)', ()
       chosenValue: v.record({}), actingParties: [OPERATOR, ME], signatories: [OPERATOR, ME], stakeholders: [OPERATOR, ME], consuming: true, children: [],
     };
     refused(() => check(prepared(), [transfer({ children: [archive('1', 'h1'), archive('2', 'h2'), mint('3', RECEIVER, '25'), mint('4', ME, '5'), entry] })]), /not a stated input|exercise/);
+  });
+
+  test('TC-SDK-2352-08: a holding minted to a third party: refused', () => {
+    refused(() => check(prepared(), [transfer({ children: [archive('1', 'h1'), archive('2', 'h2'), mint('3', RECEIVER, '25'), mint('4', 'evil::1220ee', '5')] })]), /third party/);
+  });
+
+  test('TC-SDK-2352-09: a stated input left unspent, or one not disclosed with the transaction: refused', () => {
+    refused(() => check(prepared(), [transfer({ children: [archive('1', 'h1'), mint('3', RECEIVER, '25'), mint('4', ME, '5')] })]), /not spent/);
+    refused(() => check(prepared(), [transfer({ inputs: [input('h1', ME, '20')], children: [archive('1', 'h1'), archive('2', 'h2'), mint('3', RECEIVER, '25'), mint('4', ME, '5')] })]), /not disclosed/);
+  });
+
+  test('TC-SDK-2352-10: a pending transfer for another amount than it locks: refused', () => {
+    refused(() => check(prepared(), [transfer({ children: [archive('1', 'h1'), archive('2', 'h2'), mint('3', ME, '25', true), mint('4', ME, '5'), offer('5', '30')] })]), /another amount/);
+  });
+
+  test('TC-SDK-2352-11: the dev CNRX registrar is pinned to cnrx-registry 0.2.3', () => {
+    expect(CANTON_TRANSFER_FACTORIES[ADMIN]).toEqual([expect.objectContaining({ packageId: CNRX, factory: 'Cnrx.Rules:CnrxRules', holding: 'Cnrx.Holding:CnrxHolding' })]);
   });
 });

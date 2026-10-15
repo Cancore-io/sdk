@@ -9,14 +9,21 @@
  *   proposal, acting as the party alone, creating exactly the
  *   `FillerRegistryEntry` of this fillerId and party with the stated operator.
  * - `holdings.transfer`: one root, `TransferFactory_Transfer` through the
- *   token standard's TransferFactory, acting as the party alone, sending the
- *   asked amount of the asked instrument to the asked party, spending only the
- *   stated holdings; no contract anywhere in it is created for a third party.
+ *   token standard's TransferFactory, acting as the party alone, with the
+ *   asked receiver, amount, instrument and holdings — and, under it, what the
+ *   factory does: the factory is a pinned one (`factories.ts`); the only
+ *   exercises on the sender's contracts archive the stated inputs (or are a
+ *   pinned service choice); every holding created is of the asked instrument
+ *   and owned by the sender or the receiver; the receiver is credited exactly
+ *   the amount (direct) or the amount is locked to the sender under one offer
+ *   of exactly this transfer (pending); the change is at most the inputs minus
+ *   the amount.
  *
  * `delivery.fill` and `intent.settle` check against the node's ticket and
  * order and come with those flows (CAN-1867, CAN-2321).
  */
 import type { CantonOpParams, Hex } from '@cancore/contracts';
+import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
 import { CantonRefusal, cantonFingerprint } from './legs';
 import type { CantonOpCheck } from './operations';
 import type { CantonTransaction, DamlValue, ExerciseNode, TransactionNode } from './transaction';
@@ -53,6 +60,7 @@ function field(value: DamlValue | undefined, name: string): DamlValue {
 const party = (v: DamlValue): string => (v.t === 'party' ? v.v : refuse('expected a party'));
 const textOf = (v: DamlValue): string => (v.t === 'text' ? v.v : refuse('expected text'));
 const numeric = (v: DamlValue): string => (v.t === 'numeric' ? canonicalDecimal(v.v) : refuse('expected a decimal'));
+const optionalParty = (v: DamlValue | undefined): string | undefined => (v?.t === 'optional' ? (v.v ? party(v.v) : undefined) : v ? party(v) : undefined);
 const cids = (v: DamlValue): string[] => (v.t === 'list' ? v.v.map((x) => (x.t === 'contractId' ? x.v : refuse('expected a contract id'))) : refuse('expected a list'));
 
 /** The one transaction of the op and its one root, an exercise. */
@@ -108,7 +116,13 @@ export function checkRegistryAccept(expect: { fillerId: string; publicKey: Hex }
 }
 
 /** `holdings.transfer`: exactly the transfer the node asked for, from its own party, spending only the stated holdings. */
-export function checkHoldingsTransfer(expect: { params: CantonOpParams['holdings.transfer']; publicKey: Hex; nowMs: number }): CantonOpCheck<'holdings.transfer'> {
+export function checkHoldingsTransfer(expect: {
+  params: CantonOpParams['holdings.transfer'];
+  publicKey: Hex;
+  nowMs: number;
+  /** The pinned factories; `CANTON_TRANSFER_FACTORIES` unless a test names others. */
+  factories?: Readonly<Record<string, readonly CantonTransferFactory[]>>;
+}): CantonOpCheck<'holdings.transfer'> {
   return (prepared, transactions) => {
     const s = prepared.summary;
     const asked = expect.params;
@@ -132,11 +146,126 @@ export function checkHoldingsTransfer(expect: { params: CantonOpParams['holdings
     const before = field(transfer, 'executeBefore');
     if (before.t !== 'timestamp' || BigInt(before.v) !== BigInt(s.executeBefore) * 1_000_000n) refuse('executeBefore is not the stated one');
     if (BigInt(s.executeBefore) * 1000n <= BigInt(expect.nowMs)) refuse('executeBefore has passed');
-    // No contract anywhere in it may belong to a third party: an `owner` field names the party or the receiver.
-    for (const node of Object.values(tx.nodes)) {
-      if (node.kind !== 'create' || node.argument.t !== 'record' || !('owner' in node.argument.v)) continue;
-      const owner = party(node.argument.v.owner as DamlValue);
-      if (owner !== sender && owner !== asked.toParty) refuse(`the transfer creates a contract owned by a third party (${qualified(node.templateId)})`);
-    }
+    checkTransferSubtree(tx, root, { sender: sender as string, asked, stated: s.inputHoldingCids, factories: expect.factories ?? CANTON_TRANSFER_FACTORIES });
   };
+}
+
+/** Daml Decimal (scale 10) as an integer count of 10⁻¹⁰. */
+function scaled(value: string): bigint {
+  const [whole, fraction = ''] = canonicalDecimal(value).split('.') as [string, string?];
+  if (fraction.length > 10) refuse(`more than 10 decimals: ${value}`);
+  const sign = whole.startsWith('-') ? -1n : 1n;
+  return sign * (BigInt(whole.replace('-', '')) * 10n ** 10n + BigInt(fraction.padEnd(10, '0')));
+}
+const decimal = (units: bigint): string => {
+  const abs = units < 0n ? -units : units;
+  const fraction = (abs % 10n ** 10n).toString().padStart(10, '0').replace(/0+$/, '');
+  return `${units < 0n ? '-' : ''}${abs / 10n ** 10n}${fraction ? `.${fraction}` : ''}`;
+};
+
+/** A holding as the token standard's view reads it. */
+interface HoldingSeen {
+  owner: string | undefined;
+  admin: string;
+  id: string;
+  amount: bigint;
+  locked: boolean;
+}
+function holdingOf(argument: DamlValue, f: CantonTransferFactory): HoldingSeen {
+  const view = field(argument, f.holdingView);
+  const account = field(view, 'account');
+  const instrument = field(view, 'instrumentId');
+  const lock = view.t === 'record' ? view.v.lock : undefined;
+  return {
+    owner: optionalParty(field(account, 'owner')),
+    admin: party(field(instrument, 'admin')),
+    id: textOf(field(instrument, 'id')),
+    amount: scaled(numeric(field(view, 'amount'))),
+    locked: lock !== undefined && !(lock.t === 'optional' && lock.v === undefined),
+  };
+}
+/** The owner of a token-standard account (V2), or a party (V1). */
+const accountOwner = (v: DamlValue): string | undefined => (v.t === 'record' ? optionalParty(v.v.owner) : party(v));
+
+/**
+ * What the factory does under the root of `holdings.transfer` (sdk#105
+ * review): pinned factory, only the stated inputs consumed, every holding
+ * accounted for, the receiver credited exactly the amount, the change bounded.
+ */
+function checkTransferSubtree(
+  tx: CantonTransaction,
+  root: ExerciseNode,
+  o: { sender: string; asked: CantonOpParams['holdings.transfer']; stated: readonly string[]; factories: Readonly<Record<string, readonly CantonTransferFactory[]>> },
+): void {
+  const { sender, asked } = o;
+  const f = (o.factories[asked.asset.admin] ?? []).find((e) => root.templateId === `${e.packageId}:${e.factory}`);
+  if (!f) return refuse(`the transfer factory ${root.templateId} is not a pinned factory of the admin ${asked.asset.admin}`);
+  const pinned = (t: string, entity: string) => t === `${f.packageId}:${entity}`;
+  const sameInstrument = (h: HoldingSeen) => h.admin === asked.asset.admin && h.id === asked.asset.id;
+  const amount = scaled(asked.amount);
+
+  // The stated inputs, as the transaction discloses them: the sender's unlocked holdings of the instrument.
+  let inputs = 0n;
+  for (const cid of o.stated) {
+    const disclosed = tx.inputContracts.find((c) => c.contractId === cid);
+    if (!disclosed) return refuse(`the stated input ${cid} is not disclosed with the transaction`);
+    if (!pinned(disclosed.templateId, f.holding)) refuse(`the stated input ${cid} is not a holding of the pinned registry`);
+    const h = holdingOf(disclosed.argument, f);
+    if (h.owner !== sender || !sameInstrument(h) || h.locked) refuse(`the stated input ${cid} is not an unlocked holding of the sender in the instrument`);
+    inputs += h.amount;
+  }
+  if (inputs < amount) refuse(`the stated inputs hold ${decimal(inputs)}, less than ${decimal(amount)}`);
+
+  const nodes = subtree(tx, root.nodeId);
+  if (nodes.length !== Object.keys(tx.nodes).length) refuse('the transaction holds nodes outside the transfer');
+  const archived = new Set<string>();
+  let receiver = 0n;
+  let locked = 0n;
+  let change = 0n;
+  const offers: DamlValue[] = [];
+  for (const node of nodes) {
+    if (node === root) continue;
+    if (node.kind === 'rollback') return refuse('a rollback node inside the transfer');
+    if (node.kind === 'exercise' && node.stakeholders.includes(sender)) {
+      const name = `${qualified(node.templateId)}.${node.choice}`;
+      if (node.consuming && node.choice === 'Archive' && pinned(node.templateId, f.holding) && o.stated.includes(node.contractId)) {
+        if (archived.has(node.contractId)) refuse(`the stated input ${node.contractId} is archived twice`);
+        archived.add(node.contractId);
+      } else if (!f.serviceChoices.includes(name)) {
+        refuse(`the transfer exercises ${name} on ${node.contractId}, a contract of the sender that is not a stated input`);
+      }
+    }
+    if (node.kind !== 'create') continue;
+    if (pinned(node.templateId, f.holding)) {
+      const h = holdingOf(node.argument, f);
+      if (!sameInstrument(h)) refuse(`the transfer creates a holding of another instrument (${h.admin} ${h.id})`);
+      if (h.owner === asked.toParty && !h.locked) receiver += h.amount;
+      else if (h.owner === sender && h.locked) locked += h.amount;
+      else if (h.owner === sender) change += h.amount;
+      else refuse(`the transfer creates a holding owned by a third party (${String(h.owner)})`);
+    } else if (pinned(node.templateId, f.offer)) {
+      offers.push(node.argument);
+    } else if (node.stakeholders.includes(sender)) {
+      refuse(`the transfer creates ${qualified(node.templateId)} for the sender`);
+    } else if (node.argument.t === 'record' && 'owner' in node.argument.v && optionalParty(node.argument.v.owner) !== asked.toParty) {
+      refuse(`the transfer creates a contract owned by a third party (${qualified(node.templateId)})`);
+    }
+  }
+  const unspent = o.stated.filter((cid) => !archived.has(cid));
+  if (unspent.length > 0) refuse(`the stated inputs ${unspent.join(', ')} are not spent`);
+
+  if (offers.length === 0) {
+    if (receiver !== amount) refuse(`the receiver is credited ${decimal(receiver)}, not ${decimal(amount)}`);
+    if (locked !== 0n) refuse(`a direct transfer locks ${decimal(locked)} of the sender`);
+  } else {
+    if (offers.length > 1) refuse(`the transfer creates ${offers.length} pending transfers`);
+    if (receiver !== 0n) refuse(`a pending transfer credits the receiver ${decimal(receiver)} already`);
+    if (locked !== amount) refuse(`a pending transfer locks ${decimal(locked)} of the sender, not ${decimal(amount)}`);
+    const t = field(offers[0] as DamlValue, 'transfer');
+    if (accountOwner(field(t, 'sender')) !== sender || accountOwner(field(t, 'receiver')) !== asked.toParty) refuse('the pending transfer names another sender or receiver');
+    if (scaled(numeric(field(t, 'amount'))) !== amount) refuse('the pending transfer moves another amount');
+    const instrument = field(t, 'instrumentId');
+    if (party(field(instrument, 'admin')) !== asked.asset.admin || textOf(field(instrument, 'id')) !== asked.asset.id) refuse('the pending transfer moves another instrument');
+  }
+  if (change > inputs - amount) refuse(`change ${decimal(change)} is more than the inputs minus the amount, ${decimal(inputs - amount)}`);
 }

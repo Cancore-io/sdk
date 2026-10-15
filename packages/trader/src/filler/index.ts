@@ -167,3 +167,5 @@ export type { CantonTransaction, CreateNode, DamlValue, ExerciseNode, FetchNode,
 export { CantonOperations, createCantonOperations, signatureHex } from './canton/operations';
 export type { CantonClientConfig, CantonOperationsOptions, CantonOpCheck, CantonPartySigner, PreparedOf, SubmittedOf } from './canton/operations';
 export { canonicalDecimal, checkHoldingsTransfer, checkRegistryAccept, isOwnParty } from './canton/checks';
+export { CANTON_TRANSFER_FACTORIES } from './canton/factories';
+export type { CantonTransferFactory } from './canton/factories';
