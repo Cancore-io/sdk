@@ -6,6 +6,7 @@
     // The sibling package's source, not its unbuilt `dist/`: typecheck runs before build.
     "paths": {
       "@cancore/client/selfcustody": ["../client/src/selfcustody.ts"],
+      "@cancore/client/swap": ["../client/src/swap.ts"],
       "@cancore/wallet": ["../wallet/src/index.ts"],
       "@cancore/wallet/operations": ["../wallet/src/operations.ts"],
       "@cancore/trader/filler/canton/hashing": ["../trader/src/filler/canton/hashing.ts"]
