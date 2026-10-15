@@ -27,9 +27,9 @@ import {
   FILL_TICKET_DOMAIN,
   FILL_TICKET_TYPES,
   IBURN_MINT_ERC20_ABI,
-  ORDER_TYPES,
   QUOTE_TYPES,
   fillerIdHash,
+  hashPermitWitness,
   hashTypedData,
   repayToFromEvm,
   routerDomain,
@@ -60,21 +60,6 @@ const live = INTENT && ACTORS ? describe : describe.skip;
 
 const FILLER = 'stand-filler-1';
 const PERMIT2: Hex = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
-/** Permit2's own structs (Uniswap's, not a Cancore type); the witness is `Order` from @cancore/contracts. */
-const PERMIT2_TYPES = {
-  PermitWitnessTransferFrom: [
-    { name: 'permitted', type: 'TokenPermissions' },
-    { name: 'spender', type: 'address' },
-    { name: 'nonce', type: 'uint256' },
-    { name: 'deadline', type: 'uint256' },
-    { name: 'witness', type: 'Order' },
-  ],
-  TokenPermissions: [
-    { name: 'token', type: 'address' },
-    { name: 'amount', type: 'uint256' },
-  ],
-  ...ORDER_TYPES,
-} as const;
 
 const httpRpc = (url: string): EvmRpc => {
   let id = 0;
@@ -173,7 +158,8 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
     const permit = { permitted: { token, amount: order.inputAmount }, nonce: BigInt(`0x${bytesToHex(keccak_256(utf8ToBytes(orderHash)))}`) >> 8n, deadline: order.fillDeadline };
     const permitSig = signDigest(
       key('FRANK'),
-      hashTypedData({ domain: { name: 'Permit2', chainId: stand.chainId, verifyingContract: PERMIT2 }, types: PERMIT2_TYPES, primaryType: 'PermitWitnessTransferFrom', message: { ...permit, spender: router, witness: { ...order } } }),
+      // The witness is a nested struct, which hashTypedData does not encode: the package's own Permit2 digest.
+      hashPermitWitness({ ...permit, spender: router, witness: order }, stand.chainId, PERMIT2),
     );
     await send(key('FRANK'), router, encodeFunctionCall(entryOf(abi(CANCORE_ROUTER_ABI), 'function', 'openFor'), [order, permit, permitSig, quoteDeadline, quoteSig]));
 
