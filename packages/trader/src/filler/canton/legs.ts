@@ -51,6 +51,8 @@ export class CantonRefusal extends Error {
   }
 }
 
+/** A participant id with or without the `PAR::` member prefix: topology writes it with, the JSON Ledger API without. */
+export const participantId = (uid: string): string => (uid.startsWith('PAR::') ? uid.slice(5) : uid);
 const strip0x = (hex: string): string => (hex.startsWith('0x') ? hex.slice(2) : hex).toLowerCase();
 const fromBase64 = (b64: string): Uint8Array => Uint8Array.from(Buffer.from(b64, 'base64'));
 
@@ -120,7 +122,7 @@ export interface PartyExpectation {
   partyId: string;
   /** The node's own party key, 32 bytes hex: the only key the party may have. */
   publicKey: Hex;
-  /** The Cancore participant, pinned by the node (never taken from the backend). */
+  /** The Cancore participant (`CANTON_PARTICIPANTS`, release data), never taken from the backend; `PAR::` optional. */
   participantUid: string;
 }
 
@@ -173,7 +175,9 @@ export async function verifyTopologyLeg(leg: CantonLegTopology, expect: PartyExp
         if (p.party !== expect.partyId) refuse('the hosting is for another party');
         if (p.threshold !== 1) refuse(`the hosting threshold is ${p.threshold}, not 1`);
         const [only, ...more] = p.participants;
-        if (!only || more.length > 0 || only.participantUid !== expect.participantUid) refuse('the party is hosted elsewhere than on the Cancore participant alone');
+        if (!only || more.length > 0 || participantId(only.participantUid) !== participantId(expect.participantUid)) {
+          refuse('the party is hosted elsewhere than on the Cancore participant alone');
+        }
         if (only?.permission !== Enums_ParticipantPermission.CONFIRMATION) refuse('the hosting permission is not Confirmation');
         break;
       }

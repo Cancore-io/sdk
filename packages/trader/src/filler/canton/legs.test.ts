@@ -153,6 +153,13 @@ describe('a topology leg is refused, never signed, when', () => {
     await refusedWith(verifyTopologyLeg(topologyLeg(allocation(over as never)), expect_), detail);
   });
 
+  test('the participant matches with or without the PAR:: prefix on either side', async () => {
+    const bare = PARTICIPANT.replace(/^PAR::/, '');
+    await expect(verifyTopologyLeg(topologyLeg(allocation()), { ...expect_, participantUid: bare })).resolves.toBeUndefined();
+    const hostedBare = allocation({ hosting: { participants: [{ uid: bare, permission: Enums_ParticipantPermission.CONFIRMATION }] } });
+    await expect(verifyTopologyLeg(topologyLeg(hostedBare), expect_)).resolves.toBeUndefined();
+  });
+
   test('a mapping is missing, repeated, removed or of another kind', async () => {
     const [ns, keys, hosting] = allocation();
     await refusedWith(verifyTopologyLeg(topologyLeg([ns!, keys!]), expect_), /no partyToParticipant/);
