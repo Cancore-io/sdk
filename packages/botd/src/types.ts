@@ -74,7 +74,9 @@ export interface BotState {
   pauseReason?: string;
   partyId?: string;
   /** Orders this bot made, and orders of others it took (`taken`), until they settle or end. */
-  openOrders: { orderId: string; pair: string; side: 'buy' | 'sell'; amount: string; price: string; taken?: boolean }[];
+  openOrders: { orderId: string; pair: string; side: 'buy' | 'sell'; amount: string; price: string; taken?: boolean; strategy?: { id: string; slot: string } }[];
+  /** Every strategy started, with what it placed; a running one resumes on unlock. */
+  strategies?: StrategyRecord[];
   /** Per-instrument net position, decimal string. */
   positions: Record<string, string>;
   /** Per-instrument traded amount in the rolling 24h window. */
@@ -100,10 +102,30 @@ export type Decision = { allow: true } | { allow: false; reason: DenyReason };
 /** Pure: no I/O, no clock beyond `now`. Anything not explicitly allowed is denied. */
 export type RiskGate = (cmd: Command, state: BotState, limits: Limits, now: number) => Decision;
 
-export interface StrategyHandle {
+/** A strategy's persisted state. Its open orders are the `openOrders` tagged with its id. */
+export interface StrategyRecord {
   strategyId: string;
   kind: 'grid' | 'dca';
-  stop(): Promise<void>;
+  base: string;
+  quote: string;
+  /** Validated against `gridConfig` / `dcaConfig` when started. */
+  config: Record<string, unknown>;
+  /** `denied`/`failed`: stopped by a refusal or an error, see `reason`. `rate_limited`: waiting for its hourly budget. */
+  status: 'running' | 'rate_limited' | 'denied' | 'failed' | 'stopped' | 'done';
+  reason?: string;
+  /** grid: the `level:side` slots that should have an open order. */
+  want: string[];
+  /** Epoch ms of every order placed: dca's next seq is its length; the last hour is the `ordersPerHour` budget. */
+  placed: number[];
+  fills: number;
+}
+
+/** One order a strategy wants placed; `slot` keeps it idempotent across restarts. */
+export interface StrategyOrder {
+  slot: string;
+  side: 'buy' | 'sell';
+  amount: string;
+  price: string;
 }
 
 /** An order of someone else's, as the API lists it: `source` is what its maker gives. */
@@ -133,8 +155,6 @@ export interface Engine {
   start(): void;
   /** Stops the settlement loop; a step already being signed finishes. */
   stop(): Promise<void>;
-  /** Runs the strategy loop until stopped. */
-  serve(strategy: Params<'strategy.start'>): Promise<StrategyHandle>;
 }
 
 /** What the engine reports back to the daemon. */

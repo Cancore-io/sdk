@@ -97,7 +97,7 @@ export interface StatusResult {
   paused: boolean;
   pauseReason?: string;
   partyId?: string;
-  strategies: { strategyId: string; kind: 'grid' | 'dca'; running: boolean }[];
+  strategies: { strategyId: string; kind: 'grid' | 'dca'; running: boolean; status: string; reason?: string; placed: number; fills: number }[];
   version: string;
 }
 

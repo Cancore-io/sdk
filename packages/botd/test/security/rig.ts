@@ -54,7 +54,6 @@ export function fakeEngine(): FakeEngine {
     async withdraw() {},
     start() {},
     async stop() {},
-    async serve() { return { strategyId: 's1', kind: 'grid', stop: async () => undefined }; },
   };
   return e;
 }

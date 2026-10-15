@@ -1,8 +1,6 @@
 import { createSelfCustody, type DvpNetwork, type ServeHandle, type SessionOptions } from '@cancore/client/selfcustody';
 import { dec, fmt, mul, SCALE } from '../decimal';
 import { guardSigning } from '../verify';
-import { runDca } from './dca';
-import { runGrid } from './grid';
 import type { BotSigner, Engine, EngineHooks } from '../types';
 
 export interface EngineOptions {
@@ -103,9 +101,6 @@ export function createEngine(options: EngineOptions): Engine {
       const running = loop;
       loop = undefined;
       await running?.stop();
-    },
-    serve(strategy) {
-      return strategy.kind === 'grid' ? runGrid(engine, strategy.config) : runDca(engine, strategy.config);
     },
   };
   return engine;

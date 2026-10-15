@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 import { statSync, writeFileSync, renameSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { userInfo } from 'os';
 import { createKeystore } from './keystore';
 import { openAuditLog } from './audit';
 import { applyFill, auditIntact, createStateStore, rollDaily, type StateStore } from './state';
 import { emptyLimits, loadLimits, parseLimits } from './limits';
-import { check, checkTake } from './riskgate';
+import { check, checkTake, dcaConfig, gridConfig } from './riskgate';
+import { dcaNext } from './engine/dca';
+import { gridNext, gridRefill, gridSlots } from './engine/grid';
 import { createEngine, type EngineOptions } from './engine/index';
 import { dec, fmt, SCALE } from './decimal';
 import { listen, RpcFault, type IpcServer } from './ipc/server';
 import { flag, loadConfig, paths, type BotConfig } from './config';
 import { ERROR, JSONRPC_VERSION, RISK_CLASS, type Method, type RiskClass, type Params, type Result, type RpcRequest, type RpcResponse } from './protocol/index';
-import type { AuditEntry, AuditLog, BotSigner, BotState, Decision, Engine, EngineHooks, Keystore, Limits, OrderInfo, RiskGate, StrategyHandle } from './types';
+import type { AuditEntry, AuditLog, BotSigner, BotState, Decision, Engine, EngineHooks, Keystore, Limits, OrderInfo, RiskGate, StrategyOrder, StrategyRecord } from './types';
 
 const VERSION = '0.1.0-rc.0';
 
@@ -27,6 +30,8 @@ export interface Deps {
   now(): number;
   /** The only party `withdraw` may send to (config `ownerParty`); unset disables withdraw. */
   ownerParty?: string;
+  /** Runs `fn` periodically until the returned stop is called; drives the strategy loop. Default: every 5s. */
+  every?(fn: () => void): () => void;
 }
 
 export interface Dispatcher {
@@ -42,10 +47,31 @@ const auditable = (request: RpcRequest) => (request.method === 'unlock' ? undefi
 /** Order statuses after which an order of ours will never fill. */
 const ENDED = new Set(['cancelled', 'refunded', 'delivery_failed']);
 
+const HOUR_MS = 3_600_000;
+const active = (s: StrategyRecord) => s.status === 'running' || s.status === 'rate_limited';
+const everyFiveSeconds = (fn: () => void) => {
+  const t = setInterval(fn, 5000);
+  t.unref();
+  return () => clearInterval(t);
+};
+
+/** A strategy's order filled: grid moves the slot to the opposite side one level away. */
+function strategyFilled(strategies: StrategyRecord[] | undefined, tag: { id: string; slot: string }) {
+  return strategies?.map((s) => {
+    if (s.strategyId !== tag.id) return s;
+    if (s.kind !== 'grid') return { ...s, fills: s.fills + 1 };
+    const refill = gridRefill(gridConfig.parse(s.config), tag.slot);
+    const want = s.want.filter((w) => w !== tag.slot);
+    return { ...s, fills: s.fills + 1, want: refill === undefined || want.includes(refill) ? want : [...want, refill] };
+  });
+}
+
 /** `a / b` in 1e-10 units, as a decimal string. */
 const ratio = (a: string, b: string) => fmt((dec(a) * SCALE) / dec(b));
 
 type Entry = { method: Method; riskClass: RiskClass; params: unknown };
+
+type Tag = { id: string; slot: string };
 
 type Taken = { base: string; quote: string; side: 'buy' | 'sell'; amount: string; price: string };
 
@@ -66,7 +92,7 @@ export function takeView(order: OrderInfo, allowedPairs: string[]): Taken | unde
 export function createDispatcher(deps: Deps): Dispatcher {
   let signer: BotSigner | undefined;
   let engine: Engine | undefined;
-  const strategies = new Map<string, StrategyHandle>();
+  let stopTicks: (() => void) | undefined;
 
   // Every state write is a read-modify-write on the latest state, one at a time: a write computed from a
   // state loaded before an await (an engine call) would undo a concurrent pause, fill or new order.
@@ -99,7 +125,11 @@ export function createDispatcher(deps: Deps): Dispatcher {
   const hooks: EngineHooks = {
     onSettled: (orderId) =>
       later(async () => {
-        await mutate((s) => applyFill(s, orderId, deps.now()));
+        await mutate((s) => {
+          const tag = s.openOrders.find((o) => o.orderId === orderId)?.strategy;
+          const next = applyFill(s, orderId, deps.now());
+          return tag ? { ...next, strategies: strategyFilled(next.strategies, tag) } : next;
+        });
         await append({ ...settleEntry, decision: 'allow', params: { orderId, event: 'settled' } });
       }),
     onEnded: (orderId, reason) =>
@@ -125,9 +155,72 @@ export function createDispatcher(deps: Deps): Dispatcher {
     return engine;
   };
 
+  const setStrategy = async (id: string, patch: Partial<StrategyRecord>) => {
+    await mutate((state) => ({ ...state, strategies: state.strategies?.map((s) => (s.strategyId === id ? { ...s, ...patch } : s)) }));
+  };
+
+  /** One step of one strategy: at most one order, through the same gate, audit and engine path as an agent's. */
+  async function step(rec: StrategyRecord, limits: Limits) {
+    const now = deps.now();
+    const state = await deps.state.load();
+    if (rec.kind === 'dca' && rec.placed.length >= dcaConfig.parse(rec.config).maxOrders) return setStrategy(rec.strategyId, { status: 'done' });
+    const cfg = rec.kind === 'grid' ? gridConfig.parse(rec.config) : dcaConfig.parse(rec.config);
+    // The platform's order limit is per user: waiting here beats a refused order from the API.
+    if (rec.placed.filter((t) => t > now - HOUR_MS).length >= cfg.ordersPerHour) {
+      if (rec.status !== 'rate_limited') await setStrategy(rec.strategyId, { status: 'rate_limited', reason: 'rate_limited' });
+      return;
+    }
+    if (state.openOrders.length >= limits.maxOpenOrders) return;
+    let next: StrategyOrder | undefined;
+    if (rec.kind === 'grid') {
+      const open = state.openOrders.flatMap((o) => (o.strategy?.id === rec.strategyId ? [o.strategy.slot] : []));
+      next = gridNext(gridConfig.parse(rec.config), rec.want, open);
+    } else {
+      const ref = (await engine!.referencePrices().catch(() => ({}) as Record<string, string>))[`${rec.base}/${rec.quote}`];
+      next = ref === undefined ? undefined : dcaNext(dcaConfig.parse(rec.config), rec.placed, now, ref);
+    }
+    if (!next) {
+      if (rec.status === 'rate_limited') await setStrategy(rec.strategyId, { status: 'running', reason: undefined });
+      return;
+    }
+    const request = { jsonrpc: JSONRPC_VERSION, id: `${rec.strategyId}:${next.slot}`, method: 'order.make' as const, params: { base: rec.base, quote: rec.quote, side: next.side, amount: next.amount, price: next.price } };
+    try {
+      await run(request, { owner: false }, { id: rec.strategyId, slot: next.slot });
+      if (rec.status === 'rate_limited') await setStrategy(rec.strategyId, { status: 'running', reason: undefined });
+    } catch (err) {
+      const reason = err instanceof RpcFault ? (err.data?.reason ?? err.message) : 'internal error';
+      // The gate's per-minute limit passes; any other refusal stops the strategy, and the daemon carries on.
+      if (reason === 'rate_limited') await setStrategy(rec.strategyId, { status: 'rate_limited', reason });
+      else await setStrategy(rec.strategyId, { status: err instanceof RpcFault && err.code === ERROR.DENIED ? 'denied' : 'failed', reason });
+    }
+  }
+
+  async function tick() {
+    if (!engine) return;
+    const [state, limits] = await Promise.all([deps.state.load(), deps.limits.load()]);
+    for (const rec of (state.strategies ?? []).filter(active)) await step(rec, limits);
+  }
+
+  /** Marks the strategy ended and cancels its resting orders; one that will not cancel stays on the book. */
+  async function endStrategy(id: string, status: StrategyRecord['status'], reason?: string) {
+    const state = await deps.state.load();
+    const cancelled: string[] = [];
+    if (engine) {
+      for (const o of state.openOrders.filter((x) => x.strategy?.id === id && !x.taken)) {
+        if (await engine.cancel(o.orderId).then(() => true, () => false)) cancelled.push(o.orderId);
+      }
+    }
+    await mutate((now) => ({
+      ...now,
+      openOrders: now.openOrders.filter((o) => !cancelled.includes(o.orderId)),
+      strategies: now.strategies?.map((s) => (s.strategyId === id ? { ...s, status, ...(reason !== undefined && { reason }) } : s)),
+    }));
+  }
+
   async function lock() {
-    for (const s of strategies.values()) await s.stop().catch(() => undefined);
-    strategies.clear();
+    // Strategies stay `running` on disk: the next unlock resumes them.
+    stopTicks?.();
+    stopTicks = undefined;
     await engine?.stop().catch(() => undefined);
     await background;
     signer?.destroy();
@@ -136,7 +229,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
     await mutate((s) => ({ ...s, locked: true }));
   }
 
-  async function execute(method: Method, p: unknown, taken?: Taken): Promise<Result<Method>> {
+  async function execute(method: Method, p: unknown, taken?: Taken, tag?: { id: string; slot: string }): Promise<Result<Method>> {
     const state = await deps.state.load();
     switch (method) {
       case 'status':
@@ -145,7 +238,9 @@ export function createDispatcher(deps: Deps): Dispatcher {
           paused: state.paused,
           ...(state.pauseReason && { pauseReason: state.pauseReason }),
           ...(state.partyId && { partyId: state.partyId }),
-          strategies: [...strategies.values()].map((s) => ({ strategyId: s.strategyId, kind: s.kind, running: true })),
+          strategies: (state.strategies ?? []).map((s) => ({
+            strategyId: s.strategyId, kind: s.kind, running: active(s), status: s.status, ...(s.reason && { reason: s.reason }), placed: s.placed.length, fills: s.fills,
+          })),
           version: VERSION,
         };
       case 'limits.get':
@@ -186,9 +281,12 @@ export function createDispatcher(deps: Deps): Dispatcher {
       case 'pause': {
         const { reason } = p as Params<'pause'>;
         // Paused first, so nothing new passes the gate while the book is being cancelled.
-        await mutate((s) => ({ ...s, paused: true, ...(reason !== undefined && { pauseReason: reason }) }));
-        for (const s of strategies.values()) await s.stop();
-        strategies.clear();
+        await mutate((s) => ({
+          ...s,
+          paused: true,
+          ...(reason !== undefined && { pauseReason: reason }),
+          strategies: s.strategies?.map((x) => (active(x) ? { ...x, status: 'stopped' as const, reason: 'paused' } : x)),
+        }));
         // Our own resting orders are cancelled; a taken order is already a trade and settles.
         const cancelled: string[] = [];
         if (engine) {
@@ -201,15 +299,19 @@ export function createDispatcher(deps: Deps): Dispatcher {
       }
       case 'strategy.stop': {
         const { strategyId } = p as Params<'strategy.stop'>;
-        await strategies.get(strategyId)?.stop();
-        strategies.delete(strategyId);
+        if (state.strategies?.some((s) => s.strategyId === strategyId)) await endStrategy(strategyId, 'stopped');
         return { strategyId, stopped: true };
       }
       case 'order.make': {
         const params = p as Params<'order.make'>;
         const { orderId } = await needEngine().make(params);
         const pair = `${params.base}/${params.quote}`;
-        await mutate((s) => ({ ...s, openOrders: [...s.openOrders, { orderId, pair, side: params.side, amount: params.amount, price: params.price }] }));
+        // A strategy's order and its seq land in one write: a resumed strategy sees it placed.
+        await mutate((s) => ({
+          ...s,
+          openOrders: [...s.openOrders, { orderId, pair, side: params.side, amount: params.amount, price: params.price, ...(tag && { strategy: tag }) }],
+          ...(tag && { strategies: s.strategies?.map((x) => (x.strategyId === tag.id ? { ...x, placed: [...x.placed, deps.now()] } : x)) }),
+        }));
         return { order: { orderId, base: params.base, quote: params.quote, side: params.side, amount: params.amount, price: params.price, filled: '0', status: 'open', createdAt: new Date(deps.now()).toISOString() } };
       }
       case 'order.take': {
@@ -221,9 +323,16 @@ export function createDispatcher(deps: Deps): Dispatcher {
         return result;
       }
       case 'strategy.start': {
-        const handle = await needEngine().serve(p as Params<'strategy.start'>);
-        strategies.set(handle.strategyId, handle);
-        return { strategyId: handle.strategyId };
+        const { kind, base, quote, config } = p as Params<'strategy.start'>;
+        needEngine();
+        // The gate has already parsed the config; parsing again fills its defaults.
+        const parsed = kind === 'grid' ? gridConfig.parse(config) : dcaConfig.parse(config);
+        const rec: StrategyRecord = {
+          strategyId: randomUUID(), kind, base, quote, config: parsed, status: 'running',
+          want: kind === 'grid' ? gridSlots(gridConfig.parse(config)) : [], placed: [], fills: 0,
+        };
+        await mutate((s) => ({ ...s, strategies: [...(s.strategies ?? []), rec] }));
+        return { strategyId: rec.strategyId };
       }
       case 'unlock': {
         signer = await deps.keystore.unlock((p as Params<'unlock'>).passphrase).catch(() => {
@@ -233,6 +342,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
         await mutate((s) => ({ ...s, locked: false }));
         engine.start();
         await reconcile(engine);
+        stopTicks?.();
+        stopTicks = (deps.every ?? everyFiveSeconds)(() => later(tick));
         return { locked: false };
       }
       case 'lock':
@@ -260,7 +371,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
     }
   }
 
-  async function handle(request: RpcRequest, from: { owner: boolean }): Promise<RpcResponse> {
+  async function run(request: RpcRequest, from: { owner: boolean }, tag?: { id: string; slot: string }): Promise<RpcResponse> {
     const riskClass = RISK_CLASS[request.method];
     const entry = { method: request.method, riskClass, params: auditable(request) };
     const deny = async (code: RpcFault['code'], reason: string): Promise<never> => {
@@ -272,12 +383,12 @@ export function createDispatcher(deps: Deps): Dispatcher {
     if (request.method === 'withdraw' && (!deps.ownerParty || (request.params as Params<'withdraw'>).to !== deps.ownerParty)) {
       await deny(ERROR.FORBIDDEN, 'withdraw goes only to the owner party pinned in the config');
     }
-    if (riskClass === 'trade') return exclusive(() => gated(request, entry, deny));
+    if (riskClass === 'trade') return exclusive(() => gated(request, entry, deny, tag));
     await append({ ...entry, decision: 'allow' });
     return executed(request, entry);
   }
 
-  async function gated(request: RpcRequest, entry: Entry, deny: (code: RpcFault['code'], reason: string) => Promise<never>): Promise<RpcResponse> {
+  async function gated(request: RpcRequest, entry: Entry, deny: (code: RpcFault['code'], reason: string) => Promise<never>, tag?: Tag): Promise<RpcResponse> {
     let taken: Taken | undefined;
     if (!engine) await deny(ERROR.LOCKED, 'locked');
     const now = deps.now();
@@ -307,19 +418,19 @@ export function createDispatcher(deps: Deps): Dispatcher {
     await mutate((s) => ({ ...rollDaily(s, now), recentCommands: [...s.recentCommands.filter((t) => t > now - 60_000), now] }));
     // The decision is on disk before anything touches the engine or the key.
     await append({ ...entry, decision: 'allow' });
-    return executed(request, entry, taken);
+    return executed(request, entry, taken, tag);
   }
 
-  async function executed(request: RpcRequest, entry: Entry, taken?: Taken): Promise<RpcResponse> {
+  async function executed(request: RpcRequest, entry: Entry, taken?: Taken, tag?: Tag): Promise<RpcResponse> {
     try {
-      return { jsonrpc: JSONRPC_VERSION, id: request.id, result: await execute(request.method, request.params, taken) };
+      return { jsonrpc: JSONRPC_VERSION, id: request.id, result: await execute(request.method, request.params, taken, tag) };
     } catch (err) {
       await append({ ...entry, decision: 'error', reason: err instanceof RpcFault ? err.message : 'internal error' });
       throw err;
     }
   }
 
-  return { handle, lock };
+  return { handle: (request, from) => run(request, from), lock };
 }
 
 function fileLimits(path: string): Deps['limits'] {
