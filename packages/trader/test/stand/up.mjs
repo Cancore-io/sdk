@@ -48,7 +48,9 @@ const ROLES = ['DEPLOYER', 'ALICE', 'BOB', 'FRANK', 'FILLER1', 'RELAYER', 'QUOTE
 const mnemonic = Mnemonic.fromPhrase('test test test test test test test test test test test junk');
 const keys = Object.fromEntries(ROLES.map((role, i) => [role, HDNodeWallet.fromMnemonic(mnemonic, `m/44'/60'/0'/0/${20 + i}`)]));
 for (const w of Object.values(keys)) await provider.send('anvil_setBalance', [w.address, toBeHex(10n ** 22n)]);
-const signer = (role) => new NonceManager(keys[role].connect(provider));
+// One NonceManager per role: a fresh one per call would re-read a nonce the provider may still have cached.
+const signers = Object.fromEntries(ROLES.map((role) => [role, new NonceManager(keys[role].connect(provider))]));
+const signer = (role) => signers[role];
 const deployer = signer('DEPLOYER');
 
 // Permit2 at its canonical address: MockPermit2's runtime code builds its domain from block.chainid and address(this).
