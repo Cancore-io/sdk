@@ -4,10 +4,11 @@
     "types": ["jest", "node"],
     // The sibling package's source, not its unbuilt `dist/`: typecheck runs before build.
     "paths": {
-      "@cancore/botd/protocol": ["../botd/src/protocol/index.ts"]
+      "@cancore/botd/protocol": ["../botd/src/protocol/index.ts"],
+      "@cancore/botd/ipc/client": ["../botd/src/ipc/client.ts"]
     }
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "test/**/*.ts"],
   // The root config excludes this package (it is typechecked here instead);
   // that exclude is inherited and would swallow these inputs too.
   "exclude": []

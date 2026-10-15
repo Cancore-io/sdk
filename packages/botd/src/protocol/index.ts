@@ -186,6 +186,15 @@ export const requestEnvelope = z
   })
   .strict();
 
+/** Deeper params than any method takes; refused before anything walks them recursively (audit hashing would overflow the stack). */
+const MAX_DEPTH = 16;
+
+/** Stops descending at the limit, so it never recurses deeper than `max` itself. */
+function tooDeep(v: unknown, max = MAX_DEPTH): boolean {
+  if (v === null || typeof v !== 'object') return false;
+  return max === 0 || Object.values(v).some((x) => tooDeep(x, max - 1));
+}
+
 /** Validates a raw request: envelope, known method, params. Trust boundary of the socket. */
 export function parseRequest(
   raw: unknown,
@@ -194,6 +203,7 @@ export function parseRequest(
   if (!envelope.success) return { ok: false, id: null, error: { code: ERROR.INVALID_REQUEST, message: 'invalid request' } };
   const { id, method } = envelope.data;
   if (!Object.hasOwn(PARAMS, method)) return { ok: false, id, error: { code: ERROR.METHOD_NOT_FOUND, message: `unknown method ${method}` } };
+  if (tooDeep(envelope.data.params)) return { ok: false, id, error: { code: ERROR.INVALID_PARAMS, message: 'params nested too deep' } };
   const params = PARAMS[method as Method].safeParse(envelope.data.params ?? {});
   if (!params.success) return { ok: false, id, error: { code: ERROR.INVALID_PARAMS, message: params.error.message } };
   return { ok: true, request: { jsonrpc: JSONRPC_VERSION, id, method: method as Method, params: params.data } };

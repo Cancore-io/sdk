@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync, renameSync } from 'fs';
+import { statSync, writeFileSync, renameSync } from 'fs';
 import { userInfo } from 'os';
 import { createKeystore } from './keystore';
 import { openAuditLog } from './audit';
 import { applyFill, auditIntact, createStateStore, rollDaily, type StateStore } from './state';
-import { emptyLimits, parseLimits } from './limits';
+import { emptyLimits, loadLimits, parseLimits } from './limits';
 import { check, checkTake } from './riskgate';
 import { createEngine, type EngineOptions } from './engine/index';
 import { dec, fmt, SCALE } from './decimal';
 import { listen, RpcFault, type IpcServer } from './ipc/server';
 import { flag, loadConfig, paths, type BotConfig } from './config';
-import { ERROR, JSONRPC_VERSION, RISK_CLASS, type Method, type Params, type Result, type RpcRequest, type RpcResponse } from './protocol/index';
+import { ERROR, JSONRPC_VERSION, RISK_CLASS, type Method, type RiskClass, type Params, type Result, type RpcRequest, type RpcResponse } from './protocol/index';
 import type { AuditEntry, AuditLog, BotSigner, BotState, Decision, Engine, EngineHooks, Keystore, Limits, OrderInfo, RiskGate, StrategyHandle } from './types';
 
 const VERSION = '0.1.0-rc.0';
@@ -45,6 +45,8 @@ const ENDED = new Set(['cancelled', 'refunded', 'delivery_failed']);
 /** `a / b` in 1e-10 units, as a decimal string. */
 const ratio = (a: string, b: string) => fmt((dec(a) * SCALE) / dec(b));
 
+type Entry = { method: Method; riskClass: RiskClass; params: unknown };
+
 type Taken = { base: string; quote: string; side: 'buy' | 'sell'; amount: string; price: string };
 
 /**
@@ -66,6 +68,22 @@ export function createDispatcher(deps: Deps): Dispatcher {
   let engine: Engine | undefined;
   const strategies = new Map<string, StrategyHandle>();
 
+  // Every state write is a read-modify-write on the latest state, one at a time: a write computed from a
+  // state loaded before an await (an engine call) would undo a concurrent pause, fill or new order.
+  let stateQueue: Promise<unknown> = Promise.resolve();
+  const mutate = (fn: (s: BotState) => BotState): Promise<void> => {
+    const p = stateQueue.then(async () => deps.state.save(fn(await deps.state.load())));
+    stateQueue = p.catch(() => undefined);
+    return p;
+  };
+  // Trade commands run one at a time from gate to book: two that each fit the limits alone must not both pass.
+  let tradeQueue: Promise<unknown> = Promise.resolve();
+  const exclusive = <T>(fn: () => Promise<T>): Promise<T> => {
+    const p = tradeQueue.then(fn);
+    tradeQueue = p.catch(() => undefined);
+    return p;
+  };
+
   // Every audit append moves the state's audit pointer, so a truncated log is caught on the next start.
   const append = async (entry: Parameters<AuditLog['append']>[0]): Promise<AuditEntry> => {
     const written = await deps.audit.append(entry);
@@ -81,13 +99,12 @@ export function createDispatcher(deps: Deps): Dispatcher {
   const hooks: EngineHooks = {
     onSettled: (orderId) =>
       later(async () => {
-        await deps.state.save(applyFill(await deps.state.load(), orderId, deps.now()));
+        await mutate((s) => applyFill(s, orderId, deps.now()));
         await append({ ...settleEntry, decision: 'allow', params: { orderId, event: 'settled' } });
       }),
     onEnded: (orderId, reason) =>
       later(async () => {
-        const state = await deps.state.load();
-        await deps.state.save({ ...state, openOrders: state.openOrders.filter((o) => o.orderId !== orderId) });
+        await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) }));
         await append({ ...settleEntry, decision: 'allow', params: { orderId, event: reason } });
       }),
     onVerifyFailed: (detail) => later(() => append({ ...settleEntry, decision: 'deny', reason: 'verify_failed', params: { detail } })),
@@ -116,8 +133,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
     signer?.destroy();
     signer = engine = undefined;
     deps.keystore.lock();
-    const state = await deps.state.load();
-    await deps.state.save({ ...state, locked: true });
+    await mutate((s) => ({ ...s, locked: true }));
   }
 
   async function execute(method: Method, p: unknown, taken?: Taken): Promise<Result<Method>> {
@@ -154,7 +170,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
       case 'order.cancel': {
         const { orderId } = p as Params<'order.cancel'>;
         await needEngine().cancel(orderId);
-        await deps.state.save({ ...state, openOrders: state.openOrders.filter((o) => o.orderId !== orderId) });
+        await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) }));
         return { orderId, cancelled: true };
       }
       case 'orders.cancelAll': {
@@ -164,13 +180,13 @@ export function createDispatcher(deps: Deps): Dispatcher {
           await e.cancel(o.orderId);
           cancelled.push(o.orderId);
         }
-        await deps.state.save({ ...state, openOrders: state.openOrders.filter((o) => !cancelled.includes(o.orderId)) });
+        await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => !cancelled.includes(o.orderId)) }));
         return { cancelled };
       }
       case 'pause': {
         const { reason } = p as Params<'pause'>;
         // Paused first, so nothing new passes the gate while the book is being cancelled.
-        await deps.state.save({ ...state, paused: true, ...(reason !== undefined && { pauseReason: reason }) });
+        await mutate((s) => ({ ...s, paused: true, ...(reason !== undefined && { pauseReason: reason }) }));
         for (const s of strategies.values()) await s.stop();
         strategies.clear();
         // Our own resting orders are cancelled; a taken order is already a trade and settles.
@@ -180,8 +196,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
             if (await engine.cancel(o.orderId).then(() => true, () => false)) cancelled.push(o.orderId);
           }
         }
-        const now = await deps.state.load();
-        await deps.state.save({ ...now, openOrders: now.openOrders.filter((o) => !cancelled.includes(o.orderId)) });
+        await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => !cancelled.includes(o.orderId)) }));
         return { paused: true };
       }
       case 'strategy.stop': {
@@ -194,7 +209,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
         const params = p as Params<'order.make'>;
         const { orderId } = await needEngine().make(params);
         const pair = `${params.base}/${params.quote}`;
-        await deps.state.save({ ...state, openOrders: [...state.openOrders, { orderId, pair, side: params.side, amount: params.amount, price: params.price }] });
+        await mutate((s) => ({ ...s, openOrders: [...s.openOrders, { orderId, pair, side: params.side, amount: params.amount, price: params.price }] }));
         return { order: { orderId, base: params.base, quote: params.quote, side: params.side, amount: params.amount, price: params.price, filled: '0', status: 'open', createdAt: new Date(deps.now()).toISOString() } };
       }
       case 'order.take': {
@@ -202,7 +217,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
         const result = await needEngine().take(params);
         // On the book until it settles: it counts against open orders and the worst-case position.
         const view = taken!;
-        await deps.state.save({ ...state, openOrders: [...state.openOrders, { orderId: params.orderId, pair: `${view.base}/${view.quote}`, side: view.side, amount: view.amount, price: view.price, taken: true }] });
+        await mutate((s) => ({ ...s, openOrders: [...s.openOrders, { orderId: params.orderId, pair: `${view.base}/${view.quote}`, side: view.side, amount: view.amount, price: view.price, taken: true }] }));
         return result;
       }
       case 'strategy.start': {
@@ -215,7 +230,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
           throw new RpcFault(ERROR.LOCKED, 'unlock failed');
         });
         engine = deps.createEngine(signer, hooks);
-        await deps.state.save({ ...state, locked: false });
+        await mutate((s) => ({ ...s, locked: false }));
         engine.start();
         await reconcile(engine);
         return { locked: false };
@@ -229,8 +244,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
         return { to, instrument, amount };
       }
       case 'resume': {
-        const { pauseReason: _, ...rest } = state;
-        await deps.state.save({ ...rest, paused: false });
+        await mutate(({ pauseReason: _, ...rest }) => ({ ...rest, paused: false }));
         return { paused: false };
       }
       case 'limits.set': {
@@ -249,7 +263,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
   async function handle(request: RpcRequest, from: { owner: boolean }): Promise<RpcResponse> {
     const riskClass = RISK_CLASS[request.method];
     const entry = { method: request.method, riskClass, params: auditable(request) };
-    const deny = async (code: RpcFault['code'], reason: string) => {
+    const deny = async (code: RpcFault['code'], reason: string): Promise<never> => {
       await append({ ...entry, decision: 'deny', reason });
       throw new RpcFault(code, reason, code === ERROR.DENIED ? { reason: reason as never } : undefined);
     };
@@ -258,31 +272,45 @@ export function createDispatcher(deps: Deps): Dispatcher {
     if (request.method === 'withdraw' && (!deps.ownerParty || (request.params as Params<'withdraw'>).to !== deps.ownerParty)) {
       await deny(ERROR.FORBIDDEN, 'withdraw goes only to the owner party pinned in the config');
     }
+    if (riskClass === 'trade') return exclusive(() => gated(request, entry, deny));
+    await append({ ...entry, decision: 'allow' });
+    return executed(request, entry);
+  }
+
+  async function gated(request: RpcRequest, entry: Entry, deny: (code: RpcFault['code'], reason: string) => Promise<never>): Promise<RpcResponse> {
     let taken: Taken | undefined;
-    if (riskClass === 'trade') {
-      if (!engine) await deny(ERROR.LOCKED, 'locked');
-      const now = deps.now();
-      const [loaded, limits] = await Promise.all([deps.state.load(), deps.limits.load()]);
-      if (loaded.paused) await deny(ERROR.PAUSED, 'paused');
-      // Fresh prices for every decision: an unreachable price feed leaves none, and the gate then refuses.
-      const referencePrices = await engine!.referencePrices().catch(() => ({}));
-      const state: BotState = { ...rollDaily(loaded, now), referencePrices };
-      let decision: Decision;
-      if (request.method === 'order.take') {
-        const params = request.params as Params<'order.take'>;
-        const info = await engine!.order(params.orderId).catch(() => undefined);
+    if (!engine) await deny(ERROR.LOCKED, 'locked');
+    const now = deps.now();
+    const [loaded, limits] = await Promise.all([deps.state.load(), deps.limits.load()]);
+    if (loaded.paused) await deny(ERROR.PAUSED, 'paused');
+    // Fresh prices for every decision: an unreachable price feed leaves none, and the gate then refuses.
+    const referencePrices = await engine!.referencePrices().catch(() => ({}));
+    const state: BotState = { ...rollDaily(loaded, now), referencePrices };
+    let decision: Decision;
+    if (request.method === 'order.take') {
+      const params = request.params as Params<'order.take'>;
+      const info = await engine!.order(params.orderId).catch(() => undefined);
+      // The order's amounts are the API's: one that does not parse is a refusal, never an unaudited throw.
+      let whole = false;
+      try {
         taken = info?.status === 'open' ? takeView(info, limits.allowedPairs) : undefined;
         // Partial takes do not exist: the amount asked must be the whole order, or the agent would get more than it asked for.
-        if (!taken || dec(taken.amount) !== dec(params.amount)) decision = { allow: false, reason: 'no_rule' };
-        else decision = checkTake(params, taken, state, limits, now);
-      } else {
-        decision = deps.riskgate({ method: request.method, params: request.params as never }, state, limits, now);
+        whole = !!taken && dec(taken.amount) === dec(params.amount);
+      } catch {
+        taken = undefined;
       }
-      if (!decision.allow) await deny(ERROR.DENIED, decision.reason);
-      await deps.state.save({ ...state, recentCommands: [...state.recentCommands.filter((t) => t > now - 60_000), now] });
+      decision = whole ? checkTake(params, taken!, state, limits, now) : { allow: false, reason: 'no_rule' };
+    } else {
+      decision = deps.riskgate({ method: request.method, params: request.params as never }, state, limits, now);
     }
+    if (!decision.allow) await deny(ERROR.DENIED, decision.reason);
+    await mutate((s) => ({ ...rollDaily(s, now), recentCommands: [...s.recentCommands.filter((t) => t > now - 60_000), now] }));
     // The decision is on disk before anything touches the engine or the key.
     await append({ ...entry, decision: 'allow' });
+    return executed(request, entry, taken);
+  }
+
+  async function executed(request: RpcRequest, entry: Entry, taken?: Taken): Promise<RpcResponse> {
     try {
       return { jsonrpc: JSONRPC_VERSION, id: request.id, result: await execute(request.method, request.params, taken) };
     } catch (err) {
@@ -298,7 +326,8 @@ function fileLimits(path: string): Deps['limits'] {
   return {
     async load() {
       try {
-        return parseLimits(JSON.parse(readFileSync(path, 'utf8')));
+        // Ownership and mode checked on every read: a limits file someone else can write is refused.
+        return await loadLimits(path);
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === 'ENOENT') return emptyLimits();
         throw err;
@@ -314,6 +343,11 @@ function fileLimits(path: string): Deps['limits'] {
 /** The real modules. `engine` carries test-only overrides (a fake API's fetch, short poll intervals). */
 export async function defaultDeps(config: BotConfig, engine: Partial<Pick<EngineOptions, 'fetchImpl' | 'pollMs' | 'reconcileMs'>> = {}): Promise<Deps> {
   const p = paths(config);
+  // Keystore, state, limits and audit are trusted only inside a directory nobody else can enter or swap files in.
+  const dir = statSync(config.stateDir);
+  if (!dir.isDirectory() || dir.uid !== process.getuid?.() || dir.mode & 0o077) {
+    throw new Error(`${config.stateDir}: must be a directory owned by this user with mode 0700 (mode ${(dir.mode & 0o777).toString(8)})`);
+  }
   return {
     keystore: createKeystore(p.keystore),
     audit: await openAuditLog(p.audit),
@@ -349,7 +383,7 @@ export async function start(config: BotConfig, deps: Deps): Promise<() => Promis
   await deps.state.save(intact ? { ...state, locked: true } : { ...rest, locked: true, paused: true, pauseReason: 'audit log truncated or broken' });
   const servers: IpcServer[] = [
     await listen(config.ownerSocket, (r) => dispatcher.handle(r, { owner: true }), { mode: 0o600 }),
-    await listen(config.agentSocket, (r) => dispatcher.handle(r, { owner: false }), { mode: 0o660, group: config.clientsGroup }),
+    await listen(config.agentSocket, (r) => dispatcher.handle(r, { owner: false }), { mode: 0o660, group: config.clientsGroup, maxConnections: 32 }),
   ];
   return async () => {
     await dispatcher.lock().catch(() => undefined);

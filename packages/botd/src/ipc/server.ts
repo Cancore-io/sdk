@@ -17,6 +17,8 @@ export interface ListenOptions {
   maxMessageBytes?: number;
   /** Per-request handler timeout; default 30 s. */
   requestTimeoutMs?: number;
+  /** Concurrent connections beyond this are dropped; default unlimited. */
+  maxConnections?: number;
 }
 
 /** Thrown by a handler to answer with a specific error code instead of INTERNAL. */
@@ -92,6 +94,8 @@ export async function listen(socketPath: string, handler: Handler, options: List
       if (buffer.length > max) socket.end(`${JSON.stringify(fail(null, { code: ERROR.INVALID_REQUEST, message: 'message too large' }))}\n`);
     });
   });
+
+  if (options.maxConnections !== undefined) server.maxConnections = options.maxConnections;
 
   rmSync(socketPath, { force: true });
   // The socket is created 0600 so it is never briefly wider than intended.

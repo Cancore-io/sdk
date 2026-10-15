@@ -25,7 +25,8 @@
     "release:wallet": "npm publish -w @cancore/wallet --access public",
     "release:client": "npm publish -w @cancore/client --access public",
     "release:contracts": "npm publish -w @cancore/contracts --access public",
-    "test:int": "jest --selectProjects int"
+    "test:int": "jest --selectProjects int",
+    "test:security:root": "bash packages/botd/test/security/root.sh"
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",

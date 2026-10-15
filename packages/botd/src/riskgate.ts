@@ -58,14 +58,15 @@ function checkLegs(legs: Leg[], state: BotState, limits: Limits, now: number): D
     delta += leg.side === 'buy' ? leg.amount : -leg.amount;
   }
 
-  const daily = Object.hasOwn(state.dailyVolume, base) ? dec(state.dailyVolume[base]!) : 0n;
-  if (maxDaily === undefined || daily + total > maxDaily) return deny('daily_volume_exceeded');
-
-  // Worst case: every open order on this base fills too.
+  // Worst case: every open order on this base fills too, inside the same 24h window.
+  let daily = Object.hasOwn(state.dailyVolume, base) ? dec(state.dailyVolume[base]!) : 0n;
   let pos = Object.hasOwn(state.positions, base) ? dec(state.positions[base]!) : 0n;
   for (const o of state.openOrders) {
-    if (o.pair.split('/')[0] === base) pos += o.side === 'buy' ? dec(o.amount) : -dec(o.amount);
+    if (o.pair.split('/')[0] !== base) continue;
+    daily += dec(o.amount);
+    pos += o.side === 'buy' ? dec(o.amount) : -dec(o.amount);
   }
+  if (maxDaily === undefined || daily + total > maxDaily) return deny('daily_volume_exceeded');
   if (maxPos === undefined || abs(pos + delta) > maxPos) return deny('position_exceeded');
 
   if (state.openOrders.length + legs.length > limits.maxOpenOrders) return deny('open_orders_exceeded');
@@ -119,18 +120,20 @@ function strategyLegs(p: Params<'strategy.start'>, ref: bigint): Leg[] | undefin
 
 /**
  * `order.take` on someone else's order: the daemon looks the order up and passes its
- * pair and side. Priced at the reference price, since the maker's price is theirs.
+ * pair, side and the price the taker really pays (the maker's), held to the reference price.
  */
 export function checkTake(
   take: Params<'order.take'>,
-  order: { base: string; quote: string; side: 'buy' | 'sell' },
+  order: { base: string; quote: string; side: 'buy' | 'sell'; price: string },
   state: BotState,
   limits: Limits,
   now: number,
 ): Decision {
-  const pair = `${order.base}/${order.quote}`;
-  const ref = Object.hasOwn(state.referencePrices, pair) ? dec(state.referencePrices[pair]!) : 0n;
-  return checkLegs([{ ...order, amount: dec(take.amount), price: ref }], state, limits, now);
+  try {
+    return checkLegs([{ base: order.base, quote: order.quote, side: order.side, amount: dec(take.amount), price: dec(order.price) }], state, limits, now);
+  } catch {
+    return deny('no_rule');
+  }
 }
 
 export const check: RiskGate = (cmd, state, limits, now) => {
