@@ -154,10 +154,10 @@ export const ERROR = {
 
 export type ErrorCode = (typeof ERROR)[keyof typeof ERROR];
 
-/** Why the risk gate said no. Default-deny: anything unmatched is `no_rule`. */
 /** Order id of a sent intent the daemon tracks before the API assigns a real id. */
 export const INTENT_ORDER_PREFIX = 'intent:';
 
+/** Why the risk gate said no. Default-deny: anything unmatched is `no_rule`. */
 export const DENY_REASONS = [
   'no_rule',
   'instrument_not_allowed',
