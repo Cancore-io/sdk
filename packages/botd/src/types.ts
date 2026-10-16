@@ -114,7 +114,8 @@ export interface BotState {
   /** Trusted USD price per instrument, from the Cancore API, written by the daemon. Missing = no USD trade. */
   usdPrices?: Record<string, string>;
   /** Fills of the last 24h, the source of `dailyVolume`. Epoch ms, base instrument, base amount. */
-  fills?: { at: number; instrument: string; amount: string }[];
+  /** `usdValue`: the fill's USD value at fill time, rounded up; absent on fills recorded without a price. */
+  fills?: { at: number; instrument: string; amount: string; usdValue?: string }[];
   /** The last audit entry this state has seen: a log that no longer holds it was truncated. */
   lastAuditSeq?: number;
   lastAuditHash?: string;

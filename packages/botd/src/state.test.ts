@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { openAuditLog } from './audit';
-import { auditIntact, createStateStore, initialState } from './state';
+import { applyFill, auditIntact, createStateStore, fillUsdValue, initialState } from './state';
 
 const dir = mkdtempSync(join(tmpdir(), 'botd-state-'));
 let n = 0;
@@ -48,5 +48,21 @@ describe('createStateStore', () => {
     expect(readFileSync(path, 'utf8')).not.toContain('usdPrices');
     writeFileSync(path, JSON.stringify({ ...initialState(), usdPrices: { CC: '999' } }));
     expect((await store.load()).usdPrices).toEqual({});
+  });
+});
+
+describe('applyFill', () => {
+  const open = { orderId: 'o1', pair: 'CC/USDCx', side: 'buy' as const, amount: '3', price: '0.1', at: 0 };
+
+  it('records the fill-time USD value, rounded up', () => {
+    // 0.5 x 1e-10 is below the scale: it rounds up to 1e-10, never down to zero.
+    expect(fillUsdValue('0.5', '0.0000000001')).toBe('0.0000000001');
+    const s = applyFill({ ...initialState(), openOrders: [open] } as never, 'o1', 1000, '0.15');
+    expect(s.fills).toEqual([{ at: 1000, instrument: 'CC', amount: '3', usdValue: '0.45' }]);
+  });
+
+  it('records no USD value without a price at fill time', () => {
+    const s = applyFill({ ...initialState(), openOrders: [open] } as never, 'o1', 1000);
+    expect(s.fills).toEqual([{ at: 1000, instrument: 'CC', amount: '3' }]);
   });
 });

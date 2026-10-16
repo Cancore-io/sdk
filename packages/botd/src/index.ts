@@ -7,4 +7,4 @@ export { parseLimits, emptyLimits, loadLimits } from './limits';
 export { check, checkTake, gridConfig, dcaConfig } from './riskgate';
 export { dec, fmt } from './decimal';
 export { openAuditLog } from './audit';
-export { createStateStore } from './state';
+export { createStateStore, fillUsdValue } from './state';

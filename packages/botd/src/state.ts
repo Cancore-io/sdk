@@ -1,6 +1,6 @@
 import { open, readFile, rename } from 'fs/promises';
 import { dirname } from 'path';
-import { dec, fmt } from './decimal';
+import { dec, fmt, mul } from './decimal';
 import type { AuditEntry, AuditLog, BotState } from './types';
 
 export interface StateStore {
@@ -75,8 +75,16 @@ export function rollDaily(state: BotState, now: number): BotState {
   return { ...state, fills, dailyVolume: Object.fromEntries(Object.entries(volume).map(([k, v]) => [k, fmt(v)])) };
 }
 
-/** An open order filled in full: off the book, into the position and the 24h volume. Unknown ids change nothing. */
-export function applyFill(state: BotState, orderId: string, now: number): BotState {
+/** USD value of `amount` at `usdPrice`, rounded up: what a fill costs the daily USD budget, fixed at fill time. */
+export function fillUsdValue(amount: string, usdPrice: string): string {
+  return fmt(mul(dec(amount), dec(usdPrice), 'up'));
+}
+
+/**
+ * An open order filled in full: off the book, into the position and the 24h volume. Unknown ids change nothing.
+ * `usdPrice` is the base's trusted USD price at fill time; without one the fill carries no `usdValue`.
+ */
+export function applyFill(state: BotState, orderId: string, now: number, usdPrice?: string): BotState {
   const order = state.openOrders.find((o) => o.orderId === orderId);
   if (!order) return state;
   const base = order.pair.split('/')[0]!;
@@ -85,7 +93,10 @@ export function applyFill(state: BotState, orderId: string, now: number): BotSta
     ...state,
     openOrders: state.openOrders.filter((o) => o.orderId !== orderId),
     positions: { ...state.positions, [base]: fmt(pos) },
-    fills: [...(state.fills ?? []), { at: now, instrument: base, amount: order.amount }],
+    fills: [
+      ...(state.fills ?? []),
+      { at: now, instrument: base, amount: order.amount, ...(usdPrice !== undefined && dec(usdPrice) > 0n && { usdValue: fillUsdValue(order.amount, usdPrice) }) },
+    ],
   }, now);
 }
 

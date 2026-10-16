@@ -166,7 +166,8 @@ describe('USD caps', () => {
 
   it('denies when fills of the last 24h + open orders + intents + this order exceed perDayUsd', () => {
     const s = state({
-      fills: [{ at: NOW - 1000, instrument: 'CC', amount: '100' }, { at: NOW - 90_000_000, instrument: 'CC', amount: '10000' }],
+      // The old fill has no usdValue (legacy): outside the window it is ignored, not counted as the whole day.
+      fills: [{ at: NOW - 1000, instrument: 'CC', amount: '100', usdValue: '15' }, { at: NOW - 90_000_000, instrument: 'CC', amount: '10000' }],
       openOrders: [order('100')],
       intents: [{ key: 'k', pair: 'CC/USDCx', side: 'buy', amount: '100', price: '0.15', at: NOW }],
     });
@@ -177,7 +178,7 @@ describe('USD caps', () => {
 
   it('counts a fill stamped in the future (clock skew) as fresh', () => {
     // future fill $15 + 40 CC $6 = $21 > $20
-    const s = state({ fills: [{ at: NOW + 60_000, instrument: 'CC', amount: '100' }] });
+    const s = state({ fills: [{ at: NOW + 60_000, instrument: 'CC', amount: '100', usdValue: '15' }] });
     expect(check(make({ amount: '40' }), s, usd({ perDayUsd: '20' }), NOW)).toEqual({ allow: false, reason: 'usd_daily_exceeded' });
   });
 
@@ -192,8 +193,22 @@ describe('USD caps', () => {
 
   it('denies without a USD price for the base instrument, or for an instrument already in use', () => {
     expect(check(make(), state({ usdPrices: {} }), usd({}), NOW)).toEqual({ allow: false, reason: 'usd_price_missing' });
-    const s = state({ fills: [{ at: NOW - 1000, instrument: 'ETH', amount: '1' }] });
+    const s = state({ intents: [{ key: 'e', pair: 'ETH/USDCx', side: 'buy', amount: '1', price: '3000', at: NOW }] });
     expect(check(make(), s, usd({}), NOW)).toEqual({ allow: false, reason: 'usd_price_missing' });
+  });
+
+  it('a fill keeps its fill-time USD value: a price drop does not free the daily budget', () => {
+    // 100 CC filled at $1 = $100, the whole cap. CC drops to $0.5: repriced it would look like $50.
+    const s = state({ referencePrices: { 'CC/USDCx': '0.5' }, usdPrices: { CC: '0.5', USDCx: '1' }, fills: [{ at: NOW - 1000, instrument: 'CC', amount: '100', usdValue: '100' }] });
+    expect(check(make({ amount: '100', price: '0.5' }), s, usd({ perDayUsd: '100' }), NOW)).toEqual({ allow: false, reason: 'usd_daily_exceeded' });
+    expect(check(make({ amount: '1', price: '0.5' }), s, usd({ perDayUsd: '100' }), NOW)).toEqual({ allow: false, reason: 'usd_daily_exceeded' });
+  });
+
+  it('a fill inside the window with no recorded USD value counts as the whole day spent', () => {
+    const s = state({ fills: [{ at: NOW - 1000, instrument: 'CC', amount: '1' }] });
+    expect(check(make({ amount: '1' }), s, usd({ perDayUsd: '1000000' }), NOW)).toEqual({ allow: false, reason: 'usd_daily_exceeded' });
+    const aged = state({ fills: [{ at: NOW - 86_400_001, instrument: 'CC', amount: '1' }] });
+    expect(check(make({ amount: '1' }), aged, usd({ perDayUsd: '1000000' }), NOW)).toEqual({ allow: true });
   });
 
   it('denies when a USD cap is missing unless the owner opted out', () => {

@@ -102,8 +102,14 @@ function checkUsd(legs: Leg[], state: BotState, limits: Limits, now: number): De
     if (v > perOrder) return deny('usd_order_exceeded');
     day += v;
   }
+  // Fills count at their fill-time USD value, never repriced: a price drop must not free budget already spent.
   // A fill stamped in the future (clock skew) counts as fresh: the budget errs toward refusing.
-  for (const f of state.fills ?? []) if (f.at > now - DAY_MS) day += usd(f.instrument, dec(f.amount));
+  for (const f of state.fills ?? []) {
+    if (f.at <= now - DAY_MS) continue;
+    // No recorded value (legacy, or no price at fill time): its USD cost is unknown, so the whole day counts as spent.
+    if (f.usdValue === undefined) return deny('usd_daily_exceeded');
+    day += dec(f.usdValue);
+  }
   // The daemon may already have merged intents into openOrders as `${INTENT_ORDER_PREFIX}<key>`: count each once.
   const ids = new Set(state.openOrders.map((o) => o.orderId));
   const reserved = [...state.openOrders, ...(state.intents ?? []).filter((i) => !ids.has(`${INTENT_ORDER_PREFIX}${i.key}`))];
