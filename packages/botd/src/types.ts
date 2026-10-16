@@ -67,6 +67,12 @@ export interface Limits {
   maxPriceDeviationBps: number;
   /** Max trade commands per minute. */
   maxCommandsPerMinute: number;
+  /** Cap on one order's value in USD; required unless `usdCapsOptOut`. */
+  perOrderUsd?: string;
+  /** Cap on the rolling 24h USD value of fills plus open orders and intents; required unless `usdCapsOptOut`. */
+  perDayUsd?: string;
+  /** Explicit owner opt-out of the USD caps; without it a missing cap denies every trade. */
+  usdCapsOptOut: boolean;
   /** New orders per hour, all sources together (the platform's per-user limit). Set by the daemon from its config, never from limits.json; default 5. */
   ordersPerHour?: number;
 }
@@ -105,6 +111,8 @@ export interface BotState {
   recentCommands: number[];
   /** Reference prices per pair, decimal string. */
   referencePrices: Record<string, string>;
+  /** Trusted USD price per instrument, from the Cancore API, written by the daemon. Missing = no USD trade. */
+  usdPrices?: Record<string, string>;
   /** Fills of the last 24h, the source of `dailyVolume`. Epoch ms, base instrument, base amount. */
   fills?: { at: number; instrument: string; amount: string }[];
   /** The last audit entry this state has seen: a log that no longer holds it was truncated. */

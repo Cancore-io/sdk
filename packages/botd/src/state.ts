@@ -13,7 +13,7 @@ export interface StateStore {
 const DAY_MS = 86_400_000;
 
 export const initialState = (): BotState => ({
-  locked: true, paused: false, openOrders: [], positions: {}, dailyVolume: {}, recentCommands: [], referencePrices: {}, fills: [],
+  locked: true, paused: false, openOrders: [], positions: {}, dailyVolume: {}, recentCommands: [], referencePrices: {}, usdPrices: {}, fills: [],
 });
 
 /** JSON file at `path` (mode 0600), written atomically (tmp + rename). A missing file is the initial state. */

@@ -23,6 +23,9 @@ const schema = z
     maxOpenOrders: z.number().int().min(0).max(1000).default(0),
     maxPriceDeviationBps: z.number().int().min(0).max(10_000).default(0),
     maxCommandsPerMinute: z.number().int().min(0).max(600).default(0),
+    perOrderUsd: cap.optional(),
+    perDayUsd: cap.optional(),
+    usdCapsOptOut: z.boolean().default(false),
   })
   .strict();
 

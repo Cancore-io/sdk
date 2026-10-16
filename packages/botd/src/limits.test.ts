@@ -13,6 +13,9 @@ const good = {
   maxOpenOrders: 5,
   maxPriceDeviationBps: 100,
   maxCommandsPerMinute: 10,
+  perOrderUsd: '50',
+  perDayUsd: '500',
+  usdCapsOptOut: false,
 };
 
 describe('parseLimits', () => {
@@ -36,7 +39,7 @@ describe('emptyLimits', () => {
   it('allows nothing', () =>
     expect(emptyLimits()).toEqual({
       allowedPairs: [], maxOrderAmount: {}, maxOrderNotional: {}, maxDailyVolume: {}, maxPosition: {},
-      maxOpenOrders: 0, maxPriceDeviationBps: 0, maxCommandsPerMinute: 0,
+      maxOpenOrders: 0, maxPriceDeviationBps: 0, maxCommandsPerMinute: 0, usdCapsOptOut: false,
     }));
 });
 

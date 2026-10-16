@@ -14,6 +14,9 @@ const limits: Limits = {
   maxOpenOrders: 3,
   maxPriceDeviationBps: 100,
   maxCommandsPerMinute: 5,
+  perOrderUsd: '1000',
+  perDayUsd: '100000',
+  usdCapsOptOut: false,
 };
 
 const state = (s: Partial<BotState> = {}): BotState => ({
@@ -24,6 +27,7 @@ const state = (s: Partial<BotState> = {}): BotState => ({
   dailyVolume: {},
   recentCommands: [],
   referencePrices: { 'CC/USDCx': '0.15' },
+  usdPrices: { CC: '0.15' },
   ...s,
 });
 
@@ -146,5 +150,57 @@ describe('property: emptyLimits allows no trade', () => {
       expect(check(cmd, s, emptyLimits(), NOW).allow).toBe(false);
       expect(checkTake({ orderId: 'x', amount: num() }, { base, quote, side: 'buy', price: num() }, s, emptyLimits(), NOW).allow).toBe(false);
     }
+  });
+});
+
+describe('USD caps', () => {
+  const usd = (l: Partial<Limits>) => ({ ...limits, maxOrderAmount: { CC: '100000' }, maxOrderNotional: { USDCx: '100000' }, maxDailyVolume: { CC: '1000000' }, maxPosition: { CC: '1000000' }, ...l });
+  const grid = (amountPerLevel: string, levels = 2): Command =>
+    ({ method: 'strategy.start', params: { kind: 'grid', base: 'CC', quote: 'USDCx', config: { side: 'buy', levels, amountPerLevel, lowerPrice: '0.15', upperPrice: '0.15' } } }) as Command;
+
+  it('denies a single order over perOrderUsd', () => {
+    // 100 CC at $0.15 = $15 > $10
+    expect(check(make({ amount: '100' }), state(), usd({ perOrderUsd: '10' }), NOW)).toEqual({ allow: false, reason: 'usd_order_exceeded' });
+    expect(check(make({ amount: '60' }), state(), usd({ perOrderUsd: '10' }), NOW)).toEqual({ allow: true });
+  });
+
+  it('denies when fills of the last 24h + open orders + intents + this order exceed perDayUsd', () => {
+    const s = state({
+      fills: [{ at: NOW - 1000, instrument: 'CC', amount: '100' }, { at: NOW - 90_000_000, instrument: 'CC', amount: '10000' }],
+      openOrders: [order('100')],
+      intents: [{ key: 'k', pair: 'CC/USDCx', side: 'buy', amount: '100', price: '0.15', at: NOW }],
+    });
+    // fills $15 (old fill outside 24h ignored) + open $15 + intent $15 = $45; +$6 (40 CC) > $50
+    expect(check(make({ amount: '40' }), s, usd({ perDayUsd: '50' }), NOW)).toEqual({ allow: false, reason: 'usd_daily_exceeded' });
+    expect(check(make({ amount: '30' }), s, usd({ perDayUsd: '50' }), NOW)).toEqual({ allow: true });
+  });
+
+  it('counts an intent the daemon already merged into openOrders once', () => {
+    const s = state({
+      openOrders: [{ ...order('100'), orderId: 'intent:k' }],
+      intents: [{ key: 'k', pair: 'CC/USDCx', side: 'buy', amount: '100', price: '0.15', at: NOW }],
+    });
+    // $15 reserved + $6 = $21 <= $25
+    expect(check(make({ amount: '40' }), s, usd({ perDayUsd: '25' }), NOW)).toEqual({ allow: true });
+  });
+
+  it('denies without a USD price for the base instrument, or for an instrument already in use', () => {
+    expect(check(make(), state({ usdPrices: {} }), usd({}), NOW)).toEqual({ allow: false, reason: 'usd_price_missing' });
+    const s = state({ fills: [{ at: NOW - 1000, instrument: 'ETH', amount: '1' }] });
+    expect(check(make(), s, usd({}), NOW)).toEqual({ allow: false, reason: 'usd_price_missing' });
+  });
+
+  it('denies when a USD cap is missing unless the owner opted out', () => {
+    expect(check(make(), state(), usd({ perOrderUsd: undefined }), NOW)).toEqual({ allow: false, reason: 'usd_cap_missing' });
+    expect(check(make(), state(), usd({ perDayUsd: undefined }), NOW)).toEqual({ allow: false, reason: 'usd_cap_missing' });
+    expect(check(make(), state({ usdPrices: {} }), usd({ perOrderUsd: undefined, perDayUsd: undefined, usdCapsOptOut: true }), NOW)).toEqual({ allow: true });
+  });
+
+  it('checks strategy.start and order.take the same way', () => {
+    expect(check(grid('100'), state(), usd({ perOrderUsd: '10' }), NOW)).toEqual({ allow: false, reason: 'usd_order_exceeded' });
+    // two levels of 50 CC = $15 > $10 per day
+    expect(check(grid('50'), state(), usd({ perDayUsd: '10' }), NOW)).toEqual({ allow: false, reason: 'usd_daily_exceeded' });
+    expect(check(grid('10'), state({ usdPrices: {} }), usd({}), NOW)).toEqual({ allow: false, reason: 'usd_price_missing' });
+    expect(checkTake({ orderId: 'x', amount: '100' }, { base: 'CC', quote: 'USDCx', side: 'buy', price: '0.15' }, state(), usd({ perOrderUsd: '10' }), NOW)).toEqual({ allow: false, reason: 'usd_order_exceeded' });
   });
 });

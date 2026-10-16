@@ -168,6 +168,10 @@ export const DENY_REASONS = [
   'verify_failed',
   'paused',
   'locked',
+  'usd_cap_missing',
+  'usd_price_missing',
+  'usd_order_exceeded',
+  'usd_daily_exceeded',
 ] as const;
 
 export type DenyReason = (typeof DENY_REASONS)[number];
