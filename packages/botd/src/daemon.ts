@@ -205,8 +205,9 @@ export function createDispatcher(deps: Deps): Dispatcher {
         const usdPrices: Record<string, string> = (await engine?.usdPrices().catch(() => ({}))) ?? {};
         let usdValue: string | undefined;
         await mutate((s) => {
-          const tag = s.openOrders.find((o) => o.orderId === orderId)?.strategy;
-          const base = s.openOrders.find((o) => o.orderId === orderId)?.pair.split('/')[0];
+          const filled = s.openOrders.find((o) => o.orderId === orderId);
+          const tag = filled?.strategy;
+          const base = filled?.pair.split('/')[0];
           const next = applyFill(s, orderId, deps.now(), base !== undefined && Object.hasOwn(usdPrices, base) ? usdPrices[base] : undefined);
           if (next !== s) usdValue = next.fills?.at(-1)?.usdValue;
           return tag ? { ...next, strategies: strategyFilled(next.strategies, tag) } : next;
@@ -436,9 +437,11 @@ export function createDispatcher(deps: Deps): Dispatcher {
             strategies: s.strategies?.map((x) => (active(x) ? { ...x, status: 'stopped' as const, reason: 'paused' } : x)),
           };
         });
-        // Our own resting orders are cancelled; a taken order is already a trade and settles.
+        // Our own resting orders are cancelled. A take whose accept has not been sent is dropped;
+        // one already accepted is a trade and settles.
         const cancelled: string[] = [];
         if (engine) {
+          for (const o of book.filter((x) => x.taken)) if (engine.untake(o.orderId)) cancelled.push(o.orderId);
           for (const o of book.filter((x) => !x.taken)) {
             if (await engine.cancel(o.orderId).then(() => true, () => false)) cancelled.push(o.orderId);
           }

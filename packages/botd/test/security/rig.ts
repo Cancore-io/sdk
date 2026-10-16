@@ -28,6 +28,7 @@ export const fakeSigner = (): BotSigner => ({ public_key: 'ab', signMessage: asy
 export interface FakeEngine extends Engine {
   made: unknown[];
   taken: unknown[];
+  untaken: string[];
   orders: Map<string, OrderInfo>;
   /** Delay of each make, to widen race windows. */
   makeDelayMs: number;
@@ -43,7 +44,7 @@ export interface FakeEngine extends Engine {
 export function fakeEngine(): FakeEngine {
   let n = 0;
   const e: FakeEngine = {
-    made: [], taken: [], orders: new Map(), makeDelayMs: 0,
+    made: [], taken: [], untaken: [], orders: new Map(), makeDelayMs: 0,
     async make(p) {
       e.onMakeStart?.();
       await new Promise((r) => setTimeout(r, e.makeDelayMs));
@@ -51,6 +52,7 @@ export function fakeEngine(): FakeEngine {
       e.made.push(p);
       return { orderId: `o${++n}` };
     },
+    untake: (orderId: string) => (e.untaken.push(orderId), true),
     async take(p) {
       e.taken.push(p);
       return { orderId: p.orderId, filled: '0' };

@@ -134,6 +134,9 @@ export function createEngine(options: EngineOptions): Engine {
       loop!.take(orderId);
       return { orderId, filled: '0' };
     },
+    untake(orderId) {
+      return loop ? loop.untake(orderId) : true;
+    },
     async cancel(orderId) {
       await acct.swap.cancel(orderId);
     },

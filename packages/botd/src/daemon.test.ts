@@ -42,6 +42,7 @@ function fakeDeps(log: string[]) {
     createEngine: () => ({
       make: async () => (log.push('engine:make'), { orderId: 'o1' }),
       take: jest.fn(),
+      untake: jest.fn(() => true),
       cancel: jest.fn(async () => void log.push('engine:cancel')),
       order: jest.fn(),
       balances: jest.fn(),

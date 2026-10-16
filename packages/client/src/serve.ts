@@ -72,6 +72,8 @@ export type ServeEvent =
 export interface ServeHandle {
   /** Queue an open order of someone else's to take; the loop accepts it (`autoSplitForFee` applies) and settles the taker side. */
   take(orderId: string): void;
+  /** Drops a queued take before its accept is sent; false once the accept has started (it is then a trade). */
+  untake(orderId: string): boolean;
   /**
    * Stop: nothing new is started or signed from here on; resolves once the handlers in flight are done — a
    * step already being signed is finished, a wait ends within one poll interval (`pollMs`, 5 s by default).
@@ -124,6 +126,8 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   /** Orders with nothing left to do. ponytail: grows with the account's history; prune if a loop runs for months. */
   const done = new Set<string>();
   const toTake = new Set<string>();
+  // Takes whose accept has started: past this point untake cannot stop them.
+  const accepting = new Set<string>();
   const again = new Set<string>();
   /** Swaps an `expired` event was sent for. */
   const reported = new Set<string>();
@@ -178,6 +182,8 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   async function work(orderId: string, expired: boolean): Promise<void> {
     const maker = await slot(() => look(orderId), expired);
     if (maker === undefined || stopper.signal.aborted) return;
+    // look() re-reads toTake after its lookup, so an untake up to here wins; from here the accept is on its way.
+    if (!maker) accepting.add(orderId);
     try {
       const settled = await (maker ? acct.make : acct.take)(orderId, settle);
       done.add(orderId);
@@ -287,6 +293,11 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
     take(orderId) {
       toTake.add(orderId);
       kick(orderId);
+    },
+    untake(orderId) {
+      if (accepting.has(orderId)) return false;
+      toTake.delete(orderId);
+      return true;
     },
     stop,
   };

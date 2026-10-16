@@ -147,6 +147,18 @@ describe('security: through the dispatcher', () => {
     expect(r.state().strategies ?? []).toEqual([]);
   });
 
+  it('a pause drops a queued take whose accept has not been sent, and keeps one already accepted', async () => {
+    r.engine.orders.set('queued', { orderId: 'queued', status: 'open', source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
+    r.engine.orders.set('sent', { orderId: 'sent', status: 'open', source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
+    expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'queued', amount: '10' }), agent))).toBe('ok');
+    expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'sent', amount: '10' }), agent))).toBe('ok');
+    // 'sent' already went out to the API: untake reports it cannot be stopped.
+    r.engine.untake = (id: string) => (r.engine.untaken.push(id), id !== 'sent');
+    await r.dispatcher.handle(req('pause', { reason: 'owner stop' }), owner);
+    expect(r.engine.untaken.sort()).toEqual(['queued', 'sent']);
+    expect(r.state().openOrders.map((o) => o.orderId)).toEqual(['sent']);
+  });
+
   it('a take larger than the limits, or at a hostile price, is refused', async () => {
     r.engine.orders.set('big', { orderId: 'big', status: 'open', source: 'CC', sourceAmount: '500', target: 'USDCx', targetAmount: '75' });
     expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'big', amount: '500' }), agent))).toBe('order_size_exceeded');

@@ -58,6 +58,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
           return { orderId };
         },
         take: jest.fn(),
+      untake: jest.fn(() => true),
         cancel: async (id) => void cancelled.push(id),
         order: async (id) => ({ orderId: id, status: statuses[id] ?? 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' }),
         balances: jest.fn(),

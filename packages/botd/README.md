@@ -312,6 +312,7 @@ Every strategy order is an `order.make` through the same trade lock, risk gate, 
 | daemon exits `no venue is pinned for …` | a `baseUrl` that is not one of Cancore's hosts | set `network` or `venuePartyId` |
 | `register` fails, or the first unlock logs `not registered: run cancore-bot register` | a new account, or a wrong invite code | `cancore-bot register` with the right code |
 | every trade `usd_cap_missing` | `perOrderUsd` or `perDayUsd` not set | set both, or `usdCapsOptOut: true` |
+| every trade `usd_daily_exceeded` right after an upgrade | a fill from before USD caps (no recorded USD value) is still in the 24 h window; its price then is unknown, so the day counts as spent | wait until it is 24 h old |
 | every trade `usd_price_missing` | the API gives no USD price for an instrument involved | wait for the price feed; check the pair is listed |
 | every trade `price_deviation_exceeded` | no market rate for the pair (feed down, unknown pair), or price too far | check the pair is listed; widen `maxPriceDeviationBps` |
 | starts `paused` with `audit log truncated or broken` | the log lost entries the state had seen | `audit verify`, investigate, then `resume` |
