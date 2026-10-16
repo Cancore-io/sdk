@@ -83,6 +83,13 @@ describe('createKeystore', () => {
     await expect(createKeystore(path).unlock('correct horse')).rejects.toThrow(/group\/others/);
     await expect(createKeystore(path).publicKey()).rejects.toThrow(/group\/others/);
   });
+  it('refuses a file whose scrypt cost is above the maximum, before running scrypt', async () => {
+    const path = await initialised();
+    const file = JSON.parse(readFileSync(path, 'utf8'));
+    file.kdf.N = 2 ** 19;
+    writeFileSync(path, JSON.stringify(file), { mode: 0o600 });
+    await expect(createKeystore(path).unlock('correct horse')).rejects.toBeInstanceOf(KeystoreFileError);
+  });
 });
 
 describe('keyFromEnv', () => {

@@ -39,6 +39,19 @@ describe('guardSigning', () => {
     expect(await g.signer.signMessage('I agree')).toBe('sig');
   });
 
+  it('keeps only the newest 256 verified hashes: an abandoned prepare does not stay signable forever', async () => {
+    const l = await leg();
+    const inner = fakeSigner();
+    let body: unknown = { legs: [{ hash: l.preparedTransactionHash, preparedTransaction: l.preparedTransaction }] };
+    const g = guardSigning(inner, async () => new Response(JSON.stringify(body)), () => undefined);
+    await g.fetchImpl('http://x/prepare', {});
+    const others = await Promise.all(Array.from({ length: 256 }, (_, i) => selfSendLeg({ party: 'p::1220', kind: 'transfer', receiver: 'o::1220', input: '10', ids: `b${i}`, outputs: [{ owner: 'o::1220', amount: '1' }] })));
+    body = { legs: others.map((o) => ({ hash: o.preparedTransactionHash, preparedTransaction: o.preparedTransaction })) };
+    await g.fetchImpl('http://x/prepare', {});
+    await expect(g.signer.signPreparedHash(l.preparedTransactionHash)).rejects.toBeInstanceOf(VerifyError);
+    await g.signer.signPreparedHash(others[255]!.preparedTransactionHash);
+  });
+
   it('reports a hash that is not of its bytes and never signs it', async () => {
     const [l, other] = [await leg(), await selfSendLeg({ party: 'p::1220', kind: 'transfer', receiver: 'thief::1220', input: '10', ids: 'a', outputs: [{ owner: 'thief::1220', amount: '1' }] })];
     const inner = fakeSigner();
