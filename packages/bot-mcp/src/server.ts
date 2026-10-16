@@ -76,7 +76,7 @@ const limits = (l: any) => ({
   allowedPairs: list(l?.allowedPairs).map(token).filter((v) => v !== undefined),
   ...Object.fromEntries(LIMIT_CAPS.map((k) => [k, scalars(l?.[k])])),
 });
-const AUDIT = ['seq', 'at', 'method', 'riskClass', 'decision', 'reason'] as const;
+const AUDIT = ['seq', 'at', 'method', 'riskClass', 'decision'] as const;
 const denyReason = (v: unknown) => (typeof v === 'string' && (DENY_REASONS as readonly string[]).includes(v) ? v : undefined);
 
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
@@ -91,7 +91,9 @@ const VIEW: Record<Method, (r: any) => unknown> = {
   status: (r) => ({
     ...pick(r, ['locked', 'paused', 'partyId', 'version']),
     strategies: list(r?.strategies).map((s: any) => ({
-      ...pick(s, ['strategyId', 'kind', 'running', 'status', 'reason', 'placed', 'fills']),
+      ...pick(s, ['strategyId', 'kind', 'running', 'status', 'placed', 'fills']),
+      // Only a known deny code: a free-text reason may carry an error message built from untrusted input.
+      reason: denyReason(s?.reason),
       cancelledByUser: list(s?.cancelledByUser).map(token).filter((v) => v !== undefined),
     })),
   }),
@@ -99,7 +101,7 @@ const VIEW: Record<Method, (r: any) => unknown> = {
   quote: (r) => pick(r, ['base', 'quote', 'side', 'amount', 'price', 'total', 'expiresInSec']),
   'orders.list': (r) => ({ orders: list(r?.orders).map(order) }),
   'limits.get': (r) => ({ limits: limits(r?.limits) }),
-  'audit.tail': (r) => ({ entries: list(r?.entries).map((e) => pick(e, AUDIT)) }),
+  'audit.tail': (r) => ({ entries: list(r?.entries).map((e: any) => ({ ...pick(e, AUDIT), reason: denyReason(e?.reason) })) }),
   'order.cancel': (r) => pick(r, ['orderId', 'cancelled']),
   'orders.cancelAll': (r) => ({ cancelled: list(r?.cancelled).map(token).filter((v) => v !== undefined) }),
   pause: (r) => pick(r, ['paused']),
