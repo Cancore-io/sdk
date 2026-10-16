@@ -137,8 +137,12 @@ describe('dispatcher', () => {
   it('a lock sent during an unlock wins: the daemon ends locked', async () => {
     const { deps } = fakeDeps([]);
     const d = createDispatcher(deps);
+    const create = jest.spyOn(deps, 'createEngine');
     await Promise.all([d.handle(req('unlock', { passphrase: 'right' }), { owner: true }), d.handle(req('lock', {}), { owner: true })]);
     expect((await deps.state.load()).locked).toBe(true);
+    // The key is gone too, not just the flag: the keystore was locked and the engine stopped.
+    expect(deps.keystore.lock).toHaveBeenCalled();
+    expect(create.mock.results[0]!.value.stop).toHaveBeenCalled();
   });
 
   it('skips a tick while the previous one is still running', async () => {
