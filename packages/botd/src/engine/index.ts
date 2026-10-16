@@ -171,7 +171,12 @@ export function createEngine(options: EngineOptions): Engine {
           if (usd <= 0n) continue;
           prices[pair.sourceToken] = fmt(usd);
           const rate = pair.marketRate ? dec(pair.marketRate) : 0n;
-          if (rate > 0n) derived[pair.targetToken] = fmt((usd * SCALE) / rate);
+          if (rate > 0n) {
+            // Conservative for the caps: round up, and of several pairs pricing one token take the highest.
+            const v = (usd * SCALE + rate - 1n) / rate;
+            const prev = derived[pair.targetToken];
+            if (prev === undefined || v > dec(prev)) derived[pair.targetToken] = fmt(v);
+          }
         } catch {
           // Not an exact decimal: no USD price, so the gate refuses rather than guesses.
         }

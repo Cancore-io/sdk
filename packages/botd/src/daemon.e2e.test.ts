@@ -123,7 +123,7 @@ describe('cancore-botd end to end', () => {
     dir = mkdtempSync(join(tmpdir(), 'botd-e2e-'));
     config = {
       ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
-      baseUrl: 'http://api.test', network: 'devnet', ownerParty: OWNER, maxFee: '1',
+      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
     };
     delete (config as Partial<BotConfig>).clientsGroup;
     await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');

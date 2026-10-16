@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createDispatcher, defaultDeps, start, type Deps } from './daemon';
 import { connect } from './ipc/client';
-import { DEFAULTS } from './config';
+import { DEFAULTS, loadConfig } from './config';
 import { ERROR, JSONRPC_VERSION, type Method, type RpcRequest } from './protocol/index';
 import type { BotState, Limits } from './types';
 
@@ -203,7 +203,7 @@ describe('pause against an in-flight order.make', () => {
     deps.createEngine = ((...a: Parameters<typeof base>) => ({ ...base(...a), cancel, ...engineOverrides })) as never;
     const d = createDispatcher(deps);
     await d.handle(req('unlock', { passphrase: 'right' }), { owner: true });
-    return { d, getState, cancel };
+    return { d, getState, cancel, deps };
   }
 
   it('a make whose reference prices arrive after pause returned places nothing', async () => {
@@ -231,6 +231,34 @@ describe('pause against an in-flight order.make', () => {
     expect(cancel).toHaveBeenCalledWith('late');
     expect(getState().openOrders).toEqual([]);
     expect(getState().intents ?? []).toEqual([]);
+  });
+
+  it('an order booked after pause read its state but before pause wrote is still cancelled', async () => {
+    const h = held();
+    let sentToApi!: () => void;
+    const reached = new Promise<void>((r) => (sentToApi = r));
+    const { d, getState, cancel, deps } = await unlockedWith({ make: async () => (sentToApi(), await h.gate, { orderId: 'mid' }) });
+    const sent = d.handle(order('1'), { owner: false });
+    await reached;
+    // Pause's first load is held with the snapshot taken before the make lands.
+    const realLoad = deps.state.load;
+    const snap = held();
+    let first = true;
+    deps.state.load = async () => {
+      if (!first) return realLoad();
+      first = false;
+      const before = await realLoad();
+      await snap.gate;
+      return before;
+    };
+    const paused = d.handle(req('pause', {}), { owner: true });
+    h.release();
+    await sent;
+    expect(getState().openOrders.map((o) => o.orderId)).toEqual(['mid']);
+    snap.release();
+    await paused;
+    expect(cancel).toHaveBeenCalledWith('mid');
+    expect(getState().openOrders).toEqual([]);
   });
 });
 
@@ -264,7 +292,23 @@ describe('v1 is dev only', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [{ baseUrl: 'https://api.cancore.io' }],
+    [{ baseUrl: 'https://api.cancore.io', network: 'devnet' }],
+  ])('refuses a loaded config %j: the URL decides, not the label', async (file) => {
+    const d = mkdtempSync(join(tmpdir(), 'botd-cfg-'));
+    try {
+      const path = join(d, 'config.json');
+      writeFileSync(path, JSON.stringify(file), { mode: 0o600 });
+      const fetchImpl = jest.fn();
+      await expect(defaultDeps({ ...loadConfig(path), stateDir: '/nonexistent-botd' }, { fetchImpl })).rejects.toThrow(/devnet only/);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
   it('defaults to the dev API', () => {
-    expect(DEFAULTS).toMatchObject({ baseUrl: 'https://api-dev.cancore.app', network: 'devnet' });
+    expect(DEFAULTS).toMatchObject({ baseUrl: 'https://api-dev.cancore.app' });
   });
 });

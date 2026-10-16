@@ -14,7 +14,7 @@ import { createEngine, pinnedVenue, type EngineOptions } from './engine/index';
 import { dec, fmt, SCALE } from './decimal';
 import { listen, RpcFault, type IpcServer } from './ipc/server';
 import { flag, loadConfig, paths, type BotConfig } from './config';
-import { ERROR, JSONRPC_VERSION, RISK_CLASS, type Method, type RiskClass, type Params, type Result, type RpcRequest, type RpcResponse } from './protocol/index';
+import { ERROR, INTENT_ORDER_PREFIX, JSONRPC_VERSION, RISK_CLASS, type Method, type RiskClass, type Params, type Result, type RpcRequest, type RpcResponse } from './protocol/index';
 import type { AuditEntry, AuditLog, BotSigner, BotState, Decision, Engine, EngineHooks, Keystore, Limits, OrderInfo, OrderIntent, RiskGate, StrategyOrder, StrategyRecord } from './types';
 
 const VERSION = '0.1.0-rc.0';
@@ -410,16 +410,21 @@ export function createDispatcher(deps: Deps): Dispatcher {
       case 'pause': {
         const { reason } = p as Params<'pause'>;
         // Paused first, so nothing new passes the gate while the book is being cancelled.
-        await mutate((s) => ({
-          ...s,
-          paused: true,
-          ...(reason !== undefined && { pauseReason: reason }),
-          strategies: s.strategies?.map((x) => (active(x) ? { ...x, status: 'stopped' as const, reason: 'paused' } : x)),
-        }));
+        // The book to cancel is read inside the pause write: an order adopted before it is in it, one after sees paused.
+        let book: BotState['openOrders'] = [];
+        await mutate((s) => {
+          book = s.openOrders;
+          return {
+            ...s,
+            paused: true,
+            ...(reason !== undefined && { pauseReason: reason }),
+            strategies: s.strategies?.map((x) => (active(x) ? { ...x, status: 'stopped' as const, reason: 'paused' } : x)),
+          };
+        });
         // Our own resting orders are cancelled; a taken order is already a trade and settles.
         const cancelled: string[] = [];
         if (engine) {
-          for (const o of state.openOrders.filter((x) => !x.taken)) {
+          for (const o of book.filter((x) => !x.taken)) {
             if (await engine.cancel(o.orderId).then(() => true, () => false)) cancelled.push(o.orderId);
           }
         }
@@ -593,7 +598,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
       engine!.usdPrices().catch(() => ({})),
     ]);
     // An unconfirmed intent may be an order on the book: it counts as one.
-    const intents = (loaded.intents ?? []).map(({ key, at: _at, ...o }) => ({ ...o, orderId: `intent:${key}` }));
+    const intents = (loaded.intents ?? []).map(({ key, at: _at, ...o }) => ({ ...o, orderId: `${INTENT_ORDER_PREFIX}${key}` }));
     const state: BotState = { ...rollDaily(loaded, now), referencePrices, usdPrices, openOrders: [...loaded.openOrders, ...intents] };
     let decision: Decision;
     if (request.method === 'order.take') {
@@ -652,8 +657,11 @@ function fileLimits(path: string): Deps['limits'] {
 /** The real modules. `engine` carries test-only overrides (a fake API's fetch, short poll intervals). */
 export async function defaultDeps(config: BotConfig, engine: Partial<Pick<EngineOptions, 'fetchImpl' | 'pollMs' | 'reconcileMs'>> = {}): Promise<Deps> {
   // v1 is dev only: testnet and mainnet are refused before any engine or API call exists.
-  const network = config.network ?? networkOf(config.baseUrl);
-  if (network !== 'devnet') throw new Error(`cancore-botd v1 runs on devnet only; ${config.baseUrl} is ${network ?? 'an unknown network'}`);
+  // The URL decides, whatever `network` says: a devnet label must not carry a mainnet baseUrl through.
+  const byUrl = networkOf(config.baseUrl);
+  if (byUrl !== 'devnet' || (config.network !== undefined && config.network !== 'devnet')) {
+    throw new Error(`cancore-botd v1 runs on devnet only; ${config.baseUrl} is ${byUrl ?? 'an unknown network'}${config.network ? `, network ${config.network}` : ''}`);
+  }
   const p = paths(config);
   // Keystore, state, limits and audit are trusted only inside a directory nobody else can enter or swap files in.
   const dir = statSync(config.stateDir);

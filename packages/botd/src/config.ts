@@ -40,7 +40,6 @@ export const DEFAULTS: BotConfig = {
   ownerSocket: '/run/cancore-bot/owner.sock',
   // v1 is dev only: the daemon refuses any other network at start.
   baseUrl: 'https://api-dev.cancore.app',
-  network: 'devnet',
 };
 
 const str = z.string().min(1);

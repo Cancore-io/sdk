@@ -100,4 +100,15 @@ describe('engine.usdPrices', () => {
     // CBTC is never a source: 0.15 USD per CC / 0.0000015 CBTC per CC = 100000 USD per CBTC.
     expect(await e.usdPrices()).toEqual({ CC: '0.15', USDCx: '1', CBTC: '100000' });
   });
+
+  it('of several pairs deriving one target-only token takes the highest price, rounded up', async () => {
+    const pairs = [
+      { id: 'a', sourceToken: 'CC', targetToken: 'CBTC', marketRate: '0.0000015', sourcePriceUsd: '0.15' },
+      { id: 'b', sourceToken: 'USDCx', targetToken: 'CBTC', marketRate: '0.000009', sourcePriceUsd: '1' },
+      { id: 'c', sourceToken: 'USDCx', targetToken: 'X', marketRate: '3', sourcePriceUsd: '1' },
+    ];
+    const e = await engineOver({ swap: { pairs: async () => pairs } });
+    // 1 / 0.000009 = 111111.11111111... > 100000; 1 / 3 rounds up at the 10th decimal.
+    expect(await e.usdPrices()).toMatchObject({ CBTC: '111111.1111111112', X: '0.3333333334' });
+  });
 });
