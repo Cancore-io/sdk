@@ -38,4 +38,17 @@ describe('security: USD caps through the dispatcher', () => {
     await r.unlock();
     expect(await outcome(r.dispatcher.handle(make('1'), agent))).toBe('ok');
   });
+  it('a settled fill keeps its fill-time USD value: a later price drop does not free the daily budget', async () => {
+    // 100 CC at $0.15 = $15, the whole day. Then CC drops to $0.075: repriced, the fill would look like $7.5.
+    r = await rig({ ...LIMITS, perOrderUsd: '1000', perDayUsd: '15' });
+    await r.unlock();
+    expect(await outcome(r.dispatcher.handle(make('100'), agent))).toBe('ok');
+    const orderId = r.state().openOrders[0]!.orderId;
+    r.hooks().onSettled(orderId);
+    // Settlement runs in the background: wait on its effect, not on a timer.
+    while (!r.state().fills?.length) await new Promise((res) => setImmediate(res));
+    expect(r.state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '100', usdValue: '15' })]);
+    r.engine.usdPrices = async () => ({ CC: '0.075', USDCx: '1' });
+    expect(await outcome(r.dispatcher.handle(make('100'), agent))).toBe('usd_daily_exceeded');
+  });
 });

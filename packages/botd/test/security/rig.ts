@@ -5,7 +5,7 @@ import { join } from 'path';
 import { createDispatcher, defaultDeps, type Deps } from '../../src/daemon';
 import { DEFAULTS, paths, type BotConfig } from '../../src/config';
 import { JSONRPC_VERSION, type Method, type RpcRequest } from '../../src/protocol/index';
-import type { AuditEntry, BotSigner, BotState, Engine, OrderInfo } from '../../src/types';
+import type { AuditEntry, BotSigner, BotState, Engine, EngineHooks, OrderInfo } from '../../src/types';
 
 /** Shared attacker rig: the real audit log, state file, limits file and risk gate in a private temp dir; a fake engine. */
 
@@ -82,6 +82,8 @@ export interface Rig {
   state(): BotState;
   unlock(): Promise<void>;
   cleanup(): Promise<void>;
+  /** The hooks the daemon gave the engine: a test fires settlements through them. */
+  hooks(): EngineHooks;
 }
 
 export async function rig(limits: unknown = LIMITS, keystore?: Deps['keystore']): Promise<Rig> {
@@ -90,6 +92,7 @@ export async function rig(limits: unknown = LIMITS, keystore?: Deps['keystore'])
   delete (config as Partial<BotConfig>).clientsGroup;
   writeFileSync(paths(config).limits, JSON.stringify(limits), { mode: 0o600 });
   const engine = fakeEngine();
+  let hooks: EngineHooks | undefined;
   const real = await defaultDeps(config);
   const deps: Deps = {
     ...real,
@@ -104,11 +107,12 @@ export async function rig(limits: unknown = LIMITS, keystore?: Deps['keystore'])
       isLocked: () => false,
       publicKey: async () => 'ab',
     },
-    createEngine: () => engine,
+    createEngine: (_signer, h) => ((hooks = h), engine),
   };
   const dispatcher = createDispatcher(deps);
   return {
     dir, config, deps, engine, dispatcher,
+    hooks: () => hooks!,
     audit: () => readFileSync(paths(config).audit, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as AuditEntry),
     state: () => JSON.parse(readFileSync(paths(config).state, 'utf8')) as BotState,
     unlock: async () => void (await dispatcher.handle(req('unlock', { passphrase: 'right' }), { owner: true })),

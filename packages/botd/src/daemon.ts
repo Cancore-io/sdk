@@ -192,12 +192,18 @@ export function createDispatcher(deps: Deps): Dispatcher {
   const hooks: EngineHooks = {
     onSettled: (orderId) =>
       later(async () => {
+        // The fill's USD value is fixed now, at a fresh API price: the daily USD budget never reprices it later.
+        const usdPrices: Record<string, string> = (await engine?.usdPrices().catch(() => ({}))) ?? {};
+        let usdValue: string | undefined;
         await mutate((s) => {
           const tag = s.openOrders.find((o) => o.orderId === orderId)?.strategy;
-          const next = applyFill(s, orderId, deps.now());
+          const base = s.openOrders.find((o) => o.orderId === orderId)?.pair.split('/')[0];
+          const next = applyFill(s, orderId, deps.now(), base !== undefined && Object.hasOwn(usdPrices, base) ? usdPrices[base] : undefined);
+          if (next !== s) usdValue = next.fills?.at(-1)?.usdValue;
           return tag ? { ...next, strategies: strategyFilled(next.strategies, tag) } : next;
         });
-        await append({ ...settleEntry, decision: 'allow', params: { orderId, event: 'settled' } });
+        // No price at fill time: the fill counts as the whole day spent until it ages out; say so in the log.
+        await append({ ...settleEntry, decision: 'allow', params: { orderId, event: 'settled', ...(usdValue ? { usdValue } : { usdValue: 'unpriced' }) } });
       }),
     onEnded: (orderId, reason) =>
       later(async () => {
