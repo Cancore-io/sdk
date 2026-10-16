@@ -123,7 +123,7 @@ describe('cancore-botd end to end', () => {
       baseUrl: 'http://api.test', network: 'devnet', ownerParty: OWNER, maxFee: '1',
     };
     delete (config as Partial<BotConfig>).clientsGroup;
-    await createKeystore(paths(config).keystore).init(PHRASE, 'pass');
+    await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
     writeFileSync(paths(config).limits, JSON.stringify(LIMITS), { mode: 0o600 });
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -132,7 +132,7 @@ describe('cancore-botd end to end', () => {
     const stop = await boot();
     try {
       expect(await refusal(make('1'))).toMatchObject({ code: ERROR.LOCKED });
-      await owner('unlock', { passphrase: 'pass' });
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
 
       const made = await make('10');
       expect(made).toMatchObject({ order: { orderId: 'o1', status: 'open' } });
@@ -169,7 +169,7 @@ describe('cancore-botd end to end', () => {
     const stop = await boot();
     try {
       expect(await owner('status')).toMatchObject({ locked: true, paused: false });
-      await owner('unlock', { passphrase: 'pass' });
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
       // Unlock reconciles in the background.
       for (let i = 0; i < 100 && state().openOrders.length > 0; i++) await new Promise((r) => setTimeout(r, 20));
       expect(state()).toMatchObject({ openOrders: [], positions: { CC: '10' }, dailyVolume: { CC: '10' } });
@@ -181,7 +181,7 @@ describe('cancore-botd end to end', () => {
   it('pause cancels the resting orders and refuses trades', async () => {
     const stop = await boot();
     try {
-      await owner('unlock', { passphrase: 'pass' });
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
       await make('5');
       await agent('pause', { reason: 'test' });
       expect(api.cancelled).toEqual(['o2']);
@@ -200,7 +200,7 @@ describe('cancore-botd end to end', () => {
     const stop = await boot();
     try {
       expect(await owner('status')).toMatchObject({ locked: true, paused: true, pauseReason: 'audit log truncated or broken' });
-      await owner('unlock', { passphrase: 'pass' });
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
       expect(await refusal(make('1'))).toMatchObject({ code: ERROR.PAUSED });
     } finally {
       await stop();

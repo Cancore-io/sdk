@@ -118,8 +118,9 @@ describe('security: through the dispatcher', () => {
     const pending = r.dispatcher.handle(make('10'), agent);
     await new Promise((res) => setTimeout(res, 10));
     await r.dispatcher.handle(req('pause', { reason: 'owner stop' }), owner);
-    await pending;
-    expect(r.state()).toMatchObject({ paused: true });
+    // It landed after the pause: refused as paused, and the order it placed is cancelled, not left resting.
+    expect(await outcome(pending)).toBe(-32003);
+    expect(r.state()).toMatchObject({ paused: true, openOrders: [] });
     expect(await outcome(r.dispatcher.handle(make('10'), agent))).toBe(-32003);
   });
 

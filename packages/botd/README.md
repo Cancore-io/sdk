@@ -132,8 +132,8 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
 
    ```json
    {
-     "baseUrl": "https://api.cancore.io",
-     "network": "mainnet",
+     "baseUrl": "https://api-dev.cancore.app",
+     "network": "devnet",
      "ownerParty": "<your own wallet's party id>",
      "maxFee": "1"
    }
@@ -142,12 +142,13 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
    `ownerParty` is your own party (the Wallet page shows it). Defaults: `daemonUser` `cancore-bot`,
    `clientsGroup` `cancore-bot-clients`, `stateDir` `/var/lib/cancore-bot`, `agentSocket`
    `/run/cancore-bot/bot.sock`, `ownerSocket` `/run/cancore-bot/owner.sock`, `baseUrl`
-   `https://api.cancore.io`, `ordersPerHour` `5` (new orders an hour, agent and strategies together;
+   `https://api-dev.cancore.app`, `network` `devnet`, `ordersPerHour` `5` (new orders an hour, agent and strategies together;
    the platform's per-user limit). Pinned fee fields (`venuePartyId`, `maxFeeRate`,
    `feeRecipientPartyId`) default to the SDK's values for Cancore's hosts; on any other `baseUrl`
-   set `network` or `venuePartyId`, or the daemon does not start.
+   set `network` or `venuePartyId`, or the daemon does not start. **v1 runs on devnet only:** any other
+   network (testnet, mainnet, or a host it cannot place) is refused at start, before the API is called.
 
-4. **Create the keystore.** Three ways, each asking for a passphrase at the end. Pick a long one; it
+4. **Create the keystore.** Three ways, each asking for a passphrase at the end. It must be at least 12 characters, mixing letters with digits or symbols, and not a common or repeated pattern (refused otherwise); it
    is what stands between a copy of `keystore.json` and the key.
 
    ```sh

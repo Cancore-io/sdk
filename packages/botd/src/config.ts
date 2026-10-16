@@ -38,7 +38,9 @@ export const DEFAULTS: BotConfig = {
   stateDir: '/var/lib/cancore-bot',
   agentSocket: '/run/cancore-bot/bot.sock',
   ownerSocket: '/run/cancore-bot/owner.sock',
-  baseUrl: 'https://api.cancore.io',
+  // v1 is dev only: the daemon refuses any other network at start.
+  baseUrl: 'https://api-dev.cancore.app',
+  network: 'devnet',
 };
 
 const str = z.string().min(1);

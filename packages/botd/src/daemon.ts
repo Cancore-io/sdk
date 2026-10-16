@@ -9,6 +9,7 @@ import { emptyLimits, loadLimits, parseLimits } from './limits';
 import { check, checkTake, dcaConfig, DEFAULT_ORDERS_PER_HOUR, gridConfig, ordersLastHour } from './riskgate';
 import { dcaNext } from './engine/dca';
 import { gridNext, gridRefill, gridSlots } from './engine/grid';
+import { networkOf } from '@cancore/client/selfcustody';
 import { createEngine, pinnedVenue, type EngineOptions } from './engine/index';
 import { dec, fmt, SCALE } from './decimal';
 import { listen, RpcFault, type IpcServer } from './ipc/server';
@@ -177,6 +178,17 @@ export function createDispatcher(deps: Deps): Dispatcher {
     background = background.then(work).catch(() => undefined);
   };
   const settleEntry = { method: 'settle' as const, riskClass: 'trade' as const };
+  /**
+   * Books a confirmed order. One that lands after a pause (its make or its intent was in flight) is cancelled
+   * at once; true when it was paused. A cancel that fails leaves the order booked, for the owner to see.
+   */
+  async function adoptOrCancel(e: Engine, intent: OrderIntent, orderId: string): Promise<boolean> {
+    let paused = false;
+    await mutate((s) => ((paused = s.paused), adoptIntent(s, intent, orderId)));
+    if (!paused) return false;
+    if (await e.cancel(orderId).then(() => true, () => false)) await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) }));
+    return true;
+  }
   const hooks: EngineHooks = {
     onSettled: (orderId) =>
       later(async () => {
@@ -230,7 +242,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
         continue;
       }
       lookups.delete(intent.key);
-      await mutate((s) => (found.id ? adoptIntent(s, intent, found.id) : dropIntent(s, intent)));
+      if (found.id) await adoptOrCancel(e, intent, found.id);
+      else await mutate((s) => dropIntent(s, intent));
       await append({ ...settleEntry, decision: 'allow', params: { event: found.id ? 'intent_adopted' : 'intent_dropped', key: intent.key, ...(found.id && { orderId: found.id }) } });
       // It may have filled while it was an intent: its settle event found nothing on the book then.
       if (found.id) await settleIfDone(e, found.id);
@@ -425,12 +438,15 @@ export function createDispatcher(deps: Deps): Dispatcher {
         const intent: OrderIntent = { key: randomUUID(), pair: `${params.base}/${params.quote}`, side: params.side, amount: params.amount, price: params.price, at, ...(tag && { strategy: tag }) };
         // The intent, the hourly budget and a strategy's seq land before the API call: a crash after it leaves the
         // intent to reconcile, never an order the daemon does not know about.
-        await mutate((s) => ({
+        // Re-checked on the latest state: a pause that returned while this make awaited prices wins.
+        let pausedFirst = false;
+        await mutate((s) => (s.paused ? ((pausedFirst = true), s) : {
           ...s,
           intents: [...(s.intents ?? []), intent],
           orderTimes: [...(s.orderTimes ?? []).filter((t) => t > at - 3_600_000), at],
           ...(tag && { strategies: s.strategies?.map((x) => (x.strategyId === tag.id ? { ...x, placed: [...x.placed, at] } : x)) }),
         }));
+        if (pausedFirst) throw new RpcFault(ERROR.PAUSED, 'paused');
         let orderId: string;
         try {
           ({ orderId } = await e.make({ ...params, clientKey: intent.key }));
@@ -443,7 +459,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
           // No answer (network, timeout, 5xx): the order may exist. The intent stays; a tick resolves it.
           throw new RpcFault(ERROR.UNCONFIRMED, 'unconfirmed', { intent: intent.key });
         }
-        await mutate((s) => adoptIntent(s, intent, orderId));
+        if (await adoptOrCancel(e, intent, orderId)) throw new RpcFault(ERROR.PAUSED, 'paused: the order was cancelled');
         return { order: { orderId, base: params.base, quote: params.quote, side: params.side, amount: params.amount, price: params.price, filled: '0', status: 'open', createdAt: new Date(deps.now()).toISOString() } };
       }
       case 'order.take': {
@@ -471,40 +487,39 @@ export function createDispatcher(deps: Deps): Dispatcher {
         await mutate((s) => ({ ...s, partyId }));
         return { partyId };
       }
-      case 'unlock':
-        // Through the key queue: a concurrent unlock sees the engine, a lock waits and then wins.
-        return keyExclusive(async () => {
-          // Already unlocked: a second engine would run beside the first with a destroyed signer.
-          if (engine) return { locked: false };
-          signer = await deps.keystore.unlock((p as Params<'unlock'>).passphrase).catch(() => {
-            throw new RpcFault(ERROR.LOCKED, 'unlock failed');
-          });
-          engine = deps.createEngine(signer, hooks);
-          await mutate((s) => ({ ...s, locked: false }));
-          engine.start();
-          // In the background: a slow API must not time the unlock out after the key is already loaded.
-          const unlocked = engine;
-          later(() => reconcile(unlocked));
-          // First unlock of an account registered elsewhere (the web app): onboard it and learn its party.
-          // A new account needs `register` (owner) first; until then this fails quietly and is logged.
-          if (!(await deps.state.load()).partyId) {
-            const e = engine;
-            later(async () => {
-              const partyId = await e.onboard().catch(() => undefined);
-              if (partyId) await mutate((s) => ({ ...s, partyId }));
-              await append({ ...settleEntry, decision: partyId ? 'allow' : 'error', params: { event: 'onboard' }, ...(!partyId && { reason: 'not registered: run cancore-bot register' }) });
-            });
-          }
-          stopTicks?.();
-          let ticking = false;
-          // One tick at a time: a slow API must not pile ticks up in the queue ahead of settlements.
-          stopTicks = (deps.every ?? everyFiveSeconds)(() => {
-            if (ticking) return;
-            ticking = true;
-            later(() => tick().finally(() => (ticking = false)));
-          });
-          return { locked: false };
+      case 'unlock': {
+        // Runs inside the key queue (see run): a concurrent unlock sees the engine, a lock waits and then wins.
+        // Already unlocked: a second engine would run beside the first with a destroyed signer.
+        if (engine) return { locked: false };
+        signer = await deps.keystore.unlock((p as Params<'unlock'>).passphrase).catch(() => {
+          throw new RpcFault(ERROR.LOCKED, 'unlock failed');
         });
+        engine = deps.createEngine(signer, hooks);
+        await mutate((s) => ({ ...s, locked: false }));
+        engine.start();
+        // In the background: a slow API must not time the unlock out after the key is already loaded.
+        const unlocked = engine;
+        later(() => reconcile(unlocked));
+        // First unlock of an account registered elsewhere (the web app): onboard it and learn its party.
+        // A new account needs `register` (owner) first; until then this fails quietly and is logged.
+        if (!(await deps.state.load()).partyId) {
+          const e = engine;
+          later(async () => {
+            const partyId = await e.onboard().catch(() => undefined);
+            if (partyId) await mutate((s) => ({ ...s, partyId }));
+            await append({ ...settleEntry, decision: partyId ? 'allow' : 'error', params: { event: 'onboard' }, ...(!partyId && { reason: 'not registered: run cancore-bot register' }) });
+          });
+        }
+        stopTicks?.();
+        let ticking = false;
+        // One tick at a time: a slow API must not pile ticks up in the queue ahead of settlements.
+        stopTicks = (deps.every ?? everyFiveSeconds)(() => {
+          if (ticking) return;
+          ticking = true;
+          later(() => tick().finally(() => (ticking = false)));
+        });
+        return { locked: false };
+      }
       case 'lock':
         await lock();
         return { locked: true };
@@ -543,6 +558,23 @@ export function createDispatcher(deps: Deps): Dispatcher {
       await deny(ERROR.FORBIDDEN, 'withdraw goes only to the owner party pinned in the config');
     }
     if (riskClass === 'trade') return exclusive(() => gated(request, entry, deny, tag));
+    // unlock takes its key-queue slot before its audit write, so a lock sent after it always runs after it.
+    if (request.method === 'unlock') {
+      return keyExclusive(async () => {
+        await append({ ...entry, decision: 'allow' });
+        return executed(request, entry);
+      });
+    }
+    if (request.method === 'lock') {
+      // The key goes before the audit write: a full disk must not leave it in memory with the engine running.
+      await lock();
+      try {
+        await append({ ...entry, decision: 'allow' });
+      } catch (err) {
+        throw new RpcFault(ERROR.INTERNAL, `locked, but the audit write failed: ${(err as NodeJS.ErrnoException).code ?? (err as Error).message}`);
+      }
+      return { jsonrpc: JSONRPC_VERSION, id: request.id, result: { locked: true } };
+    }
     await append({ ...entry, decision: 'allow' });
     return executed(request, entry);
   }
@@ -615,6 +647,9 @@ function fileLimits(path: string): Deps['limits'] {
 
 /** The real modules. `engine` carries test-only overrides (a fake API's fetch, short poll intervals). */
 export async function defaultDeps(config: BotConfig, engine: Partial<Pick<EngineOptions, 'fetchImpl' | 'pollMs' | 'reconcileMs'>> = {}): Promise<Deps> {
+  // v1 is dev only: testnet and mainnet are refused before any engine or API call exists.
+  const network = config.network ?? networkOf(config.baseUrl);
+  if (network !== 'devnet') throw new Error(`cancore-botd v1 runs on devnet only; ${config.baseUrl} is ${network ?? 'an unknown network'}`);
   const p = paths(config);
   // Keystore, state, limits and audit are trusted only inside a directory nobody else can enter or swap files in.
   const dir = statSync(config.stateDir);

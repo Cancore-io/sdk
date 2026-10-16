@@ -105,7 +105,8 @@ describe('security: pinned trust boundary', () => {
     const dir = mkdtempSync(join(tmpdir(), 'botd-venue-'));
     chmodSync(dir, 0o700);
     try {
-      await expect(defaultDeps({ ...DEFAULTS, stateDir: dir, baseUrl: 'https://api.example.com' })).rejects.toThrow(/no venue is pinned/);
+      // The daemon refuses any host it cannot place on devnet (v1 is dev only), before the venue is looked up.
+      await expect(defaultDeps({ ...DEFAULTS, stateDir: dir, baseUrl: 'https://api.example.com', network: undefined })).rejects.toThrow(/devnet only/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

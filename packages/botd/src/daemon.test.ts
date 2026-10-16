@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createDispatcher, start, type Deps } from './daemon';
+import { createDispatcher, defaultDeps, start, type Deps } from './daemon';
 import { connect } from './ipc/client';
 import { DEFAULTS } from './config';
 import { ERROR, JSONRPC_VERSION, type Method, type RpcRequest } from './protocol/index';
@@ -186,5 +186,84 @@ describe('start', () => {
       await stop();
     }
     expect(deps.keystore.lock).toHaveBeenCalled();
+  });
+});
+
+describe('pause against an in-flight order.make', () => {
+  const held = () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    return { gate, release };
+  };
+  async function unlockedWith(engineOverrides: Record<string, unknown>) {
+    const { deps, getState } = fakeDeps([]);
+    const base = deps.createEngine;
+    const cancel = jest.fn(async () => undefined);
+    deps.createEngine = ((...a: Parameters<typeof base>) => ({ ...base(...a), cancel, ...engineOverrides })) as never;
+    const d = createDispatcher(deps);
+    await d.handle(req('unlock', { passphrase: 'right' }), { owner: true });
+    return { d, getState, cancel };
+  }
+
+  it('a make whose reference prices arrive after pause returned places nothing', async () => {
+    const h = held();
+    const make = jest.fn(async () => ({ orderId: 'o1' }));
+    const { d, getState } = await unlockedWith({ referencePrices: async () => (await h.gate, {}), make });
+    const sent = d.handle(order('1'), { owner: false });
+    await expect(d.handle(req('pause', {}), { owner: true })).resolves.toMatchObject({ result: { paused: true } });
+    h.release();
+    await expect(sent).rejects.toMatchObject({ code: ERROR.PAUSED });
+    expect(make).not.toHaveBeenCalled();
+    expect(getState().openOrders).toEqual([]);
+  });
+
+  it('a make whose orderId arrives after pause returned is cancelled at once', async () => {
+    const h = held();
+    let sentToApi!: () => void;
+    const reached = new Promise<void>((r) => (sentToApi = r));
+    const { d, getState, cancel } = await unlockedWith({ make: async () => (sentToApi(), await h.gate, { orderId: 'late' }) });
+    const sent = d.handle(order('1'), { owner: false });
+    await reached;
+    await d.handle(req('pause', {}), { owner: true });
+    h.release();
+    await expect(sent).rejects.toMatchObject({ code: ERROR.PAUSED });
+    expect(cancel).toHaveBeenCalledWith('late');
+    expect(getState().openOrders).toEqual([]);
+    expect(getState().intents ?? []).toEqual([]);
+  });
+});
+
+describe('owner lock when the audit write fails', () => {
+  it.each(['append', 'recordAudit'] as const)('drops the key and stops the engine first (%s fails)', async (which) => {
+    const { deps } = fakeDeps([]);
+    const signerDestroy = jest.fn();
+    (deps.keystore.unlock as jest.Mock).mockImplementation(async () => ({ destroy: signerDestroy }));
+    const create = jest.spyOn(deps, 'createEngine');
+    const d = createDispatcher(deps);
+    await d.handle(req('unlock', { passphrase: 'right' }), { owner: true });
+    if (which === 'append') (deps.audit.append as jest.Mock).mockRejectedValue(Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }));
+    else deps.state.recordAudit = async () => Promise.reject(Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }));
+    await expect(d.handle(req('lock', {}), { owner: true })).rejects.toThrow(/locked.*audit/);
+    expect(signerDestroy).toHaveBeenCalled();
+    expect(deps.keystore.lock).toHaveBeenCalled();
+    expect(create.mock.results[0]!.value.stop).toHaveBeenCalled();
+  });
+});
+
+describe('v1 is dev only', () => {
+  it.each([
+    [{ network: 'testnet' as const }],
+    [{ network: 'mainnet' as const }],
+    [{ baseUrl: 'https://api.cancore.io', network: undefined }],
+    [{ baseUrl: 'http://unknown.example', network: undefined }],
+  ])('refuses %j before any engine or API call', async (over) => {
+    const fetchImpl = jest.fn();
+    // stateDir does not exist: the refusal must come first, before anything is opened.
+    await expect(defaultDeps({ ...DEFAULTS, stateDir: '/nonexistent-botd', ...over }, { fetchImpl })).rejects.toThrow(/devnet only/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('defaults to the dev API', () => {
+    expect(DEFAULTS).toMatchObject({ baseUrl: 'https://api-dev.cancore.app', network: 'devnet' });
   });
 });
