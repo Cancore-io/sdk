@@ -27,7 +27,9 @@ export function createStateStore(path: string): StateStore {
   };
   const read = async (): Promise<BotState> => {
     try {
-      return { ...initialState(), ...(JSON.parse(await readFile(path, 'utf8')) as Partial<BotState>) };
+      // USD prices are fetched fresh for every decision: a stale copy from disk is never trusted.
+      const { usdPrices: _stale, ...saved } = JSON.parse(await readFile(path, 'utf8')) as Partial<BotState>;
+      return { ...initialState(), ...saved };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return initialState();
       throw err;
@@ -40,7 +42,8 @@ export function createStateStore(path: string): StateStore {
     // fsync file then directory: a power loss must leave either the old or the new state, never a torn one.
     const fh = await open(tmp, 'w', 0o600);
     try {
-      await fh.writeFile(JSON.stringify(next));
+      const { usdPrices: _drop, ...persisted } = next;
+      await fh.writeFile(JSON.stringify(persisted));
       await fh.sync();
     } finally {
       await fh.close();

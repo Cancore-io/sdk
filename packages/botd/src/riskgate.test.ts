@@ -175,6 +175,12 @@ describe('USD caps', () => {
     expect(check(make({ amount: '30' }), s, usd({ perDayUsd: '50' }), NOW)).toEqual({ allow: true });
   });
 
+  it('counts a fill stamped in the future (clock skew) as fresh', () => {
+    // future fill $15 + 40 CC $6 = $21 > $20
+    const s = state({ fills: [{ at: NOW + 60_000, instrument: 'CC', amount: '100' }] });
+    expect(check(make({ amount: '40' }), s, usd({ perDayUsd: '20' }), NOW)).toEqual({ allow: false, reason: 'usd_daily_exceeded' });
+  });
+
   it('counts an intent the daemon already merged into openOrders once', () => {
     const s = state({
       openOrders: [{ ...order('100'), orderId: 'intent:k' }],

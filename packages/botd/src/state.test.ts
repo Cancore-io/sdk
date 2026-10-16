@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { openAuditLog } from './audit';
@@ -39,5 +39,14 @@ describe('createStateStore', () => {
     await store.recordAudit({ seq: 7, hash: 'h7' });
     await store.save({ ...initialState(), lastAuditSeq: 3, lastAuditHash: 'h3' });
     expect(await store.load()).toMatchObject({ lastAuditSeq: 7, lastAuditHash: 'h7' });
+  });
+
+  it('never persists or reads back USD prices: they are fetched fresh per decision', async () => {
+    const path = fresh();
+    const store = createStateStore(path);
+    await store.save({ ...initialState(), usdPrices: { CC: '0.15' } });
+    expect(readFileSync(path, 'utf8')).not.toContain('usdPrices');
+    writeFileSync(path, JSON.stringify({ ...initialState(), usdPrices: { CC: '999' } }));
+    expect((await store.load()).usdPrices).toEqual({});
   });
 });

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { RISK_CLASS, type DenyReason, type Params } from './protocol/index';
+import { INTENT_ORDER_PREFIX, RISK_CLASS, type DenyReason, type Params } from './protocol/index';
 import { dec, mul, SCALE } from './decimal';
 import type { BotState, Command, Decision, Limits, RiskGate } from './types';
 
@@ -102,10 +102,11 @@ function checkUsd(legs: Leg[], state: BotState, limits: Limits, now: number): De
     if (v > perOrder) return deny('usd_order_exceeded');
     day += v;
   }
-  for (const f of state.fills ?? []) if (f.at > now - DAY_MS && f.at <= now) day += usd(f.instrument, dec(f.amount));
-  // The daemon may already have merged intents into openOrders as `intent:<key>`: count each once.
+  // A fill stamped in the future (clock skew) counts as fresh: the budget errs toward refusing.
+  for (const f of state.fills ?? []) if (f.at > now - DAY_MS) day += usd(f.instrument, dec(f.amount));
+  // The daemon may already have merged intents into openOrders as `${INTENT_ORDER_PREFIX}<key>`: count each once.
   const ids = new Set(state.openOrders.map((o) => o.orderId));
-  const reserved = [...state.openOrders, ...(state.intents ?? []).filter((i) => !ids.has(`intent:${i.key}`))];
+  const reserved = [...state.openOrders, ...(state.intents ?? []).filter((i) => !ids.has(`${INTENT_ORDER_PREFIX}${i.key}`))];
   for (const o of reserved) day += usd(o.pair.split('/')[0]!, dec(o.amount));
   if (missing) return deny('usd_price_missing');
   return day > dec(limits.perDayUsd) ? deny('usd_daily_exceeded') : ALLOW;
