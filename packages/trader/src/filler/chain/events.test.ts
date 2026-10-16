@@ -32,7 +32,7 @@ const filled = (orderHash: Hex) => ({
   orderHash, fillerId: FILLER_ID, deliveryKey: FILLER, repayTo: REPAY_TO, received: 99n, recipient: RECIPIENT, filledAt: 1_790_000_100n, attempt: 0n,
 });
 
-function setup(confirmations = 2, retentionBlocks?: bigint) {
+function setup(confirmations = 3, retentionBlocks?: bigint) {
   const chain = new FakeChain(1n);
   chain.head = 100n;
   const updates: RouterEventUpdate[] = [];
@@ -51,7 +51,7 @@ function setup(confirmations = 2, retentionBlocks?: bigint) {
 
 describe('router events are reported once confirmed, in chain order', () => {
   test('Opened → Filled → Settled, each once, only after `confirmations` blocks', async () => {
-    const { chain, watcher, seen, updates } = setup(2);
+    const { chain, watcher, seen, updates } = setup(3);
     chain.emit(ROUTER, 'IntentOpened', { orderHash: A, order: ORDER, refundAfter: 1_790_003_600n, blockNumber: 95n }, 95n);
     chain.emit(ROUTER, 'Filled', filled(A), 97n);
     chain.emit(ROUTER, 'Settled', { orderHash: A, fillerId: FILLER_ID, repayTo: REPAY_TO, payout: 100n, fee: 5n }, 99n);
@@ -84,7 +84,7 @@ describe('router events are reported once confirmed, in chain order', () => {
 
 describe('reorgs never produce a false or a duplicate event', () => {
   test('a reorg shallower than `confirmations`: the replaced log is never reported', async () => {
-    const { chain, watcher, seen } = setup(3);
+    const { chain, watcher, seen } = setup(4);
     chain.emit(ROUTER, 'Filled', filled(A), 99n);
     await watcher.poll();
     expect(seen()).toEqual([]);
@@ -94,7 +94,7 @@ describe('reorgs never produce a false or a duplicate event', () => {
   });
 
   test('a deeper reorg: the reported Filled is removed, its re-inclusion reported once', async () => {
-    const { chain, watcher, seen } = setup(2);
+    const { chain, watcher, seen } = setup(3);
     chain.emit(ROUTER, 'Filled', filled(A), 97n);
     await watcher.poll();
     expect(seen()).toEqual(['added Filled 0xaa @97']);
@@ -111,7 +111,7 @@ describe('reorgs never produce a false or a duplicate event', () => {
   });
 
   test('a reorg that drops the log for good: removed, nothing re-added', async () => {
-    const { chain, watcher, seen } = setup(1);
+    const { chain, watcher, seen } = setup(2);
     chain.emit(ROUTER, 'Filled', filled(A), 95n);
     chain.emit(ROUTER, 'Filled', filled(B), 92n);
     await watcher.poll();
@@ -121,7 +121,7 @@ describe('reorgs never produce a false or a duplicate event', () => {
   });
 
   test('a reorg under the last scanned block alone (no reported log in it) rescans without duplicates', async () => {
-    const { chain, watcher, seen } = setup(1);
+    const { chain, watcher, seen } = setup(2);
     chain.emit(ROUTER, 'IntentOpened', { orderHash: A, order: ORDER, refundAfter: 1n, blockNumber: 91n }, 91n);
     await watcher.poll();
     chain.reorg(98n);

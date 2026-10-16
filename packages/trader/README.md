@@ -150,7 +150,9 @@ message.
   from the head of every endpoint, and one whose head trails the best by more than `maxHeadLagBlocks` is
   passed over while a fresher one answers. All endpoints failing is `unavailable`.
 - **Depth, one block.** A read names its block: `'latest'`, `'safe'`, `'finalized'`, `{ confirmations: n }`
-  (head − n; escrow checks read at `openConfirmations`), `{ blockNumber }` or `{ blockHash }`. The tag is
+  (the deepest block with n confirmations, `head − (n − 1)`: a block counts its own confirmation, as
+  Cancore's router indexer and the fill depth count; escrow checks read at `openConfirmations`),
+  `{ blockNumber }` or `{ blockHash }`. The tag is
   resolved to one block header, and calls carry its hash (EIP-1898 `{ blockHash, requireCanonical: true }`):
   an endpoint on another fork fails the call rather than answering from its own block at that height, and
   `pin(at)` hands the same hash to every call of one check. The endpoints must support EIP-1898 for
@@ -165,7 +167,7 @@ message.
   `hashFillProof(proof, { chainId, router })`: `hashTypedData` of `@cancore/contracts` in the router's
   domains, equal to the router's views and to the golden vectors.
 - **Events** — `RouterEventWatcher` polls `eth_getLogs` for `IntentOpened`, `Filled`, `Settled`, `Refunded`
-  and reports a log only once it is `confirmations` deep. A deeper reorg is found by re-reading block hashes:
+  and reports a log only once its block has `confirmations` confirmations (`head − block + 1`). A deeper reorg is found by re-reading block hashes:
   the replaced log is reported `removed`, the scan rewinds, and what the new chain holds is reported `added`.
   An event's identity is `(name, orderHash)`; between two `added` of one identity there is always a
   `removed`. The cursor is in memory: persist `cursor` to resume after a restart.

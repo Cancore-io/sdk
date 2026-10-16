@@ -117,11 +117,11 @@ describe('all checks pass: { ok: true }, every check reported to the EventSink',
     expect(targets(h.dst)).toEqual(new Set([DST_ROUTER, TOKEN]));
   });
 
-  test('the escrow is read openConfirmations deep', async () => {
+  test('the escrow is read at the deepest block with openConfirmations confirmations', async () => {
     const h = await setup();
     await h.verifier.verify(h.input);
     const escrowReads = h.src.calls.filter((c) => c.method === 'eth_call' && (c.params![0] as { to: string }).to === SRC_ROUTER);
-    expect(escrowReads.map((c) => h.src.numberOfHash((c.params![1] as { blockHash: string }).blockHash))).toEqual([97n]);
+    expect(escrowReads.map((c) => h.src.numberOfHash((c.params![1] as { blockHash: string }).blockHash))).toEqual([98n]);
   });
 });
 
@@ -144,7 +144,7 @@ describe('each check refuses with its own code, and nothing after it runs', () =
     ['V-E1: the offered order is not the one hashed', {}, (h) => void (h.offer.order = { ...h.offer.order, minReceived: '98' }), 'V-E1', 'ESCROW_MISMATCH'],
     ['V-E2: no escrow on the source router', {}, (h) => h.src.router(SRC_ROUTER).intents.clear(), 'V-E2', 'ESCROW_NOT_OPEN'],
     ['V-E2: the escrow is already settled', {}, (h) => void (h.src.router(SRC_ROUTER).intents.get(h.orderHash)!.status = 2), 'V-E2', 'ESCROW_NOT_OPEN'],
-    ['V-E2: opened openConfirmations − 1 deep', {}, (h) => void (h.src.router(SRC_ROUTER).intents.get(h.orderHash)!.atBlock = 98n), 'V-E2', 'ESCROW_NOT_OPEN'],
+    ['V-E2: opened with openConfirmations − 1 confirmations', {}, (h) => void (h.src.router(SRC_ROUTER).intents.get(h.orderHash)!.atBlock = 99n), 'V-E2', 'ESCROW_NOT_OPEN'],
     ['V-E2: the source RPC is down (N-12)', {}, (h) => void (h.src.down = true), 'V-E2', 'ESCROW_NOT_OPEN'],
     ['V-E3: refundAfter − fillDeadline one second short', { refundAfter: undefined }, (h) => void (h.src.router(SRC_ROUTER).intents.get(h.orderHash)!.refundAfter = BigInt(h.offer.order.fillDeadline) + 2_699n), 'V-E3', 'PROOF_WINDOW_TOO_SHORT'],
     ['V-T1: signed by a key that is not a ticket signer', { signer: stranger }, undefined, 'V-T1', 'TICKET_SIGNER_UNKNOWN'],
@@ -209,7 +209,8 @@ describe('boundaries pass', () => {
     const h = await setup();
     const intent = h.src.router(SRC_ROUTER).intents.get(h.orderHash)!;
     intent.refundAfter = BigInt(h.offer.order.fillDeadline) + 2_700n;
-    intent.atBlock = 97n;
+    // Head 100: block 98 has exactly 3 confirmations (98, 99, 100).
+    intent.atBlock = 98n;
     await expect(h.verifier.verify(h.input)).resolves.toMatchObject({ ok: true });
   });
 
