@@ -183,6 +183,8 @@ export interface Engine {
   onboard(): Promise<string>;
   /** Queues the taker side on the settlement loop; resolves once queued, not once settled. */
   take(params: Params<'order.take'>): Promise<{ orderId: string; filled: string }>;
+  /** Drops a queued take whose accept has not been sent; false once it has (the take is then a trade). */
+  untake(orderId: string): boolean;
   cancel(orderId: string): Promise<void>;
   /** Any order by id: one to take, or one of ours to reconcile. */
   order(orderId: string): Promise<OrderInfo>;
