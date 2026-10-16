@@ -659,6 +659,9 @@ export async function defaultDeps(config: BotConfig, engine: Partial<Pick<Engine
   // v1 is dev only: testnet and mainnet are refused before any engine or API call exists.
   // The URL decides, whatever `network` says: a devnet label must not carry a mainnet baseUrl through.
   const byUrl = networkOf(config.baseUrl);
+  // TLS too: the API answers carry the prices the USD caps and the price corridor trust.
+  const tls = (() => { try { return new URL(config.baseUrl).protocol === 'https:'; } catch { return false; } })();
+  if (!tls) throw new Error(`cancore-botd: ${config.baseUrl} must be an https URL`);
   if (byUrl !== 'devnet' || (config.network !== undefined && config.network !== 'devnet')) {
     throw new Error(`cancore-botd v1 runs on devnet only; ${config.baseUrl} is ${byUrl ?? 'an unknown network'}${config.network ? `, network ${config.network}` : ''}`);
   }

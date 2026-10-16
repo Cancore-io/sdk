@@ -280,11 +280,17 @@ describe('owner lock when the audit write fails', () => {
 });
 
 describe('v1 is dev only', () => {
+  it('refuses plain http to the dev host before any engine or API call', async () => {
+    const fetchImpl = jest.fn();
+    await expect(defaultDeps({ ...DEFAULTS, baseUrl: 'http://api-dev.cancore.app', stateDir: '/nonexistent-botd' }, { fetchImpl })).rejects.toThrow(/must be an https URL/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it.each([
     [{ network: 'testnet' as const }],
     [{ network: 'mainnet' as const }],
     [{ baseUrl: 'https://api.cancore.io', network: undefined }],
-    [{ baseUrl: 'http://unknown.example', network: undefined }],
+    [{ baseUrl: 'https://unknown.example', network: undefined }],
   ])('refuses %j before any engine or API call', async (over) => {
     const fetchImpl = jest.fn();
     // stateDir does not exist: the refusal must come first, before anything is opened.
