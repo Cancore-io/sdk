@@ -16,7 +16,9 @@ export interface BotMcpOptions {
 export async function startServer(options: BotMcpOptions): Promise<void> {
   let client: Promise<IpcClient> | undefined;
   // Lazy and retried: the daemon may start after the agent, and a dead socket must not kill the MCP session.
-  const getClient = (): Promise<BotClient> => {
+  const getClient = async (): Promise<BotClient> => {
+    // A daemon restart closes the cached socket: drop it and reconnect instead of writing into a dead one.
+    if (client && (await client.catch(() => undefined))?.closed) client = undefined;
     client ??= connect(options.socketPath).catch((err) => {
       client = undefined;
       throw new SocketError(socketErrorMessage(options.socketPath, err));
