@@ -6,6 +6,7 @@ import type { BotState, Limits } from '../types';
 import { gridPrice } from './grid';
 
 const LIMITS: Limits = {
+  usdCapsOptOut: false,
   allowedPairs: ['CC/USDCx'],
   maxOrderAmount: { CC: '100' },
   maxOrderNotional: { USDCx: '100' },
@@ -14,6 +15,9 @@ const LIMITS: Limits = {
   maxOpenOrders: 10,
   maxPriceDeviationBps: 2000,
   maxCommandsPerMinute: 600,
+  // Wide USD caps: these tests are about the other limits.
+  perOrderUsd: '1000000',
+  perDayUsd: '1000000',
 };
 
 /** Fake engine, fake clock, a ticker the test drives; state survives `restart()` like the file would. */
@@ -58,6 +62,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         order: async (id) => ({ orderId: id, status: statuses[id] ?? 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' }),
         balances: jest.fn(),
         referencePrices: async () => ({ 'CC/USDCx': '0.15' }),
+        usdPrices: async () => ({ CC: '0.15', USDCx: '1' }),
         withdraw: jest.fn(),
         findIntent: async () => {
           crash.lookups++;

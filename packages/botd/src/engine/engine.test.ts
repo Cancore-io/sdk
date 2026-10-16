@@ -87,3 +87,17 @@ describe('engine.make', () => {
     await expect(e.make(params)).rejects.not.toHaveProperty('status');
   });
 });
+
+describe('engine.usdPrices', () => {
+  it('takes sourcePriceUsd per source token, derives a target-only token through the rate, skips null', async () => {
+    const pairs = [
+      { id: 'a', sourceToken: 'CC', targetToken: 'USDCx', marketRate: '0.15', sourcePriceUsd: '0.15' },
+      { id: 'b', sourceToken: 'CC', targetToken: 'CBTC', marketRate: '0.0000015', sourcePriceUsd: '0.15' },
+      { id: 'c', sourceToken: 'USDCx', targetToken: 'CC', marketRate: '6.6666666666', sourcePriceUsd: '1' },
+      { id: 'd', sourceToken: 'ETHx', targetToken: 'CC', marketRate: '20000', sourcePriceUsd: null },
+    ];
+    const e = await engineOver({ swap: { pairs: async () => pairs } });
+    // CBTC is never a source: 0.15 USD per CC / 0.0000015 CBTC per CC = 100000 USD per CBTC.
+    expect(await e.usdPrices()).toEqual({ CC: '0.15', USDCx: '1', CBTC: '100000' });
+  });
+});

@@ -43,7 +43,7 @@ function fakeApi() {
         return json({ token: `h.${Buffer.from(JSON.stringify({ sub: 'bot', exp: 4e9 })).toString('base64url')}.s`, user: { id: 'bot' } });
       }
       if (route === 'GET /auth/me') return json({ id: 'bot', partyId: party, publicKey, roles: ['user'], status: 'ACTIVE' });
-      if (route === 'GET /auto-trader/pairs') return json([{ id: 'p1', sourceToken: 'CC', targetToken: 'USDCx', marketRate: '0.15' }]);
+      if (route === 'GET /auto-trader/pairs') return json([{ id: 'p1', sourceToken: 'CC', targetToken: 'USDCx', marketRate: '0.15', sourcePriceUsd: '0.15' }]);
       if (route === 'POST /orders') {
         const order = { ...body, id: `o${orders.size + 1}`, status: 'open' };
         orders.set(order.id, order);
@@ -94,6 +94,9 @@ const LIMITS = {
   maxOpenOrders: 5,
   maxPriceDeviationBps: 500,
   maxCommandsPerMinute: 60,
+  // Wide USD caps: these tests are about the other limits.
+  perOrderUsd: '1000000',
+  perDayUsd: '1000000',
 };
 
 describe('cancore-botd end to end', () => {

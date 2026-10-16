@@ -159,6 +159,25 @@ export function createEngine(options: EngineOptions): Engine {
       }
       return prices;
     },
+    async usdPrices() {
+      const prices: Record<string, string> = {};
+      // sourcePriceUsd is the API's USD price of the pair's source token; a token that is only ever a target is
+      // valued through the mid-market rate (USD per source / target per source). Own prices win over derived ones.
+      const derived: Record<string, string> = {};
+      for (const pair of await acct.swap.pairs()) {
+        if (!pair.sourcePriceUsd) continue;
+        try {
+          const usd = dec(pair.sourcePriceUsd);
+          if (usd <= 0n) continue;
+          prices[pair.sourceToken] = fmt(usd);
+          const rate = pair.marketRate ? dec(pair.marketRate) : 0n;
+          if (rate > 0n) derived[pair.targetToken] = fmt((usd * SCALE) / rate);
+        } catch {
+          // Not an exact decimal: no USD price, so the gate refuses rather than guesses.
+        }
+      }
+      return { ...derived, ...prices };
+    },
     async withdraw(to, instrument, amount) {
       await acct.send({ receiverPartyId: to, amount, ...(instrument !== 'CC' && { tokenId: instrument }) });
     },

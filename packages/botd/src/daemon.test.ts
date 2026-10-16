@@ -46,6 +46,7 @@ function fakeDeps(log: string[]) {
       order: jest.fn(),
       balances: jest.fn(),
       referencePrices: async () => ({}),
+      usdPrices: async () => ({}),
       withdraw: jest.fn(),
       findIntent: async () => undefined,
       quote: jest.fn(),

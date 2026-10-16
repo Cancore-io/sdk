@@ -587,10 +587,14 @@ export function createDispatcher(deps: Deps): Dispatcher {
     const limits: Limits = { ...stored, ordersPerHour: deps.ordersPerHour ?? DEFAULT_ORDERS_PER_HOUR };
     if (loaded.paused) await deny(ERROR.PAUSED, 'paused');
     // Fresh prices for every decision: an unreachable price feed leaves none, and the gate then refuses.
-    const referencePrices = await engine!.referencePrices().catch(() => ({}));
+    const [referencePrices, usdPrices] = await Promise.all([
+      engine!.referencePrices().catch(() => ({})),
+      // Never from disk: a stale or edited state file must not value an order.
+      engine!.usdPrices().catch(() => ({})),
+    ]);
     // An unconfirmed intent may be an order on the book: it counts as one.
     const intents = (loaded.intents ?? []).map(({ key, at: _at, ...o }) => ({ ...o, orderId: `intent:${key}` }));
-    const state: BotState = { ...rollDaily(loaded, now), referencePrices, openOrders: [...loaded.openOrders, ...intents] };
+    const state: BotState = { ...rollDaily(loaded, now), referencePrices, usdPrices, openOrders: [...loaded.openOrders, ...intents] };
     let decision: Decision;
     if (request.method === 'order.take') {
       const params = request.params as Params<'order.take'>;

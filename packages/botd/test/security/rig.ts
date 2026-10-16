@@ -18,6 +18,9 @@ export const LIMITS = {
   maxOpenOrders: 5,
   maxPriceDeviationBps: 500,
   maxCommandsPerMinute: 60,
+  // Wide USD caps: these tests are about the other limits.
+  perOrderUsd: '1000000',
+  perDayUsd: '1000000',
 };
 
 export const fakeSigner = (): BotSigner => ({ public_key: 'ab', signMessage: async () => 's', signPreparedHash: async () => 's', destroy: () => undefined });
@@ -51,6 +54,7 @@ export function fakeEngine(): FakeEngine {
     },
     async balances() { return []; },
     async referencePrices() { return { 'CC/USDCx': '0.15', 'USDCx/CC': '6.6666666666' }; },
+    usdPrices: async () => ({ CC: '0.15', USDCx: '1' }),
     async withdraw() {},
     async findIntent() { return undefined; },
     async quote(p) { return { ...p, price: '0.15', total: '0', expiresInSec: 30 }; },

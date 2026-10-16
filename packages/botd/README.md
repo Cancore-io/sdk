@@ -212,7 +212,9 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
      "maxPosition": { "CC": "2000" },
      "maxOpenOrders": 10,
      "maxPriceDeviationBps": 200,
-     "maxCommandsPerMinute": 10
+     "maxCommandsPerMinute": 10,
+     "perOrderUsd": "50",
+     "perDayUsd": "500"
    }
    ```
 
@@ -231,6 +233,12 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
    | `maxOpenOrders` | open orders at once, including taken ones not yet settled (0–1000) | `0` |
    | `maxPriceDeviationBps` | max distance of the order price from the market rate (0–10000) | `0` |
    | `maxCommandsPerMinute` | trade commands per minute (0–600) | `0`: every trade is `rate_limited` |
+   | `perOrderUsd` | one order's value in USD | every trade is `usd_cap_missing` |
+   | `perDayUsd` | USD value of fills in the rolling 24 h, plus open orders and unconfirmed intents, plus this order | every trade is `usd_cap_missing` |
+   | `usdCapsOptOut` | `true` turns both USD caps off, explicitly | `false` |
+
+   USD values use the Cancore API's price per instrument (`sourcePriceUsd` of the listed pairs), fetched
+   fresh for every decision. An instrument without a USD price refuses the trade (`usd_price_missing`).
 
    Amounts are decimal strings, at most 15 integer and 10 fraction digits. Unknown fields are
    rejected.
@@ -303,6 +311,8 @@ Every strategy order is an `order.make` through the same trade lock, risk gate, 
 | `order.make` `rate_limited` with `maxCommandsPerMinute` set | the hourly `ordersPerHour` budget is spent | wait; it is the platform's limit |
 | daemon exits `no venue is pinned for …` | a `baseUrl` that is not one of Cancore's hosts | set `network` or `venuePartyId` |
 | `register` fails, or the first unlock logs `not registered: run cancore-bot register` | a new account, or a wrong invite code | `cancore-bot register` with the right code |
+| every trade `usd_cap_missing` | `perOrderUsd` or `perDayUsd` not set | set both, or `usdCapsOptOut: true` |
+| every trade `usd_price_missing` | the API gives no USD price for an instrument involved | wait for the price feed; check the pair is listed |
 | every trade `price_deviation_exceeded` | no market rate for the pair (feed down, unknown pair), or price too far | check the pair is listed; widen `maxPriceDeviationBps` |
 | starts `paused` with `audit log truncated or broken` | the log lost entries the state had seen | `audit verify`, investigate, then `resume` |
 | `withdraw goes only to the owner party pinned in the config` | `--to` differs, or no `ownerParty` | set `ownerParty`, restart the daemon |

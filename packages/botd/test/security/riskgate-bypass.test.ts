@@ -7,7 +7,7 @@ import { agent, LIMITS, make, outcome, owner, req, rig, type Rig } from './rig';
 const NOW = 1_700_000_000_000;
 const limits = parseLimits(LIMITS);
 const state = (s: Partial<BotState> = {}): BotState => ({
-  locked: false, paused: false, openOrders: [], positions: {}, dailyVolume: {}, recentCommands: [], referencePrices: { 'CC/USDCx': '0.15' }, ...s,
+  locked: false, paused: false, openOrders: [], positions: {}, dailyVolume: {}, recentCommands: [], referencePrices: { 'CC/USDCx': '0.15' }, usdPrices: { CC: '0.15', USDCx: '1' }, ...s,
 });
 const order = (amount: string, price = '0.15'): Command => ({ method: 'order.make', params: { base: 'CC', quote: 'USDCx', side: 'buy', amount, price } }) as Command;
 
