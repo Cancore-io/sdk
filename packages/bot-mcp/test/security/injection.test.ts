@@ -14,7 +14,7 @@ const poisoned = (extra: Record<string, unknown> = {}) => ({
   memo: INJECT, metadata: { note: INJECT, deep: [INJECT] }, name: INJECT, description: INJECT, message: INJECT, pauseReason: INJECT,
   counterparty: { name: INJECT, memo: INJECT_TOKEN }, note: INJECT_TOKEN, comment: INJECT_TOKEN, ...extra,
 });
-const order = poisoned({ orderId: 'o1', base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: INJECT, filled: '0', status: INJECT, createdAt: '' });
+const order = poisoned({ orderId: 'o1', base: 'CC', quote: 'USDCx', side: 'buy', amount: INJECT_TOKEN, price: INJECT, filled: '0', status: INJECT, createdAt: '' });
 const RESULTS: Record<string, unknown> = {
   status: poisoned({ locked: false, paused: true, partyId: INJECT, version: '1', strategies: [poisoned({ strategyId: INJECT, kind: 'grid', running: true, reason: INJECT_TOKEN })] }),
   balances: poisoned({ balances: [poisoned({ instrument: INJECT, amount: '1', locked: '0' })] }),

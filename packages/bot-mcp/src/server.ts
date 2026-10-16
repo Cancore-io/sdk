@@ -49,16 +49,21 @@ const ANNOTATIONS: Record<Exclude<RiskClass, 'owner'>, ToolAnnotations> = {
 const BOUNDARY =
   'Limits are enforced by the daemon, not by this tool; a refusal returns {denied: reason}. Withdraw, limit changes, unlock and resume are owner-only and do not exist here.';
 
-// An id, decimal or enum: no whitespace, so no room for an instruction. Anything else is dropped.
+// An id, decimal or enum: no whitespace, so no free-form sentence; anything else is dropped. Only fields the
+// daemon or the Cancore API fills are whitelisted; counterparty text (names, memos, metadata) never is.
 const TOKEN = /^[\w.:\-+@/#=]{0,256}$/;
 const token = (v: unknown) => (typeof v === 'string' && TOKEN.test(v) ? v : undefined);
 const scalar = (v: unknown) => (typeof v === 'number' || typeof v === 'boolean' ? v : token(v));
+// Money fields carry a decimal and nothing else, so a token-shaped instruction cannot ride in one.
+const DECIMAL = /^-?\d{1,40}(\.\d{1,40})?$/;
+const DECIMAL_KEYS = new Set(['amount', 'price', 'filled', 'total', 'maxOrderAmount', 'maxOrderNotional', 'maxDailyVolume', 'maxPosition']);
 
 function pick(source: unknown, keys: readonly string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (source === null || typeof source !== 'object') return out;
   for (const key of keys) {
-    const value = scalar((source as Record<string, unknown>)[key]);
+    const raw = (source as Record<string, unknown>)[key];
+    const value = DECIMAL_KEYS.has(key) && typeof raw === 'string' && !DECIMAL.test(raw) ? undefined : scalar(raw);
     if (value !== undefined) out[key] = value;
   }
   return out;
@@ -159,7 +164,8 @@ export function inventory() {
 }
 
 export async function callTool(getClient: () => Promise<BotClient>, method: Method, args: unknown): Promise<ToolReply> {
-  // Strict schema here, before the socket: unknown keys and bad amounts never leave the process.
+  // Validated here, before the socket: bad amounts never leave the process. Over MCP the SDK has already
+  // stripped unknown keys (it builds a non-strict object from the shape), so they are dropped, not refused.
   const params = PARAMS[method].safeParse(args ?? {});
   if (!params.success) return reply({ error: 'invalid_params', issues: params.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`) }, true);
   try {
@@ -183,7 +189,7 @@ export function registerBotTools(server: McpServer, getClient: () => Promise<Bot
         inputSchema: PARAMS[method].shape,
         annotations: { title: toolName(method), ...ANNOTATIONS[risk] },
       },
-      // The SDK strips unknown keys; callTool re-validates strictly on the raw args.
+      // The SDK strips unknown keys before this handler; callTool validates what remains.
       (async (args: unknown) => callTool(getClient, method, args)) as never,
     );
   }
