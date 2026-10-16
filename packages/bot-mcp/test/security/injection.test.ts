@@ -70,6 +70,13 @@ describe('security: bot-mcp', () => {
     clean(JSON.stringify(res));
   });
 
+  it('a clean limit cap survives the filter: only the poisoned entries are dropped', async () => {
+    const mcp = await connected({ call: async (m) => RESULTS[m] });
+    const res = (await mcp.callTool({ name: toolName('limits.get'), arguments: {} })) as { structuredContent?: { limits?: { maxOrderAmount?: unknown } }; content: { text: string }[] };
+    const limits = res.structuredContent?.limits ?? JSON.parse(res.content[0]!.text).limits;
+    expect(limits.maxOrderAmount).toEqual({ USDCx: '5' });
+  });
+
   it('error replies carry no daemon message text', async () => {
     for (const error of [
       { code: ERROR.DENIED, message: INJECT, data: { reason: INJECT } },
