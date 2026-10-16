@@ -56,7 +56,7 @@ const token = (v: unknown) => (typeof v === 'string' && TOKEN.test(v) ? v : unde
 const scalar = (v: unknown) => (typeof v === 'number' || typeof v === 'boolean' ? v : token(v));
 // Money fields carry a decimal and nothing else, so a token-shaped instruction cannot ride in one.
 const DECIMAL = /^-?\d{1,40}(\.\d{1,40})?$/;
-const DECIMAL_KEYS = new Set(['amount', 'price', 'filled', 'total']);
+const DECIMAL_KEYS = new Set(['amount', 'price', 'filled', 'total', 'perOrderUsd', 'perDayUsd']);
 
 function pick(source: unknown, keys: readonly string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -69,7 +69,7 @@ function pick(source: unknown, keys: readonly string[]): Record<string, unknown>
   return out;
 }
 
-const LIMIT_NUMBERS = ['maxOpenOrders', 'maxPriceDeviationBps', 'maxCommandsPerMinute'] as const;
+const LIMIT_NUMBERS = ['maxOpenOrders', 'maxPriceDeviationBps', 'maxCommandsPerMinute', 'perOrderUsd', 'perDayUsd', 'usdCapsOptOut'] as const;
 const LIMIT_CAPS = ['maxOrderAmount', 'maxOrderNotional', 'maxDailyVolume', 'maxPosition'] as const;
 // A cap is instrument -> decimal: both the key and the value are checked.
 const caps = (m: unknown) =>
