@@ -47,8 +47,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+      # Build before test: the bundle-isolation tests (no key code in bot-mcp/protocol) read dist.
       - run: npm run build
+      - run: npm test
       # The committed vectors must be what the generators produce: a hand-edited
       # or stale spec file fails here instead of shipping (CAN-2496 review F-2).
       - name: Vectors are regenerated, not hand-edited
@@ -82,7 +83,16 @@ jobs:
             private=$(node -p "require('./$pkg/package.json').private === true")
             if [ "$private" = "true" ]; then echo "skip $name (private)"; continue; fi
             siblings=()
-            for dep in $(node -p "((p) => Object.keys({ ...p.dependencies, ...p.peerDependencies }))(require('./$pkg/package.json')).filter((d) => d.startsWith('@cancore/')).join(' ')"); do
+            # Transitive: bot-mcp -> botd -> client must not fall back to a registry without that version.
+            for dep in $(node -e "
+              const fs = require('fs');
+              const byName = Object.fromEntries(fs.readdirSync('packages').filter((d) => fs.existsSync('packages/' + d + '/package.json'))
+                .map((d) => require('./packages/' + d + '/package.json')).map((m) => [m.name, m]));
+              const deps = (m) => Object.keys({ ...m.dependencies, ...m.peerDependencies }).filter((d) => byName[d]);
+              const seen = new Set(), todo = deps(require('./$pkg/package.json'));
+              while (todo.length) { const d = todo.pop(); if (!seen.has(d)) { seen.add(d); todo.push(...deps(byName[d])); } }
+              console.log([...seen].join(' '));
+            "); do
               siblings+=("${TARBALL[$dep]}")
             done
             rm -rf "$RUNNER_TEMP/consumer" && mkdir -p "$RUNNER_TEMP/consumer"
@@ -306,3 +316,18 @@ jobs:
             console.log(r.numPassedTests, 'passed,', r.numPendingTests + r.numTodoTests, 'skipped');
             if (r.numTotalTestSuites !== 1 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
           "
+
+  # cancore-botd's OS isolation (users, groups, socket and state-dir modes, /proc) needs root: a
+  # disposable container is root and is thrown away. ubuntu-latest for the reason given on `check`.
+  botd-root:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: node:22
+    env:
+      # Makes root.sh fail instead of skipping, so this job can never be a false green.
+      CANCORE_ROOT_TESTS: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:security:root
