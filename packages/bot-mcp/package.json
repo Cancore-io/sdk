@@ -1,0 +1,59 @@
+{
+  "name": "@cancore/bot-mcp",
+  "version": "0.1.0-rc.0",
+  "type": "module",
+  "description": "A stdio MCP server that lets an AI agent drive a local cancore-botd within the owner's limits: read state, reduce risk, trade within limits. It has no tool to withdraw, send, export a key, change limits, unlock or resume.",
+  "bin": {
+    "cancore-bot-mcp": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cancore-io/sdk.git",
+    "directory": "packages/bot-mcp"
+  },
+  "homepage": "https://docs.cancore.io/sdk/bot-mcp",
+  "bugs": {
+    "url": "https://github.com/Cancore-io/sdk/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "canton",
+    "cancore",
+    "agent",
+    "trading",
+    "bot"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "prepack": "tsup --silent",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@cancore/botd": "^0.1.0-rc.0",
+    "@modelcontextprotocol/sdk": "^1.20.0",
+    "zod": "^3.25.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
