@@ -5,7 +5,7 @@ npm install @cancore/botd
 ```
 
 A self-custody trading daemon for Cancore. It holds one bot account's key, trades for it through
-the API, and lets an AI agent (through `@cancore/bot-mcp`) place trades only inside
+the API, and lets an AI agent (through [`@cancore/bot-mcp`](../bot-mcp)) place trades only inside
 limits the owner set.
 
 - `cancore-botd` — the daemon: encrypted keystore, default-deny risk gate, hash-chained audit log,
