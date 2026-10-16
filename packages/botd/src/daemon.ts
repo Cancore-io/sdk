@@ -158,6 +158,15 @@ export function createDispatcher(deps: Deps): Dispatcher {
     stateQueue = p.catch(() => undefined);
     return p;
   };
+  /**
+   * The one pause check every risk-opening action goes through, inside the state queue: a pause that already
+   * returned is on disk, so the action sees it and refuses. `fn` is the action's own write, applied only if not paused.
+   */
+  const unlessPaused = async (fn: (s: BotState) => BotState = (s) => s): Promise<void> => {
+    let paused = false;
+    await mutate((s) => (s.paused ? ((paused = true), s) : fn(s)));
+    if (paused) throw new RpcFault(ERROR.PAUSED, 'paused');
+  };
   // Trade commands run one at a time from gate to book: two that each fit the limits alone must not both pass.
   let tradeQueue: Promise<unknown> = Promise.resolve();
   const exclusive = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -450,14 +459,12 @@ export function createDispatcher(deps: Deps): Dispatcher {
         // The intent, the hourly budget and a strategy's seq land before the API call: a crash after it leaves the
         // intent to reconcile, never an order the daemon does not know about.
         // Re-checked on the latest state: a pause that returned while this make awaited prices wins.
-        let pausedFirst = false;
-        await mutate((s) => (s.paused ? ((pausedFirst = true), s) : {
+        await unlessPaused((s) => ({
           ...s,
           intents: [...(s.intents ?? []), intent],
           orderTimes: [...(s.orderTimes ?? []).filter((t) => t > at - 3_600_000), at],
           ...(tag && { strategies: s.strategies?.map((x) => (x.strategyId === tag.id ? { ...x, placed: [...x.placed, at] } : x)) }),
         }));
-        if (pausedFirst) throw new RpcFault(ERROR.PAUSED, 'paused');
         let orderId: string;
         try {
           ({ orderId } = await e.make({ ...params, clientKey: intent.key }));
@@ -490,7 +497,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
           strategyId: randomUUID(), kind, base, quote, config: parsed, status: 'running',
           want: kind === 'grid' ? gridSlots(gridConfig.parse(config)) : [], placed: [], fills: 0,
         };
-        await mutate((s) => ({ ...s, strategies: [...(s.strategies ?? []), rec] }));
+        await unlessPaused((s) => ({ ...s, strategies: [...(s.strategies ?? []), rec] }));
         return { strategyId: rec.strategyId };
       }
       case 'register': {
@@ -632,6 +639,9 @@ export function createDispatcher(deps: Deps): Dispatcher {
 
   async function executed(request: RpcRequest, entry: Entry, taken?: Taken, tag?: Tag): Promise<RpcResponse> {
     try {
+      // Every trade-class method, present and future: the pause is re-read after the gate's awaits, right before
+      // it acts. make and strategy.start also re-check inside their own write (the same unlessPaused).
+      if (entry.riskClass === 'trade') await unlessPaused();
       return { jsonrpc: JSONRPC_VERSION, id: request.id, result: await execute(request.method, request.params, taken, tag) };
     } catch (err) {
       await append({ ...entry, decision: 'error', reason: err instanceof RpcFault ? err.message : 'internal error' });

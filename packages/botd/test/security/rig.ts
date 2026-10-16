@@ -35,6 +35,9 @@ export interface FakeEngine extends Engine {
   makeHold?: Promise<void>;
   /** Called when a make reaches the API, before it waits. */
   onMakeStart?: () => void;
+  /** When set, reference prices and order lookups (the gate's own awaits) wait for it; `onGateHold` fires first. */
+  gateHold?: Promise<void>;
+  onGateHold?: () => void;
 }
 
 export function fakeEngine(): FakeEngine {
@@ -54,12 +57,18 @@ export function fakeEngine(): FakeEngine {
     },
     async cancel() {},
     async order(id) {
+      e.onGateHold?.();
+      await e.gateHold;
       const o = e.orders.get(id);
       if (!o) throw new Error('404');
       return o;
     },
     async balances() { return []; },
-    async referencePrices() { return { 'CC/USDCx': '0.15', 'USDCx/CC': '6.6666666666' }; },
+    async referencePrices() {
+      e.onGateHold?.();
+      await e.gateHold;
+      return { 'CC/USDCx': '0.15', 'USDCx/CC': '6.6666666666' };
+    },
     usdPrices: async () => ({ CC: '0.15', USDCx: '1' }),
     async withdraw() {},
     async findIntent() { return undefined; },

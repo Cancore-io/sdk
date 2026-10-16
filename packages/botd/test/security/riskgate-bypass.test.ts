@@ -128,6 +128,25 @@ describe('security: through the dispatcher', () => {
     expect(await outcome(r.dispatcher.handle(make('10'), agent))).toBe(-32003);
   });
 
+  it.each([
+    ['order.take', () => req('order.take', { orderId: 'held', amount: '10' })],
+    ['strategy.start', () => req('strategy.start', { kind: 'grid', base: 'CC', quote: 'USDCx', config: { side: 'buy', levels: 2, amountPerLevel: '10', lowerPrice: '0.149', upperPrice: '0.151' } })],
+  ])('%s held in the gate while a pause returns is refused and acts on nothing', async (_m, request) => {
+    r.engine.orders.set('held', { orderId: 'held', status: 'open', source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
+    let release!: () => void;
+    r.engine.gateHold = new Promise((res) => (release = res));
+    const held = new Promise<void>((res) => (r.engine.onGateHold = res));
+    const pending = outcome(r.dispatcher.handle(request(), agent));
+    await held;
+    r.engine.gateHold = undefined;
+    await r.dispatcher.handle(req('pause', { reason: 'owner stop' }), owner);
+    release();
+    expect(await pending).toBe(-32003);
+    expect(r.engine.taken).toEqual([]);
+    expect(r.state()).toMatchObject({ paused: true, openOrders: [] });
+    expect(r.state().strategies ?? []).toEqual([]);
+  });
+
   it('a take larger than the limits, or at a hostile price, is refused', async () => {
     r.engine.orders.set('big', { orderId: 'big', status: 'open', source: 'CC', sourceAmount: '500', target: 'USDCx', targetAmount: '75' });
     expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'big', amount: '500' }), agent))).toBe('order_size_exceeded');
