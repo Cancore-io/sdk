@@ -313,7 +313,15 @@ export function createDispatcher(deps: Deps): Dispatcher {
     }));
   }
 
-  async function lock() {
+  // unlock and lock one at a time: a lock that lands during an unlock's passphrase check must not be undone by it.
+  let keyQueue: Promise<unknown> = Promise.resolve();
+  const keyExclusive = <T>(fn: () => Promise<T>): Promise<T> => {
+    const p = keyQueue.then(fn);
+    keyQueue = p.catch(() => undefined);
+    return p;
+  };
+  const lock = () => keyExclusive(lockNow);
+  async function lockNow() {
     // Strategies stay `running` on disk: the next unlock resumes them.
     stopTicks?.();
     stopTicks = undefined;
@@ -463,38 +471,40 @@ export function createDispatcher(deps: Deps): Dispatcher {
         await mutate((s) => ({ ...s, partyId }));
         return { partyId };
       }
-      case 'unlock': {
-        // Already unlocked: a second engine would run beside the first with a destroyed signer.
-        if (engine) return { locked: false };
-        signer = await deps.keystore.unlock((p as Params<'unlock'>).passphrase).catch(() => {
-          throw new RpcFault(ERROR.LOCKED, 'unlock failed');
-        });
-        engine = deps.createEngine(signer, hooks);
-        await mutate((s) => ({ ...s, locked: false }));
-        engine.start();
-        // In the background: a slow API must not time the unlock out after the key is already loaded.
-        const unlocked = engine;
-        later(() => reconcile(unlocked));
-        // First unlock of an account registered elsewhere (the web app): onboard it and learn its party.
-        // A new account needs `register` (owner) first; until then this fails quietly and is logged.
-        if (!(await deps.state.load()).partyId) {
-          const e = engine;
-          later(async () => {
-            const partyId = await e.onboard().catch(() => undefined);
-            if (partyId) await mutate((s) => ({ ...s, partyId }));
-            await append({ ...settleEntry, decision: partyId ? 'allow' : 'error', params: { event: 'onboard' }, ...(!partyId && { reason: 'not registered: run cancore-bot register' }) });
+      case 'unlock':
+        // Through the key queue: a concurrent unlock sees the engine, a lock waits and then wins.
+        return keyExclusive(async () => {
+          // Already unlocked: a second engine would run beside the first with a destroyed signer.
+          if (engine) return { locked: false };
+          signer = await deps.keystore.unlock((p as Params<'unlock'>).passphrase).catch(() => {
+            throw new RpcFault(ERROR.LOCKED, 'unlock failed');
           });
-        }
-        stopTicks?.();
-        let ticking = false;
-        // One tick at a time: a slow API must not pile ticks up in the queue ahead of settlements.
-        stopTicks = (deps.every ?? everyFiveSeconds)(() => {
-          if (ticking) return;
-          ticking = true;
-          later(() => tick().finally(() => (ticking = false)));
+          engine = deps.createEngine(signer, hooks);
+          await mutate((s) => ({ ...s, locked: false }));
+          engine.start();
+          // In the background: a slow API must not time the unlock out after the key is already loaded.
+          const unlocked = engine;
+          later(() => reconcile(unlocked));
+          // First unlock of an account registered elsewhere (the web app): onboard it and learn its party.
+          // A new account needs `register` (owner) first; until then this fails quietly and is logged.
+          if (!(await deps.state.load()).partyId) {
+            const e = engine;
+            later(async () => {
+              const partyId = await e.onboard().catch(() => undefined);
+              if (partyId) await mutate((s) => ({ ...s, partyId }));
+              await append({ ...settleEntry, decision: partyId ? 'allow' : 'error', params: { event: 'onboard' }, ...(!partyId && { reason: 'not registered: run cancore-bot register' }) });
+            });
+          }
+          stopTicks?.();
+          let ticking = false;
+          // One tick at a time: a slow API must not pile ticks up in the queue ahead of settlements.
+          stopTicks = (deps.every ?? everyFiveSeconds)(() => {
+            if (ticking) return;
+            ticking = true;
+            later(() => tick().finally(() => (ticking = false)));
+          });
+          return { locked: false };
         });
-        return { locked: false };
-      }
       case 'lock':
         await lock();
         return { locked: true };

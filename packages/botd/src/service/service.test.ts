@@ -55,5 +55,7 @@ describe('service', () => {
     expect(() => assertRootOwnedChain('/usr/bin/node', fs)).not.toThrow();
     expect(() => assertRootOwnedChain('/home/a/d.js', fs)).toThrow(/\/home\/a.*owned by uid 1000/);
     expect(() => assertRootOwnedChain('/opt/d.js', fs)).toThrow(/\/opt.*writable/);
+    // The unit gets the resolved target, not a link that could be re-pointed after install.
+    expect(assertRootOwnedChain('/usr/local/node', { ...fs, realpath: (p: string) => (p === '/usr/local/node' ? '/usr/bin/node' : p) })).toBe('/usr/bin/node');
   });
 });

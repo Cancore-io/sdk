@@ -92,22 +92,26 @@ export function installPlan(options: ServiceOptions & { human?: string }): strin
  * The unit runs `node daemon.js` as the daemon user, which later receives the passphrase: a file on
  * that path, or a directory above it, that a non-root user can rewrite would hand them the key.
  */
-export function assertRootOwnedChain(path: string, fs: { realpath(p: string): string; stat(p: string): { uid: number; mode: number } } = { realpath: realpathSync, stat: statSync }): void {
-  let p = fs.realpath(path);
+/** Returns the resolved path: the unit must name it, not a link that could be re-pointed later. */
+export function assertRootOwnedChain(path: string, fs: { realpath(p: string): string; stat(p: string): { uid: number; mode: number } } = { realpath: realpathSync, stat: statSync }): string {
+  const resolved = fs.realpath(path);
+  let p = resolved;
   for (;;) {
     const st = fs.stat(p);
     if (st.uid !== 0) throw new Error(`${p} is owned by uid ${st.uid}: install cancore-botd and node where only root can write`);
     if (st.mode & 0o022) throw new Error(`${p} is writable by group or others (mode ${(st.mode & 0o777).toString(8)})`);
-    if (p === dirname(p)) return;
+    if (p === dirname(p)) return resolved;
     p = dirname(p);
   }
 }
 
 /** Creates the user, group and directories and installs the unit; needs root unless dryRun, which only prints. */
 export async function install(options: ServiceOptions & { human?: string; dryRun?: boolean }): Promise<void> {
-  const plan = installPlan(options);
   if (!options.dryRun && process.getuid?.() !== 0) throw new Error('install must run as root (or pass --dry-run)');
-  if (!options.dryRun) for (const p of [options.nodePath ?? process.execPath, options.execPath]) assertRootOwnedChain(p);
+  if (!options.dryRun) {
+    options = { ...options, nodePath: assertRootOwnedChain(options.nodePath ?? process.execPath), execPath: assertRootOwnedChain(options.execPath) };
+  }
+  const plan = installPlan(options);
   for (const step of plan) {
     const [first, ...rest] = step;
     if (first!.startsWith('write:')) {

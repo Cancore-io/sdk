@@ -125,6 +125,22 @@ describe('dispatcher', () => {
     expect(deps.keystore.unlock).toHaveBeenCalledTimes(1);
   });
 
+  it('two concurrent unlocks start one engine and check the passphrase once', async () => {
+    const { deps } = fakeDeps([]);
+    const create = jest.spyOn(deps, 'createEngine');
+    const d = createDispatcher(deps);
+    await Promise.all([d.handle(req('unlock', { passphrase: 'right' }), { owner: true }), d.handle(req('unlock', { passphrase: 'right' }), { owner: true })]);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(deps.keystore.unlock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a lock sent during an unlock wins: the daemon ends locked', async () => {
+    const { deps } = fakeDeps([]);
+    const d = createDispatcher(deps);
+    await Promise.all([d.handle(req('unlock', { passphrase: 'right' }), { owner: true }), d.handle(req('lock', {}), { owner: true })]);
+    expect((await deps.state.load()).locked).toBe(true);
+  });
+
   it('skips a tick while the previous one is still running', async () => {
     const { deps } = fakeDeps([]);
     let fire: () => void = () => undefined;
