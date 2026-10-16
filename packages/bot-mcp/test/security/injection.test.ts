@@ -80,6 +80,13 @@ describe('security: bot-mcp', () => {
     expect(limits).toMatchObject({ perDayUsd: '500', usdCapsOptOut: false });
   });
 
+  it('usdCapsOptOut passes only as a boolean', async () => {
+    const mcp = await connected({ call: async () => ({ limits: { usdCapsOptOut: 'true' } }) });
+    const res = (await mcp.callTool({ name: toolName('limits.get'), arguments: {} })) as { structuredContent?: { limits?: unknown }; content: { text: string }[] };
+    const limits = res.structuredContent?.limits ?? JSON.parse(res.content[0]!.text).limits;
+    expect(limits).not.toHaveProperty('usdCapsOptOut');
+  });
+
   it('error replies carry no daemon message text', async () => {
     for (const error of [
       { code: ERROR.DENIED, message: INJECT, data: { reason: INJECT } },

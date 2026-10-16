@@ -69,13 +69,15 @@ function pick(source: unknown, keys: readonly string[]): Record<string, unknown>
   return out;
 }
 
-const LIMIT_NUMBERS = ['maxOpenOrders', 'maxPriceDeviationBps', 'maxCommandsPerMinute', 'perOrderUsd', 'perDayUsd', 'usdCapsOptOut'] as const;
+const LIMIT_NUMBERS = ['maxOpenOrders', 'maxPriceDeviationBps', 'maxCommandsPerMinute', 'perOrderUsd', 'perDayUsd'] as const;
 const LIMIT_CAPS = ['maxOrderAmount', 'maxOrderNotional', 'maxDailyVolume', 'maxPosition'] as const;
 // A cap is instrument -> decimal: both the key and the value are checked.
 const caps = (m: unknown) =>
   Object.fromEntries(Object.entries(m !== null && typeof m === 'object' ? m : {}).filter(([i, v]) => token(i) !== undefined && typeof v === 'string' && DECIMAL.test(v)));
 const limits = (l: any) => ({
   ...pick(l, LIMIT_NUMBERS),
+  // A flag is a boolean or nothing: the string "true" is not an opt-out.
+  ...(typeof l?.usdCapsOptOut === 'boolean' && { usdCapsOptOut: l.usdCapsOptOut }),
   allowedPairs: list(l?.allowedPairs).map(token).filter((v) => v !== undefined),
   ...Object.fromEntries(LIMIT_CAPS.map((k) => [k, caps(l?.[k])])),
 });
