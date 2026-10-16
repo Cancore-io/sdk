@@ -2,7 +2,7 @@
   "name": "@cancore/botd",
   "version": "0.1.0-rc.0",
   "type": "module",
-  "description": "A self-custody trading daemon for Cancore. Holds the bot's key, enforces owner-set limits behind a default-deny risk gate, keeps a hash-chained audit log, and serves a local unix-socket JSON-RPC API. ./protocol: the command and response schemas only.",
+  "description": "The core of a self-custody trading daemon for Cancore: an encrypted keystore for the bot's key, a signer that recomputes the hash before it signs, owner-set limits behind a default-deny risk gate, a hash-chained audit log. ./protocol: the command and response schemas only.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
