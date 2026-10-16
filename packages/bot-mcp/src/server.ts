@@ -56,7 +56,7 @@ const token = (v: unknown) => (typeof v === 'string' && TOKEN.test(v) ? v : unde
 const scalar = (v: unknown) => (typeof v === 'number' || typeof v === 'boolean' ? v : token(v));
 // Money fields carry a decimal and nothing else, so a token-shaped instruction cannot ride in one.
 const DECIMAL = /^-?\d{1,40}(\.\d{1,40})?$/;
-const DECIMAL_KEYS = new Set(['amount', 'price', 'filled', 'total', 'maxOrderAmount', 'maxOrderNotional', 'maxDailyVolume', 'maxPosition']);
+const DECIMAL_KEYS = new Set(['amount', 'price', 'filled', 'total']);
 
 function pick(source: unknown, keys: readonly string[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -69,17 +69,15 @@ function pick(source: unknown, keys: readonly string[]): Record<string, unknown>
   return out;
 }
 
-/** Every scalar field whose value is a token; nested and free-text values are dropped. */
-function scalars(source: unknown): Record<string, unknown> {
-  return source !== null && typeof source === 'object' ? pick(source, Object.keys(source)) : {};
-}
-
 const LIMIT_NUMBERS = ['maxOpenOrders', 'maxPriceDeviationBps', 'maxCommandsPerMinute'] as const;
 const LIMIT_CAPS = ['maxOrderAmount', 'maxOrderNotional', 'maxDailyVolume', 'maxPosition'] as const;
+// A cap is instrument -> decimal: both the key and the value are checked.
+const caps = (m: unknown) =>
+  Object.fromEntries(Object.entries(m !== null && typeof m === 'object' ? m : {}).filter(([i, v]) => token(i) !== undefined && typeof v === 'string' && DECIMAL.test(v)));
 const limits = (l: any) => ({
   ...pick(l, LIMIT_NUMBERS),
   allowedPairs: list(l?.allowedPairs).map(token).filter((v) => v !== undefined),
-  ...Object.fromEntries(LIMIT_CAPS.map((k) => [k, scalars(l?.[k])])),
+  ...Object.fromEntries(LIMIT_CAPS.map((k) => [k, caps(l?.[k])])),
 });
 const AUDIT = ['seq', 'at', 'method', 'riskClass', 'decision'] as const;
 const denyReason = (v: unknown) => (typeof v === 'string' && (DENY_REASONS as readonly string[]).includes(v) ? v : undefined);
