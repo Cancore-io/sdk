@@ -114,10 +114,14 @@ describe('security: through the dispatcher', () => {
   });
 
   it('an order made while a pause lands does not un-pause trading', async () => {
-    r.engine.makeDelayMs = 50;
+    // Deterministic: the make is held at the API until the pause has returned.
+    let release!: () => void;
+    r.engine.makeHold = new Promise((res) => (release = res));
+    const started = new Promise<void>((res) => (r.engine.onMakeStart = res));
     const pending = r.dispatcher.handle(make('10'), agent);
-    await new Promise((res) => setTimeout(res, 10));
+    await started;
     await r.dispatcher.handle(req('pause', { reason: 'owner stop' }), owner);
+    release();
     // It landed after the pause: refused as paused, and the order it placed is cancelled, not left resting.
     expect(await outcome(pending)).toBe(-32003);
     expect(r.state()).toMatchObject({ paused: true, openOrders: [] });

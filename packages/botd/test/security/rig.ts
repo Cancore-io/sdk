@@ -31,6 +31,10 @@ export interface FakeEngine extends Engine {
   orders: Map<string, OrderInfo>;
   /** Delay of each make, to widen race windows. */
   makeDelayMs: number;
+  /** When set, every make waits for it: a test decides exactly when the API answers. */
+  makeHold?: Promise<void>;
+  /** Called when a make reaches the API, before it waits. */
+  onMakeStart?: () => void;
 }
 
 export function fakeEngine(): FakeEngine {
@@ -38,7 +42,9 @@ export function fakeEngine(): FakeEngine {
   const e: FakeEngine = {
     made: [], taken: [], orders: new Map(), makeDelayMs: 0,
     async make(p) {
+      e.onMakeStart?.();
       await new Promise((r) => setTimeout(r, e.makeDelayMs));
+      await e.makeHold;
       e.made.push(p);
       return { orderId: `o${++n}` };
     },
