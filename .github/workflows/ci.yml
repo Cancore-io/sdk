@@ -322,7 +322,7 @@ jobs:
   botd-root:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    container: node:22
+    container: node:22@sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8
     env:
       # Makes root.sh fail instead of skipping, so this job can never be a false green.
       CANCORE_ROOT_TESTS: '1'
