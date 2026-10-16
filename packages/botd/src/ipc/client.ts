@@ -4,6 +4,8 @@ import { JSONRPC_VERSION, type Method, type Params, type Result, type RpcError, 
 export interface IpcClient {
   call<M extends Method>(method: M, params: Params<M>): Promise<Result<M>>;
   close(): void;
+  /** True once the connection is gone (daemon restarted or the socket was closed): reconnect instead of reusing. */
+  readonly closed: boolean;
 }
 
 /** A JSON-RPC error answer from the daemon. */
@@ -49,7 +51,11 @@ export function connect(socketPath: string): Promise<IpcClient> {
         else p.resolve(response.result as never);
       }
     });
-    socket.on('close', () => failAll(new Error('connection closed')));
+    let closed = false;
+    socket.on('close', () => {
+      closed = true;
+      failAll(new Error('connection closed'));
+    });
     socket.once('error', reject);
     socket.once('connect', () => {
       socket.off('error', reject);
@@ -57,11 +63,18 @@ export function connect(socketPath: string): Promise<IpcClient> {
       resolve({
         call: <M extends Method>(method: M, params: Params<M>) =>
           new Promise<Result<M>>((res, rej) => {
+            // A write to a destroyed socket never calls back: without this the call would hang forever.
+            if (closed || socket.destroyed) return rej(new Error('connection closed'));
             const id = nextId++;
             pending.set(id, { resolve: res as (v: never) => void, reject: rej });
-            socket.write(`${JSON.stringify({ jsonrpc: JSONRPC_VERSION, id, method, params })}\n`);
+            socket.write(`${JSON.stringify({ jsonrpc: JSONRPC_VERSION, id, method, params })}\n`, (err) => {
+              if (err && pending.delete(id)) rej(err);
+            });
           }),
         close: () => socket.end(),
+        get closed() {
+          return closed || socket.destroyed;
+        },
       });
     });
   });

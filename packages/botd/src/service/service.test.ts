@@ -1,4 +1,4 @@
-import { install, installPlan, systemdUnit } from './index';
+import { assertRootOwnedChain, install, installPlan, systemdUnit } from './index';
 
 const opts = { user: 'cancore-bot', clientsGroup: 'cancore-bot-clients', execPath: '/usr/lib/node_modules/@cancore/botd/dist/daemon.js', nodePath: '/usr/bin/node' };
 
@@ -46,5 +46,14 @@ describe('service', () => {
     } finally {
       write.mockRestore();
     }
+  });
+
+  it('refuses an exec path any non-root user could rewrite', () => {
+    const st = (uid: number, mode: number) => ({ uid, mode }) as never;
+    const tree: Record<string, { uid: number; mode: number }> = { '/': st(0, 0o755), '/usr': st(0, 0o755), '/usr/bin': st(0, 0o755), '/usr/bin/node': st(0, 0o755), '/home': st(0, 0o755), '/home/a': st(1000, 0o755), '/home/a/d.js': st(1000, 0o644), '/opt': st(0, 0o777), '/opt/d.js': st(0, 0o644) };
+    const fs = { realpath: (p: string) => p, stat: (p: string) => tree[p]! };
+    expect(() => assertRootOwnedChain('/usr/bin/node', fs)).not.toThrow();
+    expect(() => assertRootOwnedChain('/home/a/d.js', fs)).toThrow(/\/home\/a.*owned by uid 1000/);
+    expect(() => assertRootOwnedChain('/opt/d.js', fs)).toThrow(/\/opt.*writable/);
   });
 });

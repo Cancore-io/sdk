@@ -75,7 +75,11 @@ expect_ok "audit log is 0600 cancore-bot" test "$(stat -c '%U %a' "$W/state/audi
 if grep -rq "root-test-pass" "$W/state" "$W/daemon.err"; then fail "passphrase absent from state dir and daemon stderr"; else pass "passphrase absent from state dir and daemon stderr"; fi
 
 # The daemon refuses to start as anyone but its configured user.
-expect_no "daemon refuses to run as another user" as botagent timeout 5 "$NODE" "$DIST/daemon.js" --config "$W/config.json"
+# The refusal must be the user check itself, not any later failure (e.g. the state-dir uid check).
+if out=$(as botagent timeout 5 "$NODE" "$DIST/daemon.js" --config "$W/config.json" 2>&1); then
+  fail "daemon refuses to run as another user"
+elif grep -q "must run as" <<<"$out"; then pass "daemon refuses to run as another user"
+else fail "daemon refuses to run as another user (wrong reason: $out)"; fi
 
 # systemd hardening (ProtectSystem, NoNewPrivileges, SystemCallFilter …) needs a systemd host, not a container:
 # there, after `cancore-bot install`, run `systemd-analyze security cancore-botd`.

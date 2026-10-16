@@ -33,6 +33,20 @@ function raw(path: string, payload: string | Buffer, count = 1): Promise<Record<
 const status = { locked: true, paused: false, strategies: [], version: 't' };
 
 describe('ipc server', () => {
+  it('a call after the daemon closed the connection rejects at once and marks the client closed', async () => {
+    const path = join(dir, 'c.sock');
+    const srv = createServer((sock) => sock.destroy());
+    await new Promise<void>((r) => srv.listen(path, r));
+    try {
+      const client = await connect(path);
+      await new Promise((r) => setTimeout(r, 50));
+      expect(client.closed).toBe(true);
+      await expect(client.call('status', {})).rejects.toThrow(/closed/);
+    } finally {
+      await new Promise((r) => srv.close(r));
+    }
+  });
+
   it('round-trips a typed call through the client', async () => {
     const path = join(dir, 's.sock');
     server = await listen(path, async (r) => ({ jsonrpc: JSONRPC_VERSION, id: r.id, result: status as never }));

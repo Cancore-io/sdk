@@ -74,7 +74,9 @@ with neither the daemon refuses to start.
 
 **Risk gate.** Default-deny: omitted limits allow nothing. Every trade command is checked against
 fresh reference prices; if the price feed is unreachable there is no reference and the gate
-refuses. The decision is written to the audit log before anything touches the key.
+refuses. The decision is written to the audit log before anything touches the key. Trust boundary:
+those reference prices come from the Cancore API, so the price corridor protects against a bad
+order, not against a compromised API.
 
 **Audit log.** `audit.jsonl`, append-only, fsynced per entry. Each entry carries the SHA-256 of the
 previous one; `cancore-bot audit verify` re-walks the chain. The state file remembers the last entry

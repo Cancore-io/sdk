@@ -52,7 +52,7 @@ describe('security: keystore and state files', () => {
 
   it('a plaintext env key is refused on mainnet and without the explicit opt-in', () => {
     const env = { CANCORE_BOT_KEY: KEY_HEX };
-    expect(() => keyFromEnv({ insecureEnvKey: true, network: 'mainnet', env })).toThrow(/mainnet/);
+    expect(() => keyFromEnv({ insecureEnvKey: true, network: 'mainnet', env })).toThrow(/devnet and testnet only/);
     expect(() => keyFromEnv({ insecureEnvKey: 'true' as never, network: 'testnet', env })).toThrow(/insecureEnvKey/);
     expect(() => keyFromEnv({ network: 'testnet', env })).toThrow(/insecureEnvKey/);
   });

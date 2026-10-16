@@ -1,5 +1,6 @@
 import { execFileSync } from 'child_process';
-import { writeFileSync } from 'fs';
+import { realpathSync, statSync, writeFileSync } from 'fs';
+import { dirname } from 'path';
 
 export interface ServiceOptions {
   /** Daemon user and its primary group. */
@@ -87,10 +88,26 @@ export function installPlan(options: ServiceOptions & { human?: string }): strin
   ];
 }
 
+/**
+ * The unit runs `node daemon.js` as the daemon user, which later receives the passphrase: a file on
+ * that path, or a directory above it, that a non-root user can rewrite would hand them the key.
+ */
+export function assertRootOwnedChain(path: string, fs: { realpath(p: string): string; stat(p: string): { uid: number; mode: number } } = { realpath: realpathSync, stat: statSync }): void {
+  let p = fs.realpath(path);
+  for (;;) {
+    const st = fs.stat(p);
+    if (st.uid !== 0) throw new Error(`${p} is owned by uid ${st.uid}: install cancore-botd and node where only root can write`);
+    if (st.mode & 0o022) throw new Error(`${p} is writable by group or others (mode ${(st.mode & 0o777).toString(8)})`);
+    if (p === dirname(p)) return;
+    p = dirname(p);
+  }
+}
+
 /** Creates the user, group and directories and installs the unit; needs root unless dryRun, which only prints. */
 export async function install(options: ServiceOptions & { human?: string; dryRun?: boolean }): Promise<void> {
   const plan = installPlan(options);
   if (!options.dryRun && process.getuid?.() !== 0) throw new Error('install must run as root (or pass --dry-run)');
+  if (!options.dryRun) for (const p of [options.nodePath ?? process.execPath, options.execPath]) assertRootOwnedChain(p);
   for (const step of plan) {
     const [first, ...rest] = step;
     if (first!.startsWith('write:')) {

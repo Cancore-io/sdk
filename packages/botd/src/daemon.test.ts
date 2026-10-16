@@ -115,6 +115,34 @@ describe('dispatcher', () => {
     expect(JSON.stringify(audited)).not.toMatch(/right|wrong/);
     expect(audited.map((e) => e.decision)).toEqual(['allow', 'error', 'allow']);
   });
+  it('a second unlock while unlocked does not start a second engine', async () => {
+    const { deps } = fakeDeps([]);
+    const create = jest.spyOn(deps, 'createEngine');
+    const d = createDispatcher(deps);
+    await d.handle(req('unlock', { passphrase: 'right' }), { owner: true });
+    await d.handle(req('unlock', { passphrase: 'right' }), { owner: true });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(deps.keystore.unlock).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips a tick while the previous one is still running', async () => {
+    const { deps } = fakeDeps([]);
+    let fire: () => void = () => undefined;
+    deps.every = (fn) => ((fire = fn), () => undefined);
+    const d = createDispatcher(deps);
+    await d.handle(req('unlock', { passphrase: 'right' }), { owner: true });
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    const load = jest.fn(async () => (await gate, { allowedPairs: [] } as unknown as Limits));
+    deps.limits.load = load;
+    fire();
+    fire();
+    fire();
+    await new Promise((r) => setTimeout(r, 20));
+    release();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(load).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('start', () => {

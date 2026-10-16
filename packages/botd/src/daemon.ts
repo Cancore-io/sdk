@@ -464,6 +464,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
         return { partyId };
       }
       case 'unlock': {
+        // Already unlocked: a second engine would run beside the first with a destroyed signer.
+        if (engine) return { locked: false };
         signer = await deps.keystore.unlock((p as Params<'unlock'>).passphrase).catch(() => {
           throw new RpcFault(ERROR.LOCKED, 'unlock failed');
         });
@@ -484,7 +486,13 @@ export function createDispatcher(deps: Deps): Dispatcher {
           });
         }
         stopTicks?.();
-        stopTicks = (deps.every ?? everyFiveSeconds)(() => later(tick));
+        let ticking = false;
+        // One tick at a time: a slow API must not pile ticks up in the queue ahead of settlements.
+        stopTicks = (deps.every ?? everyFiveSeconds)(() => {
+          if (ticking) return;
+          ticking = true;
+          later(() => tick().finally(() => (ticking = false)));
+        });
         return { locked: false };
       }
       case 'lock':
