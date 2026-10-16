@@ -293,3 +293,49 @@ test('serve reads me() once per poll, not per look, and a changed party is seen 
   // Each swap is looked at with the party read on the poll that first listed it.
   expect(seen).toEqual(['s0:p1', 's1:p2', 's2:p3', 's3:p4']);
 });
+
+test('untake before the accept is sent drops the take; after it has started it cannot', async () => {
+  const theirs = order('theirs', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let accepted!: () => void;
+  const started = new Promise<void>((r) => (accepted = r));
+  const { acct, calls } = account([theirs], async (id) => (accepted(), new Promise<Settled>(() => undefined)));
+  const get = acct.swap.get;
+  let lookups = 0;
+  (acct.swap as { get: (id: string) => Promise<Order> }).get = async (id) => (lookups++, await held, get(id));
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
+  handle.take('theirs');
+  await until(() => lookups > 0);
+  // The lookup is held: the accept has not been sent, so the untake wins (look re-reads the queue).
+  expect(handle.untake('theirs')).toBe(true);
+  release();
+  await new Promise((r) => setImmediate(r));
+  expect(calls).toEqual([]);
+
+  handle.take('theirs');
+  await started;
+  expect(calls).toEqual(['theirs']);
+  expect(handle.untake('theirs')).toBe(false);
+  void handle.stop();
+});
+
+test('a take whose accept failed is not retried after untake', async () => {
+  const theirs = order('flaky', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let attempts = 0;
+  const events: ServeEvent[] = [];
+  const { acct, calls } = account([theirs], async () => {
+    attempts++;
+    throw new Error('503');
+  });
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 5, onEvent: (e) => events.push(e) }, noneLocked);
+  handle.take('flaky');
+  await until(() => attempts >= 1);
+  await new Promise((r) => setImmediate(r));
+  // Not in flight any more: untake stops the retry the next poll would start.
+  expect(handle.untake('flaky')).toBe(true);
+  const before = calls.length;
+  await new Promise((r) => setTimeout(r, 30));
+  expect(calls.length).toBe(before);
+  await handle.stop();
+});

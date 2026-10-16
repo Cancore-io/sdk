@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { readFileSync } from 'fs';
+import { closeSync, constants, fstatSync, openSync, readFileSync } from 'fs';
 import { join } from 'path';
 
 /** Daemon and CLI configuration; a JSON file, every field optional. */
@@ -38,7 +38,8 @@ export const DEFAULTS: BotConfig = {
   stateDir: '/var/lib/cancore-bot',
   agentSocket: '/run/cancore-bot/bot.sock',
   ownerSocket: '/run/cancore-bot/owner.sock',
-  baseUrl: 'https://api.cancore.io',
+  // v1 is dev only: the daemon refuses any other network at start.
+  baseUrl: 'https://api-dev.cancore.app',
 };
 
 const str = z.string().min(1);
@@ -52,11 +53,26 @@ const configSchema = z
   .partial()
   .strict();
 
+/** The config pins ownerParty (the only withdraw target): refused if anyone but root or this user could rewrite it. */
+function readTrusted(path: string): string {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw new Error(`${path}: not a regular file`);
+    const uid = process.getuid?.();
+    if (st.uid !== 0 && st.uid !== uid) throw new Error(`${path}: owned by uid ${st.uid}, expected root or ${uid}`);
+    if (st.mode & 0o022) throw new Error(`${path}: writable by group or others (mode ${(st.mode & 0o777).toString(8)})`);
+    return readFileSync(fd, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** A missing file at the default path means defaults; a missing explicit path is an error. */
 export function loadConfig(path?: string): BotConfig {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path ?? DEFAULT_CONFIG_PATH, 'utf8'));
+    raw = JSON.parse(readTrusted(path ?? DEFAULT_CONFIG_PATH));
   } catch (err) {
     if (!path && (err as NodeJS.ErrnoException).code === 'ENOENT') return { ...DEFAULTS };
     throw err;

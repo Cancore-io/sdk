@@ -72,6 +72,8 @@ export type ServeEvent =
 export interface ServeHandle {
   /** Queue an open order of someone else's to take; the loop accepts it (`autoSplitForFee` applies) and settles the taker side. */
   take(orderId: string): void;
+  /** Drops a queued take before its accept is sent; false once the accept has started (it is then a trade). */
+  untake(orderId: string): boolean;
   /**
    * Stop: nothing new is started or signed from here on; resolves once the handlers in flight are done — a
    * step already being signed is finished, a wait ends within one poll interval (`pollMs`, 5 s by default).
@@ -124,6 +126,8 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   /** Orders with nothing left to do. ponytail: grows with the account's history; prune if a loop runs for months. */
   const done = new Set<string>();
   const toTake = new Set<string>();
+  // Takes whose accept has started: past this point untake cannot stop them.
+  const accepting = new Set<string>();
   const again = new Set<string>();
   /** Swaps an `expired` event was sent for. */
   const reported = new Set<string>();
@@ -176,13 +180,23 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   }
 
   async function work(orderId: string, expired: boolean): Promise<void> {
+    // Queued by take(): only such an accept can still be called off. One accepted elsewhere (the web app) just settles.
+    const queued = toTake.has(orderId);
     const maker = await slot(() => look(orderId), expired);
     if (maker === undefined || stopper.signal.aborted) return;
+    // Checked and marked in the same synchronous step as the accept call: an untake before it wins, none can slip between.
+    if (!maker) {
+      if (queued && !toTake.has(orderId)) return;
+      // Marked whenever it is queued now, also when take() arrived during look(): untake then reports it in flight.
+      if (toTake.has(orderId)) accepting.add(orderId);
+    }
     try {
       const settled = await (maker ? acct.make : acct.take)(orderId, settle);
       done.add(orderId);
       emit({ type: 'settled', orderId, swapId: settled.swap.id, settled });
     } catch (error) {
+      // A failed accept is no longer in flight: a later untake must be able to stop the retry.
+      accepting.delete(orderId);
       if (stopper.signal.aborted) return;
       const last = (error as { last?: HtlcSwap | Order }).last;
       if (last && 'status' in last && last.status === 'dvp_expired') {
@@ -287,6 +301,11 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
     take(orderId) {
       toTake.add(orderId);
       kick(orderId);
+    },
+    untake(orderId) {
+      // Always dequeued, so no retry starts later; false only while an accept is actually in flight.
+      toTake.delete(orderId);
+      return !accepting.has(orderId);
     },
     stop,
   };

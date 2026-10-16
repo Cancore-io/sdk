@@ -12,7 +12,7 @@
       "@cancore/trader/filler/canton/hashing": ["../trader/src/filler/canton/hashing.ts"]
     }
   },
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "test/**/*.ts"],
   // The root config excludes this package (it is typechecked here instead);
   // that exclude is inherited and would swallow these inputs too.
   "exclude": []

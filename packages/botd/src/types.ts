@@ -191,6 +191,8 @@ export interface Engine {
   balances(instruments: string[]): Promise<{ instrument: string; amount: string }[]>;
   /** Market rate per `BASE/QUOTE`, both directions of every listed pair. */
   referencePrices(): Promise<Record<string, string>>;
+  /** USD price per instrument from the Cancore API; an instrument without one is absent. */
+  usdPrices(): Promise<Record<string, string>>;
   /** Sends `amount` of `instrument` to `to`; the daemon has already held `to` to the pinned owner party. */
   withdraw(to: string, instrument: string, amount: string): Promise<void>;
   /** Starts the background DvP settlement loop (make and take sides, autoWithdraw of expired allocations). */
