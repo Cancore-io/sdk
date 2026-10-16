@@ -180,15 +180,22 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   }
 
   async function work(orderId: string, expired: boolean): Promise<void> {
+    // Queued by take(): only such an accept can still be called off. One accepted elsewhere (the web app) just settles.
+    const queued = toTake.has(orderId);
     const maker = await slot(() => look(orderId), expired);
     if (maker === undefined || stopper.signal.aborted) return;
-    // look() re-reads toTake after its lookup, so an untake up to here wins; from here the accept is on its way.
-    if (!maker) accepting.add(orderId);
+    // Checked and marked in the same synchronous step as the accept call: an untake before it wins, none can slip between.
+    if (!maker && queued) {
+      if (!toTake.has(orderId)) return;
+      accepting.add(orderId);
+    }
     try {
       const settled = await (maker ? acct.make : acct.take)(orderId, settle);
       done.add(orderId);
       emit({ type: 'settled', orderId, swapId: settled.swap.id, settled });
     } catch (error) {
+      // A failed accept is no longer in flight: a later untake must be able to stop the retry.
+      accepting.delete(orderId);
       if (stopper.signal.aborted) return;
       const last = (error as { last?: HtlcSwap | Order }).last;
       if (last && 'status' in last && last.status === 'dvp_expired') {
@@ -295,9 +302,9 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
       kick(orderId);
     },
     untake(orderId) {
-      if (accepting.has(orderId)) return false;
+      // Always dequeued, so no retry starts later; false only while an accept is actually in flight.
       toTake.delete(orderId);
-      return true;
+      return !accepting.has(orderId);
     },
     stop,
   };

@@ -319,3 +319,23 @@ test('untake before the accept is sent drops the take; after it has started it c
   expect(handle.untake('theirs')).toBe(false);
   void handle.stop();
 });
+
+test('a take whose accept failed is not retried after untake', async () => {
+  const theirs = order('flaky', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let attempts = 0;
+  const events: ServeEvent[] = [];
+  const { acct, calls } = account([theirs], async () => {
+    attempts++;
+    throw new Error('503');
+  });
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 5, onEvent: (e) => events.push(e) }, noneLocked);
+  handle.take('flaky');
+  await until(() => attempts >= 1);
+  await new Promise((r) => setImmediate(r));
+  // Not in flight any more: untake stops the retry the next poll would start.
+  expect(handle.untake('flaky')).toBe(true);
+  const before = calls.length;
+  await new Promise((r) => setTimeout(r, 30));
+  expect(calls.length).toBe(before);
+  await handle.stop();
+});
