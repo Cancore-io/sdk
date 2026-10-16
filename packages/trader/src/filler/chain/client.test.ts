@@ -158,7 +158,7 @@ describe('one check reads one block, whichever endpoint serves it (EIP-1898)', (
     chain.router(ROUTER);
     await new RouterReader('eip155:1', ROUTER, client([chain])).intents(ORDER_HASH, { confirmations: 3 });
     const call = chain.calls.find((c) => c.method === 'eth_call')!;
-    expect(call.params![1]).toEqual({ blockHash: chain.blockHash(197n), requireCanonical: true });
+    expect(call.params![1]).toEqual({ blockHash: chain.blockHash(198n), requireCanonical: true });
   });
 
   test('an endpoint on another fork cannot answer for the pinned block: the read fails, never reads its own block at that height', async () => {
@@ -169,7 +169,7 @@ describe('one check reads one block, whichever endpoint serves it (EIP-1898)', (
     const forked = chain.endpoint({ label: 'forked', fork: 'other' });
     const error = await rejection(new RouterReader('eip155:1', ROUTER, client([resolver, forked])).intents(ORDER_HASH, { confirmations: 3 }));
     expect(error.reason).toBe('unavailable');
-    expect(forked.calls.find((c) => c.method === 'eth_call')!.params![1]).toEqual({ blockHash: chain.blockHash(197n), requireCanonical: true });
+    expect(forked.calls.find((c) => c.method === 'eth_call')!.params![1]).toEqual({ blockHash: chain.blockHash(198n), requireCanonical: true });
   });
 
   test('failover to an endpoint on the same chain still works', async () => {
@@ -189,8 +189,8 @@ describe('one check reads one block, whichever endpoint serves it (EIP-1898)', (
     const pinned = await c.pin({ confirmations: 10 });
     chain.mine(3n);
     await new RouterReader('eip155:1', ROUTER, c).filled(ORDER_HASH, pinned);
-    expect(callBlocks(chain, chain.calls)).toEqual([190n]);
-    await expect(c.resolve(pinned)).resolves.toBe(190n);
+    expect(callBlocks(chain, chain.calls)).toEqual([191n]);
+    await expect(c.resolve(pinned)).resolves.toBe(191n);
   });
 });
 
@@ -206,7 +206,9 @@ describe('reads at a depth', () => {
   };
 
   test.each([
-    ['openConfirmations = 3', { confirmations: 3 }, 197n],
+    ['openConfirmations = 3', { confirmations: 3 }, 198n],
+    ['openConfirmations = 1', { confirmations: 1 }, 200n],
+    ['openConfirmations = 0', { confirmations: 0 }, 200n],
     ['safe', 'safe', 190n],
     ['finalized', 'finalized', 150n],
     ['latest', 'latest', 200n],
@@ -217,11 +219,27 @@ describe('reads at a depth', () => {
     expect(callBlocks(chain, chain.calls)).toEqual([block]);
   });
 
-  test('an escrow opened less than openConfirmations deep is not open yet; at the boundary it is', async () => {
+  test('an escrow with fewer than openConfirmations confirmations is not open yet; at the boundary it is', async () => {
     const { chain, reader } = setup();
-    chain.router(ROUTER).openIntent(ORDER_HASH, { refundAfter: 2_000n, openedAt: 1_000n, atBlock: 198n });
+    // Opened in 199 with the head at 200: two confirmations, its own block counted.
+    chain.router(ROUTER).openIntent(ORDER_HASH, { refundAfter: 2_000n, openedAt: 1_000n, atBlock: 199n });
     await expect(reader.intents(ORDER_HASH, { confirmations: 3 })).resolves.toMatchObject({ status: INTENT_STATUS.None });
     await expect(reader.intents(ORDER_HASH, { confirmations: 2 })).resolves.toMatchObject({ status: INTENT_STATUS.Opened, refundAfter: 2_000n });
+  });
+
+  // The second dev intent (0x25c3…1807): opened on Sepolia in 11929057; Cancore's indexer
+  // (3 confirmations, head − block + 1 ≥ 3) confirmed it at head 11929059, trading issued the
+  // ticket, and V-E2 read at head − 3 found no escrow and declined ESCROW_NOT_OPEN.
+  test('TC-SDK-2352-08: an escrow the indexer counts N confirmations deep is open at openConfirmations N', async () => {
+    const chain = new FakeChain(11155111n);
+    chain.head = 11_929_058n;
+    chain.router(ROUTER).openIntent(ORDER_HASH, { refundAfter: 2_000n, openedAt: 1_000n, atBlock: 11_929_057n });
+    const reader = new RouterReader('eip155:11155111', ROUTER, client([chain]));
+    await expect(reader.intents(ORDER_HASH, { confirmations: 3 })).resolves.toMatchObject({ status: INTENT_STATUS.None });
+    chain.mine(1n);
+    expect(chain.head - 11_929_057n + 1n).toBe(3n);
+    await expect(reader.intents(ORDER_HASH, { confirmations: 3 })).resolves.toMatchObject({ status: INTENT_STATUS.Opened, refundAfter: 2_000n });
+    expect(callBlocks(chain, chain.calls).at(-1)).toBe(11_929_057n);
   });
 
   test('one resolved block for every call: the head moving between calls does not mix blocks', async () => {
@@ -230,7 +248,7 @@ describe('reads at a depth', () => {
     chain.mine(5n);
     await reader.intents(ORDER_HASH, { blockNumber: block });
     await reader.filled(ORDER_HASH, { blockNumber: block });
-    expect(callBlocks(chain, chain.calls)).toEqual([197n, 197n]);
+    expect(callBlocks(chain, chain.calls)).toEqual([198n, 198n]);
   });
 
   test('more confirmations than blocks reads the genesis block', async () => {

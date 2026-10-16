@@ -13,8 +13,11 @@
  *   trails the best head seen by more than `maxHeadLagBlocks` is passed over
  *   while a fresher one answers (`ops.maxHeadLagBlocks`).
  * - **Depth and one block.** A read names where it reads (`ReadAt`): `latest`,
- *   `safe`, `finalized`, `confirmations` blocks below the head, a block number
- *   or a block hash. The tag is resolved to one block header first, and the
+ *   `safe`, `finalized`, the deepest block with `confirmations` confirmations,
+ *   a block number or a block hash. A block has N confirmations when
+ *   `head − block + 1 ≥ N` (its own block counts): the rule of Cancore's
+ *   router indexer and of the delivery's fill depth, so an escrow the indexer
+ *   reports open at N is open here at N. The tag is resolved to one block header first, and the
  *   call is sent with that header's hash (EIP-1898 `{blockHash,
  *   requireCanonical}`), not its number: whichever endpoint serves it reads
  *   that exact block, and an endpoint on another fork fails the call instead
@@ -30,11 +33,21 @@ import { evmChainNumber, type EvmChainId } from '../chains';
 import type { Logger } from '../runtime';
 import type { EvmRpc } from '../rpc';
 
+/**
+ * The deepest block with `confirmations` confirmations at `head`: a block has N
+ * when `head − block + 1 ≥ N`, so `head − (N − 1)`; 0 and 1 are the head, and
+ * a chain shorter than that gives the genesis block.
+ */
+export function confirmedBlock(head: bigint, confirmations: number): bigint {
+  const target = head - BigInt(Math.max(confirmations - 1, 0));
+  return target < 0n ? 0n : target;
+}
+
 export type ReadAt =
   | 'latest'
   | 'safe'
   | 'finalized'
-  /** `head − confirmations`: the block an escrow must already be open at (V-E2, `openConfirmations`). */
+  /** `head − (confirmations − 1)`: the block an escrow must already be open at (V-E2, `openConfirmations`); 0 and 1 read the head. */
   | { confirmations: number }
   | { blockNumber: bigint }
   /** One exact block, as `pin()` returns it. */
@@ -186,8 +199,7 @@ export class ChainClient {
     if (typeof at === 'object' && 'blockNumber' in at) return at.blockNumber;
     if (typeof at === 'object') {
       if (!Number.isSafeInteger(at.confirmations) || at.confirmations < 0) throw new TypeError('confirmations must be a non-negative integer');
-      const target = (await this.head()) - BigInt(at.confirmations);
-      return target < 0n ? 0n : target;
+      return confirmedBlock(await this.head(), at.confirmations);
     }
     if (at === 'latest') return this.head();
     return (await this.block(at)).number;

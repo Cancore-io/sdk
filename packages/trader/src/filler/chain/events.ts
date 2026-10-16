@@ -2,7 +2,7 @@
  * Router events (`IntentOpened`, `Filled`, `Settled`, `Refunded`) that survive
  * reorganisations. The watcher polls `eth_getLogs` — `EvmRpc` is a plain
  * request interface, so no node subscription is assumed — and reports a log
- * only once it is `confirmations` blocks deep, so a shallow reorg never
+ * only once its block has `confirmations` confirmations, so a shallow reorg never
  * produces an event at all.
  *
  * A deeper reorg is caught by re-reading block hashes: the last scanned block
@@ -19,7 +19,7 @@
 import { CANCORE_ROUTER_ABI, type Hex } from '@cancore/contracts';
 import type { Logger } from '../runtime';
 import { AbiDecodeError, decodeEventLog, entryOf, topicOf, type AbiEntry } from './abi';
-import { ChainReadError, quantity, toQuantity, type ChainClient } from './client';
+import { ChainReadError, confirmedBlock, quantity, toQuantity, type ChainClient } from './client';
 
 export const ROUTER_EVENTS = ['IntentOpened', 'Filled', 'Settled', 'Refunded'] as const;
 export type RouterEventName = (typeof ROUTER_EVENTS)[number];
@@ -41,7 +41,7 @@ export interface RouterEventWatcherOptions {
   client: ChainClient;
   /** The pinned router, from config. */
   router: Hex;
-  /** A log is reported once its block is this many blocks below the head. */
+  /** A log is reported once its block has this many confirmations (`head − block + 1`; 0 and 1: at the head). */
   confirmations: number;
   /** First block to scan. */
   fromBlock: bigint;
@@ -97,7 +97,7 @@ export class RouterEventWatcher {
     const { client } = this.options;
     await this.detectReorg();
     const head = await client.head();
-    const confirmed = head - BigInt(this.options.confirmations);
+    const confirmed = confirmedBlock(head, this.options.confirmations);
     const maxRange = this.options.maxRange ?? 2_000n;
     while (this.next <= confirmed) {
       const to = this.next + maxRange - 1n < confirmed ? this.next + maxRange - 1n : confirmed;

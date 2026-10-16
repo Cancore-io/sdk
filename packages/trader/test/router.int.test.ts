@@ -120,7 +120,7 @@ live('RouterReader against the stand router (make intent-genesis)', () => {
   test('reads at a depth: confirmations, safe and finalized resolve to blocks at or below the head', async () => {
     const c = client();
     const head = await c.head();
-    await expect(c.resolve({ confirmations: 3 })).resolves.toBe(head >= 3n ? head - 3n : 0n);
+    await expect(c.resolve({ confirmations: 3 })).resolves.toBe(head >= 2n ? head - 2n : 0n);
     expect(await c.resolve('safe')).toBeLessThanOrEqual(head);
     expect(await c.resolve('finalized')).toBeLessThanOrEqual(head);
   });
