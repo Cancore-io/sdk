@@ -185,9 +185,10 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
     const maker = await slot(() => look(orderId), expired);
     if (maker === undefined || stopper.signal.aborted) return;
     // Checked and marked in the same synchronous step as the accept call: an untake before it wins, none can slip between.
-    if (!maker && queued) {
-      if (!toTake.has(orderId)) return;
-      accepting.add(orderId);
+    if (!maker) {
+      if (queued && !toTake.has(orderId)) return;
+      // Marked whenever it is queued now, also when take() arrived during look(): untake then reports it in flight.
+      if (toTake.has(orderId)) accepting.add(orderId);
     }
     try {
       const settled = await (maker ? acct.make : acct.take)(orderId, settle);
