@@ -1,8 +1,16 @@
 import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCb, type BinaryLike, type ScryptOptions } from 'node:crypto';
 import { closeSync, constants, fstatSync, openSync, linkSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { bytesToHex, deriveWalletKey, ed25519PublicKeyFromSeed, hexToBytes, isValidMnemonic, newMnemonic } from '@cancore/wallet';
+import { bytesToHex, deriveWalletKey, ed25519PublicKeyFromSeed, hexToBytes, assessWalletPassword, isValidMnemonic, newMnemonic, WALLET_PASSWORD_MIN_LENGTH, type WalletPasswordProblem } from '@cancore/wallet';
 import { createSigner } from './signer';
 import type { BotSigner, Keystore } from './types';
+
+/** A new keystore's passphrase fails the wallet password policy; `problem` is its code. */
+export class WeakPassphraseError extends Error {
+  constructor(readonly problem: WalletPasswordProblem) {
+    super(`keystore: passphrase rejected (${problem}): use at least ${WALLET_PASSWORD_MIN_LENGTH} characters, mixing letters with digits or symbols, not a common or repeated pattern`);
+    this.name = 'WeakPassphraseError';
+  }
+}
 
 const VERSION = 1;
 const MIN_N = 2 ** 17;
@@ -75,9 +83,11 @@ export function createKeystore(path: string): Keystore {
   async function write(raw: Uint8Array, passphrase: string) {
     const seed = Buffer.from(raw);
     raw.fill(0);
-    if (!passphrase) {
+    // Only on creation: an existing file keeps unlocking with the passphrase it was made with.
+    const problem = assessWalletPassword(passphrase);
+    if (problem) {
       seed.fill(0);
-      throw new Error('keystore: empty passphrase');
+      throw new WeakPassphraseError(problem);
     }
     const salt = randomBytes(32);
     const iv = randomBytes(12);

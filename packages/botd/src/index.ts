@@ -1,6 +1,6 @@
 export type * from './types';
 export * from './protocol/index';
-export { createKeystore } from './keystore';
+export { createKeystore, WeakPassphraseError } from './keystore';
 export { createSigner } from './signer';
 export { guardSigning, recomputeHash, VerifyError } from './verify';
 export { parseLimits, emptyLimits, loadLimits } from './limits';

@@ -2,7 +2,14 @@ import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deriveWalletKey, isValidMnemonic, providerFromMnemonic } from '@cancore/wallet';
-import { createKeystore, generateMnemonic, keyFromEnv, KeystoreFileError, WrongPassphraseError } from './keystore';
+import * as wallet from '@cancore/wallet';
+
+// The real policy, wrapped so one test can create a legacy (pre-policy) file with a weak passphrase.
+jest.mock('@cancore/wallet', () => {
+  const actual = jest.requireActual('@cancore/wallet');
+  return { ...actual, assessWalletPassword: jest.fn(actual.assessWalletPassword) };
+});
+import { createKeystore, generateMnemonic, keyFromEnv, KeystoreFileError, WeakPassphraseError, WrongPassphraseError } from './keystore';
 
 const PHRASE = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const HASH = Buffer.alloc(32, 1).toString('base64');
@@ -40,15 +47,15 @@ describe('createKeystore', () => {
 
   it('refuses to overwrite an existing keystore', async () => {
     const path = await initialised();
-    await expect(createKeystore(path).init(PHRASE, 'other')).rejects.toThrow(/already exists/);
+    await expect(createKeystore(path).init(PHRASE, 'other-pass-123')).rejects.toThrow(/already exists/);
   });
 
   it('works with a generated phrase', async () => {
     const phrase = generateMnemonic();
     expect(isValidMnemonic(phrase)).toBe(true);
     const path = fresh();
-    await createKeystore(path).init(phrase, 'pw');
-    expect((await createKeystore(path).unlock('pw')).public_key).toBe(deriveWalletKey(phrase).publicKeyHex);
+    await createKeystore(path).init(phrase, 'pw-long-enough-1');
+    expect((await createKeystore(path).unlock('pw-long-enough-1')).public_key).toBe(deriveWalletKey(phrase).publicKeyHex);
   });
 
   it('wrong passphrase → WrongPassphraseError', async () => {
@@ -105,5 +112,40 @@ describe('keyFromEnv', () => {
   });
   it('reads the key off mainnet with the opt-in', () => {
     expect(keyFromEnv({ insecureEnvKey: true, network: 'testnet', env }).public_key).toBe(deriveWalletKey(PHRASE).publicKeyHex);
+  });
+});
+
+describe('passphrase policy', () => {
+  const SEED = () => Uint8Array.from(Buffer.alloc(32, 7));
+  it.each([
+    ['a', 'too-short'],
+    ['', 'empty'],
+    ['abcdefghijklmnop', 'single-class'],
+    ['password1234!', 'common'],
+  ])('refuses %j on init and initSeed and writes no file', async (pass, problem) => {
+    for (const create of [(p: string) => createKeystore(p).init(PHRASE, pass), (p: string) => createKeystore(p).initSeed(SEED(), pass)]) {
+      const path = fresh();
+      await expect(create(path)).rejects.toMatchObject({ name: 'WeakPassphraseError', problem });
+      expect(() => statSync(path)).toThrow();
+    }
+  });
+
+  it('accepts a strong passphrase on both creation paths', async () => {
+    const a = fresh();
+    await createKeystore(a).init(PHRASE, 'strong-pass-2026');
+    expect((await createKeystore(a).unlock('strong-pass-2026')).public_key).toBe(deriveWalletKey(PHRASE).publicKeyHex);
+    const b = fresh();
+    await createKeystore(b).initSeed(SEED(), 'strong-pass-2026');
+    await expect(createKeystore(b).unlock('strong-pass-2026')).resolves.toBeDefined();
+  });
+
+  it('does not apply the policy on unlock: an existing file with a weak passphrase still opens', async () => {
+    const path = fresh();
+    (wallet.assessWalletPassword as jest.Mock).mockReturnValueOnce(null);
+    await createKeystore(path).init(PHRASE, 'a');
+    const calls = (wallet.assessWalletPassword as jest.Mock).mock.calls.length;
+    expect((await createKeystore(path).unlock('a')).public_key).toBe(deriveWalletKey(PHRASE).publicKeyHex);
+    expect((wallet.assessWalletPassword as jest.Mock).mock.calls.length).toBe(calls);
+    expect(new WeakPassphraseError('too-short').message).toMatch(/at least 12 characters/);
   });
 });
