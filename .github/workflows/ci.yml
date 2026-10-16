@@ -233,7 +233,7 @@ jobs:
             if (r.numTotalTestSuites !== 4 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
           "
 
-  # Transaction pricing of @cancore/trader against a real node (CAN-2299): an anvil of its own, no contracts and no
+  # Transaction pricing and nonce allocation of @cancore/trader against a real node (CAN-2299, CAN-2636): an anvil of its own, no contracts and no
   # secret. The suite toggles automine, so no other suite shares this anvil. ubuntu-latest for the reason given on
   # `check` (CAN-1120).
   anvil:
@@ -263,15 +263,15 @@ jobs:
             sleep 0.2
           done
           cat "$RUNNER_TEMP/anvil.log"; exit 1
-      - name: Replacement cap against anvil, none skipped
+      - name: Replacement cap and nonce counter against anvil, none skipped
         env:
           ANVIL_RPC_URL: http://127.0.0.1:8545
         run: |
-          npx jest --selectProjects int --runInBand --verbose --json --outputFile="$RUNNER_TEMP/int.json" packages/trader/test/replacement.int.test.ts
+          npx jest --selectProjects int --runInBand --verbose --json --outputFile="$RUNNER_TEMP/int.json" packages/trader/test/replacement.int.test.ts packages/trader/test/nonce.int.test.ts
           node -e "
             const r = require(process.env.RUNNER_TEMP + '/int.json');
             console.log(r.numPassedTests, 'passed,', r.numPendingTests + r.numTodoTests, 'skipped');
-            if (r.numTotalTestSuites !== 1 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
+            if (r.numTotalTestSuites !== 2 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
           "
 
   # CAN-2331: the published @cancore/contracts, installed from the npm registry into a stranger's project, and its
