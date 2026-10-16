@@ -33,7 +33,7 @@ describe('security: USD caps through the dispatcher', () => {
     r = await rig(noCaps);
     await r.unlock();
     expect(await outcome(r.dispatcher.handle(make('1'), agent))).toBe('usd_cap_missing');
-    r.cleanup();
+    await r.cleanup();
     r = await rig({ ...noCaps, usdCapsOptOut: true });
     await r.unlock();
     expect(await outcome(r.dispatcher.handle(make('1'), agent))).toBe('ok');

@@ -75,7 +75,7 @@ export interface Rig {
   audit(): AuditEntry[];
   state(): BotState;
   unlock(): Promise<void>;
-  cleanup(): void;
+  cleanup(): Promise<void>;
 }
 
 export async function rig(limits: unknown = LIMITS, keystore?: Deps['keystore']): Promise<Rig> {
@@ -106,9 +106,11 @@ export async function rig(limits: unknown = LIMITS, keystore?: Deps['keystore'])
     audit: () => readFileSync(paths(config).audit, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as AuditEntry),
     state: () => JSON.parse(readFileSync(paths(config).state, 'utf8')) as BotState,
     unlock: async () => void (await dispatcher.handle(req('unlock', { passphrase: 'right' }), { owner: true })),
-    cleanup: () => {
-      void deps.audit.close().catch(() => undefined);
-      rmSync(dir, { recursive: true, force: true });
+    // Lock first: it drains the unlock's background work (reconcile, onboard), which still writes into dir.
+    cleanup: async () => {
+      await dispatcher.lock().catch(() => undefined);
+      await deps.audit.close().catch(() => undefined);
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
     },
   };
 }

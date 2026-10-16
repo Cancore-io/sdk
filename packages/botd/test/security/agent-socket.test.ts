@@ -13,7 +13,7 @@ describe('security: agent socket', () => {
   });
   afterEach(async () => {
     await stop();
-    r.cleanup();
+    await r.cleanup();
   });
 
   const one = async (msg: unknown) => {
