@@ -136,6 +136,7 @@ test('socket path: flag, env, default; errors say what to do', () => {
   expect(resolveSocketPath(['--socket', '/a.sock'], { CANCORE_BOT_SOCKET: '/b.sock' })).toBe('/a.sock');
   expect(resolveSocketPath(['--socket=/c.sock'], {})).toBe('/c.sock');
   expect(() => resolveSocketPath(['--socket'], { CANCORE_BOT_SOCKET: '/b.sock' })).toThrow('--socket needs a path');
+  expect(() => resolveSocketPath(['--socket', '--other'], {})).toThrow('--socket needs a path');
   expect(resolveSocketPath([], { CANCORE_BOT_SOCKET: '/b.sock' })).toBe('/b.sock');
   expect(resolveSocketPath([], {})).toBe('/run/cancore-bot/bot.sock');
   expect(socketErrorMessage('/s', { code: 'ENOENT' })).toMatch(/daemon running/);
