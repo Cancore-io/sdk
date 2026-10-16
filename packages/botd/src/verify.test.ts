@@ -28,6 +28,17 @@ describe('guardSigning', () => {
     expect(failed).toHaveLength(2);
   });
 
+  it('refuses to sign a non-text message and never reaches the inner signer', async () => {
+    const calls: string[] = [];
+    const inner = { ...fakeSigner(), signMessage: async (m: string) => (calls.push(m), 'sig') };
+    const failed: string[] = [];
+    const g = guardSigning(inner, answering({}), (r) => failed.push(r));
+    await expect(g.signer.signMessage('\x00\xff\x10binary')).rejects.toBeInstanceOf(VerifyError);
+    expect(failed[0]).toMatch(/non-text/);
+    expect(calls).toEqual([]);
+    expect(await g.signer.signMessage('I agree')).toBe('sig');
+  });
+
   it('reports a hash that is not of its bytes and never signs it', async () => {
     const [l, other] = [await leg(), await selfSendLeg({ party: 'p::1220', kind: 'transfer', receiver: 'thief::1220', input: '10', ids: 'a', outputs: [{ owner: 'thief::1220', amount: '1' }] })];
     const inner = fakeSigner();

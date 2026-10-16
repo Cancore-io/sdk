@@ -1,4 +1,5 @@
-import { readFile, rename, writeFile } from 'fs/promises';
+import { open, readFile, rename } from 'fs/promises';
+import { dirname } from 'path';
 import { dec, fmt } from './decimal';
 import type { AuditEntry, AuditLog, BotState } from './types';
 
@@ -36,8 +37,21 @@ export function createStateStore(path: string): StateStore {
     // A stale caller must not move the audit pointer back: the newest entry seen wins.
     const next = audit && (state.lastAuditSeq ?? -1) < audit.seq ? { ...state, lastAuditSeq: audit.seq, lastAuditHash: audit.hash } : state;
     const tmp = `${path}.tmp`;
-    await writeFile(tmp, JSON.stringify(next), { mode: 0o600 });
+    // fsync file then directory: a power loss must leave either the old or the new state, never a torn one.
+    const fh = await open(tmp, 'w', 0o600);
+    try {
+      await fh.writeFile(JSON.stringify(next));
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
     await rename(tmp, path);
+    const dir = await open(dirname(path), 'r');
+    try {
+      await dir.sync();
+    } finally {
+      await dir.close();
+    }
   };
   return {
     load: () => serial(read),

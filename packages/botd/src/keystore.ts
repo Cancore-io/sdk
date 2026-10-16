@@ -8,6 +8,7 @@ const VERSION = 1;
 const MIN_N = 2 ** 17;
 const KDF = { N: MIN_N, r: 8, p: 1 };
 // scrypt needs 128 * N * r bytes; node's default maxmem (32 MiB) is below that for N = 2^17.
+// 512 MiB covers the accepted maximum N = 2^18 with r = 8 (256 MiB).
 const MAXMEM = 512 * 1024 * 1024;
 
 interface KeystoreFile {
@@ -57,7 +58,7 @@ function readChecked(path: string): KeystoreFile {
     if (file.version !== VERSION || file.kdf?.name !== 'scrypt' || file.cipher?.name !== 'aes-256-gcm') throw new KeystoreFileError('unsupported file format');
     if (!(file.kdf.N >= MIN_N && file.kdf.r >= 8 && file.kdf.p >= 1)) throw new KeystoreFileError('scrypt parameters below the minimum');
     // An absurd cost in the file would hang unlock for hours: bounded above as well as below.
-    if (!(file.kdf.N <= 2 ** 20 && file.kdf.r <= 8 && file.kdf.p <= 4)) throw new KeystoreFileError('scrypt parameters above the maximum');
+    if (!(file.kdf.N <= 2 ** 18 && file.kdf.r <= 8 && file.kdf.p <= 4)) throw new KeystoreFileError('scrypt parameters above the maximum');
     return file;
   } catch (err) {
     if (err instanceof KeystoreFileError) throw err;
@@ -158,7 +159,7 @@ export function createKeystore(path: string): Keystore {
 export interface EnvKeyOptions {
   /** Must be literally true: a plaintext key in the environment is for throwaway test bots only. */
   insecureEnvKey?: boolean;
-  network: string;
+  network: string | undefined;
   env?: NodeJS.ProcessEnv;
   /** Env var holding the 64-hex wallet key; default CANCORE_BOT_KEY. */
   variable?: string;
@@ -167,7 +168,8 @@ export interface EnvKeyOptions {
 /** A signer from a hex key in the environment; refused unless opted in, and always on mainnet. */
 export function keyFromEnv({ insecureEnvKey, network, env = process.env, variable = 'CANCORE_BOT_KEY' }: EnvKeyOptions): BotSigner {
   if (insecureEnvKey !== true) throw new Error('keyFromEnv: refused; pass insecureEnvKey: true to read a plaintext key from the environment');
-  if (network === 'mainnet') throw new Error('keyFromEnv: refused on mainnet; use an encrypted keystore');
+  // Allow-list, not deny-list: an unset or misspelled network must not reach mainnet with a plaintext key.
+  if (network !== 'devnet' && network !== 'testnet') throw new Error('keyFromEnv: allowed on devnet and testnet only; use an encrypted keystore');
   const hex = env[variable]?.trim();
   if (!hex || !/^[0-9a-f]{64}$/i.test(hex)) throw new Error(`keyFromEnv: ${variable} must be a 32-byte key as 64 hex characters`);
   return createSigner(hexToBytes(hex.toLowerCase()));

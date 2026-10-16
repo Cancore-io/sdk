@@ -91,7 +91,9 @@ describe('keyFromEnv', () => {
     expect(() => keyFromEnv({ network: 'testnet', env })).toThrow(/insecureEnvKey/);
   });
   it('refuses on mainnet even with the opt-in', () => {
-    expect(() => keyFromEnv({ insecureEnvKey: true, network: 'mainnet', env })).toThrow(/mainnet/);
+    expect(() => keyFromEnv({ insecureEnvKey: true, network: 'mainnet', env })).toThrow(/devnet and testnet only/);
+    expect(() => keyFromEnv({ insecureEnvKey: true, network: undefined, env })).toThrow(/devnet and testnet only/);
+    expect(() => keyFromEnv({ insecureEnvKey: true, network: 'Mainnet', env })).toThrow(/devnet and testnet only/);
   });
   it('reads the key off mainnet with the opt-in', () => {
     expect(keyFromEnv({ insecureEnvKey: true, network: 'testnet', env }).public_key).toBe(deriveWalletKey(PHRASE).publicKeyHex);

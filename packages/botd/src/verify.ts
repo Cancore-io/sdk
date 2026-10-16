@@ -50,6 +50,8 @@ export function recomputeHash(preparedTransaction: string): string | undefined {
  * from bytes, the signer signs only those (each once). `onFailed` hears every mismatch and every
  * refused signature.
  */
+const MAX_VERIFIED = 256;
+
 export function guardSigning(inner: BotSigner, fetchImpl: FetchLike, onFailed: (reason: string) => void): { signer: BotSigner; fetchImpl: FetchLike } {
   const verified = new Set<string>();
 
@@ -63,7 +65,11 @@ export function guardSigning(inner: BotSigner, fetchImpl: FetchLike, onFailed: (
     }
     for (const { bytes, hash } of preparedPairs(body)) {
       const real = recomputeHash(bytes);
-      if (real === hash) verified.add(hash);
+      if (real === hash) {
+        verified.add(hash);
+        // Abandoned prepares never get signed: keep only the newest MAX_VERIFIED (a Set iterates oldest first).
+        if (verified.size > MAX_VERIFIED) verified.delete(verified.values().next().value!);
+      }
       else onFailed(`prepared transaction hash ${hash} is not the hash of its bytes (${real ?? 'undecodable'})`);
     }
     return res;
