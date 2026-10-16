@@ -1,0 +1,59 @@
+{
+  "name": "@cancore/botd",
+  "version": "0.1.0-rc.0",
+  "type": "module",
+  "description": "The core of a self-custody trading daemon for Cancore: an encrypted keystore for the bot's key, a signer that recomputes the hash before it signs, owner-set limits behind a default-deny risk gate, a hash-chained audit log. ./protocol: the command and response schemas only.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol/index.d.ts",
+      "import": "./dist/protocol/index.js",
+      "default": "./dist/protocol/index.js"
+    }
+  },
+  "sideEffects": false,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cancore-io/sdk.git",
+    "directory": "packages/botd"
+  },
+  "homepage": "https://docs.cancore.io/sdk/botd",
+  "bugs": {
+    "url": "https://github.com/Cancore-io/sdk/issues"
+  },
+  "keywords": [
+    "cancore",
+    "canton",
+    "trading",
+    "bot",
+    "daemon",
+    "self-custody"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "prepack": "tsup --silent",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@cancore/client": "^0.10.0",
+    "@cancore/trader": "^0.1.0-rc.1",
+    "@cancore/wallet": ">=0.3.0 <1.0.0",
+    "zod": "^3.25.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
