@@ -89,6 +89,7 @@ describe('createKeystore', () => {
     file.kdf.N = 2 ** 19;
     writeFileSync(path, JSON.stringify(file), { mode: 0o600 });
     await expect(createKeystore(path).unlock('correct horse')).rejects.toBeInstanceOf(KeystoreFileError);
+    await expect(createKeystore(path).unlock('correct horse')).rejects.toThrow(/above the maximum/);
   });
 });
 
