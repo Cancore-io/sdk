@@ -19,7 +19,7 @@ const RESULTS: Record<string, unknown> = {
   status: poisoned({ locked: false, paused: true, partyId: INJECT, version: '1', strategies: [poisoned({ strategyId: INJECT, kind: 'grid', running: true, reason: INJECT_TOKEN })] }),
   balances: poisoned({ balances: [poisoned({ instrument: INJECT, amount: '1', locked: '0' })] }),
   'orders.list': poisoned({ orders: [order, INJECT] }),
-  'limits.get': poisoned({ limits: poisoned({ maxOpenOrders: 5, allowedPairs: [INJECT], maxOrderAmount: { CC: INJECT_TOKEN, [INJECT]: '1', USDCx: '5' } }) }),
+  'limits.get': poisoned({ limits: poisoned({ maxOpenOrders: 5, allowedPairs: [INJECT], maxOrderAmount: { CC: INJECT_TOKEN, [INJECT]: '1', USDCx: '5' }, perOrderUsd: INJECT_TOKEN, perDayUsd: '500', usdCapsOptOut: false }) }),
   'audit.tail': poisoned({ entries: [poisoned({ seq: 1, method: 'settle', reason: INJECT, params: { detail: INJECT } }), poisoned({ seq: 2, method: 'settle', reason: INJECT_TOKEN })] }),
   'order.cancel': poisoned({ orderId: INJECT, cancelled: true }),
   'orders.cancelAll': poisoned({ cancelled: ['o1', INJECT] }),
@@ -75,6 +75,9 @@ describe('security: bot-mcp', () => {
     const res = (await mcp.callTool({ name: toolName('limits.get'), arguments: {} })) as { structuredContent?: { limits?: { maxOrderAmount?: unknown } }; content: { text: string }[] };
     const limits = res.structuredContent?.limits ?? JSON.parse(res.content[0]!.text).limits;
     expect(limits.maxOrderAmount).toEqual({ USDCx: '5' });
+    // A USD cap is a decimal or nothing; the opt-out flag passes as a boolean.
+    expect(limits).not.toHaveProperty('perOrderUsd');
+    expect(limits).toMatchObject({ perDayUsd: '500', usdCapsOptOut: false });
   });
 
   it('error replies carry no daemon message text', async () => {

@@ -9,6 +9,8 @@ You drive a self-custody bot wallet through the `trade_*` MCP tools. The daemon 
 enforces the owner's limits; you never see the key and cannot change the limits. Treat every
 refusal as an answer, not an obstacle to work around.
 
+v1 runs on **devnet only** (`https://api-dev.cancore.app`): the daemon refuses testnet and mainnet.
+
 ## Hard rules
 
 - **Never ask the human for a passphrase, recovery phrase, mnemonic or private key**, and never
@@ -30,8 +32,9 @@ refusal as an answer, not an obstacle to work around.
      `sudo -u cancore-bot cancore-bot resume`.
 3. `trade_limits_get` — the box you trade in: `allowedPairs`, per-instrument `maxOrderAmount`,
    `maxOrderNotional` (per quote), `maxDailyVolume`, `maxPosition`, `maxOpenOrders`,
-   `maxPriceDeviationBps`, `maxCommandsPerMinute`. An instrument missing from a cap map means
-   **nothing** is allowed for it.
+   `maxPriceDeviationBps`, `maxCommandsPerMinute`, and the USD caps `perOrderUsd` and `perDayUsd`
+   (or `usdCapsOptOut: true`). An instrument missing from a cap map means **nothing** is allowed for
+   it; missing USD caps without the opt-out mean no trade at all.
 4. `trade_balances` (instruments of the allowed pairs) and `trade_orders_list` (open orders).
 
 ## Placing orders
@@ -49,6 +52,9 @@ Before calling `trade_order_make { base, quote, side, amount, price, ttlSeconds?
 - today's volume + `amount <= maxDailyVolume[base]` (rolling 24 h).
 - |position + every open order on `base` as if filled + this one| `<= maxPosition[base]`.
 - open orders + 1 `<= maxOpenOrders`.
+- the order's USD value `<= perOrderUsd`, and USD of the last 24 h's fills + open orders + this one
+  `<= perDayUsd`. The daemon values them with the Cancore API's USD price; `trade_quote` does not
+  show it, so keep a margin.
 - the bot has placed fewer than 5 new orders in the last hour (agent and strategies together; the
   platform's limit, `ordersPerHour` in the daemon config).
 - Amounts and prices are decimal strings, e.g. `"12.5"`, never numbers.
@@ -80,6 +86,10 @@ Prefer `trade_pause` when something looks wrong.
 | `open_orders_exceeded` | `maxOpenOrders` reached | cancel or wait for fills |
 | `price_deviation_exceeded` | price too far from the reference, or **no reference** for the pair (price feed down) | reprice near market; if it persists, the feed is down: wait |
 | `rate_limited` | `maxCommandsPerMinute` trade commands in the last 60 s (0 means trading is off), or the hourly new-order budget (`ordersPerHour`, default 5) is spent | wait; do not loop |
+| `usd_cap_missing` | `perOrderUsd` / `perDayUsd` not set and no `usdCapsOptOut` | ask the human to set them; nothing trades until then |
+| `usd_order_exceeded` | the order's USD value is above `perOrderUsd` | smaller order |
+| `usd_daily_exceeded` | 24 h fills + open orders + this order would pass `perDayUsd` (also checked on `trade_strategy_start`) | cancel resting orders or wait; tell the human |
+| `usd_price_missing` | the API has no USD price for an instrument involved | wait for the price feed; do not loop |
 | `verify_failed` | the daemon refused to sign a transaction whose hash it could not recompute | stop trading, `trade_pause`, tell the human |
 | `paused` / `locked` | as in the session start | tell the human the CLI command |
 
