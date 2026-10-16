@@ -16,11 +16,11 @@ const poisoned = (extra: Record<string, unknown> = {}) => ({
 });
 const order = poisoned({ orderId: 'o1', base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: INJECT, filled: '0', status: INJECT, createdAt: '' });
 const RESULTS: Record<string, unknown> = {
-  status: poisoned({ locked: false, paused: true, partyId: INJECT, version: '1', strategies: [poisoned({ strategyId: INJECT, kind: 'grid', running: true })] }),
+  status: poisoned({ locked: false, paused: true, partyId: INJECT, version: '1', strategies: [poisoned({ strategyId: INJECT, kind: 'grid', running: true, reason: INJECT_TOKEN })] }),
   balances: poisoned({ balances: [poisoned({ instrument: INJECT, amount: '1', locked: '0' })] }),
   'orders.list': poisoned({ orders: [order, INJECT] }),
   'limits.get': poisoned({ limits: poisoned({ maxOpenOrders: 5, allowedPairs: [INJECT] }) }),
-  'audit.tail': poisoned({ entries: [poisoned({ seq: 1, method: 'settle', reason: INJECT, params: { detail: INJECT } })] }),
+  'audit.tail': poisoned({ entries: [poisoned({ seq: 1, method: 'settle', reason: INJECT, params: { detail: INJECT } }), poisoned({ seq: 2, method: 'settle', reason: INJECT_TOKEN })] }),
   'order.cancel': poisoned({ orderId: INJECT, cancelled: true }),
   'orders.cancelAll': poisoned({ cancelled: ['o1', INJECT] }),
   pause: poisoned({ paused: true }),

@@ -4,6 +4,7 @@ export const DEFAULT_SOCKET = '/run/cancore-bot/bot.sock';
 export function resolveSocketPath(argv: readonly string[], env: NodeJS.ProcessEnv): string {
   const i = argv.findIndex((a) => a === '--socket' || a.startsWith('--socket='));
   const flag = i < 0 ? undefined : argv[i]!.includes('=') ? argv[i]!.slice('--socket='.length) : argv[i + 1];
+  if (i >= 0 && !flag) throw new Error('--socket needs a path');
   return flag || env.CANCORE_BOT_SOCKET || DEFAULT_SOCKET;
 }
 
