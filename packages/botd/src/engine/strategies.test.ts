@@ -859,6 +859,20 @@ describe('round on 0d5f493: wadguk and goodmai', () => {
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual([id]);
   });
 
+  it('a failed second daemon cancel keeps the mark of an earlier one that was sent', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    const id = w.state().openOrders[0]!.orderId;
+    w.crash.orderDown = true;
+    await w.call('pause', {}, true);
+    expect(Object.keys(w.state().daemonCancels ?? {})).toContain(id);
+    await w.call('resume', {}, true);
+    w.crash.cancelFails = true;
+    await w.call('pause', {}, true);
+    expect(Object.keys(w.state().daemonCancels ?? {})).toContain(id);
+  });
+
   it('a cancel the daemon itself sent is not a user cancel: the grid keeps the slot (coordinator)', async () => {
     const w = world();
     await w.unlock();

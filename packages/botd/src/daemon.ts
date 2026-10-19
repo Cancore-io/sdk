@@ -209,11 +209,13 @@ export function createDispatcher(deps: Deps): Dispatcher {
     const info = (await read()) ?? (await read());
     if (info && info.status !== 'open') return 'kept';
     // Recorded before the request: however it ends, reconcile then knows the daemon cancelled it, not the user.
-    if (byDaemon) await mutate((s) => ({ ...s, daemonCancels: { ...s.daemonCancels, [orderId]: deps.now() } }));
+    let marked = false;
+    if (byDaemon) await mutate((s) => ((marked = !s.daemonCancels?.[orderId]), { ...s, daemonCancels: { ...s.daemonCancels, [orderId]: deps.now() } }));
     const sent = await e.cancel(orderId).then(() => true, () => false);
     if (!sent) {
       // Not sent: the mark must not hide a later manual cancel of this order.
-      if (byDaemon) await mutate((s) => ({ ...s, daemonCancels: Object.fromEntries(Object.entries(s.daemonCancels ?? {}).filter(([id]) => id !== orderId)) }));
+      // Only a mark this call set: an earlier daemon cancel of this order may still be in flight.
+      if (marked) await mutate((s) => ({ ...s, daemonCancels: Object.fromEntries(Object.entries(s.daemonCancels ?? {}).filter(([id]) => id !== orderId)) }));
       return 'failed';
     }
     if (!info) return 'sent';
