@@ -35,6 +35,8 @@ function fakeApi() {
     dropAccept: false,
     /** Whether the venue applied that accept before the answer was lost. */
     applyAccept: true,
+    /** When set, decides each POST accept by attempt number (1-based) instead of dropAccept/applyAccept. */
+    acceptScript: undefined as undefined | ((attempt: number) => 'lost-unapplied' | 'applied-then-400'),
     accepts: 0,
     orders,
     async fetch(url: string, init: RequestInit): Promise<Response> {
@@ -58,6 +60,13 @@ function fakeApi() {
       const accepting = /^\/orders\/(x\d+)\/accept$/.exec(pathname);
       if (init.method === 'POST' && accepting && orders.has(accepting[1]!)) {
         api.accepts++;
+        const step = api.acceptScript?.(api.accepts);
+        if (step === 'lost-unapplied') throw new TypeError('fetch failed: the server was still in its handler');
+        if (step === 'applied-then-400') {
+          // The earlier attempt commits now; this one sees the order no longer open.
+          Object.assign(orders.get(accepting[1]!)!, { status: 'accepted', opponentUserId: 'bot' });
+          return json({ statusCode: 400, message: 'Order is not open' }, 400);
+        }
         if (api.applyAccept) Object.assign(orders.get(accepting[1]!)!, { status: 'accepted', opponentUserId: 'bot' });
         if (api.dropAccept) throw new TypeError('fetch failed: the response was lost');
         return json(orders.get(accepting[1]!));
@@ -340,5 +349,87 @@ describe('cancore-botd end to end: an accept whose answer was lost (F128-LOST-AC
     }
     expect((state().fills ?? []).length).toBe(before.fills);
     expect(state().positions).toEqual(before.positions);
+  });
+});
+
+describe('cancore-botd end to end: a 400 after a lost accept answer (F128-ACCEPT-400-1)', () => {
+  let dir: string;
+  let config: BotConfig;
+  const api = fakeApi();
+  // A short reconcile, so serve retries the take after the first lost answer.
+  const boot = async (reconcileMs = 20) => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs }));
+  const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
+    const c = await connect(socket);
+    try {
+      return (await c.call(method as never, params as never)) as T;
+    } finally {
+      c.close();
+    }
+  };
+  const refusal = (p: Promise<unknown>) => p.then(() => undefined, (e: RpcCallError) => e.error);
+  const owner = <T = unknown>(m: string, p?: unknown) => call<T>(config.ownerSocket, m, p);
+  const agent = <T = unknown>(m: string, p?: unknown) => call<T>(config.agentSocket, m, p);
+  const state = () => JSON.parse(readFileSync(paths(config).state, 'utf8')) as BotState;
+  const until = async (check: () => boolean) => {
+    for (let i = 0; i < 250 && !check(); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(check()).toBe(true);
+  };
+  const audit = () => readFileSync(paths(config).audit, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { params?: { orderId?: string; event?: string } });
+  const takeFailures = (orderId: string) => audit().filter((e) => e.params?.event === 'take_failed' && e.params.orderId === orderId).length;
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'botd-e2e-400-'));
+    config = {
+      ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
+      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
+    };
+    delete (config as Partial<BotConfig>).clientsGroup;
+    await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
+    writeFileSync(paths(config).limits, JSON.stringify({ ...LIMITS, perOrderUsd: '100', perDayUsd: '2' }), { mode: 0o600 });
+    api.orders.set('x3', {
+      id: 'x3', status: 'open', sourceNetwork: 'canton', targetNetwork: 'canton', dvp: true,
+      initiatorUserId: 'someone', opponentUserId: null, swapId: null,
+      sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: '10', targetTokenAddress: 'USDCx', targetTokenName: 'USDCx', targetAmount: '1.5',
+      expiresAt: '', createdAt: '', updatedAt: '',
+    });
+    api.acceptScript = (attempt) => (attempt === 1 ? 'lost-unapplied' : 'applied-then-400');
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('keeps the booking through the refusal and counts the trade exactly once', async () => {
+    let stop = await boot();
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      expect(await agent('order.take', { orderId: 'x3', amount: '10' })).toMatchObject({ orderId: 'x3' });
+      // First answer lost, the order still read open, the retry got 400 while the first attempt landed.
+      await until(() => api.accepts >= 2 && takeFailures('x3') >= 2);
+      await owner('pause', { reason: 'owner stop' });
+      expect(state().openOrders.map((o) => o.orderId)).toEqual(['x3']);
+    } finally {
+      await stop();
+    }
+
+    api.orders.get('x3')!.status = 'completed';
+    for (let round = 0; round < 2; round++) {
+      stop = await boot(3_600_000);
+      try {
+        await owner('unlock', { passphrase: 'bot-pass-2026' });
+        await until(() => state().openOrders.length === 0 && (state().fills ?? []).length === 1);
+      } finally {
+        await stop();
+      }
+    }
+    expect(state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '10', usdValue: '1.5' })]);
+    expect(state().positions).toMatchObject({ CC: '10' });
+
+    stop = await boot(3_600_000);
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      await owner('resume');
+      expect(await refusal(agent('order.make', { base: 'CC', quote: 'USDCx', side: 'buy', amount: '10', price: '0.15' })))
+        .toMatchObject({ code: ERROR.DENIED, data: { reason: 'usd_daily_exceeded' } });
+    } finally {
+      await stop();
+    }
   });
 });

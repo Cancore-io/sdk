@@ -389,3 +389,24 @@ test('a take whose accept answer was lost stays in flight: untake reports it may
   expect(handle.untake('lost')).toBe(false);
   await handle.stop();
 });
+
+test('a refusal after an earlier accept with an unknown outcome keeps the take in flight', async () => {
+  const theirs = order('twice', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let runs = 0;
+  const { acct } = account([theirs], async () => {
+    throw new Error('unused');
+  });
+  (acct as unknown as { take: (id: string, o: SettleRun) => Promise<Settled> }).take = async (_id, o) => {
+    runs++;
+    if (o.beforeAccept && !o.beforeAccept()) throw Object.assign(new Error('called off'), { name: 'TakeCancelledError' });
+    // First attempt: the answer is lost. Second: the venue says 400, because the first one already took the order.
+    if (runs > 1) o.onAcceptRefused?.();
+    throw runs === 1 ? new TypeError('fetch failed') : new Error('400 order is not open');
+  };
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 5 }, noneLocked);
+  handle.take('twice');
+  await until(() => runs >= 2);
+  await new Promise((r) => setImmediate(r));
+  expect(handle.untake('twice')).toBe(false);
+  await handle.stop();
+});

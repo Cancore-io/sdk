@@ -2819,6 +2819,39 @@ describe('serve(): which accept failures prove nothing was accepted', () => {
   });
 });
 
+describe('serve(): a 400 after a lost accept answer does not drop the take (F128-ACCEPT-400-1)', () => {
+  test('first accept times out unapplied-looking, the order still reads open, the second accept lands but answers 400; untake reports a trade, and the trade settles', async () => {
+    const api = venue();
+    let posts = 0;
+    const fetchImpl: typeof api.fetchImpl = async (url, init) => {
+      if (init.method === 'POST' && new URL(url).pathname === '/orders/o1/accept') {
+        posts++;
+        // First attempt: the server is still in its handler when the client gives up; nothing visible yet.
+        if (posts === 1) throw new TypeError('fetch failed');
+        // Second attempt: the first one commits now (we become the taker), and this one is refused as not open.
+        if (posts === 2) {
+          await api.fetchImpl(url, init);
+          return new Response(JSON.stringify({ statusCode: 400, message: 'Order is not open' }), { status: 400 });
+        }
+      }
+      return api.fetchImpl(url, init);
+    };
+    const { maker, taker } = await tradingPair(api, [80, 81], {}, { fetchImpl });
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    const events: ServeEvent[] = [];
+    const handle = taker.serve({ reconcileMs: 5, onEvent: (e) => events.push(e) });
+    handle.take('o1');
+    await until(() => posts >= 2 && events.filter((e) => e.type === 'error').length >= 2);
+    // What a pause does now: the take must still be reported as a possible trade.
+    expect(handle.untake('o1')).toBe(false);
+    expect(api.order.opponentUserId).toBeTruthy();
+    await handle.stop();
+  });
+});
+
 describe('take: onAccepted marks the trade', () => {
   test('called once this account holds the order', async () => {
     const api = venue();

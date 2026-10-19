@@ -139,6 +139,9 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   const accepting = new Set<string>();
   // Takes accepted by this account: trades, whatever later steps or retries do.
   const accepted = new Set<string>();
+  // Takes with an accept whose outcome was never learned: a later refusal cannot prove the earlier one did not land
+  // (the venue refuses a second accept on an order the first one already took), so they stay in flight.
+  const ambiguous = new Set<string>();
   const again = new Set<string>();
   /** Swaps an `expired` event was sent for. */
   const reported = new Set<string>();
@@ -209,12 +212,16 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
         beforeAccept,
         onAccepted: () => void accepted.add(orderId),
         // Only a proven refusal leaves the in-flight state; a lost answer stays in flight until the venue shows the order.
-        onAcceptRefused: () => void accepting.delete(orderId),
+        onAcceptRefused: () => {
+          if (!ambiguous.has(orderId)) accepting.delete(orderId);
+        },
       };
       const settled = await (maker ? acct.make(orderId, settle) : acct.take(orderId, takeRun));
       done.add(orderId);
       emit({ type: 'settled', orderId, swapId: settled.swap.id, settled });
     } catch (error) {
+      // Still in flight after the failure: no refusal proved this accept did not happen.
+      if (accepting.has(orderId)) ambiguous.add(orderId);
       if (stopper.signal.aborted || (error as Error)?.name === 'TakeCancelledError') return;
       const last = (error as { last?: HtlcSwap | Order }).last;
       if (last && 'status' in last && last.status === 'dvp_expired') {
