@@ -198,6 +198,8 @@ export interface SettlementRecord {
   /** Source chain the `settle` went to. */
   chain?: Caip2;
   txHash?: Hex;
+  /** Canton source: the update id of the party's `SwapIntent_SettleWithProof`. */
+  updateId?: string;
   orderSettled?: OrderSettled;
   /** Why it failed (revert reason, `refundAfter` passed). */
   reason?: string;

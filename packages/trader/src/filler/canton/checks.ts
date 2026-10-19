@@ -160,14 +160,14 @@ export const decimal = (units: bigint): string => {
 };
 
 /** A holding as the token standard's view reads it. */
-interface HoldingSeen {
+export interface HoldingSeen {
   owner: string | undefined;
   admin: string;
   id: string;
   amount: bigint;
   locked: boolean;
 }
-function holdingOf(argument: DamlValue, f: CantonTransferFactory): HoldingSeen {
+export function holdingOf(argument: DamlValue, f: CantonTransferFactory): HoldingSeen {
   const view = field(argument, f.holdingView);
   const account = field(view, 'account');
   const instrument = field(view, 'instrumentId');
