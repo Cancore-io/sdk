@@ -262,7 +262,9 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
    such a booking with `cancore-bot release <orderId>` (`order.release`): the daemon calls the queued
    take off, reads the order on the venue, and releases it only if the order is still open with no
    taker, or was taken by another account or ended. Any other state (this account as taker, a taker
-   not reported yet, completed by this account) is refused with `may_be_trade` and stays booked. An
+   not reported yet, completed by this account) is refused with `may_be_trade` and stays booked, and
+   so is any release while the settlement loop still works on the order: an accept it already sent
+   could land after the read. An
    accept that lands after a release settles an order the book no longer knows, which pauses trading
    (`unbooked_fill`).
 

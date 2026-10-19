@@ -750,6 +750,10 @@ export function createDispatcher(deps: Deps): Dispatcher {
         }
         // Dequeued before the venue is read: no retry of the accept can start after the read.
         e.untake(orderId);
+        // An accept already sent can land after the read: no release while the loop still works on the order.
+        if (e.busy(orderId)) {
+          throw new RpcFault(ERROR.INVALID_PARAMS, 'not released: an accept for this order may still be in flight; try again once it has an answer', { reason: 'may_be_trade' } as never);
+        }
         const info = await e.order(orderId).catch(() => undefined);
         if (!info) throw new RpcFault(ERROR.INTERNAL, 'not released: the order could not be read; try again');
         // Only the venue's word that this account is not the taker releases it. An accept that lands later anyway

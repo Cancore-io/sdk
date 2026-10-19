@@ -90,6 +90,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
           return { orderId: p.orderId, filled: '0' };
         },
         untake: (id: string) => (untaken.push(id), crash.untaken.push(id), true),
+        busy: () => false,
         // The venue applies a cancel: the order then reads cancelled, unless the test already set it otherwise.
         cancel: (id) => {
           // Not even a promise: a cancel that blows up in the caller's hands.

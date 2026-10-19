@@ -671,3 +671,74 @@ describe('cancore-botd end to end: a lock between a take and its booking (N-1)',
     }
   });
 });
+
+describe('cancore-botd end to end: an owner release while the take is in flight (CAN-2836)', () => {
+  let dir: string;
+  let config: BotConfig;
+  const api = fakeApi();
+  const boot = async () => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 }));
+  const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
+    const c = await connect(socket);
+    try {
+      return (await c.call(method as never, params as never)) as T;
+    } finally {
+      c.close();
+    }
+  };
+  const refusal = (p: Promise<unknown>) => p.then(() => undefined, (e: RpcCallError) => e.error);
+  const owner = <T = unknown>(m: string, p?: unknown) => call<T>(config.ownerSocket, m, p);
+  const agent = <T = unknown>(m: string, p?: unknown) => call<T>(config.agentSocket, m, p);
+  const state = () => JSON.parse(readFileSync(paths(config).state, 'utf8')) as BotState;
+  const until = async (check: () => boolean) => {
+    for (let i = 0; i < 250 && !check(); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(check()).toBe(true);
+  };
+  const audit = () => readFileSync(paths(config).audit, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { params?: { orderId?: string; event?: string } });
+  const event = (orderId: string, name: string) => audit().some((e) => e.params?.event === name && e.params.orderId === orderId);
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'botd-e2e-release-'));
+    config = {
+      ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
+      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
+    };
+    delete (config as Partial<BotConfig>).clientsGroup;
+    await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
+    writeFileSync(paths(config).limits, JSON.stringify(LIMITS), { mode: 0o600 });
+    api.orders.set('x1', {
+      id: 'x1', status: 'open', sourceNetwork: 'canton', targetNetwork: 'canton', dvp: true,
+      initiatorUserId: 'someone', opponentUserId: null, swapId: null,
+      sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: '1', targetTokenAddress: 'USDCx', targetTokenName: 'USDCx', targetAmount: '0.15',
+      expiresAt: '', createdAt: '', updatedAt: '',
+    });
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('is refused while the accept is out, though the venue reads open with no taker; once that accept is over, the venue decides', async () => {
+    const stop = await boot();
+    let answer!: () => void;
+    api.acceptHold = new Promise<void>((r) => (answer = r));
+    const sent = new Promise<void>((r) => (api.atAccept = r));
+    // The answer is then lost, and the venue never applies that accept.
+    api.acceptScript = () => 'lost-unapplied';
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      expect(await agent('order.take', { orderId: 'x1', amount: '1' })).toMatchObject({ orderId: 'x1' });
+      await sent;
+      expect(await refusal(owner('order.release', { orderId: 'x1' }))).toMatchObject({ code: ERROR.INVALID_PARAMS, data: { reason: 'may_be_trade' } });
+      expect(state().openOrders.map((o) => o.orderId)).toEqual(['x1']);
+      answer();
+      await until(() => event('x1', 'take_failed'));
+      // Nothing of ours can still land on it: the order reads open with no taker, so it is released.
+      expect(await owner('order.release', { orderId: 'x1' })).toMatchObject({ orderId: 'x1', released: true });
+      expect(state().openOrders).toEqual([]);
+      expect(event('x1', 'released')).toBe(true);
+      expect(api.accepts).toBe(1);
+    } finally {
+      api.acceptHold = undefined;
+      api.atAccept = undefined;
+      api.acceptScript = undefined;
+      await stop();
+    }
+  });
+});
