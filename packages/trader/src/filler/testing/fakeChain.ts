@@ -42,6 +42,8 @@ const hex = (n: bigint): string => `0x${n.toString(16)}`;
 /** A router escrow record, present from `atBlock` on (default: always). */
 export interface FakeIntent extends IntentRecord {
   atBlock?: bigint;
+  /** The block `status` took effect at; before it the intent reads `Opened` (default: always `status`). */
+  statusAtBlock?: bigint;
 }
 
 /** The scripted state of one router; every map is keyed by lowercase hex. */
@@ -75,7 +77,8 @@ export class FakeRouter {
       case 'intents': {
         const record = this.intents.get(key(0));
         if (!record || (record.atBlock !== undefined && block < record.atBlock)) return [0n, 0n, 0n];
-        return [BigInt(record.status), record.refundAfter, record.openedAt];
+        const status = record.statusAtBlock !== undefined && block < record.statusAtBlock ? 1 : record.status;
+        return [BigInt(status), record.refundAfter, record.openedAt];
       }
       case 'filled': {
         const at = this.filled.get(key(0));
