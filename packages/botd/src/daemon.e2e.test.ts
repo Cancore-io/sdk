@@ -4,12 +4,12 @@ import { join } from 'path';
 import { ed25519 } from '@noble/curves/ed25519';
 import { cantonFingerprint } from '@cancore/wallet';
 import { selfSendLeg } from '../../client/src/dvp-prepared.fixture';
-import { defaultDeps, start } from './daemon';
+import { createDispatcher, defaultDeps, start } from './daemon';
 import { connect, RpcCallError } from './ipc/client';
 import { DEFAULTS, paths, type BotConfig } from './config';
 import { createKeystore } from './keystore';
 import { recomputeHash } from './verify';
-import { ERROR } from './protocol/index';
+import { ERROR, JSONRPC_VERSION, type RpcRequest } from './protocol/index';
 import type { BotState } from './types';
 
 /**
@@ -38,6 +38,11 @@ function fakeApi() {
     /** When set, decides each POST accept by attempt number (1-based) instead of dropAccept/applyAccept. */
     acceptScript: undefined as undefined | ((attempt: number) => 'lost-unapplied' | 'applied-then-400'),
     accepts: 0,
+    /** When set, a POST accept reports itself and waits here before the venue answers. */
+    acceptHold: undefined as Promise<void> | undefined,
+    atAccept: undefined as undefined | (() => void),
+    /** When set, GET /orders/<id> lets `skip` reads pass, then waits on `gate`. */
+    readHold: undefined as undefined | { id: string; skip: number; gate: Promise<void> },
     /** GET /orders/<id> per order: a reconcile is observable by its lookup. */
     reads: {} as Record<string, number>,
     orders,
@@ -62,6 +67,8 @@ function fakeApi() {
       const accepting = /^\/orders\/(x\d+)\/accept$/.exec(pathname);
       if (init.method === 'POST' && accepting && orders.has(accepting[1]!)) {
         api.accepts++;
+        api.atAccept?.();
+        await api.acceptHold;
         const step = api.acceptScript?.(api.accepts);
         if (step === 'lost-unapplied') throw new TypeError('fetch failed: the server was still in its handler');
         if (step === 'applied-then-400') {
@@ -76,6 +83,8 @@ function fakeApi() {
       const order = /^\/orders\/([ox]\d+)(\/cancel)?$/.exec(pathname);
       if (order && orders.has(order[1]!)) {
         if (!order[2]) api.reads[order[1]!] = (api.reads[order[1]!] ?? 0) + 1;
+        const hold = api.readHold;
+        if (!order[2] && hold && hold.id === order[1] && hold.skip-- <= 0) await hold.gate;
         if (order[2]) {
           api.cancelled.push(order[1]!);
           orders.get(order[1]!)!.status = 'cancelled';
@@ -563,6 +572,102 @@ describe('cancore-botd end to end: an ambiguous take stays booked until the venu
         .toMatchObject({ code: ERROR.DENIED, data: { reason: 'usd_daily_exceeded' } });
     } finally {
       await stop();
+    }
+  });
+});
+
+describe('cancore-botd end to end: a lock between a take and its booking (N-1)', () => {
+  let dir: string;
+  let config: BotConfig;
+  const api = fakeApi();
+  const state = () => JSON.parse(readFileSync(paths(config).state, 'utf8')) as BotState;
+  const req = (method: string, params: unknown): RpcRequest => ({ jsonrpc: JSONRPC_VERSION, id: 1, method: method as never, params: params as never });
+  const held = () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    return { gate, release };
+  };
+  /** The real engine over the fake API; only the step from its take to the daemon's booking write is held. */
+  async function dispatcher() {
+    const deps = await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 });
+    const booking = held();
+    let queued!: () => void;
+    const taken = new Promise<void>((r) => (queued = r));
+    const real = deps.createEngine;
+    deps.createEngine = (signer, hooks) => {
+      const e = real(signer, hooks);
+      return { ...e, take: async (p) => { const r = await e.take(p); queued(); await booking.gate; return r; } };
+    };
+    const d = createDispatcher(deps);
+    await d.handle(req('unlock', { passphrase: 'bot-pass-2026' }), { owner: true });
+    return { d, deps, booking, taken };
+  }
+  const order = (id: string, amount: string, total: string) => ({
+    id, status: 'open', sourceNetwork: 'canton', targetNetwork: 'canton', dvp: true,
+    initiatorUserId: 'someone', opponentUserId: null, swapId: null,
+    sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: amount, targetTokenAddress: 'USDCx', targetTokenName: 'USDCx', targetAmount: total,
+    expiresAt: '', createdAt: '', updatedAt: '',
+  });
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'botd-e2e-n1-'));
+    config = {
+      ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
+      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
+    };
+    delete (config as Partial<BotConfig>).clientsGroup;
+    await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
+    writeFileSync(paths(config).limits, JSON.stringify(LIMITS), { mode: 0o600 });
+    api.orders.set('x1', order('x1', '10', '1.5'));
+    api.orders.set('x2', order('x2', '2', '0.3'));
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('an accept already sent when the lock lands keeps the take booked as a trade, not dropped', async () => {
+    const { d, deps, booking, taken } = await dispatcher();
+    const accept = held();
+    const atAccept = new Promise<void>((r) => (api.atAccept = r));
+    api.acceptHold = accept.gate;
+    try {
+      const taking = d.handle(req('order.take', { orderId: 'x1', amount: '10' }), { owner: false });
+      await taken;
+      // serve's POST accept is out; the daemon has not booked the take yet.
+      await atAccept;
+      const locking = d.handle(req('lock', {}), { owner: true });
+      await new Promise((r) => setImmediate(r));
+      booking.release();
+      await expect(taking).resolves.toMatchObject({ result: { orderId: 'x1' } });
+      expect(state().openOrders.map((o) => o.orderId)).toEqual(['x1']);
+      accept.release();
+      await locking;
+      expect(api.accepts).toBe(1);
+    } finally {
+      api.acceptHold = undefined;
+      api.atAccept = undefined;
+      await deps.audit.close();
+    }
+  });
+
+  it('a take whose accept has not started when the lock lands is called off: LOCKED, and no accept goes out', async () => {
+    const { d, deps, booking, taken } = await dispatcher();
+    const read = held();
+    // The gate's read of x2 passes; serve's first look at it waits, so its accept cannot have started.
+    api.readHold = { id: 'x2', skip: 1, gate: read.gate };
+    const accepts = api.accepts;
+    try {
+      const taking = d.handle(req('order.take', { orderId: 'x2', amount: '2' }), { owner: false });
+      await taken;
+      const locking = d.handle(req('lock', {}), { owner: true });
+      await new Promise((r) => setImmediate(r));
+      booking.release();
+      await expect(taking).rejects.toMatchObject({ code: ERROR.LOCKED });
+      read.release();
+      await locking;
+      expect(api.accepts).toBe(accepts);
+      expect(state().openOrders.map((o) => o.orderId)).not.toContain('x2');
+    } finally {
+      api.readHold = undefined;
+      await deps.audit.close();
     }
   });
 });

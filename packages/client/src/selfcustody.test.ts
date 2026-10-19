@@ -2905,6 +2905,33 @@ describe('serve(): an untake is honoured up to the accept request itself', () =>
   });
 });
 
+describe('serve(): untake of a take this account has already accepted (V3)', () => {
+  test('the order was accepted by this account outside serve before the queued take ran: untake reports a trade', async () => {
+    const api = venue();
+    let reads = 0;
+    const fetchImpl: typeof api.fetchImpl = async (url, init) => {
+      if (init.method === 'GET' && new URL(url).pathname === '/orders/o1') reads++;
+      return api.fetchImpl(url, init);
+    };
+    const { maker, taker } = await tradingPair(api, [84, 85], {}, { fetchImpl });
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    // Accepted by this same account elsewhere (the web app) after the daemon's gate read the order open.
+    await taker.swap.accept('o1');
+    const handle = taker.serve({ reconcileMs: 3_600_000 });
+    reads = 0;
+    handle.take('o1');
+    // serve's look, the take's own read, then its wait for the maker: the accept was never this loop's to send,
+    // but the trade is this account's and in progress.
+    await until(() => reads >= 3);
+    expect(handle.untake('o1')).toBe(false);
+    expect(api.takes()).toBe(1);
+    await handle.stop();
+  });
+});
+
 describe('serve(): the maker runs nothing but serve()', () => {
   test('an order taken while serve runs is settled on the maker side, triggered by the realtime event alone', async () => {
     const api = venue();
