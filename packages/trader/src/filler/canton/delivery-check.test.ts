@@ -98,6 +98,7 @@ interface Over {
   pending?: boolean;
   noOrder?: boolean;
   actAs?: string[];
+  fetchSignatories?: string[];
 }
 
 /** The honest fill: DeliveryOrder_Fill → [registry fetch, TransferFactory_Transfer → (archive h1, h2, credit, change), DeliveryReceipt]. */
@@ -127,7 +128,7 @@ function fill(o: Over = {}): CantonTransaction {
     }),
     actingParties: [ME], signatories: [ADMIN], stakeholders: [ADMIN], consuming: false, children: children.map((n) => n.nodeId),
   };
-  const fetch: TransactionNode = { nodeId: '1', kind: 'fetch', contractId: 'ee'.repeat(34), packageName: 'cancore-intent', templateId: `${INTENT}:Intent.FillerRegistry:FillerRegistryEntry`, actingParties: [ME], signatories: [OPERATOR, ME], stakeholders: [OPERATOR, ME] };
+  const fetch: TransactionNode = { nodeId: '1', kind: 'fetch', contractId: 'ee'.repeat(34), packageName: 'cancore-intent', templateId: `${INTENT}:Intent.FillerRegistry:FillerRegistryEntry`, actingParties: [ME], signatories: o.fetchSignatories ?? [OPERATOR, ME], stakeholders: [OPERATOR, ME] };
   const receipt: TransactionNode = {
     nodeId: '3', kind: 'create', contractId: `03${'c'.repeat(66)}`, packageName: 'cancore-intent', templateId: `${INTENT}:Intent.DeliveryReceipt:DeliveryReceipt`,
     argument: receiptArg(o.receipt), signatories: o.receiptSignatories ?? [OPERATOR, ME], stakeholders: [OPERATOR, ME, ATTESTOR],
@@ -199,6 +200,7 @@ describe('delivery.fill: the decoded transaction (CAN-1867)', () => {
     ['TC-SDK-1867-24: the receipt not co-signed by the party', { receiptSignatories: [OPERATOR] }, /not signed by exactly/],
     ['TC-SDK-1867-25: a pending transfer instead of a delivery', { pending: true }, /pending transfer is not a delivery/],
     ['TC-SDK-1867-26: the receiver credited less than the amount', { credited: '20' }, /receiver is credited/],
+    ['TC-SDK-1867-28: a read of another party’s registry entry', { fetchSignatories: [OPERATOR, 'someone-else::1220ee'] }, /registry entry that is not the party/],
   ])('%s: refused', (_name, over, detail) => refused(() => check()(prepared(), [fill(over as Over)]), detail));
 
   test('TC-SDK-1867-27: anything else under the fill — a second receipt, an archive of the party’s registry entry: refused', () => {

@@ -49,6 +49,32 @@ export interface CantonPartySigner {
   signHash(hash: Uint8Array): Promise<Hex>;
 }
 
+/** Hooks of one operation run. */
+export interface RunHooks {
+  /**
+   * Called once every leg is signed, before the first `canton.submit`: the
+   * caller records that a submit may follow. With it, any failure of the
+   * submit is thrown as `CantonSubmitUnknown` (the cause inside it).
+   */
+  onSigned?: (operationId: string) => void | Promise<void>;
+}
+
+/**
+ * A `canton.submit` that failed after the legs were signed: the operation may
+ * or may not have committed (a lost answer, an answer for another operation,
+ * a refusal of a repeated submit). Never read as «nothing happened».
+ */
+export class CantonSubmitUnknown extends Error {
+  override readonly name = 'CantonSubmitUnknown';
+  constructor(
+    readonly op: CantonOp,
+    readonly operationId: string,
+    override readonly cause: unknown,
+  ) {
+    super(`${op} ${operationId}: submit outcome unknown: ${cause instanceof Error ? cause.message : String(cause)}`);
+  }
+}
+
 export type PreparedOf<K extends CantonOp> = Extract<CantonPrepared, { op: K }>;
 export type SubmittedOf<K extends CantonOp> = Extract<CantonSubmitted, { op: K }>;
 
@@ -112,13 +138,13 @@ export class CantonOperations {
    * offered order and the node's identity — before the party key signs it.
    * `delivered` is the checked amount in the order's units (Numeric 10 × 10¹⁰).
    */
-  async fill(expect: Omit<DeliveryFillExpectation, 'publicKey' | 'nowMs'>): Promise<SubmittedOf<'delivery.fill'> & { delivered: string }> {
+  async fill(expect: Omit<DeliveryFillExpectation, 'publicKey' | 'nowMs'>, hooks: RunHooks = {}): Promise<SubmittedOf<'delivery.fill'> & { delivered: string }> {
     const check = checkDeliveryFill({ ...expect, publicKey: this.publicKey, nowMs: this.options.clock.now() });
     let delivered = '';
     const submitted = await this.run('delivery.fill', { orderHash: expect.orderHash.toLowerCase() as Hex, attempt: expect.attempt }, (prepared, transactions) => {
       check(prepared, transactions);
       delivered = encodeCantonAmount(canonicalDecimal(prepared.summary.amount)).toString();
-    });
+    }, hooks);
     return { ...submitted, delivered };
   }
 
@@ -140,7 +166,7 @@ export class CantonOperations {
    * transactions, signs, submits. Throws `CantonRefusal` when anything is not
    * as expected — then nothing is signed or submitted.
    */
-  async run<K extends CantonOp>(op: K, params: CantonOpParams[K], check: CantonOpCheck<K>): Promise<SubmittedOf<K>> {
+  async run<K extends CantonOp>(op: K, params: CantonOpParams[K], check: CantonOpCheck<K>, hooks: RunHooks = {}): Promise<SubmittedOf<K>> {
     const { clock, logger } = this.options;
     const request = await this.options.seal<CantonPrepare>({ type: 'canton.prepare', id: this.options.nextId(), op, params } as Unsealed<CantonPrepare>);
     const prepared = (await this.options.rest.postCanton('prepare', request)).frame as unknown as PreparedOf<K>;
@@ -181,7 +207,14 @@ export class CantonOperations {
       signatures.push({ legId: leg.legId, signature });
     }
     logger.info('canton: signed', { op, operationId, legs: prepared.legs.length });
-    return this.submit(op, operationId, signatures);
+    if (!hooks.onSigned) return this.submit(op, operationId, signatures);
+    // From here a submit may reach the ledger: whatever fails after this point leaves the outcome unknown.
+    await hooks.onSigned(operationId);
+    try {
+      return await this.submit(op, operationId, signatures);
+    } catch (error) {
+      throw new CantonSubmitUnknown(op, operationId, error);
+    }
   }
 
   /** `canton.submit`, idempotent per operationId: retried on a retryable refusal while attempts last. */

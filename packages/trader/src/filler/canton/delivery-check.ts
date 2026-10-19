@@ -19,7 +19,8 @@
  * - Under the root: `TransferFactory_Transfer` through a pinned factory, from
  *   the party to the recipient, exactly the order's amount and instrument,
  *   spending only the stated holdings, completed in this transaction (a
- *   pending transfer is not a delivery); the registry-entry fetch; and exactly
+ *   pending transfer is not a delivery); the fetch of the party's own registry
+ *   entry (signed by the operator and the party); and exactly
  *   one `DeliveryReceipt` naming the same filler, fillerId, repayTo, order,
  *   attempt, recipient, instrument and amount. Nothing else.
  * - `validUntil` has not passed by the process clock.
@@ -143,7 +144,8 @@ export function checkDeliveryFill(expect: DeliveryFillExpectation): CantonOpChec
         if (node.contractId !== s.transferFactoryCid) refuse('the transfer goes through another factory than the order pins');
         transfer = node;
       } else if (node?.kind === 'fetch' && qualified(node.templateId) === REGISTRY_ENTRY && node.packageName === INTENT_PACKAGE_NAME) {
-        // assertRegisteredFiller: a read of the party's registry entry.
+        // assertRegisteredFiller: a read of the party's own registry entry, co-signed by the operator and the party.
+        if (!sameSet(node.signatories, [operator, me])) refuse('the fill reads a registry entry that is not the party’s own');
       } else if (node?.kind === 'create' && qualified(node.templateId) === RECEIPT && node.packageName === INTENT_PACKAGE_NAME) {
         receipts += 1;
         checkReceipt(node.argument, node.signatories, { me, operator, fillerId: expect.fillerId, repayTo, orderHash, attempt: expect.attempt, recipient, instrument, amount: s.amount });
