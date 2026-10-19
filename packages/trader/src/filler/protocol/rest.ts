@@ -40,6 +40,7 @@ import {
   type QuoteAck,
   type QuoteFinalStatus,
   type QuoteMessage,
+  type RoutesSet,
   type TicketDecline,
   type TicketIntentMessage,
   type TicketReceiptMessage,
@@ -243,6 +244,30 @@ export class GatewayRest {
     const out: CantonDeliveryOrder[] = [];
     await this.pages('/v1/filler/canton/delivery-orders', {}, (item) => out.push(item as CantonDeliveryOrder));
     return out;
+  }
+
+  // -- The filler's own routes (§3.20) ----------------------------------------
+
+  /** `GET /v1/filler/routes`: the verified `routes.state` — every route approved for this filler and whether it serves it. */
+  async getRoutes(): Promise<VerifiedFrame> {
+    const path = '/v1/filler/routes';
+    const { text } = await this.authed('GET', path, 'read');
+    return this.routesState(text, path);
+  }
+
+  /** `POST /v1/filler/routes`: the sealed `routes.set` out, the verified new `routes.state` back; `ROUTE_NOT_APPROVED` is thrown and nothing changed. */
+  async postRoutes(message: RoutesSet): Promise<VerifiedFrame> {
+    const path = '/v1/filler/routes';
+    const { text } = await this.authed('POST', path, 'service', JSON.stringify(message));
+    return this.routesState(text, path);
+  }
+
+  private routesState(text: string, path: string): VerifiedFrame {
+    const check = verifyGatewayObject(parseJson(text, path), utf8(text), this.expect);
+    if (!check.ok || check.verified.frame.type !== 'routes.state') {
+      throw new GatewayError('UNVERIFIED_RESPONSE', false, `${path}: the answer failed verification (${check.ok ? check.verified.frame.type : check.reason})`);
+    }
+    return check.verified;
   }
 
   // -------------------------------------------------------------------------

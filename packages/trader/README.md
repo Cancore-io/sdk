@@ -410,6 +410,15 @@ The party is recognised by its namespace, the fingerprint of the node key (its h
 `party()`, `holdings()` and `deliveryOrders()` read the party's own state. `createCantonOperations` gives a node command a client with its own REST
 login.
 
+### The filler's own routes — `createFillerRoutes`
+
+Cancore staff approve the routes a filler may serve; the filler switches each approved route on or
+off itself (protocol §3.20). `createFillerRoutes({gatewayUrl, fillerId, gatewaySigner,
+messageSigner})` gives a node command a client with its own REST login: `state()` reads every
+approved route with `active`; `set(routes)` sends `routes.set` — the full list, sealed by the message
+key — and returns the verified new `routes.state`. A route outside the approved ones is thrown as
+`GatewayError` `ROUTE_NOT_APPROVED`, and nothing changed.
+
 ## Injected interfaces
 
 ### Signers — `TypedDataSigner`, `FillSigner`, `QuoteSigner`, `StakingSigner`

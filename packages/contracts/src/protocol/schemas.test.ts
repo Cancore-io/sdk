@@ -289,7 +289,7 @@ test('V-2: no object is closed, and no enum outside the allow-list is closed', (
 describe('REST', () => {
   const rest = (def: string, value: unknown) => ajv.validate(`https://cancore.io/schemas/filler-protocol/v1/rest.schema.json#/$defs/${def}`, value);
   test('every endpoint names schemas that resolve', () => {
-    expect(REST_ENDPOINTS).toHaveLength(20);
+    expect(REST_ENDPOINTS).toHaveLength(22);
     const base = 'https://cancore.io/schemas/filler-protocol/v1/';
     for (const e of REST_ENDPOINTS) {
       for (const ref of [e.request, e.query, e.response, e.errorBody].filter((x): x is string => !!x)) {
@@ -302,7 +302,7 @@ describe('REST', () => {
     expect(REST_ENDPOINTS.filter((e) => e.path.startsWith('/v1/filler/canton/')).every((e) => e.auth === 'bearer' && !e.errorBody)).toBe(true);
   });
   test('the login is REST only: the challenge is asked for by fillerId; refusals before a signature check are unsigned', () => {
-    expect([...REST_ONLY_TYPES].sort()).toEqual(['auth.challenge', 'auth.response']);
+    expect([...REST_ONLY_TYPES].sort()).toEqual(['auth.challenge', 'auth.response', 'routes.set', 'routes.state']);
     const challenge = REST_ENDPOINTS.find((e) => e.path === '/v1/filler/auth/challenge')!;
     expect(challenge).toEqual({
       method: 'GET', path: '/v1/filler/auth/challenge', auth: 'none', query: '#/$defs/challengeQuery',
@@ -317,6 +317,23 @@ describe('REST', () => {
     expect(rest('unsignedErrorBody', { type: 'error', code: 'UNAUTHENTICATED', message: 'no live challenge for this fillerId' })).toBe(true);
     expect(REST_ENDPOINTS.filter((e) => e.errorBody).map((e) => e.path)).toEqual(['/v1/filler/auth/challenge', '/v1/filler/auth']);
     expect(REST_ENDPOINTS.find((e) => e.path === '/v1/filler/auth')!.errorBody).toBe('#/$defs/unsignedErrorBody');
+  });
+  test('CAN-2793 routes.set and routes.state: the filler\'s own routes over REST only, CAIP-2 pairs, unique, at most 50', () => {
+    expect(REST_ENDPOINTS.filter((e) => e.path === '/v1/filler/routes')).toEqual([
+      { method: 'GET', path: '/v1/filler/routes', auth: 'bearer', response: 'messages.schema.json#/$defs/routes.state' },
+      { method: 'POST', path: '/v1/filler/routes', auth: 'bearer', request: 'messages.schema.json#/$defs/routes.set', response: 'messages.schema.json#/$defs/routes.state' },
+    ]);
+    const set = example('routes.set');
+    expect(errorsOf('routes.set', set)).toEqual([]);
+    expect(errorsOf('routes.set', { ...set, routes: [] })).toEqual([]);
+    expect(errorsOf('routes.set', { ...set, routes: [{ src: 'eip155:56', dst: 'eip155:1' }, { src: 'eip155:56', dst: 'eip155:1' }] })).not.toEqual([]);
+    expect(errorsOf('routes.set', { ...set, routes: [{ src: 'eip155:56', dst: 'solana:mainnet' }] })).not.toEqual([]);
+    expect(errorsOf('routes.set', { ...set, routes: Array.from({ length: 51 }, (_, i) => ({ src: `eip155:${i + 1}`, dst: 'canton:devnet' })) })).not.toEqual([]);
+    expect(errorsOf('routes.set', { ...set, msgSig: undefined })).not.toEqual([]);
+    const state = example('routes.state');
+    expect(errorsOf('routes.state', state)).toEqual([]);
+    expect(errorsOf('routes.state', { ...state, routes: [{ src: 'eip155:56', dst: 'eip155:1' }] })).not.toEqual([]);
+    expect(ERROR_HTTP_STATUS.ROUTE_NOT_APPROVED).toBe(403);
   });
   test('bodies: ticket list, token, error, empty', () => {
     expect(rest('ticketList', { items: [example('ticket.offer'), example('ticket.issued')], nextCursor: null })).toBe(true);

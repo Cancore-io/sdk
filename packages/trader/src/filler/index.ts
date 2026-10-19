@@ -171,4 +171,7 @@ export type { CantonClientConfig, CantonOperationsOptions, CantonOpCheck, Canton
 export { canonicalDecimal, checkHoldingsTransfer, checkRegistryAccept, checkTransferExercise, isOwnParty } from './canton/checks';
 export type { TransferExpectation } from './canton/checks';
 export { CANTON_TRANSFER_FACTORIES } from './canton/factories';
+// The filler's own routes within those Cancore approved (§3.20).
+export { createFillerRoutes, FillerRoutes, MAX_ROUTES } from './routes';
+export type { FillerRoutesConfig, FillerRoutesOptions } from './routes';
 export type { CantonTransferFactory } from './canton/factories';
