@@ -31,6 +31,9 @@ function fakeApi() {
     /** Hashes the API received signed, each checked against the bot's key. */
     signed: [] as { hash: string; bytes: string }[],
     tamper: false,
+    /** POST accept of x1: applied on the venue, then the answer is lost (fetch throws). */
+    dropAccept: false,
+    accepts: 0,
     orders,
     async fetch(url: string, init: RequestInit): Promise<Response> {
       const { pathname } = new URL(url);
@@ -50,7 +53,13 @@ function fakeApi() {
         api.created.push(body);
         return json(order, 201);
       }
-      const order = /^\/orders\/(o\d+)(\/cancel)?$/.exec(pathname);
+      if (route === 'POST /orders/x1/accept' && orders.has('x1')) {
+        api.accepts++;
+        Object.assign(orders.get('x1')!, { status: 'accepted', opponentUserId: 'bot' });
+        if (api.dropAccept) throw new TypeError('fetch failed: the response was lost');
+        return json(orders.get('x1'));
+      }
+      const order = /^\/orders\/([ox]\d+)(\/cancel)?$/.exec(pathname);
       if (order && orders.has(order[1]!)) {
         if (order[2]) {
           api.cancelled.push(order[1]!);
@@ -208,6 +217,97 @@ describe('cancore-botd end to end', () => {
     } finally {
       await stop();
       stderr.mockRestore();
+    }
+  });
+});
+
+describe('cancore-botd end to end: an accept whose answer was lost (F128-LOST-ACCEPT-1)', () => {
+  let dir: string;
+  let config: BotConfig;
+  const api = fakeApi();
+  const boot = async () => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 }));
+  const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
+    const c = await connect(socket);
+    try {
+      return (await c.call(method as never, params as never)) as T;
+    } finally {
+      c.close();
+    }
+  };
+  const refusal = (p: Promise<unknown>) => p.then(() => undefined, (e: RpcCallError) => e.error);
+  const owner = <T = unknown>(m: string, p?: unknown) => call<T>(config.ownerSocket, m, p);
+  const agent = <T = unknown>(m: string, p?: unknown) => call<T>(config.agentSocket, m, p);
+  const state = () => JSON.parse(readFileSync(paths(config).state, 'utf8')) as BotState;
+  const until = async (check: () => boolean) => {
+    for (let i = 0; i < 250 && !check(); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(check()).toBe(true);
+  };
+  // Every pending promise chain of the failed take runs to its catch: macrotask turns, not a timing guess.
+  const drain = async () => {
+    for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'botd-e2e-lost-'));
+    config = {
+      ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
+      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
+    };
+    delete (config as Partial<BotConfig>).clientsGroup;
+    await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
+    // One take of 10 CC at 0.15 USD is 1.5 of the 2 USD day.
+    writeFileSync(paths(config).limits, JSON.stringify({ ...LIMITS, perOrderUsd: '100', perDayUsd: '2' }), { mode: 0o600 });
+    api.orders.set('x1', {
+      id: 'x1', status: 'open', sourceNetwork: 'canton', targetNetwork: 'canton', dvp: true,
+      initiatorUserId: 'someone', opponentUserId: null, swapId: null,
+      sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: '10', targetTokenAddress: 'USDCx', targetTokenName: 'USDCx', targetAmount: '1.5',
+      expiresAt: '', createdAt: '', updatedAt: '',
+    });
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('keeps the take booked through the uncertainty and counts the trade exactly once', async () => {
+    let stop = await boot();
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      api.dropAccept = true;
+      expect(await agent('order.take', { orderId: 'x1', amount: '10' })).toMatchObject({ orderId: 'x1' });
+      // The venue applied the accept; the bot only saw a network error.
+      await until(() => api.accepts === 1);
+      await drain();
+      // Paused before any reconcile: the take may be a trade, so its booking must survive.
+      await owner('pause', { reason: 'owner stop' });
+      expect(state().openOrders.map((o) => o.orderId)).toEqual(['x1']);
+    } finally {
+      await stop();
+    }
+
+    // The venue reports the trade done; the daemon reconciles it on the next unlock, twice over.
+    api.orders.get('x1')!.status = 'completed';
+    for (let round = 0; round < 2; round++) {
+      stop = await boot();
+      try {
+        await owner('unlock', { passphrase: 'bot-pass-2026' });
+        await until(() => state().openOrders.length === 0 && (state().fills ?? []).length === 1);
+        await drain();
+      } finally {
+        await stop();
+      }
+    }
+    const fills = state().fills ?? [];
+    expect(fills).toHaveLength(1);
+    expect(fills[0]).toMatchObject({ instrument: 'CC', amount: '10', usdValue: '1.5' });
+    expect(state().positions).toMatchObject({ CC: '10' });
+
+    stop = await boot();
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      await owner('resume');
+      // 1.5 USD already spent today: another 1.5 USD order passes the 2 USD day.
+      expect(await refusal(agent('order.make', { base: 'CC', quote: 'USDCx', side: 'buy', amount: '10', price: '0.15' })))
+        .toMatchObject({ code: ERROR.DENIED, data: { reason: 'usd_daily_exceeded' } });
+    } finally {
+      await stop();
     }
   });
 });

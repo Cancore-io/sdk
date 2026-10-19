@@ -1281,22 +1281,30 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       try {
         return await swap.accept(order.id);
       } catch (err) {
+        // Only a 4xx is the venue's word that this accept did not happen. Anything else (a lost response,
+        // a timeout, a 5xx) may have been applied: the caller keeps treating the take as in flight.
+        // Told only when the take ends here; a split and retry keeps it in flight.
+        const definite = err instanceof CancoreApiError && err.status >= 400 && err.status < 500;
+        const fail = (e: unknown): never => {
+          if (definite) opts.onAcceptRefused?.();
+          throw e;
+        };
         const refused = dvpRefusal(err, what, order, self);
         const body = (err as CancoreApiError).body as { payerPartyId?: string; feeAmount?: string } | undefined;
         const mine = refusalOf(err) === 'feeHoldingRequired' && self !== undefined && body?.payerPartyId === self && body.feeAmount;
-        if (split !== null && refused) throw new SettleError(`${what}: refused again after splitting ${split} into a holding of its own — ${refused.message}`, null, order);
-        if (!autoSplit || !mine) throw refused ?? err;
+        if (split !== null && refused) fail(new SettleError(`${what}: refused again after splitting ${split} into a holding of its own — ${refused.message}`, null, order));
+        if (!autoSplit || !mine) fail(refused ?? err);
         split = body!.feeAmount!;
         // The fee is the venue's word: held to the order and this account's own fee ceiling before anything is signed.
         const [fee, target] = [units(split), units(order.targetAmount)];
         const ceiling = options.maxFeeRate ?? DEFAULT_MAX_FEE_RATE;
         if (fee <= 0n || target < 0n || fee * 10n ** 10n > target * units(ceiling)) {
-          throw new SettleError(`${what}: the venue asks for a fee holding of ${split}, more than ${order.targetAmount} × this account's ceiling ${ceiling} (maxFeeRate); nothing was split`, null, order);
+          fail(new SettleError(`${what}: the venue asks for a fee holding of ${split}, more than ${order.targetAmount} × this account's ceiling ${ceiling} (maxFeeRate); nothing was split`, null, order));
         }
         try {
           await splitFee(order.targetTokenAddress, split, target - fee, opts.allowUnverifiedSplit ?? false);
         } catch (cause) {
-          throw new SettleError(`${what}: the platform fee needs a holding of its own, and splitting ${split} off failed: ${(cause as Error).message}`, null, order);
+          fail(new SettleError(`${what}: the platform fee needs a holding of its own, and splitting ${split} off failed: ${(cause as Error).message}`, null, order));
         }
       }
     }

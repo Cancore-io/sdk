@@ -30,6 +30,8 @@ export interface SettleRun extends SettleOptions {
   beforeAccept?: () => boolean;
   /** `take` only: the order is accepted by this account (this run or an earlier one); it is a trade from here. */
   onAccepted?: () => void;
+  /** `take` only: the venue refused this accept (4xx), so it did not happen. Not called for a lost or unclear answer. */
+  onAcceptRefused?: () => void;
 }
 
 export interface ServeOptions extends Omit<SettleOptions, 'signal'> {
@@ -202,13 +204,17 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
       return true;
     };
     try {
-      const takeRun: SettleRun = { ...settle, beforeAccept, onAccepted: () => void accepted.add(orderId) };
+      const takeRun: SettleRun = {
+        ...settle,
+        beforeAccept,
+        onAccepted: () => void accepted.add(orderId),
+        // Only a proven refusal leaves the in-flight state; a lost answer stays in flight until the venue shows the order.
+        onAcceptRefused: () => void accepting.delete(orderId),
+      };
       const settled = await (maker ? acct.make(orderId, settle) : acct.take(orderId, takeRun));
       done.add(orderId);
       emit({ type: 'settled', orderId, swapId: settled.swap.id, settled });
     } catch (error) {
-      // A failed accept is no longer in flight: a later untake must be able to stop the retry.
-      accepting.delete(orderId);
       if (stopper.signal.aborted || (error as Error)?.name === 'TakeCancelledError') return;
       const last = (error as { last?: HtlcSwap | Order }).last;
       if (last && 'status' in last && last.status === 'dvp_expired') {

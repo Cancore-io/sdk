@@ -325,13 +325,15 @@ test('untake before the accept is sent drops the take; after it has started it c
   void handle.stop();
 });
 
-test('a take whose accept failed is not retried after untake', async () => {
+test('a take whose accept the venue refused is not retried after untake', async () => {
   const theirs = order('flaky', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
   let attempts = 0;
   const events: ServeEvent[] = [];
-  const { acct, calls } = account([theirs], async () => {
+  const { acct, calls } = account([theirs], async (_id, opts) => {
     attempts++;
-    throw new Error('503');
+    // A 4xx: the venue's word that the accept did not happen.
+    (opts as SettleRun).onAcceptRefused?.();
+    throw new Error('409');
   });
   const handle = serve(acct, { concurrency: 1, reconcileMs: 5, onEvent: (e) => events.push(e) }, noneLocked);
   handle.take('flaky');
@@ -371,4 +373,19 @@ test('untake of a take this loop never queued reports it may be a trade', () => 
   const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
   expect(handle.untake('unknown')).toBe(false);
   void handle.stop();
+});
+
+test('a take whose accept answer was lost stays in flight: untake reports it may be a trade', async () => {
+  const theirs = order('lost', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let attempts = 0;
+  const { acct } = account([theirs], async () => {
+    attempts++;
+    throw new TypeError('fetch failed');
+  });
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
+  handle.take('lost');
+  await until(() => attempts >= 1);
+  await new Promise((r) => setImmediate(r));
+  expect(handle.untake('lost')).toBe(false);
+  await handle.stop();
 });
