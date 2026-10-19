@@ -232,7 +232,9 @@ export function createDispatcher(deps: Deps): Dispatcher {
   async function adoptOrCancel(e: Engine, intent: OrderIntent, orderId: string): Promise<boolean> {
     let paused = false;
     await mutate((s) => ((paused = s.paused), adoptIntent(s, intent, orderId)));
-    if (!paused || (await cancelResting(e, orderId, true)) !== 'cancelled') return false;
+    // A lock since the make started counts as a pause: nothing serves this order until the next unlock.
+    const late = paused || engine !== e;
+    if (!late || (await cancelResting(e, orderId, true)) !== 'cancelled') return false;
     await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) }));
     return true;
   }
@@ -419,6 +421,9 @@ export function createDispatcher(deps: Deps): Dispatcher {
 
   /** One step of one strategy: at most one order, through the same gate, audit and engine path as an agent's. */
   async function step(rec: StrategyRecord, limits: Limits) {
+    // Locked while the tick ran: the strategy stays as it is and resumes on unlock.
+    const e = engine;
+    if (!e) return;
     const now = deps.now();
     const state = await deps.state.load();
     // Done only once every placement is a real order: an intent still unresolved may yet be dropped and need placing again.
@@ -436,7 +441,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
       const open = book.flatMap((o) => (o.strategy?.id === rec.strategyId ? [o.strategy.slot] : []));
       next = gridNext(gridConfig.parse(rec.config), rec.want, open);
     } else {
-      const ref = (await engine!.referencePrices().catch(() => ({}) as Record<string, string>))[`${rec.base}/${rec.quote}`];
+      const ref = (await e.referencePrices().catch(() => ({}) as Record<string, string>))[`${rec.base}/${rec.quote}`];
       next = ref === undefined ? undefined : dcaNext(dcaConfig.parse(rec.config), rec.placed, now, ref);
     }
     if (!next) {
@@ -453,6 +458,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
       if (reason === 'rate_limited') await setStrategy(rec.strategyId, { status: 'rate_limited', reason });
       // A lost answer is not a failure: the intent holds the slot until a tick confirms or drops it.
       else if (err instanceof RpcFault && err.code === ERROR.UNCONFIRMED) return;
+      // A lock mid-tick is not the strategy's fault: it keeps its status and resumes on unlock.
+      else if (err instanceof RpcFault && err.code === ERROR.LOCKED) return;
       else await setStrategy(rec.strategyId, { status: err instanceof RpcFault && err.code === ERROR.DENIED ? 'denied' : 'failed', reason });
     }
   }
@@ -466,7 +473,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
     for (const { strategyId } of (state.strategies ?? []).filter(active)) {
       // Each strategy from the latest state: an earlier step's write, or a pause, is not undone by a stale record.
       const now = await deps.state.load();
-      if (now.paused) return;
+      if (now.paused || !engine) return;
       const rec = now.strategies?.find((r) => r.strategyId === strategyId);
       if (rec && active(rec)) await step(rec, limits);
     }
@@ -510,7 +517,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
     deps.keystore.lock();
     await running?.stop().catch(() => undefined);
     // Bounded: hooks still in flight finish or are left behind, the lock does not wait on the network.
-    await Promise.race([background, new Promise((r) => setTimeout(r, LOCK_DRAIN_MS).unref())]);
+    // The trade queue too: a make or take already past its gate finishes (and is cancelled as late) before locked lands.
+    await Promise.race([Promise.all([background, tradeQueue]), new Promise((r) => setTimeout(r, LOCK_DRAIN_MS).unref())]);
     await mutate((s) => ({ ...s, locked: true }));
   }
 
@@ -636,7 +644,9 @@ export function createDispatcher(deps: Deps): Dispatcher {
           // No answer (network, timeout, 5xx): the order may exist. The intent stays; a tick resolves it.
           throw new RpcFault(ERROR.UNCONFIRMED, 'unconfirmed', { intent: intent.key });
         }
-        if (await adoptOrCancel(e, intent, orderId)) throw new RpcFault(ERROR.PAUSED, 'paused: the order was cancelled');
+        if (await adoptOrCancel(e, intent, orderId)) {
+          throw engine === e ? new RpcFault(ERROR.PAUSED, 'paused: the order was cancelled') : new RpcFault(ERROR.LOCKED, 'locked: the order was cancelled');
+        }
         return { order: { orderId, base: params.base, quote: params.quote, side: params.side, amount: params.amount, price: params.price, filled: '0', status: 'open', createdAt: new Date(deps.now()).toISOString() } };
       }
       case 'order.take': {
@@ -649,10 +659,10 @@ export function createDispatcher(deps: Deps): Dispatcher {
         const view = taken!;
         let dropped = false;
         await mutate((s) => {
-          if (s.paused && e.untake(params.orderId)) return (dropped = true), s;
+          if ((s.paused || engine !== e) && e.untake(params.orderId)) return (dropped = true), s;
           return { ...s, openOrders: [...s.openOrders, { orderId: params.orderId, pair: `${view.base}/${view.quote}`, side: view.side, amount: view.amount, price: view.price, taken: true }] };
         });
-        if (dropped) throw new RpcFault(ERROR.PAUSED, 'paused: the take was called off');
+        if (dropped) throw engine === e ? new RpcFault(ERROR.PAUSED, 'paused: the take was called off') : new RpcFault(ERROR.LOCKED, 'locked: the take was called off');
         return result;
       }
       case 'strategy.start': {

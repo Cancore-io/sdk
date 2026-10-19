@@ -261,6 +261,33 @@ describe('grid', () => {
   });
 });
 
+describe('lock during a tick', () => {
+  it.each([
+    ['grid', { kind: 'grid', base: 'CC', quote: 'USDCx', config: { side: 'buy', levels: 3, amountPerLevel: '10', lowerPrice: '0.14', upperPrice: '0.16' } }],
+    ['dca', { kind: 'dca', base: 'CC', quote: 'USDCx', config: { side: 'buy', amountPerOrder: '10', intervalSeconds: 600, maxOrders: 3 } }],
+  ])('a lock mid-tick leaves a running %s strategy running, and it places again after unlock (F-10)', async (_kind, strategy) => {
+    const w = world();
+    await w.unlock();
+    await w.call('strategy.start', strategy, false);
+    let release!: (v: { orderId: string }) => void;
+    w.crash.slow = new Promise((r) => (release = r));
+    const ticking = w.tick();
+    await new Promise((r) => setTimeout(r, 0));
+    const locking = w.call('lock', {}, true);
+    release({ orderId: 'late' });
+    await ticking;
+    await locking;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(w.state().strategies?.[0]).toMatchObject({ status: 'running' });
+    w.crash.slow = undefined;
+    const before = w.made.length;
+    await w.unlock();
+    w.advance(601_000);
+    await w.tick();
+    expect(w.made.length).toBeGreaterThan(before);
+  });
+});
+
 describe('dca', () => {
   const dca = { kind: 'dca', base: 'CC', quote: 'USDCx', config: { side: 'buy', amountPerOrder: '10', intervalSeconds: 600, maxOrders: 3 } };
 

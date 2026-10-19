@@ -227,6 +227,40 @@ describe('pause against an in-flight order.make', () => {
     expect(getState().openOrders).toEqual([]);
   });
 
+  it.each([
+    ['cancellable', true],
+    ['not cancellable', false],
+  ])('a make whose orderId arrives after an owner lock is treated as late (%s) (F-11)', async (_name, cancellable) => {
+    const h = held();
+    let sentToApi!: () => void;
+    const reached = new Promise<void>((r) => (sentToApi = r));
+    const { d, getState, cancel, deps } = await unlockedWith({
+      make: async () => (sentToApi(), await h.gate, { orderId: 'late' }),
+      ...(!cancellable && { cancel: jest.fn(async () => Promise.reject(new Error('ECONNRESET'))) }),
+    });
+    const sent = d.handle(order('1'), { owner: false });
+    await reached;
+    const locking = d.handle(req('lock', {}), { owner: true });
+    // The key is wiped at once, before the held make answers.
+    await new Promise((r) => setImmediate(r));
+    expect(deps.keystore.lock).toHaveBeenCalled();
+    h.release();
+    await locking;
+    // The lock waited for the trade queue: when it returns, the late make is already resolved.
+    expect(getState().intents ?? []).toEqual([]);
+    if (cancellable) {
+      await expect(sent).rejects.toMatchObject({ code: ERROR.LOCKED });
+      expect(cancel).toHaveBeenCalledWith('late');
+      expect(getState().openOrders).toEqual([]);
+    } else {
+      // Not cancelled: a real order is never dropped, it stays booked as a trade.
+      await sent.catch(() => undefined);
+      expect(getState().openOrders.map((o) => o.orderId)).toEqual(['late']);
+    }
+    expect(getState().intents ?? []).toEqual([]);
+    expect(getState().locked).toBe(true);
+  });
+
   it('a make whose orderId arrives after pause returned is cancelled at once', async () => {
     const h = held();
     let sentToApi!: () => void;

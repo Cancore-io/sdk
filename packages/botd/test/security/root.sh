@@ -26,6 +26,12 @@ pass() { echo "ok   $1"; }
 fail() { echo "FAIL $1"; fails=$((fails + 1)); }
 expect_ok() { if "${@:2}" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
 expect_no() { if "${@:2}" >/dev/null 2>&1; then fail "$1"; else pass "$1"; fi; }
+# A daemon refusal must be the stated one: a crash or a broken connection is not a pass.
+expect_refused() {
+  local name=$1 want=$2 out
+  shift 2
+  if out=$("$@" 2>&1); then fail "$name"; elif grep -Fq -- "$want" <<<"$out"; then pass "$name"; else fail "$name (refused, but not with $want): $out"; fi
+}
 
 getent group cancore-bot-clients >/dev/null || groupadd --system cancore-bot-clients
 id cancore-bot >/dev/null 2>&1 || useradd --system --user-group --no-create-home --shell /usr/sbin/nologin -G cancore-bot-clients cancore-bot
@@ -63,7 +69,7 @@ done
 expect_ok "agent socket is group cancore-bot-clients, mode 660" test "$(stat -c '%G %a' "$W/run/bot.sock")" = "cancore-bot-clients 660"
 expect_ok "owner socket is cancore-bot only, mode 600" test "$(stat -c '%U %a' "$W/run/owner.sock")" = "cancore-bot 600"
 expect_ok "clients-group member reads status on the agent socket" rpc botagent "$W/run/bot.sock" status
-expect_no "clients-group member cannot unlock on the agent socket" rpc botagent "$W/run/bot.sock" unlock '{"passphrase":"root-test-pass"}'
+expect_refused "clients-group member cannot unlock on the agent socket" '"code":-32004' rpc botagent "$W/run/bot.sock" unlock '{"passphrase":"root-test-pass"}'
 expect_no "clients-group member cannot connect to the owner socket" rpc botagent "$W/run/owner.sock" status
 expect_no "outsider cannot connect to the agent socket" rpc outsider "$W/run/bot.sock" status
 expect_no "agent cannot list the state dir" as botagent ls "$W/state"
