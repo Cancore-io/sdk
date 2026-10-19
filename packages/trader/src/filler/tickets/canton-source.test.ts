@@ -207,7 +207,9 @@ describe('V-C1…V-C6 on the golden Canton-source order (CAN-1863)', () => {
     ['V-C6: refundAfter − fillDeadline one second short of the proof window', () => undefined, 'V-C6', 'PROOF_WINDOW_TOO_SHORT', { requiredProofWindowSec: 3_601 }],
   ];
 
-  test.each(cases)('%s', async (name, mutate, check, reason, run, party) => {
+  // A rest parameter: jest reads a callback with more parameters than the row has columns as a `done` test.
+  test.each(cases)('%s', async (...row: Case) => {
+    const [name, mutate, check, reason, run, party] = row;
     const g = golden3(mutate, party ?? ACTIVE);
     if (name.startsWith('V-C1: no live intent')) g.reader.intent = async () => Promise.reject(new GatewayError('UNKNOWN_TICKET', false, 'none'));
     const overrides = name.startsWith('V-C3') ? { ticket: { orderHash: `0x${'ee'.repeat(32)}` as Hex }, order: {} } : run;
