@@ -197,8 +197,9 @@ offered ──► intent-sent ──► intent-acked ──► checking ──�
   (T-21: silence costs more than a decline). The kill-switch declines `PAUSED` without asking. Nothing is sent
   after `acceptBy`. `ticket.intent.ack` is kept on the attempt.
 - **Issued.** `ticket.issued` → the checks below → `ticket.receipt` (`TicketReceipt{hashTicket(ticket),
-  keccak256(ticketSig)}`) or `ticket.decline` with the failed check's code (T-22, T-23). An issued ticket with no
-  consent behind it, or a Canton-form one, is declined. Nothing is sent after `validUntil`.
+  keccak256(ticketSig)}`; a Canton-form ticket: `CantonTicketReceipt`, `form: "canton"`) or `ticket.decline` with
+  the failed check's code (T-22, T-23). An issued ticket with no consent behind it is declined, and so is a
+  Canton-form one without `canton` configured. Nothing is sent after `validUntil`.
 - **Write ahead, sign once.** Every move is written before its message goes out; `sentAtMs` marks that it went.
   After a restart (every login) open attempts resume from the store: an unanswered offer is decided, a stored
   message that never went out is sent again — the same bytes, never re-signed — while its deadline lasts, an
@@ -310,8 +311,43 @@ A fact that cannot be read declines with the code of the check that needed it (`
 detail): an unverifiable ticket is never receipted. No setting turns a check off. Each check's result —
 `passed`, `failed` or `skipped` — is emitted as stage `ticket.checked`. V-T4 compares the
 time `ticket.issued` arrived, which the protocol client writes on the attempt when the frame is received; a
-ticket whose arrival is not recorded is refused as unverifiable. A Canton source and a Canton-form ticket are declined `OTHER` until their
-checks land; V1 does not check the draw.
+ticket whose arrival is not recorded is refused as unverifiable. V1 does not check the draw.
+
+**Canton source** (an EVM-form ticket for an order whose `originChainId` is a `CANTON_ORIGIN_ID`). There is no
+escrow on a router: the owner's give is a committed allocation only `SwapIntent_SettleWithProof` — this filler's
+submission — pays out, strictly before `refundAfter`. V-C1…V-C6 run in place of V-E1…V-E4 (V-T1 and V-E5 stay,
+on the destination), reading through Cancore — `GET /v1/filler/canton/intents/{orderHash}` and
+`/party` — with `cantonSource` (a `CantonOperations`); the node has no Ledger API (operator decision T-1).
+What can be recomputed is: the order and its hash from the intent's own fields, the legs from its amount and fee
+rate. What cannot — that the intent and its allocation are live, `committed`, the executors, `refundAfter`,
+`settlementDeadline`, the registry state — is Cancore's read of its participant, held to the protocol's rules:
+
+| Check | What | Decline |
+|---|---|---|
+| V-C1 | a live `SwapIntent` with `ticket.orderHash` names this filler: its party and `fillerId` | `ESCROW_NOT_OPEN` (none), `ESCROW_MISMATCH` |
+| V-C2 | the EVM-form order built from the intent's own terms (protocol §3.7) is `offer.order`, field by field | `ESCROW_MISMATCH` |
+| V-C3 | that order's hash in the Canton source domain is `ticket.orderHash` | `ESCROW_MISMATCH` |
+| V-C4 | the allocation `allocationCid` is live, a pinned registry template (`CANTON_ALLOCATION_TEMPLATES`), `committed`, the owner's, executors exactly operator and owner, `settlementDeadline == refundAfter`, legs exactly `payout` (`amount` less the fee, Numeric 10 half to even) to this party and `fee` to the operator | `ESCROW_NOT_OPEN` (not live), `ESCROW_MISMATCH` |
+| V-C5 | `ticket.repayTo == keccak256(utf8(party))`; the `FillerRegistryEntry` of the party is `ACTIVE`; the instrument's pinned registry pays any party through a receipt-only allocation (`openReceipt`, T-9) | `TICKET_MISMATCH`, `OTHER` (`payout-not-ready`) |
+| V-C6 | `refundAfter − fillDeadline ≥ requiredProofWindowSec` of the destination | `PROOF_WINDOW_TOO_SHORT` |
+
+A node without `cantonParty` and `cantonSource` declines a Canton source `OTHER` at `form`.
+
+**Canton destination** (a Canton-form ticket, CAN-1867). The ticket is the `DeliveryOrder` the party observes,
+read through filler-gateway: it must be live under `deliveryOrderCid` with this order, attempt, `validUntil` and
+the `repayTo` of the node's own `ticket.intent`, the order's `recipient` and `outputAsset` (the encodings of
+`@cancore/contracts`) and an amount in `[minReceived, amountOut]`. V-T3 runs on `canton.destination`
+(`minTicketTtlSec`, `sendGuardSec`), V-E1…V-E4 on the EVM source as for any EVM source, V-E3 against
+`canton.destination.requiredProofWindowSec`, and V-E5 is the party's unlocked holdings of the instrument
+(`NO_INVENTORY`). Delivery is `delivery.fill` (`filler.canton.fill`): before the party key signs, the decoded
+transaction must be one `DeliveryOrder_Fill` of `cancore-intent` on that order, as the party alone; the order it
+discloses must name the party, the node's `fillerId` and `repayTo` (T-48 on the ledger's own data), the
+ticket's order, attempt, `validUntil` and the order's `fillDeadline`; under it, exactly the completed
+`TransferFactory_Transfer` through a pinned factory of the order's amount to the recipient from the stated
+holdings, the registry-entry fetch and one `DeliveryReceipt` with the same terms. The committed fill is
+`confirmed` with its update id as `txRef`, and settles on the EVM source with `fillRef =
+keccak256(utf8(updateId))`. A fill whose answer was lost (the order gone on the next try) is kept `sent`, and
+its settlement adopts the attested `fillRef` of a proof that is otherwise exactly its own.
 
 ## Quotes
 

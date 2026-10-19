@@ -62,6 +62,7 @@ export type { EvmRpc, EvmRpcMap, EvmRpcRequest } from './rpc';
 export { TicketVerifier } from './tickets/checks';
 export { DEFAULT_OFFER_REPLY_MARGIN_MS, OFFER_DECLINE_REASONS } from './tickets/desk';
 export type { EscrowVerification, TicketCheckId, TicketCheckInput, TicketCheckResult, TicketVerifierOptions } from './tickets/checks';
+export type { CantonSourceReader } from './tickets/canton-source';
 export { chainsOf, fillTicketOf, identityFor, ticketMismatch } from './tickets/terms';
 export type { OfferTerms, OrderChains, TicketIdentity } from './tickets/terms';
 
@@ -170,8 +171,11 @@ export { CantonOperations, createCantonOperations, signatureHex } from './canton
 export type { CantonClientConfig, CantonOperationsOptions, CantonOpCheck, CantonPartySigner, PreparedOf, SubmittedOf } from './canton/operations';
 export { canonicalDecimal, checkHoldingsTransfer, checkRegistryAccept, checkTransferExercise, isOwnParty } from './canton/checks';
 export type { TransferExpectation } from './canton/checks';
-export { CANTON_TRANSFER_FACTORIES } from './canton/factories';
+export { checkDeliveryFill, INTENT_PACKAGE_NAME } from './canton/delivery-check';
+export type { DeliveryFillExpectation } from './canton/delivery-check';
+export { cantonFillRef } from './delivery/canton';
+export { CANTON_ALLOCATION_TEMPLATES, CANTON_TRANSFER_FACTORIES } from './canton/factories';
+export type { CantonTransferFactory } from './canton/factories';
 // The filler's own routes within those Cancore approved (§3.20).
 export { createFillerRoutes, FillerRoutes, MAX_ROUTES } from './routes';
 export type { FillerRoutesConfig, FillerRoutesOptions } from './routes';
-export type { CantonTransferFactory } from './canton/factories';

@@ -33,6 +33,7 @@ import {
   type AuthToken,
   type CantonDeliveryOrder,
   type CantonHolding,
+  type CantonIntent,
   type CantonParty,
   type CantonPrepare,
   type CantonSubmit,
@@ -246,6 +247,20 @@ export class GatewayRest {
     return out;
   }
 
+  /**
+   * `GET /v1/filler/canton/intents/{orderHash}`: the live Canton-source intent
+   * naming this filler's party, with its committed allocation (CAN-1863). Its
+   * fields are checked by V-C1…V-C6, never trusted; here only its shape.
+   */
+  async getCantonIntent(orderHash: Hex): Promise<CantonIntent> {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(orderHash)) throw new GatewayError('BAD_REQUEST', false, `orderHash ${orderHash} is not 32 bytes of hex`);
+    const path = `/v1/filler/canton/intents/${orderHash.toLowerCase()}`;
+    const { text } = await this.authed('GET', path, 'read');
+    const body = parseJson(text, path);
+    if (!isCantonIntent(body)) throw new GatewayError('BAD_RESPONSE', false, `${path}: expected a CantonIntent`);
+    return body as unknown as CantonIntent;
+  }
+
   // -- The filler's own routes (§3.20) ----------------------------------------
 
   /** `GET /v1/filler/routes`: the verified `routes.state` — every route approved for this filler and whether it serves it. */
@@ -405,4 +420,27 @@ function parseJson(text: string, path: string): unknown {
   } catch {
     throw new GatewayError('BAD_RESPONSE', false, `${path}: the body is not JSON`);
   }
+}
+
+const strings = (o: Record<string, unknown>, keys: readonly string[]): boolean => keys.every((k) => typeof o[k] === 'string');
+const nullableString = (v: unknown): boolean => v === null || typeof v === 'string';
+
+/**
+ * The shape of `cantonIntent` (rest.schema.json) the checks read: every field
+ * they compare is a string where the schema says so, so a malformed answer is
+ * a `BAD_RESPONSE` — a declined ticket — never a `TypeError` mid-check.
+ */
+export function isCantonIntent(body: unknown): body is CantonIntent {
+  if (!isObject(body)) return false;
+  const top = ['intentCid', 'templateId', 'orderHash', 'owner', 'operator', 'filler', 'fillerId', 'requestId', 'amount', 'feeRate', 'fillDeadline', 'refundAfter', 'orderCreatedAt', 'allocationCid'];
+  if (!strings(body, top)) return false;
+  if (!isObject(body.asset) || !strings(body.asset, ['admin', 'id'])) return false;
+  if (!isObject(body.destination) || !strings(body.destination, ['chainId', 'token', 'recipient'])) return false;
+  if (!isObject(body.minReceived) || typeof body.minReceived.units !== 'string' || !Number.isSafeInteger(body.minReceived.decimals)) return false;
+  const a = body.allocation;
+  if (a === null) return true;
+  if (!isObject(a) || !strings(a, ['contractId', 'templateId', 'admin', 'settlementId']) || typeof a.committed !== 'boolean') return false;
+  if (!nullableString(a.authorizer) || !nullableString(a.settlementDeadline)) return false;
+  if (!Array.isArray(a.executors) || !a.executors.every((e) => typeof e === 'string')) return false;
+  return Array.isArray(a.legs) && a.legs.every((l) => isObject(l) && strings(l, ['legId', 'side', 'amount', 'instrumentId']) && nullableString(l.otherside));
 }

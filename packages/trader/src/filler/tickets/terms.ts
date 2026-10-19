@@ -16,6 +16,9 @@
  * addresses per ticket from the node's configuration is CAN-2151.
  */
 import {
+  CANTON_TICKET_RECEIPT_TYPES,
+  cantonNetworkOfDestination,
+  cantonTicketReceipt,
   fillerIdHash,
   FILLER_PROTOCOL_DOMAIN,
   repayToFromEvm,
@@ -23,10 +26,12 @@ import {
   TICKET_INTENT_TYPES,
   TICKET_RECEIPT_TYPES,
   type FillTicket,
+  type CantonNetwork,
   type Hex,
   type Order,
   type OrderJson,
   type TicketIntentMessage,
+  type TicketIssuedCanton,
   type TicketJson,
   type TicketOffer,
   type TicketReceiptMessage,
@@ -45,10 +50,12 @@ export const CANTON_ORIGIN_FLOOR = 1n << 63n;
 const BYTES32 = /^0x[0-9a-fA-F]{64}$/;
 const DEC = /^(0|[1-9][0-9]*)$/;
 
-/** The chains of an order: its EVM source and EVM destination, when they are EVM. */
+/** The chains of an order: its EVM source and EVM destination, when they are EVM; its Canton destination, when it is one. */
 export interface OrderChains {
   source?: EvmChainId;
   destination?: EvmChainId;
+  /** The Canton network of a Canton destination (`keccak256(utf8("canton:<network>"))`, protocol §3.13). */
+  canton?: CantonNetwork;
   /** The raw origin id (`order.originChainId`). */
   origin: bigint;
 }
@@ -59,10 +66,12 @@ export function chainsOf(order: OrderJson): OrderChains | undefined {
   if (typeof order.destination !== 'string' || !BYTES32.test(order.destination)) return undefined;
   const origin = BigInt(order.originChainId);
   const dst = BigInt(order.destination);
+  // A Canton destination is a hash: about half of them are below 2⁶³ and would otherwise read as an EVM chain id.
+  const canton = cantonNetworkOfDestination(order.destination);
   return {
     origin,
     ...(origin > 0n && origin < CANTON_ORIGIN_FLOOR ? { source: `eip155:${origin}` as EvmChainId } : {}),
-    ...(dst > 0n && dst < CANTON_ORIGIN_FLOOR ? { destination: `eip155:${dst}` as EvmChainId } : {}),
+    ...(canton ? { canton } : dst > 0n && dst < CANTON_ORIGIN_FLOOR ? { destination: `eip155:${dst}` as EvmChainId } : {}),
   };
 }
 
@@ -190,4 +199,21 @@ export async function signTicketReceipt(ticket: TicketJson, ticketSig: Hex, mess
   const sig = await signTypedDataChecked(messageSigner, input);
   const { ticketHash, ticketSigHash } = input.message as { ticketHash: Hex; ticketSigHash: Hex };
   return { type: 'ticket.receipt', id, orderHash: ticket.orderHash.toLowerCase() as Hex, attempt: ticket.attempt, ticketHash, ticketSigHash, sig };
+}
+
+/** `CantonTicketReceipt` of a Canton-form ticket (protocol T-9): the fields of `ticket.issued` that name it. */
+export const cantonTicketReceiptInput = (issued: TicketIssuedCanton): TypedDataInput => ({
+  domain: FILLER_PROTOCOL_DOMAIN,
+  types: CANTON_TICKET_RECEIPT_TYPES,
+  primaryType: 'CantonTicketReceipt',
+  message: { ...cantonTicketReceipt(issued) },
+});
+
+/** Signs the Canton-form receipt with the message key and builds `ticket.receipt {form: "canton"}`, still to be sealed (T-22). */
+export async function signCantonTicketReceipt(issued: TicketIssuedCanton, messageSigner: QuoteSigner, id: string): Promise<Unsealed<TicketReceiptMessage>> {
+  const sig = await signTypedDataChecked(messageSigner, cantonTicketReceiptInput(issued));
+  return {
+    type: 'ticket.receipt', form: 'canton', id, orderHash: issued.orderHash.toLowerCase() as Hex, attempt: issued.attempt,
+    deliveryOrderCid: issued.deliveryOrderCid, validUntil: issued.validUntil, sig,
+  };
 }
