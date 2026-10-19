@@ -23,6 +23,11 @@ import { TERMINAL_ORDER_STATUSES, type Order, type OrderStatus } from './swap';
 /** `make` / `take` options as serve passes them: `gate` holds each new step, never a wait, to its `concurrency`. Internal to serve. */
 export interface SettleRun extends SettleOptions {
   gate?: <T>(run: () => Promise<T>) => Promise<T>;
+  /**
+   * `take` only: asked synchronously right before the accept request is sent, after every preflight
+   * read. False calls the take off (`TakeCancelledError`); true means the accept is now in flight.
+   */
+  beforeAccept?: () => boolean;
 }
 
 export interface ServeOptions extends Omit<SettleOptions, 'signal'> {
@@ -184,20 +189,23 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
     const queued = toTake.has(orderId);
     const maker = await slot(() => look(orderId), expired);
     if (maker === undefined || stopper.signal.aborted) return;
-    // Checked and marked in the same synchronous step as the accept call: an untake before it wins, none can slip between.
-    if (!maker) {
-      if (queued && !toTake.has(orderId)) return;
-      // Marked whenever it is queued now, also when take() arrived during look(): untake then reports it in flight.
-      if (toTake.has(orderId)) accepting.add(orderId);
-    }
+    if (!maker && queued && !toTake.has(orderId)) return;
+    // The take is in flight only once its accept request is about to go out (after the account's own
+    // preflight reads): an untake up to that synchronous step calls it off, none can slip between.
+    const beforeAccept = () => {
+      if (!toTake.has(orderId)) return false;
+      accepting.add(orderId);
+      return true;
+    };
     try {
-      const settled = await (maker ? acct.make : acct.take)(orderId, settle);
+      const takeRun: SettleRun = { ...settle, beforeAccept };
+      const settled = await (maker ? acct.make(orderId, settle) : acct.take(orderId, takeRun));
       done.add(orderId);
       emit({ type: 'settled', orderId, swapId: settled.swap.id, settled });
     } catch (error) {
       // A failed accept is no longer in flight: a later untake must be able to stop the retry.
       accepting.delete(orderId);
-      if (stopper.signal.aborted) return;
+      if (stopper.signal.aborted || (error as Error)?.name === 'TakeCancelledError') return;
       const last = (error as { last?: HtlcSwap | Order }).last;
       if (last && 'status' in last && last.status === 'dvp_expired') {
         const { swapId, withdrawable, withdrawal } = error as { swapId: string | null; withdrawable?: boolean; withdrawal?: Withdrawal };

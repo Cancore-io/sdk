@@ -393,6 +393,14 @@ export interface Withdrawal {
 }
 
 /** A settle that cannot finish: the swap went somewhere it cannot come back from, or time ran out. */
+/** The take was called off (serve `untake`) before its accept request was sent: nothing was accepted or signed. */
+export class TakeCancelledError extends Error {
+  constructor(readonly orderId: string) {
+    super(`take of order ${orderId} was called off before the accept was sent`);
+    this.name = 'TakeCancelledError';
+  }
+}
+
 export class SettleError extends Error {
   constructor(
     message: string,
@@ -1262,11 +1270,13 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * Take the order. Refused for want of a fee holding of this account's own, it splits one off
    * and takes once more — once: a second refusal ends the take.
    */
-  async function acceptOrder(order: Order, self: string | undefined, opts: SettleOptions): Promise<Order> {
+  async function acceptOrder(order: Order, self: string | undefined, opts: SettleRun): Promise<Order> {
     const what = `taking order ${order.id}`;
     const autoSplit = opts.autoSplitForFee ?? true;
     let split: string | null = null;
     for (;;) {
+      // Last synchronous step before the request: a caller that called the take off is honoured here.
+      if (opts.beforeAccept && !opts.beforeAccept()) throw new TakeCancelledError(order.id);
       try {
         return await swap.accept(order.id);
       } catch (err) {

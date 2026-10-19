@@ -29,7 +29,12 @@ function account(orders: Order[], make: (orderId: string, opts: SettleOptions) =
     },
     listSwaps: async () => [],
     make: (orderId: string, opts: SettleOptions) => (calls.push(orderId), make(orderId, opts)),
-    take: (orderId: string, opts: SettleOptions) => (calls.push(orderId), make(orderId, opts)),
+    // Like the real account: the accept goes out only if the caller still wants it.
+    take: async (orderId: string, opts: SettleRun) => {
+      if (opts.beforeAccept && !opts.beforeAccept()) throw Object.assign(new Error('called off'), { name: 'TakeCancelledError' });
+      calls.push(orderId);
+      return make(orderId, opts);
+    },
   } as unknown as SelfCustodyAccount;
   return { acct, calls };
 }

@@ -2757,6 +2757,43 @@ async function until(check: () => boolean, budgetMs = 10_000): Promise<void> {
   }
 }
 
+describe('serve(): an untake is honoured up to the accept request itself', () => {
+  test('the take preflight GET is held past serve.look, untake lands, and no POST accept is ever sent', async () => {
+    const api = venue();
+    // The taker's reads of the order: the first is serve.look, the second takeOnce's own preflight, held here.
+    let reads = 0;
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let atPreflight!: () => void;
+    const reachedPreflight = new Promise<void>((r) => (atPreflight = r));
+    const fetchImpl: typeof api.fetchImpl = async (url, init) => {
+      if (init.method === 'GET' && new URL(url).pathname === '/orders/o1' && ++reads === 2) {
+        atPreflight();
+        await held;
+      }
+      return api.fetchImpl(url, init);
+    };
+    const { maker, taker } = await tradingPair(api, [70, 71], {}, { fetchImpl });
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    const events: ServeEvent[] = [];
+    const handle = taker.serve({ reconcileMs: 3_600_000, onEvent: (e) => events.push(e) });
+    handle.take('o1');
+    await reachedPreflight;
+    // What the daemon's pause does: the accept has not been sent yet, so the take is called off.
+    expect(handle.untake('o1')).toBe(true);
+    release();
+    await until(() => reads >= 2);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(api.takes()).toBe(0);
+    expect(api.order.status).toBe('open');
+    expect(events.filter((e) => e.type === 'error')).toEqual([]);
+    await handle.stop();
+  });
+});
+
 describe('serve(): the maker runs nothing but serve()', () => {
   test('an order taken while serve runs is settled on the maker side, triggered by the realtime event alone', async () => {
     const api = venue();
