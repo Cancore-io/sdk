@@ -632,6 +632,11 @@ export function createDispatcher(deps: Deps): Dispatcher {
           orderTimes: [...(s.orderTimes ?? []).filter((t) => t > at - 3_600_000), at],
           ...(tag && { strategies: s.strategies?.map((x) => (x.strategyId === tag.id ? { ...x, placed: [...x.placed, at] } : x)) }),
         }));
+        // A lock while that write waited: the key is gone, so nothing goes to the API; undone like a refusal.
+        if (engine !== e) {
+          await mutate((s) => ({ ...dropIntent(s, intent), orderTimes: withoutOne(s.orderTimes ?? [], at) }));
+          throw new RpcFault(ERROR.LOCKED, 'locked');
+        }
         let orderId: string;
         try {
           ({ orderId } = await e.make({ ...params, clientKey: intent.key }));
@@ -778,24 +783,32 @@ export function createDispatcher(deps: Deps): Dispatcher {
 
   async function gated(request: RpcRequest, entry: Entry, deny: (code: RpcFault['code'], reason: string) => Promise<never>, tag?: Tag): Promise<RpcResponse> {
     let taken: Taken | undefined;
-    if (!engine) await deny(ERROR.LOCKED, 'locked');
+    // The engine this decision started with: a lock in any await below replaces it, and the gate then answers LOCKED.
+    const e = engine;
+    if (!e) await deny(ERROR.LOCKED, 'locked');
+    const relocked = async () => {
+      if (engine !== e) await deny(ERROR.LOCKED, 'locked');
+    };
     const now = deps.now();
     const [loaded, stored] = await Promise.all([deps.state.load(), deps.limits.load()]);
     const limits: Limits = { ...stored, ordersPerHour: deps.ordersPerHour ?? DEFAULT_ORDERS_PER_HOUR };
+    await relocked();
     if (loaded.paused) await deny(ERROR.PAUSED, 'paused');
     // Fresh prices for every decision: an unreachable price feed leaves none, and the gate then refuses.
     const [referencePrices, usdPrices] = await Promise.all([
-      engine!.referencePrices().catch(() => ({})),
+      e!.referencePrices().catch(() => ({})),
       // Never from disk: a stale or edited state file must not value an order.
-      engine!.usdPrices().catch(() => ({})),
+      e!.usdPrices().catch(() => ({})),
     ]);
+    await relocked();
     // An unconfirmed intent may be an order on the book: it counts as one.
     const intents = (loaded.intents ?? []).map(({ key, at: _at, ...o }) => ({ ...o, orderId: `${INTENT_ORDER_PREFIX}${key}` }));
     const state: BotState = { ...rollDaily(loaded, now), referencePrices, usdPrices, openOrders: [...loaded.openOrders, ...intents] };
     let decision: Decision;
     if (request.method === 'order.take') {
       const params = request.params as Params<'order.take'>;
-      const info = await engine!.order(params.orderId).catch(() => undefined);
+      const info = await e!.order(params.orderId).catch(() => undefined);
+      await relocked();
       // The order's amounts are the API's: one that does not parse is a refusal, never an unaudited throw.
       let whole = false;
       try {
@@ -810,6 +823,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
       decision = deps.riskgate({ method: request.method, params: request.params as never }, state, limits, now);
     }
     if (!decision.allow) await deny(ERROR.DENIED, decision.reason);
+    await relocked();
     await mutate((s) => ({ ...rollDaily(s, now), recentCommands: [...s.recentCommands.filter((t) => t > now - 60_000), now] }));
     // The decision is on disk before anything touches the engine or the key.
     await append({ ...entry, decision: 'allow' });

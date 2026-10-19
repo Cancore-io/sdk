@@ -215,6 +215,51 @@ describe('pause against an in-flight order.make', () => {
     return { d, getState, cancel, deps };
   }
 
+  it('a lock while the gate loads its limits answers LOCKED, not an internal error (round-32 X-1)', async () => {
+    const h = held();
+    const { d, deps } = await unlockedWith({});
+    const load = deps.limits.load;
+    let reached!: () => void;
+    const atLoad = new Promise<void>((r) => (reached = r));
+    deps.limits.load = async () => (reached(), await h.gate, load());
+    const sent = d.handle(order('1'), { owner: false });
+    await atLoad;
+    const locking = d.handle(req('lock', {}), { owner: true });
+    await new Promise((r) => setImmediate(r));
+    h.release();
+    await locking;
+    await expect(sent).rejects.toMatchObject({ code: ERROR.LOCKED });
+  });
+
+  it('a lock while the make records its intent sends nothing to the API and leaves no intent (round-32 X-2)', async () => {
+    const make = jest.fn(async () => ({ orderId: 'o1' }));
+    const { d, deps, getState } = await unlockedWith({ make });
+    const h = held();
+    const save = deps.state.save;
+    let reached!: () => void;
+    const atWrite = new Promise<void>((r) => (reached = r));
+    let armed = true;
+    // Hold the first state write that carries the new intent: that is the make's unlessPaused write.
+    deps.state.save = async (s) => {
+      if (armed && (s.intents ?? []).length > 0) {
+        armed = false;
+        reached();
+        await h.gate;
+      }
+      return save(s);
+    };
+    const sent = d.handle(order('1'), { owner: false });
+    await atWrite;
+    const locking = d.handle(req('lock', {}), { owner: true });
+    await new Promise((r) => setImmediate(r));
+    h.release();
+    await locking;
+    await expect(sent).rejects.toMatchObject({ code: ERROR.LOCKED });
+    expect(make).not.toHaveBeenCalled();
+    expect(getState().intents ?? []).toEqual([]);
+    expect(getState().orderTimes ?? []).toEqual([]);
+  });
+
   it('a make whose reference prices arrive after pause returned places nothing', async () => {
     const h = held();
     const make = jest.fn(async () => ({ orderId: 'o1' }));
