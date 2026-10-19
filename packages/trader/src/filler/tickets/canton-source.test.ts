@@ -15,6 +15,7 @@ import {
   type TicketJson,
   type TicketOffer,
 } from '@cancore/contracts';
+import { CANTON_ALLOCATION_TEMPLATES } from '../canton/factories';
 import { FillerChains, type ChainConfig } from '../chain';
 import { GatewayError } from '../errors';
 import type { FillSigner } from '../signer';
@@ -248,8 +249,11 @@ const ticketSigner = createTestTypedDataSigner(TICKET_KEY);
 async function verifierSetup(canton: { reader?: CantonSourceReader; party?: string } = {}) {
   const clock = new FakeClock();
   const nowS = Math.floor(clock.now() / 1000);
+  // The dev CNRX registrar: its allocation template is the one the verifier pins (CANTON_ALLOCATION_TEMPLATES).
+  const [admin, [template]] = Object.entries(CANTON_ALLOCATION_TEMPLATES)[0] as [string, string[]];
   const input: CantonSourceIntent = {
     ...golden.vector.input,
+    instrumentAdmin: admin,
     destinationChainId: '1',
     wantToken: TOKEN,
     wantDecimals: 0,
@@ -262,6 +266,7 @@ async function verifierSetup(canton: { reader?: CantonSourceReader; party?: stri
   const orderHash = built.orderHash;
   const intent = intentOf(input, orderHash, GOLDEN_LEGS, String(nowS + 600 + 3_600));
   intent.minReceived = { units: '99', decimals: 0 };
+  intent.allocation!.templateId = template!;
   const dst = new FakeChain(1n, 'eth');
   dst.router(DST_ROUTER).ticketSigners.add(ticketSigner.address);
   dst.token(TOKEN).setBalance(fill.address, 1_000n).approve(fill.address, DST_ROUTER, 1_000n);
