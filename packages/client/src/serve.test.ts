@@ -383,11 +383,14 @@ test('a take accepted in this run stays a trade after a later accept is refused:
     throw new Error('409');
   };
   const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
-  handle.take('ours');
-  await until(() => runs >= 1);
-  await new Promise((r) => setImmediate(r));
-  expect(handle.untake('ours')).toBe(false);
-  await handle.stop();
+  try {
+    handle.take('ours');
+    await until(() => runs >= 1);
+    await new Promise((r) => setImmediate(r));
+    expect(handle.untake('ours')).toBe(false);
+  } finally {
+    await handle.stop();
+  }
 });
 
 test('untake of a take this loop never queued reports it may be a trade', () => {
