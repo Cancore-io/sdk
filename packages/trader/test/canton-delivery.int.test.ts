@@ -305,7 +305,7 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
     expect(asked).toHaveLength(1);
 
     const payeeBefore = await balanceOf(createTestFillSigner(key('FILLER1')).address.toLowerCase() as Hex);
-    const { reader } = await attestAndSettle(order, orderHash, cantonFillRef(updateId), t.repayTo, now, executor, store, clock);
+    const { reader } = await attestAndSettle(order, orderHash, cantonFillRef(updateId), t.repayTo, await chainTime(), executor, store, clock);
     expect((await reader.intents(orderHash)).status).toBe(2);
     const payout = (BigInt(order.inputAmount) * 10_000n) / (10_000n + BigInt(order.feeBps));
     expect((await balanceOf(createTestFillSigner(key('FILLER1')).address.toLowerCase() as Hex)) - payeeBefore).toBe(payout);
@@ -321,7 +321,7 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
     expect(await store.withOrder(orderHash, (tx) => tx.getFill(0))).toMatchObject({ state: 'sent', txRef: '' });
 
     const attestedRef = cantonFillRef(`1220${'ab'.repeat(32)}`);
-    const { reader } = await attestAndSettle(order, orderHash, attestedRef, t.repayTo, now, executor, store, clock);
+    const { reader } = await attestAndSettle(order, orderHash, attestedRef, t.repayTo, await chainTime(), executor, store, clock);
     expect((await reader.intents(orderHash)).status).toBe(2);
     executor.stop();
   }, 60_000);
