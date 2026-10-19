@@ -99,6 +99,11 @@ async function waitFor<T>(what: string, read: () => Promise<T | undefined>, time
 }
 
 live('CAN-1867: EVM → Canton on the full intent stand', () => {
+  // describe.skip still runs this body: without the stand nothing below may read the env.
+  if (!STAND) {
+    test('TC-CAN-1867-STAND-01: needs the intent stand (INTENT_STAND_ENV)', () => undefined);
+    return;
+  }
   const chain = `eip155:${env('EVM_CHAIN_ID')}` as EvmChainId;
   const router = env('INTENT_ROUTER_ADDRESS').toLowerCase() as Hex;
   const rpc = httpRpc(env('EVM_RPC_URL'));
