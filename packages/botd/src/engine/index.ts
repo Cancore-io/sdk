@@ -87,6 +87,8 @@ export function createEngine(options: EngineOptions): Engine {
     ...(options.pollMs && { pollMs: options.pollMs }),
   });
   let loop: ServeHandle | undefined;
+  // The loop a lock stopped: it still knows whether an accept went out, so untake keeps asking it.
+  let last: ServeHandle | undefined;
 
   // This account's user id, cached after the first order that needs it.
   let selfId: string | undefined;
@@ -161,7 +163,8 @@ export function createEngine(options: EngineOptions): Engine {
       return { orderId, filled: '0' };
     },
     untake(orderId) {
-      return loop ? loop.untake(orderId) : true;
+      const l = loop ?? last;
+      return l ? l.untake(orderId) : true;
     },
     async cancel(orderId) {
       await acct.swap.cancel(orderId);
@@ -229,6 +232,7 @@ export function createEngine(options: EngineOptions): Engine {
           else if (event.type === 'error' && event.orderId) hooks.onTakeFailed?.(event.orderId, (event.error as Error)?.name ?? 'Error');
         },
       });
+      last = loop;
     },
     async stop() {
       const running = loop;

@@ -172,6 +172,34 @@ describe('dispatcher', () => {
   });
 });
 
+describe('the strategy timer', () => {
+  it('a lock stops it, so after lock and unlock exactly one runs (K11)', async () => {
+    const { deps } = fakeDeps([]);
+    const live = new Set<() => void>();
+    deps.every = (fn) => (live.add(fn), () => void live.delete(fn));
+    const d = createDispatcher(deps);
+    await d.handle(req('unlock', { passphrase: 'right' }), { owner: true });
+    expect(live.size).toBe(1);
+    await d.handle(req('lock', {}), { owner: true });
+    expect(live.size).toBe(0);
+    await d.handle(req('unlock', { passphrase: 'right' }), { owner: true });
+    expect(live.size).toBe(1);
+  });
+});
+
+describe('the state directory', () => {
+  it('is refused when another user owns it, even with mode 0700 (X5)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'botd-owner-'));
+    const uid = jest.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1);
+    try {
+      await expect(defaultDeps({ ...DEFAULTS, stateDir: dir })).rejects.toThrow(/owned by this user/);
+    } finally {
+      uid.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('start', () => {
   let dir: string;
   beforeEach(() => (dir = mkdtempSync(join(tmpdir(), 'botd-d-'))));
