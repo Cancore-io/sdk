@@ -1,4 +1,9 @@
 /**
+ * A COMPONENT suite, not the CAN-1867 integration test: the chain is real, the
+ * Canton side and filler-gateway are played (see below). The integration test
+ * against a Canton participant, filler-gateway and trading belongs on a stand
+ * that runs them.
+ *
  * EVM → Canton against the real `CancoreRouter` of the stand (CAN-1867): an
  * intent with a Canton destination opened on anvil (Permit2 witness by FRANK,
  * quote by QUOTESIGNER); the Canton-form ticket checked by the SDK — V-E1…V-E4
@@ -110,7 +115,7 @@ const signDigest = (key: Hex, digest: Hex): Hex => {
 };
 const addressOf = (key: Hex): Hex => addressOfPublicKey(secp256k1.getPublicKey(hexToBytes(key.slice(2)), false));
 
-live('EVM → Canton against the stand router (CAN-1867)', () => {
+live('component: EVM → Canton against the stand router, filler-gateway played (CAN-1867)', () => {
   const stand = (INTENT ? JSON.parse(readFileSync(INTENT, 'utf8')) : {}) as { chainId: number; rpcUrlHost: string; contracts: { CancoreRouter: Hex } };
   const evm = (INTENT ? JSON.parse(readFileSync(process.env.CANCORE_EVM_JSON ?? join(dirname(INTENT), 'evm.json'), 'utf8')) : {}) as { tokens: Record<string, { address: Hex }> };
   const actors = ACTORS ? env(ACTORS) : {};
@@ -197,7 +202,7 @@ live('EVM → Canton against the stand router (CAN-1867)', () => {
       canton: { party: PARTY, policy: cantonPolicy, deliveryOrders: async () => orders, holdings: async () => holdings },
     });
 
-  test('TC-SDK-1867-INT-01: a Canton-form ticket on a real escrow passes every check, from the router and the input token', async () => {
+  test('TC-SDK-1867-COMP-01: a Canton-form ticket on a real escrow passes every check, from the router and the input token', async () => {
     const { order, orderHash, now } = await openToCanton(1);
     const clock = standClock(now);
     const t = ticketOf(order, orderHash, now, clock);
@@ -206,7 +211,7 @@ live('EVM → Canton against the stand router (CAN-1867)', () => {
     expect(verdict.checks.map((c) => [c.check, c.status])).toEqual(['form', 'V-T4', 'V-T2', 'V-T3', 'V-E1', 'V-E2', 'V-E3', 'V-E4', 'V-E5'].map((c) => [c, 'passed']));
   }, 60_000);
 
-  test('TC-SDK-1867-INT-02: refused on the real escrow — another order, an operator repayTo (T-48), no inventory', async () => {
+  test('TC-SDK-1867-COMP-02: refused on the real escrow — another order, an operator repayTo (T-48), no inventory', async () => {
     const { order, orderHash, now } = await openToCanton(2);
     const clock = standClock(now);
     const t = ticketOf(order, orderHash, now, clock);
@@ -276,7 +281,7 @@ live('EVM → Canton against the stand router (CAN-1867)', () => {
     return { txHash, reader };
   }
 
-  test('TC-SDK-1867-INT-03: delivered on Canton, attested with fillRef = keccak256(utf8(updateId)), settled on the source: repayTo is paid', async () => {
+  test('TC-SDK-1867-COMP-03: delivered on Canton, attested with fillRef = keccak256(utf8(updateId)), settled on the source: repayTo is paid', async () => {
     const { order, orderHash, now } = await openToCanton(3);
     const clock = standClock(now);
     const store = new InMemoryFillerStore(clock);
@@ -301,7 +306,7 @@ live('EVM → Canton against the stand router (CAN-1867)', () => {
     executor.stop();
   }, 60_000);
 
-  test('TC-SDK-1867-INT-04: a delivery whose update id was lost settles from the attested proof that is otherwise its own', async () => {
+  test('TC-SDK-1867-COMP-04: a delivery whose update id was lost settles from the attested proof that is otherwise its own', async () => {
     const { order, orderHash, now } = await openToCanton(4);
     const clock = standClock(now);
     const store = new InMemoryFillerStore(clock);
