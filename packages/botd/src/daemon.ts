@@ -305,6 +305,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
    * Adopts the order an intent made, or drops an intent the API never saw. An intent possibly still in
    * flight waits; one is dropped only after two empty lookups INTENT_SETTLE_MS apart.
    */
+  // When an intent lookup last answered: an outage of the lookup API must not turn into an unbooked-fill pause.
+  let lastIntentLookupOk: number | undefined;
   async function reconcileIntents(e: Engine) {
     const now = deps.now();
     for (const intent of (await deps.state.load()).intents ?? []) {
@@ -312,6 +314,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
       if (now - intent.at < INTENT_SETTLE_MS || now < seen.next) continue;
       const known = (await deps.state.load()).openOrders.map((o) => o.orderId);
       const found = await e.findIntent(intent, known).then((id) => ({ id }), () => undefined);
+      if (found) lastIntentLookupOk = deps.now();
       if (!found) {
         const failures = seen.failures + 1;
         lookups.set(intent.key, { ...seen, failures, next: now + Math.min(INTENT_SETTLE_MS * 2 ** failures, LOOKUP_BACKOFF_MAX_MS) });
@@ -340,7 +343,10 @@ export function createDispatcher(deps: Deps): Dispatcher {
   async function resolveUnknownSettles() {
     const s = await deps.state.load();
     const now = deps.now();
-    const due = Object.entries(s.unknownSettles ?? {}).filter(([, at]) => (s.intents ?? []).length === 0 || now - at >= LOOKUP_BACKOFF_MAX_MS);
+    // Past the longest backoff, judged only if a lookup has answered since: a down API keeps it held, not paused.
+    const due = Object.entries(s.unknownSettles ?? {}).filter(
+      ([, at]) => (s.intents ?? []).length === 0 || (now - at >= LOOKUP_BACKOFF_MAX_MS && lastIntentLookupOk !== undefined && lastIntentLookupOk > at),
+    );
     if (due.length === 0) return;
     const ids = due.map(([id]) => id);
     await mutate((x) => ({ ...x, unknownSettles: Object.fromEntries(Object.entries(x.unknownSettles ?? {}).filter(([id]) => !ids.includes(id))) }));

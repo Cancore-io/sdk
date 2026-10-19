@@ -462,6 +462,30 @@ describe('an order whose answer was lost', () => {
     expect(w.audited).toContainEqual(expect.objectContaining({ decision: 'deny', reason: 'unbooked_fill' }));
   });
 
+  it('an unknown settle is not judged while the intent lookup API is down, even past 15 minutes (round-23 X-3)', async () => {
+    const w = world();
+    await w.unlock();
+    w.crash.make = true;
+    await expect(w.call('order.make', make, false)).rejects.toBeDefined();
+    w.crash.make = false;
+    await w.fill('ghost');
+    w.crash.lookupDown = true;
+    // Twenty minutes of failing lookups: the settle stays held, the bot keeps trading.
+    for (let i = 0; i < 20; i++) {
+      w.advance(61_000);
+      await w.tick();
+    }
+    expect(w.state()).toMatchObject({ paused: false });
+    expect(Object.keys(w.state().unknownSettles ?? {})).toEqual(['ghost']);
+    // The API answers again: the intent drains and the still-unknown settle pauses as it should.
+    w.crash.lookupDown = false;
+    for (let i = 0; i < 20 && !w.state().paused; i++) {
+      w.advance(61_000);
+      await w.tick();
+    }
+    expect(w.state()).toMatchObject({ paused: true, pauseReason: 'unbooked_fill' });
+  });
+
   it('released takes are pruned: past their day without a lookup, or once the venue shows they ended (round-22 X-2)', async () => {
     const w = world();
     const view = { pair: 'CC/USDCx', side: 'buy' as const, amount: '1', price: '0.15', taken: true };
