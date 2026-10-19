@@ -1,7 +1,7 @@
 import { createDispatcher, type Deps } from '../daemon';
 import { initialState } from '../state';
 import { check } from '../riskgate';
-import { JSONRPC_VERSION, type Method, type RpcRequest } from '../protocol/index';
+import { ERROR, JSONRPC_VERSION, type Method, type RpcRequest } from '../protocol/index';
 import type { BotState, Limits } from '../types';
 import { gridPrice } from './grid';
 
@@ -980,6 +980,82 @@ describe('a settle that lands in the lock window (CAN-2834)', () => {
     await w.unlock();
     expect(w.state().fills).toEqual([{ at: expect.any(Number), instrument: 'CC', amount: '1' }]);
     expect(w.audited).toContainEqual(expect.objectContaining({ method: 'settle', params: expect.objectContaining({ orderId: 'o1', usdValue: 'unpriced' }) }));
+  });
+});
+
+describe('owner release of a booked take (CAN-2836)', () => {
+  const someoneElses = { source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '0.15' };
+  const tookA = async () => {
+    const w = world();
+    await w.unlock();
+    w.infos.A = someoneElses;
+    await w.call('order.take', { orderId: 'A', amount: '1' }, false);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+    return w;
+  };
+  const release = (w: Awaited<ReturnType<typeof tookA>>, orderId = 'A', owner = true) => w.call('order.release' as Method, { orderId }, owner);
+
+  it('the venue shows the order still open with no taker: the booking and its reservation are released (G0-CAN-2836.1)', async () => {
+    const w = await tookA();
+    await expect(release(w)).resolves.toMatchObject({ result: { orderId: 'A', released: true } });
+    expect(w.state().openOrders).toEqual([]);
+    expect(w.state().fills ?? []).toEqual([]);
+    expect(w.audited).toContainEqual(expect.objectContaining({ method: 'settle', params: expect.objectContaining({ orderId: 'A', event: 'released' }) }));
+  });
+
+  it('the venue shows this account as the taker: the accept may have gone through, so it stays booked (G0-CAN-2836.2)', async () => {
+    const w = await tookA();
+    w.statuses.A = 'accepted';
+    w.takers.A = true;
+    await expect(release(w)).rejects.toMatchObject({ code: ERROR.INVALID_PARAMS, data: { reason: 'may_be_trade' } });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+  });
+
+  it('a taker the venue does not report yet on an order no longer open is not proof the accept failed: it stays booked', async () => {
+    const w = await tookA();
+    w.statuses.A = 'accepted';
+    await expect(release(w)).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+  });
+
+  it('an order that cannot be read is not released', async () => {
+    const w = await tookA();
+    w.crash.orderDown = true;
+    await expect(release(w)).rejects.toMatchObject({ code: ERROR.INTERNAL });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+  });
+
+  it('the maker\'s order already completed by this account: refused, and reconcile books the fill (G0-CAN-2836.3)', async () => {
+    const w = await tookA();
+    w.statuses.A = 'completed';
+    w.takers.A = true;
+    await expect(release(w)).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+    w.advance(31_000);
+    await w.tick();
+    expect(w.state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '1' })]);
+  });
+
+  it('the maker\'s order completed by another account: released with no fill', async () => {
+    const w = await tookA();
+    w.statuses.A = 'completed';
+    w.takers.A = false;
+    await expect(release(w)).resolves.toMatchObject({ result: { released: true } });
+    expect(w.state().openOrders).toEqual([]);
+    expect(w.state().fills ?? []).toEqual([]);
+  });
+
+  it('only a booked take can be released, never a resting order of ours', async () => {
+    const w = await tookA();
+    await w.call('order.make', { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' }, false);
+    await expect(release(w, 'o1')).rejects.toMatchObject({ code: ERROR.INVALID_PARAMS, data: { reason: 'not_a_take' } });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'o1']);
+  });
+
+  it('is an owner command: refused on the agent socket', async () => {
+    const w = await tookA();
+    await expect(release(w, 'A', false)).rejects.toMatchObject({ code: ERROR.FORBIDDEN });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
   });
 });
 
