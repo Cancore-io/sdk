@@ -31,7 +31,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
   let ticker: (() => void) | undefined;
   const audited: { method: string; decision: string; reason?: string }[] = [];
   let hooks: Parameters<Deps['createEngine']>[1] | undefined;
-  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0 };
+  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[] };
   const deps = (): Deps => ({
     keystore: { init: jest.fn(), initSeed: jest.fn(), unlock: async () => ({ destroy: () => undefined }) as never, lock: () => void (crash.wiped = true), isLocked: () => false, publicKey: async () => 'ab' },
     audit: {
@@ -60,7 +60,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         take: jest.fn(),
         untake: jest.fn(() => true),
         cancel: async (id) => void cancelled.push(id),
-        order: async (id) => ({ orderId: id, status: statuses[id] ?? 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' }),
+        order: async (id) => (crash.orderLookups.push(id), { orderId: id, status: statuses[id] ?? 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' }),
         balances: jest.fn(),
         referencePrices: async () => ({ 'CC/USDCx': '0.15' }),
         usdPrices: async () => ({ CC: '0.15', USDCx: '1' }),
@@ -412,6 +412,75 @@ describe('an order whose answer was lost', () => {
     expect(w.made.map((m) => m.side)).toContain('buy');
     expect(w.state().openOrders.some((o) => o.strategy?.slot === '0:buy')).toBe(true);
     expect(strategyOf(w)).toMatchObject({ status: 'running' });
+  });
+
+  it('a settle that arrives before its intent is adopted does not pause, and books the fill once (round-22 X-1)', async () => {
+    const w = world();
+    await w.unlock();
+    w.crash.make = true;
+    await expect(w.call('order.make', make, false)).rejects.toBeDefined();
+    w.crash.make = false;
+    // serve settles the maker side of o1 while the daemon only has the intent.
+    await w.fill('o1');
+    expect(w.state()).toMatchObject({ paused: false });
+    w.statuses.o1 = 'completed';
+    w.crash.found = 'o1';
+    w.advance(61_000);
+    await w.tick();
+    await w.tick();
+    expect(w.state().intents).toEqual([]);
+    expect(w.state()).toMatchObject({ paused: false });
+    expect((w.state().fills ?? []).filter((f) => f.amount === '1')).toHaveLength(1);
+    expect(w.state().openOrders).toEqual([]);
+    expect(w.cancelled).toEqual([]);
+    expect(w.state().unknownSettles ?? {}).toEqual({});
+  });
+
+  it('a settle for an order nobody booked pauses at once when no intent is pending', async () => {
+    const w = world();
+    await w.unlock();
+    await w.fill('ghost');
+    expect(w.state()).toMatchObject({ paused: true, pauseReason: 'unbooked_fill' });
+  });
+
+  it('an unknown settle held for pending intents pauses once they drain and it is still unknown', async () => {
+    const w = world();
+    await w.unlock();
+    w.crash.make = true;
+    await expect(w.call('order.make', make, false)).rejects.toBeDefined();
+    w.crash.make = false;
+    await w.fill('ghost');
+    expect(w.state()).toMatchObject({ paused: false });
+    // Two empty lookups a minute apart drop the intent; the ghost is then judged.
+    w.advance(61_000);
+    await w.tick();
+    w.advance(61_000);
+    await w.tick();
+    await w.tick();
+    expect(w.state().intents).toEqual([]);
+    expect(w.state()).toMatchObject({ paused: true, pauseReason: 'unbooked_fill' });
+    expect(w.audited).toContainEqual(expect.objectContaining({ decision: 'deny', reason: 'unbooked_fill' }));
+  });
+
+  it('released takes are pruned: past their day without a lookup, or once the venue shows they ended (round-22 X-2)', async () => {
+    const w = world();
+    const view = { pair: 'CC/USDCx', side: 'buy' as const, amount: '1', price: '0.15', taken: true };
+    const state = w.state();
+    state.releasedTakes = {
+      old: { orderId: 'old', ...view, releasedAt: 1_000_000 - 86_400_001 },
+      gone: { orderId: 'gone', ...view, releasedAt: 1_000_000 },
+      live: { orderId: 'live', ...view, releasedAt: 1_000_000 },
+    };
+    w.statuses.gone = 'cancelled';
+    await w.unlock();
+    expect(Object.keys(w.state().releasedTakes ?? {})).toEqual(['live']);
+    expect(w.crash.orderLookups).not.toContain('old');
+    // Still open: kept, in case its accept lands late.
+    w.crash.orderLookups.length = 0;
+    await w.restart();
+    await w.unlock();
+    expect(Object.keys(w.state().releasedTakes ?? {})).toEqual(['live']);
+    expect(w.crash.orderLookups).not.toContain('gone');
   });
 
   it('an adopted order that filled while it was an intent goes into the position', async () => {

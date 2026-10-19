@@ -21,6 +21,8 @@ declare module '../types' {
     releasedTakes?: Record<string, BotState['openOrders'][number] & { releasedAt: number }>;
     /** Orders whose fill was booked, with when (ms), for a day: a repeated settle is not an unknown one. */
     settledOrders?: Record<string, number>;
+    /** Settles for orders not on the book that arrived while intents were unresolved, with when (ms): judged once they drain. */
+    unknownSettles?: Record<string, number>;
   }
   interface EngineHooks {
     /** A take or settle step of the loop failed; `errorName` is the error's class, never its text. */

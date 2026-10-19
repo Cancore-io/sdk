@@ -214,6 +214,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
         let usdValue: string | undefined;
         let unbooked = false;
         let repeated = false;
+        let pending = false;
         const now = deps.now();
         await mutate((s0) => {
           let s = withoutStale(s0, now);
@@ -227,6 +228,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
           const filled = s.openOrders.find((o) => o.orderId === orderId);
           if (!filled) {
             if (s.settledOrders?.[orderId] !== undefined) return (repeated = true), s;
+            // It may be the order of an intent not adopted yet (a make whose answer was lost): judged once intents drain.
+            if ((s.intents ?? []).length > 0) return (pending = true), { ...s, unknownSettles: { [orderId]: now, ...s.unknownSettles } };
             // A trade on this account the book never knew: limits cannot have seen it, so trading stops for the owner.
             unbooked = true;
             return { ...s, paused: true, pauseReason: 'unbooked_fill' };
@@ -241,6 +244,10 @@ export function createDispatcher(deps: Deps): Dispatcher {
         });
         // Already booked (serve and reconcile both saw it): nothing more to record.
         if (repeated) return;
+        if (pending) {
+          await append({ ...settleEntry, decision: 'allow', params: { orderId, event: 'settle_pending' } });
+          return;
+        }
         if (unbooked) {
           await append({ ...settleEntry, decision: 'deny', reason: 'unbooked_fill', params: { orderId, event: 'settled' } });
           return;
@@ -321,16 +328,47 @@ export function createDispatcher(deps: Deps): Dispatcher {
       // It may have filled while it was an intent: its settle event found nothing on the book then.
       if (found.id) await settleIfDone(e, found.id);
     }
+    // Queued behind the settles the adoptions above queued, so it judges the book they leave.
+    later(resolveUnknownSettles);
+  }
+
+  /**
+   * Settles that found no booking while intents were unresolved. Once intents drain (or after the longest
+   * lookup backoff), one now booked is settled by the normal path, one already settled is dropped, and one
+   * still unknown pauses trading like any unbooked fill.
+   */
+  async function resolveUnknownSettles() {
+    const s = await deps.state.load();
+    const now = deps.now();
+    const due = Object.entries(s.unknownSettles ?? {}).filter(([, at]) => (s.intents ?? []).length === 0 || now - at >= LOOKUP_BACKOFF_MAX_MS);
+    if (due.length === 0) return;
+    const ids = due.map(([id]) => id);
+    await mutate((x) => ({ ...x, unknownSettles: Object.fromEntries(Object.entries(x.unknownSettles ?? {}).filter(([id]) => !ids.includes(id))) }));
+    for (const id of ids) {
+      if (s.settledOrders?.[id] !== undefined) continue;
+      if (s.openOrders.some((o) => o.orderId === id)) {
+        hooks.onSettled(id);
+        continue;
+      }
+      await mutate((x) => ({ ...x, paused: true, pauseReason: 'unbooked_fill' }));
+      await append({ ...settleEntry, decision: 'deny', reason: 'unbooked_fill', params: { orderId: id, event: 'settled' } });
+    }
   }
 
   /** Orders that settled or ended while the daemon was down. A failed lookup leaves the order as it was. */
   async function reconcile(e: Engine) {
     await reconcileIntents(e);
     for (const o of (await deps.state.load()).openOrders) await settleIfDone(e, o.orderId);
+    // Released takes past their day are dropped first, so they are not polled forever.
+    await mutate((s) => withoutStale(s, deps.now()));
     // A released take the venue now shows completed by us landed late: book it (onSettled puts it back first).
+    // One that ended, or that another account took, can no longer land: forget it.
     for (const orderId of Object.keys((await deps.state.load()).releasedTakes ?? {})) {
       const info = await e.order(orderId).catch(() => undefined);
       if (info?.status === 'completed' && info.takenBySelf === true) hooks.onSettled(orderId);
+      else if (info && (ENDED.has(info.status) || info.takenBySelf === false)) {
+        await mutate(({ releasedTakes: { [orderId]: _, ...rest } = {}, ...s }) => ({ ...s, releasedTakes: rest }));
+      }
     }
   }
 
