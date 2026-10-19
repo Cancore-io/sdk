@@ -256,15 +256,7 @@ export class GatewayRest {
     const path = `/v1/filler/canton/intents/${orderHash.toLowerCase()}`;
     const { text } = await this.authed('GET', path, 'read');
     const body = parseJson(text, path);
-    const shaped =
-      isObject(body) &&
-      typeof body.intentCid === 'string' &&
-      typeof body.orderHash === 'string' &&
-      isObject(body.asset) &&
-      isObject(body.destination) &&
-      isObject(body.minReceived) &&
-      (body.allocation === null || (isObject(body.allocation) && Array.isArray(body.allocation.legs) && Array.isArray(body.allocation.executors)));
-    if (!shaped) throw new GatewayError('BAD_RESPONSE', false, `${path}: expected a CantonIntent`);
+    if (!isCantonIntent(body)) throw new GatewayError('BAD_RESPONSE', false, `${path}: expected a CantonIntent`);
     return body as unknown as CantonIntent;
   }
 
@@ -403,4 +395,27 @@ function parseJson(text: string, path: string): unknown {
   } catch {
     throw new GatewayError('BAD_RESPONSE', false, `${path}: the body is not JSON`);
   }
+}
+
+const strings = (o: Record<string, unknown>, keys: readonly string[]): boolean => keys.every((k) => typeof o[k] === 'string');
+const nullableString = (v: unknown): boolean => v === null || typeof v === 'string';
+
+/**
+ * The shape of `cantonIntent` (rest.schema.json) the checks read: every field
+ * they compare is a string where the schema says so, so a malformed answer is
+ * a `BAD_RESPONSE` — a declined ticket — never a `TypeError` mid-check.
+ */
+export function isCantonIntent(body: unknown): body is CantonIntent {
+  if (!isObject(body)) return false;
+  const top = ['intentCid', 'templateId', 'orderHash', 'owner', 'operator', 'filler', 'fillerId', 'requestId', 'amount', 'feeRate', 'fillDeadline', 'refundAfter', 'orderCreatedAt', 'allocationCid'];
+  if (!strings(body, top)) return false;
+  if (!isObject(body.asset) || !strings(body.asset, ['admin', 'id'])) return false;
+  if (!isObject(body.destination) || !strings(body.destination, ['chainId', 'token', 'recipient'])) return false;
+  if (!isObject(body.minReceived) || typeof body.minReceived.units !== 'string' || !Number.isSafeInteger(body.minReceived.decimals)) return false;
+  const a = body.allocation;
+  if (a === null) return true;
+  if (!isObject(a) || !strings(a, ['contractId', 'templateId', 'admin', 'settlementId']) || typeof a.committed !== 'boolean') return false;
+  if (!nullableString(a.authorizer) || !nullableString(a.settlementDeadline)) return false;
+  if (!Array.isArray(a.executors) || !a.executors.every((e) => typeof e === 'string')) return false;
+  return Array.isArray(a.legs) && a.legs.every((l) => isObject(l) && strings(l, ['legId', 'side', 'amount', 'instrumentId']) && nullableString(l.otherside));
 }

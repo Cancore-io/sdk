@@ -35,6 +35,13 @@ export interface CantonTransferFactory {
   serviceChoices: readonly string[];
   /** The V2 allocation template the registry's allocation factory creates, when the registry has one (V-C4). */
   allocation?: string;
+  /**
+   * The registry's receipt-only allocation needs nothing from its receiver — no
+   * holding, no preapproval, no other contract of the receiver's — so any party
+   * can be paid through it (fillers.md T-9, V-C5). Set only from the registry's
+   * own code; a registry without it is not paid out to on a Canton source.
+   */
+  openReceipt?: boolean;
 }
 
 const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
@@ -47,6 +54,9 @@ const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
   serviceChoices: [],
   // Committed V2 allocations from 0.2.1 on (CAN-2415).
   allocation: 'Cnrx.Allocation:CnrxAllocationV2',
+  // Cnrx.Allocation cnrx_allocateImplV2: a receipt-only allocation (no debit) takes no input holdings and
+  // checks only that its actor owns the authorizer account — nothing of the receiver must exist beforehand.
+  openReceipt: true,
 };
 
 /** By instrument admin party. */

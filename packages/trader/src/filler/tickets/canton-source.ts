@@ -19,27 +19,31 @@
  * | V-C2 | the intent's terms are the offered order: the EVM-form order built from them (protocol §3.7) equals `offer.order` field by field | `ESCROW_MISMATCH` |
  * | V-C3 | the label binds the terms: that order's hash in the Canton source domain is `ticket.orderHash` and the intent's `orderHash` | `ESCROW_MISMATCH` |
  * | V-C4 | the give is committed to this filler: the allocation `allocationCid` is live, of a pinned registry template, `committed`, authorized by the owner, executors exactly operator and owner, `settlementDeadline == refundAfter`, legs exactly `payout` to the node's party and `fee` to the operator | `ESCROW_NOT_OPEN` (not live), `ESCROW_MISMATCH` |
- * | V-C5 | the filler can be paid: its `FillerRegistryEntry` is ACTIVE and `ticket.repayTo == keccak256(utf8(party))` (T-45) | `OTHER` (detail `payout-not-ready`), `TICKET_MISMATCH` |
+ * | V-C5 | the filler can be paid: `ticket.repayTo == keccak256(utf8(party))` (T-45), its `FillerRegistryEntry` is ACTIVE, and the instrument's pinned registry pays any party through a receipt-only allocation (`openReceipt`, T-9) | `TICKET_MISMATCH`, `OTHER` (detail `payout-not-ready`) |
  * | V-C6 | `refundAfter − fillDeadline ≥` the filler's own proof window for the destination, as V-E3 | `PROOF_WINDOW_TOO_SHORT` |
  *
  * `PAYOUT_NOT_READY` is a `TICKET_REFUSED` reason of filler-gateway, not a
  * decline code: like V-E4, V-C5 declines `OTHER` and names it in the detail.
- * Not checked here: that the party can create a receipt allocation for the
- * instrument (T-9) — no read states it; `SwapIntent_SettleWithProof` refuses
- * then, and the intent stays live.
+ * T-9 (the party can create a receipt allocation for the instrument) is held
+ * by the registry, not by a read: the node pays out only through a pinned
+ * registry whose receipt-only allocation needs nothing from its receiver
+ * (`CantonTransferFactory.openReceipt`), and the same registry must be the
+ * one the give is committed in (V-C4).
  */
 import {
   buildCantonSourceOrder,
   cantonInclusiveFeeSplit,
   repayToFromParty,
   type CantonAllocation,
+  type CantonSourceOrder,
   type CantonIntent,
   type CantonParty,
   type Hex,
   type OrderJson,
   type TicketJson,
 } from '@cancore/contracts';
-import { CANTON_ALLOCATION_TEMPLATES } from '../canton/factories';
+import { canonicalDecimal, scaled } from '../canton/checks';
+import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../canton/factories';
 import { GatewayError } from '../errors';
 import { Refusal, type TicketCheckId } from './refusal';
 
@@ -60,32 +64,40 @@ export interface CantonSourceCheckInput {
   /** The filler's own proof window for the destination, seconds (V-C6, as V-E3). */
   requiredProofWindowSec: number;
   reader: CantonSourceReader;
-  /** The pinned allocation templates by instrument admin; `CANTON_ALLOCATION_TEMPLATES` unless a test names others. */
-  allocationTemplates?: Readonly<Record<string, readonly string[]>>;
-}
-
-const DECIMAL = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/;
-const SCALE = 10;
-
-/** A Daml Decimal with its trailing fraction zeros dropped: `0.0030000000` → `0.003`. */
-function trimmed(value: string, check: TicketCheckId, field: string): string {
-  if (!DECIMAL.test(value)) throw new Refusal(check, 'ESCROW_MISMATCH', `${field} ${value} is not a decimal`);
-  const [whole, fraction = ''] = value.split('.') as [string, string?];
-  const f = fraction.replace(/0+$/, '');
-  return f ? `${whole}.${f}` : whole;
-}
-
-/** A Daml Decimal (Numeric 10) as an integer count of 10⁻¹⁰. */
-function units(value: string, check: TicketCheckId, field: string): bigint {
-  const [whole, fraction = ''] = trimmed(value, check, field).split('.') as [string, string?];
-  if (fraction.length > SCALE) throw new Refusal(check, 'ESCROW_MISMATCH', `${field} ${value} has more than ${SCALE} decimals`);
-  return BigInt(whole) * 10n ** BigInt(SCALE) + BigInt(fraction.padEnd(SCALE, '0'));
+  /** The pinned registries by instrument admin; `CANTON_TRANSFER_FACTORIES` unless a test names others. */
+  registries?: Readonly<Record<string, readonly CantonTransferFactory[]>>;
 }
 
 /** `<module>:<entity>` of a `<package id>:<module>:<entity>` id. */
 const qualified = (templateId: string): string => templateId.split(':').slice(1).join(':');
 const sameSet = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && [...a].sort().join('\n') === [...b].sort().join('\n');
 const lower = (v: unknown): string => String(v).toLowerCase();
+
+/**
+ * The EVM-form order of a Canton-source intent, built from its own fields
+ * (protocol §3.7): what V-C2 compares with the offer and V-C3 hashes. Throws
+ * when the terms do not encode exactly.
+ */
+export function intentOrder(intent: CantonIntent, originChainId: string): CantonSourceOrder {
+  return buildCantonSourceOrder({
+    ownerPartyId: intent.owner,
+    requestId: intent.requestId,
+    instrumentAdmin: intent.asset.admin,
+    instrumentId: intent.asset.id,
+    amount: canonicalDecimal(intent.amount),
+    destinationChainId: intent.destination.chainId,
+    wantToken: intent.destination.token,
+    // minReceived is in base units already: built at 0 decimals it stays the same integer.
+    wantDecimals: 0,
+    minReceived: intent.minReceived.units,
+    recipient: intent.destination.recipient,
+    createdAt: intent.orderCreatedAt,
+    fillDeadline: intent.fillDeadline,
+    feeRate: canonicalDecimal(intent.feeRate),
+    cantonOriginId: originChainId,
+    fillerId: intent.fillerId,
+  });
+}
 
 /** The fields of the 12-field `Order` V-C2 compares, in their order. */
 const ORDER_FIELDS = ['user', 'originChainId', 'inputToken', 'inputAmount', 'destination', 'outputAsset', 'minReceived', 'recipient', 'createdAt', 'fillDeadline', 'feeBps', 'fillerId'] as const;
@@ -114,28 +126,10 @@ export async function checkCantonSource(input: CantonSourceCheckInput, pass: (ch
   pass('V-C1');
 
   // -- V-C2: its terms are the offered order -----------------------------------------------------
-  let built: ReturnType<typeof buildCantonSourceOrder>;
+  let built: CantonSourceOrder;
   try {
-    built = buildCantonSourceOrder({
-      ownerPartyId: intent.owner,
-      requestId: intent.requestId,
-      instrumentAdmin: intent.asset.admin,
-      instrumentId: intent.asset.id,
-      amount: trimmed(intent.amount, 'V-C2', 'amount'),
-      destinationChainId: intent.destination.chainId,
-      wantToken: intent.destination.token,
-      // minReceived is in base units already: built at 0 decimals it stays the same integer.
-      wantDecimals: 0,
-      minReceived: intent.minReceived.units,
-      recipient: intent.destination.recipient,
-      createdAt: intent.orderCreatedAt,
-      fillDeadline: intent.fillDeadline,
-      feeRate: trimmed(intent.feeRate, 'V-C2', 'feeRate'),
-      cantonOriginId: order.originChainId,
-      fillerId: intent.fillerId,
-    });
+    built = intentOrder(intent, order.originChainId);
   } catch (error) {
-    if (error instanceof Refusal) throw error;
     throw new Refusal('V-C2', 'ESCROW_MISMATCH', `the intent's terms do not encode as an order: ${String(error)}`);
   }
   const offered = order as unknown as Record<string, unknown>;
@@ -149,7 +143,7 @@ export async function checkCantonSource(input: CantonSourceCheckInput, pass: (ch
   pass('V-C3');
 
   // -- V-C4: the give is committed to this filler ------------------------------------------------------
-  checkAllocation(intent, intent.allocation, party, BigInt(built.order.feeBps as string), input.allocationTemplates ?? CANTON_ALLOCATION_TEMPLATES);
+  const registry = checkAllocation(intent, intent.allocation, party, BigInt(built.order.feeBps as string), input.registries ?? CANTON_TRANSFER_FACTORIES);
   pass('V-C4');
 
   // -- V-C5: the filler can be paid -------------------------------------------------------------------
@@ -164,6 +158,10 @@ export async function checkCantonSource(input: CantonSourceCheckInput, pass: (ch
   if (registered.registry?.state !== 'ACTIVE' || !registered.registry.entryCid) {
     throw new Refusal('V-C5', 'OTHER', `payout-not-ready: the FillerRegistryEntry is ${String(registered.registry?.state)}`);
   }
+  // T-9: the receipt allocation of the settle must be one this party can create.
+  if (registry.openReceipt !== true) {
+    throw new Refusal('V-C5', 'OTHER', `payout-not-ready: the registry ${registry.packageId} of ${intent.asset.admin} is not pinned as paying any party (T-9)`);
+  }
   pass('V-C5');
 
   // -- V-C6: the settlement window ----------------------------------------------------------------------
@@ -175,20 +173,34 @@ export async function checkCantonSource(input: CantonSourceCheckInput, pass: (ch
 }
 
 /** V-C4: the allocation is exactly the commitment `IntentFactory_Open` makes (`SwapIntent.daml` legsOf, allocationSpec). */
-function checkAllocation(intent: CantonIntent, a: CantonAllocation | null, party: string, feeBps: bigint, templates: Readonly<Record<string, readonly string[]>>): void {
+function checkAllocation(
+  intent: CantonIntent,
+  a: CantonAllocation | null,
+  party: string,
+  feeBps: bigint,
+  registries: Readonly<Record<string, readonly CantonTransferFactory[]>>,
+): CantonTransferFactory {
   const mismatch = (detail: string): never => {
     throw new Refusal('V-C4', 'ESCROW_MISMATCH', detail);
   };
   if (!a) throw new Refusal('V-C4', 'ESCROW_NOT_OPEN', 'the committed allocation is not live');
   if (a.contractId !== intent.allocationCid) mismatch('the allocation read is not the intent’s allocationCid');
-  if (!(templates[intent.asset.admin] ?? []).includes(a.templateId)) mismatch(`the allocation ${a.templateId} is not a pinned allocation of the admin ${intent.asset.admin}`);
+  const registry = (registries[intent.asset.admin] ?? []).find((f) => f.allocation !== undefined && a.templateId === `${f.packageId}:${f.allocation}`);
+  if (!registry) return mismatch(`the allocation ${a.templateId} is not a pinned allocation of the admin ${intent.asset.admin}`);
   if (a.admin !== intent.asset.admin) mismatch('the allocation is of another instrument admin');
   if (a.committed !== true) mismatch('the allocation is not committed: the owner could withdraw it before refundAfter');
   if (a.authorizer !== intent.owner) mismatch('the allocation is not the owner’s');
   if (a.executors.length !== 2 || !sameSet(a.executors, [intent.operator, intent.owner])) mismatch('the executors are not exactly the operator and the owner');
   if (a.settlementId !== `cancore-intent/${lower(intent.orderHash).slice(2)}`) mismatch('the allocation belongs to another settlement');
   if (a.settlementDeadline !== intent.refundAfter) mismatch(`settlementDeadline ${String(a.settlementDeadline)} is not refundAfter ${intent.refundAfter}`);
-  const split = cantonInclusiveFeeSplit(units(intent.amount, 'V-C4', 'amount'), feeBps);
+  const units = (value: string, what: string): bigint => {
+    try {
+      return scaled(value);
+    } catch {
+      return mismatch(`${what} ${value} is not a Daml Decimal`);
+    }
+  };
+  const split = cantonInclusiveFeeSplit(units(intent.amount, 'amount'), feeBps);
   const want = [{ legId: 'payout', otherside: party, amount: split.payout }, ...(split.fee > 0n ? [{ legId: 'fee', otherside: intent.operator, amount: split.fee }] : [])];
   if (a.legs.length !== want.length) mismatch(`the allocation has ${a.legs.length} legs, not ${want.length}`);
   for (const w of want) {
@@ -197,6 +209,7 @@ function checkAllocation(intent: CantonIntent, a: CantonAllocation | null, party
     if (leg.side !== 'SENDER') mismatch(`the ${w.legId} leg is not on the owner's sending side`);
     if (leg.otherside !== w.otherside) mismatch(`the ${w.legId} leg pays ${String(leg.otherside)}, not ${w.otherside}`);
     if (leg.instrumentId !== intent.asset.id) mismatch(`the ${w.legId} leg moves another instrument`);
-    if (units(leg.amount, 'V-C4', `${w.legId}.amount`) !== w.amount) mismatch(`the ${w.legId} leg moves ${leg.amount}, not the ledger's split of ${intent.amount} at ${feeBps} bps`);
+    if (units(leg.amount, `${w.legId}.amount`) !== w.amount) mismatch(`the ${w.legId} leg moves ${leg.amount}, not the ledger's split of ${intent.amount} at ${feeBps} bps`);
   }
+  return registry;
 }

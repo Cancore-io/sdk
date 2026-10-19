@@ -15,9 +15,10 @@ import {
   type TicketJson,
   type TicketOffer,
 } from '@cancore/contracts';
-import { CANTON_ALLOCATION_TEMPLATES } from '../canton/factories';
+import { CANTON_ALLOCATION_TEMPLATES, CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../canton/factories';
 import { FillerChains, type ChainConfig } from '../chain';
 import { GatewayError } from '../errors';
+import { isCantonIntent } from '../protocol/rest';
 import type { FillSigner } from '../signer';
 import { createRecordingEventSink, createRecordingLogger, createTestTypedDataSigner, FakeChain, FakeClock } from '../testing';
 import { checkCantonSource, type CantonSourceReader } from './canton-source';
@@ -27,6 +28,11 @@ import { Refusal } from './refusal';
 const PARTY = 'filler-acme::12206c81aa';
 const OPERATOR = 'cancore-intent-operator::1220ee';
 const ALLOCATION_TEMPLATE = `${'ab'.repeat(32)}:Cnrx.Allocation:CnrxAllocationV2`;
+/** A registry pinned like cnrx-registry: its V2 allocation, a receipt allocation open to any party. */
+const registryOf = (openReceipt: boolean): CantonTransferFactory => ({
+  packageId: 'ab'.repeat(32), factory: 'Cnrx.Rules:CnrxRules', holding: 'Cnrx.Holding:CnrxHolding', holdingView: 'holding', offer: 'Cnrx.Transfer:CnrxTransferOffer',
+  serviceChoices: [], allocation: 'Cnrx.Allocation:CnrxAllocationV2', ...(openReceipt ? { openReceipt } : {}),
+});
 
 const VECTORS = join(__dirname, '..', '..', '..', '..', 'contracts', 'spec', 'vectors');
 const golden = JSON.parse(readFileSync(join(VECTORS, 'canton-order.json'), 'utf8')) as {
@@ -98,7 +104,7 @@ function reader(intent: CantonIntent | Error, party: CantonParty | Error = ACTIV
 // 1250.5 CNRX at 30 bps, divided as the ledger divides (Numeric 10, half to even): 1250.5 / 1.003.
 const GOLDEN_LEGS = { payout: '1246.7597208375', fee: '3.7402791625' };
 
-function golden3(mutate: (i: CantonIntent) => void = () => undefined, party: CantonParty | Error = ACTIVE) {
+function golden3(mutate: (i: CantonIntent) => void = () => undefined, party: CantonParty | Error = ACTIVE, openReceipt = true) {
   const { input, order, orderHash } = golden.vector;
   const intent = intentOf(input, orderHash, GOLDEN_LEGS, String(input.fillDeadline + 3_600));
   mutate(intent);
@@ -114,7 +120,7 @@ function golden3(mutate: (i: CantonIntent) => void = () => undefined, party: Can
         fillerId: 'acme',
         requiredProofWindowSec: overrides.requiredProofWindowSec ?? 2_700,
         reader: r,
-        allocationTemplates: { [input.instrumentAdmin]: [ALLOCATION_TEMPLATE] },
+        registries: { [input.instrumentAdmin]: [registryOf(openReceipt)] },
       },
       (check) => void passed.push(check),
     );
@@ -157,7 +163,7 @@ describe('V-C1…V-C6 on the golden Canton-source order (CAN-1863)', () => {
         order: built.order as unknown as OrderJson,
         ticket: { orderHash: built.orderHash, repayTo: repayToFromParty(PARTY) } as TicketJson,
         party: PARTY, fillerId: 'acme', requiredProofWindowSec: 2_700, reader: reader(intent),
-        allocationTemplates: { [input.instrumentAdmin]: [ALLOCATION_TEMPLATE] },
+        registries: { [input.instrumentAdmin]: [registryOf(true)] },
       },
       (check) => void passed.push(check),
     );
@@ -228,6 +234,28 @@ describe('V-C1…V-C6 on the golden Canton-source order (CAN-1863)', () => {
     g.reader.intent = async () => Promise.reject(new GatewayError('CANTON_UNAVAILABLE', true, 'participant down'));
     const r = await refusal(g.run());
     expect(r).toMatchObject({ check: 'V-C1', reason: 'ESCROW_NOT_OPEN', detail: expect.stringMatching(/^unverifiable/) });
+  });
+
+  test('V-C5 (T-9): a registry not pinned as paying any party through a receipt allocation declines payout-not-ready', async () => {
+    const g = golden3(undefined, ACTIVE, false);
+    const r = await refusal(g.run());
+    expect(r).toMatchObject({ check: 'V-C5', reason: 'OTHER', detail: expect.stringMatching(/^payout-not-ready: .*T-9/) });
+    expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4']);
+  });
+
+  test('V-C5 (T-9): the pinned dev CNRX registry pays any party', () => {
+    expect(Object.values(CANTON_TRANSFER_FACTORIES).flat().every((f) => f.openReceipt === true)).toBe(true);
+  });
+
+  test('the read is shape-checked before any check: a non-string field is BAD_RESPONSE, not a TypeError', () => {
+    const { input, orderHash } = golden.vector;
+    const ok = intentOf(input, orderHash, GOLDEN_LEGS, '1');
+    expect(isCantonIntent(ok)).toBe(true);
+    expect(isCantonIntent({ ...ok, allocation: null })).toBe(true);
+    expect(isCantonIntent({ ...ok, amount: 1250.5 })).toBe(false);
+    expect(isCantonIntent({ ...ok, allocation: { ...ok.allocation!, legs: [{ ...ok.allocation!.legs[0]!, amount: 1 }] } })).toBe(false);
+    expect(isCantonIntent({ ...ok, allocation: { ...ok.allocation!, executors: [1] } })).toBe(false);
+    expect(isCantonIntent({ ...ok, minReceived: { units: '1', decimals: '6' } })).toBe(false);
   });
 
   test('V-C6: exactly the required window passes', async () => {
