@@ -35,7 +35,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
   let ticker: (() => void) | undefined;
   const audited: { method: string; decision: string; reason?: string }[] = [];
   let hooks: Parameters<Deps['createEngine']>[1] | undefined;
-  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[], orderDown: false, orderFailOnce: undefined as string | undefined, cancelFails: false, takeOnCancel: undefined as string | undefined };
+  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[], orderDown: false, orderFailOnce: undefined as string | undefined, cancelFails: false, takeOnCancel: undefined as string | undefined, pricesDown: false, pricesHold: undefined as Promise<void> | undefined };
   const deps = (): Deps => ({
     keystore: { init: jest.fn(), initSeed: jest.fn(), unlock: async () => ({ destroy: () => undefined }) as never, lock: () => void (crash.wiped = true), isLocked: () => false, publicKey: async () => 'ab' },
     audit: {
@@ -82,7 +82,11 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         },
         balances: jest.fn(),
         referencePrices: async () => ({ 'CC/USDCx': '0.15' }),
-        usdPrices: async () => ({ CC: '0.15', USDCx: '1' }),
+        usdPrices: async () => {
+          if (crash.pricesDown) throw new Error('ECONNRESET');
+          await crash.pricesHold;
+          return { CC: '0.15', USDCx: '1' };
+        },
         withdraw: jest.fn(),
         // Like the real lookup: an order the daemon already knows is never offered for another intent.
         findIntent: async (_intent: unknown, known: string[] = []) => {
@@ -125,6 +129,8 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
       hooks!.onSettled(orderId);
       await new Promise((r) => setTimeout(r, 0));
     },
+    /** The engine's settle event, queued without waiting for it to be booked. */
+    settleEvent: (orderId: string) => hooks!.onSettled(orderId),
     // Unlock reconciles in the background; a macrotask lets it finish.
     unlock: async () => {
       const r = await call('unlock', { passphrase: 'x' });
@@ -919,6 +925,61 @@ describe('round on 0d5f493: wadguk and goodmai', () => {
     expect(strategyOf(w).cancelled ?? []).toEqual([]);
     // A user cancel would drop the slot from what the grid wants; the daemon's own cancel leaves it.
     expect(strategyOf(w).want).toEqual(want);
+  });
+});
+
+describe('a settle that lands in the lock window (CAN-2834)', () => {
+  const make = { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' };
+  // One fill of 1 CC at 0.15 USD leaves room for another order in a 1 USD day.
+  const dayOfOneUsd = { ...LIMITS, perOrderUsd: '1', perDayUsd: '1' };
+
+  it('is booked after unlock at a USD price, and the next order is not refused as usd_daily_exceeded (G0-CAN-2834.1)', async () => {
+    const w = world(dayOfOneUsd);
+    await w.unlock();
+    await w.call('order.make', make, false);
+    await w.call('lock', {}, true);
+    w.statuses.o1 = 'completed';
+    await w.fill('o1');
+    await w.unlock();
+    expect(w.state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '1', usdValue: '0.15' })]);
+    expect(w.state().openOrders).toEqual([]);
+    await expect(w.call('order.make', make, false)).resolves.toMatchObject({ result: expect.anything() });
+  });
+
+  it('a lock that arrives while the settle is still queued does not book it unpriced (G0-CAN-2834.2)', async () => {
+    const w = world(dayOfOneUsd);
+    await w.unlock();
+    await w.call('order.make', make, false);
+    await w.call('order.make', make, false);
+    w.statuses.o1 = 'completed';
+    w.statuses.o2 = 'completed';
+    // o1's settle holds the background queue on its price fetch; o2's waits behind it while the lock lands.
+    let release!: () => void;
+    w.crash.pricesHold = new Promise((r) => (release = r));
+    w.settleEvent('o1');
+    w.settleEvent('o2');
+    await new Promise((r) => setTimeout(r, 0));
+    const locking = w.call('lock', {}, true);
+    await new Promise((r) => setTimeout(r, 0));
+    w.crash.pricesHold = undefined;
+    release();
+    await locking;
+    await w.unlock();
+    expect(w.state().fills).toEqual([expect.objectContaining({ usdValue: '0.15' }), expect.objectContaining({ usdValue: '0.15' })]);
+    await expect(w.call('order.make', make, false)).resolves.toMatchObject({ result: expect.anything() });
+  });
+
+  it('with no USD price at unlock the fill is booked unpriced and counts as the whole day spent (G0-CAN-2834.3)', async () => {
+    const w = world(dayOfOneUsd);
+    await w.unlock();
+    await w.call('order.make', make, false);
+    await w.call('lock', {}, true);
+    w.statuses.o1 = 'completed';
+    await w.fill('o1');
+    w.crash.pricesDown = true;
+    await w.unlock();
+    expect(w.state().fills).toEqual([{ at: expect.any(Number), instrument: 'CC', amount: '1' }]);
+    expect(w.audited).toContainEqual(expect.objectContaining({ method: 'settle', params: expect.objectContaining({ orderId: 'o1', usdValue: 'unpriced' }) }));
   });
 });
 
