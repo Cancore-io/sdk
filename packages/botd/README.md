@@ -38,7 +38,7 @@ Every method has a risk class (`RISK_CLASS` in `./protocol`):
 - `read` — `status`, `balances`, `orders.list`, `limits.get`, `audit.tail`
 - `reduce` — `order.cancel`, `orders.cancelAll`, `pause`, `strategy.stop`
 - `trade` — `order.make`, `order.take`, `strategy.start`; always behind the risk gate
-- `owner` — `unlock`, `lock`, `resume`, `limits.set`, `withdraw`; refused (`FORBIDDEN`) on the agent socket
+- `owner` — `unlock`, `lock`, `resume`, `limits.set`, `withdraw`, `order.release`; refused (`FORBIDDEN`) on the agent socket
 
 The owner CLI talks to `owner.sock`, so it runs as the daemon user: `sudo -u cancore-bot cancore-bot …`.
 An agent in the `cancore-bot-clients` group can reach `bot.sock` and nothing else.
@@ -258,8 +258,13 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
 
    **Deliberate:** a take whose accept answer was lost stays booked, holding its open-order slot and
    its reservation, for as long as the maker's order stays open — the daemon cannot tell whether that
-   accept landed, and releasing it early could let a real trade escape the limits. An owner command
-   to release such a booking after checking the order is planned as a follow-up: [CAN-2836](https://linear.app/cancore/issue/CAN-2836).
+   accept landed, and releasing it early could let a real trade escape the limits. The owner releases
+   such a booking with `cancore-bot release <orderId>` (`order.release`): the daemon calls the queued
+   take off, reads the order on the venue, and releases it only if the order is still open with no
+   taker, or was taken by another account or ended. Any other state (this account as taker, a taker
+   not reported yet, completed by this account) is refused with `may_be_trade` and stays booked. An
+   accept that lands after a release settles an order the book no longer knows, which pauses trading
+   (`unbooked_fill`).
 
 **Crash safety.** Every `order.make` (agent or strategy) is written to the state file as an intent,
 with a client key, before the API is called; the key rides on the order as its description. An

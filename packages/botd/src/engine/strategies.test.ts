@@ -27,6 +27,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
   let seq = 0;
   const made: { orderId: string; side: string; price: string }[] = [];
   const cancelled: string[] = [];
+  const untaken: string[] = [];
   const statuses: Record<string, string> = {};
   // Who took an order, as the venue reports it: absent until it has a taker.
   const takers: Record<string, boolean> = {};
@@ -62,7 +63,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
           return { orderId };
         },
         take: jest.fn(),
-        untake: jest.fn(() => true),
+        untake: jest.fn((id: string) => (untaken.push(id), true)),
         // The venue applies a cancel: the order then reads cancelled, unless the test already set it otherwise.
         cancel: async (id) => {
           if (crash.cancelFails) throw new Error('ECONNRESET');
@@ -119,6 +120,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
     tick,
     made,
     cancelled,
+    untaken,
     audited,
     statuses,
     takers,
@@ -993,11 +995,13 @@ describe('owner release of a booked take (CAN-2836)', () => {
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
     return w;
   };
-  const release = (w: Awaited<ReturnType<typeof tookA>>, orderId = 'A', owner = true) => w.call('order.release' as Method, { orderId }, owner);
+  const release = (w: Awaited<ReturnType<typeof tookA>>, orderId = 'A', owner = true) => w.call('order.release', { orderId }, owner);
 
   it('the venue shows the order still open with no taker: the booking and its reservation are released (G0-CAN-2836.1)', async () => {
     const w = await tookA();
     await expect(release(w)).resolves.toMatchObject({ result: { orderId: 'A', released: true } });
+    // The queued take is called off first, so no retry of its accept starts after the venue was read.
+    expect(w.untaken).toEqual(['A']);
     expect(w.state().openOrders).toEqual([]);
     expect(w.state().fills ?? []).toEqual([]);
     expect(w.audited).toContainEqual(expect.objectContaining({ method: 'settle', params: expect.objectContaining({ orderId: 'A', event: 'released' }) }));
@@ -1016,6 +1020,20 @@ describe('owner release of a booked take (CAN-2836)', () => {
     w.statuses.A = 'accepted';
     await expect(release(w)).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+  });
+
+  it('an order still open but already showing this account as taker is an accept landing: it stays booked', async () => {
+    const w = await tookA();
+    w.takers.A = true;
+    await expect(release(w)).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+  });
+
+  it('a maker\'s order that ended with no taker is released', async () => {
+    const w = await tookA();
+    w.statuses.A = 'cancelled';
+    await expect(release(w)).resolves.toMatchObject({ result: { released: true } });
+    expect(w.state().openOrders).toEqual([]);
   });
 
   it('an order that cannot be read is not released', async () => {
