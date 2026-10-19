@@ -10,7 +10,7 @@
  * `stand` job brings the stand up on anvil (test/stand/up.mjs) and runs it.
  */
 import { readFileSync } from 'node:fs';
-import { fillerIdHash, repayToFromEvm, type FillProof, type FillTicket, type Hex, type Order } from '@cancore/contracts';
+import { cantonNetworkOfDestination, fillerIdHash, repayToFromEvm, type FillProof, type FillTicket, type Hex, type Order } from '@cancore/contracts';
 import { ChainClient, ChainReadError, hashFillProof, hashOrder, hashTicket, INTENT_STATUS, RouterEventWatcher, RouterReader, type RouterEventUpdate } from '../src/filler/chain';
 import type { EvmRpc } from '../src/filler/rpc';
 import { createRecordingLogger } from '../src/filler/testing';
@@ -140,9 +140,16 @@ live('RouterReader against the stand router (make intent-genesis)', () => {
     for (const orderHash of settled) {
       const order = (name: string) => updates.findIndex((u) => u.log.name === name && u.log.orderHash === orderHash);
       expect(order('IntentOpened')).toBeGreaterThanOrEqual(0);
+      await expect(r.intents(orderHash)).resolves.toMatchObject({ status: INTENT_STATUS.Settled });
+      // An order delivered on Canton (canton-delivery.int.test.ts) settles here with no Filled on this router.
+      const destination = String((updates[order('IntentOpened')]!.log.args.order as { destination?: unknown }).destination).toLowerCase();
+      if (cantonNetworkOfDestination(destination)) {
+        expect(order('Filled')).toBe(-1);
+        expect(order('IntentOpened')).toBeLessThan(order('Settled'));
+        continue;
+      }
       expect(order('IntentOpened')).toBeLessThan(order('Filled'));
       expect(order('Filled')).toBeLessThan(order('Settled'));
-      await expect(r.intents(orderHash)).resolves.toMatchObject({ status: INTENT_STATUS.Settled });
       await expect(r.filled(orderHash)).resolves.toBe(true);
     }
   });

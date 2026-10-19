@@ -51,7 +51,7 @@ import type { FillSigner, QuoteSigner } from '../signer';
 import type { FillerStore, TicketRecord, TicketState } from '../store';
 import { GatewayError } from '../errors';
 import type { TicketVerifier } from './checks';
-import { identityFor, signTicketIntent, signTicketReceipt } from './terms';
+import { chainsOf, identityFor, signCantonTicketReceipt, signTicketIntent, signTicketReceipt } from './terms';
 
 /** The reasons a filler may give for not taking an offered ticket (protocol §3.5, stage «offer»). */
 export const OFFER_DECLINE_REASONS = ['NO_INVENTORY', 'RISK_LIMIT', 'PRICE_MOVED', 'PAUSED', 'OTHER'] as const;
@@ -76,6 +76,8 @@ export interface TicketDeskOptions {
   fillerId: string;
   /** The filler's Canton party, the payee of a Canton source. */
   cantonParty?: string;
+  /** `sendGuardSec` of a Canton destination (`FillerConfig.canton.destination`); without it a Canton-form ticket gets no receipt. */
+  cantonSendGuardSec?: number;
   /** The message key: signs the consent and the receipt (protocol T-3). */
   messageSigner: QuoteSigner;
   clock: Clock;
@@ -360,7 +362,7 @@ export class TicketDesk {
       verdict = { ok: false, reason: 'OTHER', detail: 'the checks failed to run', checks: [] };
     }
     const identity = identityFor(record.offer.order, this.options);
-    if (!verdict.ok || record.issued.form !== 'evm' || !identity) {
+    if (!verdict.ok || (record.issued.form !== 'evm' && record.issued.form !== 'canton') || !identity) {
       return this.decline(orderHash, attempt, ['checking', 'issued'], verdict.reason ?? 'OTHER', verdict.detail ?? 'refused');
     }
     if (this.options.clock.now() > this.receiptDeadline(record)) {
@@ -368,7 +370,12 @@ export class TicketDesk {
     }
     let receipt;
     try {
-      receipt = await this.options.protocol.seal<TicketReceiptMessage>(await signTicketReceipt(record.issued.ticket, record.issued.ticketSig, this.options.messageSigner, this.options.nextId()));
+      // T-22: a Canton-form ticket is answered with a CantonTicketReceipt, never a TicketReceipt.
+      const unsealed =
+        record.issued.form === 'canton'
+          ? await signCantonTicketReceipt(record.issued, this.options.messageSigner, this.options.nextId())
+          : await signTicketReceipt(record.issued.ticket, record.issued.ticketSig, this.options.messageSigner, this.options.nextId());
+      receipt = await this.options.protocol.seal<TicketReceiptMessage>(unsealed);
     } catch (error) {
       this.options.logger.error('tickets: the receipt could not be signed', { orderHash, attempt, error: String(error) });
       return this.decline(orderHash, attempt, ['checking', 'issued'], 'OTHER', 'the receipt could not be signed');
@@ -383,7 +390,9 @@ export class TicketDesk {
   /** `validUntil − sendGuard`: the last moment a receipt may bind the filler (V-T3, T-29). */
   private receiptDeadline(record: TicketRecord): number {
     const identity = record.offer ? identityFor(record.offer.order, this.options) : undefined;
-    const guardSec = identity ? this.options.chains.get(identity.chain)?.config.sendGuardSec : undefined;
+    // A Canton destination is delivered by the party: its own sendGuard, not the EVM source's.
+    const canton = record.offer ? chainsOf(record.offer.order)?.canton !== undefined : false;
+    const guardSec = !identity ? undefined : canton ? this.options.cantonSendGuardSec : this.options.chains.get(identity.chain)?.config.sendGuardSec;
     if (guardSec === undefined) return 0;
     return validUntilMs(record.issued) - guardSec * 1000;
   }

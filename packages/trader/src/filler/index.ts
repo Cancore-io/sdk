@@ -170,5 +170,8 @@ export { CantonOperations, createCantonOperations, signatureHex } from './canton
 export type { CantonClientConfig, CantonOperationsOptions, CantonOpCheck, CantonPartySigner, PreparedOf, SubmittedOf } from './canton/operations';
 export { canonicalDecimal, checkHoldingsTransfer, checkRegistryAccept, checkTransferExercise, isOwnParty } from './canton/checks';
 export type { TransferExpectation } from './canton/checks';
+export { checkDeliveryFill, INTENT_PACKAGE_NAME } from './canton/delivery-check';
+export type { DeliveryFillExpectation } from './canton/delivery-check';
+export { cantonFillRef } from './delivery/canton';
 export { CANTON_TRANSFER_FACTORIES } from './canton/factories';
 export type { CantonTransferFactory } from './canton/factories';

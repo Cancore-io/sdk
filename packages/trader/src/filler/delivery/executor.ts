@@ -28,6 +28,9 @@
  *   `filled(orderHash)` decide whether anything is sent again; a fill already
  *   recorded is driven, never sent a second time.
  *
+ * A Canton-form ticket (a Canton destination) is delivered by the party
+ * through `delivery.fill` instead (`canton.ts`, CAN-1867).
+ *
  * Allowance: the router is approved for the output asset up to the configured
  * limit (never unlimited by default), when it no longer covers a fill or,
  * with a limit configured, when it has fallen below half of it.
@@ -49,9 +52,11 @@ import type { ChainReaders, FillerChains } from '../chain';
 import type { EvmChainId } from '../chains';
 import type { EventSink, FillerEvent, FillerStage } from '../events';
 import type { Cancel, Clock, Logger } from '../runtime';
+import type { CantonOperations } from '../canton/operations';
 import type { FillSigner } from '../signer';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, TicketRecord } from '../store';
 import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from '../tickets/terms';
+import { CantonDelivery } from './canton';
 import { FeeCeilingError, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
 
 // ---------------------------------------------------------------------------
@@ -151,6 +156,8 @@ export interface ExecutorOptions {
    * Default 1 h.
    */
   settleUrgencyMs?: number;
+  /** Delivery of a Canton-form ticket (CAN-1867): the party's operations and `canton.destination.sendGuardSec`. */
+  canton?: { operations: Pick<CantonOperations, 'fill'>; sendGuardSec: number };
 }
 
 /** Default of `ExecutorOptions.settleUrgencyMs`: the settlement's refund alert margin. */
@@ -215,6 +222,7 @@ export class Executor {
   private settleLostListener: SettleLostListener | undefined;
   private started = false;
   private stopped = false;
+  private readonly canton: CantonDelivery | undefined;
 
   constructor(private readonly options: ExecutorOptions) {
     const d = options.delivery ?? {};
@@ -227,6 +235,23 @@ export class Executor {
       ...(d.approvals ? { approvals: d.approvals } : {}),
       ...(d.fillAmount ? { fillAmount: d.fillAmount } : {}),
     };
+    this.canton = options.canton
+      ? new CantonDelivery({
+          store: options.store,
+          operations: options.canton.operations,
+          sendGuardSec: options.canton.sendGuardSec,
+          fillerId: options.fillerId,
+          fillSigners: options.fillSigners,
+          ...(options.cantonParty ? { cantonParty: options.cantonParty } : {}),
+          instanceId: options.instanceId,
+          leaseMs: this.delivery.nonceLeaseTtlMs,
+          retryMs: this.delivery.pollIntervalMs,
+          clock: options.clock,
+          logger: options.logger,
+          events: options.events,
+          ...(options.onFilled ? { onFilled: options.onFilled } : {}),
+        })
+      : undefined;
   }
 
   /** The transaction driver of `chain`'s delivery key; undefined without a fill key and a router for it. */
@@ -293,6 +318,7 @@ export class Executor {
   /** Stops every timer. In-flight work stays in the store for this or another replica. */
   stop(): void {
     this.stopped = true;
+    this.canton?.stop();
     this.sweep?.();
     for (const tracker of this.trackers.values()) tracker.cancel?.();
     this.trackers.clear();
@@ -424,6 +450,10 @@ export class Executor {
     const { store, clock, instanceId } = this.options;
     const ticket = await this.options.receipted(orderHash, attempt);
     if (!ticket) return this.refuse(orderHash, attempt, 'no-receipt', 'no ticket.receipt went out for this attempt');
+    if (ticket.issued?.form === 'canton') {
+      if (!this.canton) return this.refuse(orderHash, attempt, 'not-deliverable', 'a Canton-form ticket, and no Canton party configured');
+      return this.canton.deliver(ticket, () => void this.deliver(orderHash, attempt));
+    }
     const issued = ticket.issued as TicketIssuedEvm | undefined;
     const offer = ticket.offer;
     const chain = offer ? chainsOf(offer.order)?.destination : undefined;

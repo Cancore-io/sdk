@@ -38,7 +38,7 @@ import {
   type OrderJson,
   type OrderSettled,
   type SettleAttestationsPayload,
-  type TicketIssuedEvm,
+  type TicketIssued,
 } from '@cancore/contracts';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../chain/abi';
 import { ChainReadError } from '../chain/client';
@@ -50,6 +50,7 @@ import type { EventSink, FillerEvent, FillerStage } from '../events';
 import type { Delivery, FillerProtocolClient } from '../protocol/client';
 import type { Cancel, Clock, Logger } from '../runtime';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, SettlementRecord, TicketRecord } from '../store';
+import { cantonFillRef } from '../delivery/canton';
 import { chainsOf, orderOf } from '../tickets/terms';
 import { collectAttestations, fillProofOf } from './attestations';
 
@@ -134,6 +135,20 @@ function revertName(error: unknown): string {
   const data = typeof cause === 'object' && cause !== null ? (cause as { data?: unknown }).data : undefined;
   const hex = typeof data === 'string' ? data : typeof data === 'object' && data !== null && typeof (data as { data?: unknown }).data === 'string' ? (data as { data: string }).data : undefined;
   return (hex && /^0x[0-9a-fA-F]{8}/.test(hex) ? describeRevert(hex, [CANCORE_ROUTER_ERRORS]) : undefined) ?? reasonOf(error);
+}
+
+/** The payee the ticket names: `ticket.repayTo` (EVM form) or `repayTo` of a Canton-form ticket. */
+const ticketRepayTo = (issued: TicketIssued | undefined): string => String(issued?.form === 'evm' ? issued.ticket.repayTo : issued?.repayTo);
+
+/**
+ * The `fillRef` of the filler's own fill: the transaction hash (EVM), or
+ * `keccak256(utf8(updateId))` of a Canton delivery; undefined for a Canton
+ * fill whose update id was never learnt (its outcome is adopted from a proof
+ * that is otherwise exactly its own — `delivery/canton.ts`).
+ */
+function ownFillRef(s: { fill: FillRecord; ticket: TicketRecord }): string | undefined {
+  if (s.ticket.issued?.form !== 'canton') return lower(s.fill.txRef);
+  return s.fill.txRef ? cantonFillRef(s.fill.txRef) : undefined;
 }
 
 /** What one order's settlement works from. */
@@ -501,19 +516,18 @@ export class Settler {
    * payload where the fill record does not know them; `ownMismatch` bounds them.
    */
   private expectedProof(s: Settleable, setId: number): FillProofJson {
-    const issued = s.ticket.issued as TicketIssuedEvm;
     const header = s.fill.inclusion?.header;
     return {
       kind: PROOF_KIND_ATTESTATION,
       orderHash: s.orderHash,
       destination: lower(s.order.destination) as Hex,
-      fillRef: lower(s.fill.txRef) as Hex,
+      fillRef: (ownFillRef(s) ?? lower(s.payload!.proof.fillRef)) as Hex,
       recipient: lower(s.order.recipient) as Hex,
       outputAsset: lower(s.order.outputAsset) as Hex,
       amountDelivered: s.fill.received ?? s.payload!.proof.amountDelivered,
       filledAt: header?.timestamp !== undefined ? BigInt(String(header.timestamp)).toString() : s.payload!.proof.filledAt,
       fillerId: fillerIdHash(this.options.fillerId),
-      repayTo: lower(issued.ticket.repayTo) as Hex,
+      repayTo: lower(ticketRepayTo(s.ticket.issued)) as Hex,
       attempt: s.fill.attempt,
       setId,
     };
@@ -521,13 +535,16 @@ export class Settler {
 
   /** The first field of `proof` that is not this filler's own fill, ticket or identity; undefined when it is. */
   private ownMismatch(s: Settleable, proof: FillProofJson): string | undefined {
-    const issued = s.ticket.issued as TicketIssuedEvm;
+    const repayTo = ticketRepayTo(s.ticket.issued);
+    const fillRef = ownFillRef(s);
     if (proof.kind !== PROOF_KIND_ATTESTATION) return `kind ${proof.kind}`;
     if (lower(proof.orderHash) !== s.orderHash) return 'orderHash';
     if (proof.attempt !== s.fill.attempt) return `attempt ${proof.attempt}, filled ${s.fill.attempt}`;
-    if (lower(proof.fillRef) !== lower(s.fill.txRef)) return `fillRef ${proof.fillRef}, own fill ${s.fill.txRef}`;
+    if (fillRef !== undefined && lower(proof.fillRef) !== fillRef) return `fillRef ${proof.fillRef}, own fill ${s.fill.txRef}`;
     if (lower(proof.fillerId) !== fillerIdHash(this.options.fillerId)) return 'fillerId';
-    if (lower(proof.repayTo) !== lower(issued.ticket.repayTo)) return `repayTo ${proof.repayTo}, ticket ${issued.ticket.repayTo}`;
+    if (lower(proof.repayTo) !== lower(repayTo)) return `repayTo ${proof.repayTo}, ticket ${repayTo}`;
+    // A Canton delivery is legal through validUntil inclusive (T-28): a proof of a later one is not this ticket's.
+    if (s.ticket.issued?.form === 'canton' && BigInt(proof.filledAt) > BigInt(s.ticket.issued.validUntil)) return `filledAt ${proof.filledAt} after validUntil ${s.ticket.issued.validUntil}`;
     const delivered = BigInt(proof.amountDelivered);
     if (s.fill.received !== undefined ? delivered !== BigInt(s.fill.received) : delivered > BigInt(s.fill.amount)) return `amountDelivered ${proof.amountDelivered}`;
     if (delivered < BigInt(s.order.minReceived)) return `amountDelivered ${proof.amountDelivered} below minReceived`;
@@ -575,7 +592,9 @@ export class Settler {
     return this.options.store.withOrder(orderHash, async (tx) => {
       for (const ticket of [...(await tx.listTickets())].reverse()) {
         const fill = await tx.getFill(ticket.attempt);
-        if (fill?.state !== 'confirmed' || !ticket.offer || ticket.issued?.form !== 'evm') continue;
+        // A Canton delivery whose outcome is unknown (`sent`, no update id) settles once its proof arrives.
+        const cantonUnknown = ticket.issued?.form === 'canton' && fill?.state === 'sent' && !fill.txRef;
+        if ((fill?.state !== 'confirmed' && !cantonUnknown) || !fill || !ticket.offer || (ticket.issued?.form !== 'evm' && ticket.issued?.form !== 'canton')) continue;
         const record = await tx.getAttestations(ticket.attempt);
         const settlement = await tx.getSettlement();
         let payload: SettleAttestationsPayload | undefined;

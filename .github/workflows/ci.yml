@@ -226,11 +226,12 @@ jobs:
         run: |
           npx jest --selectProjects int --runInBand --json --outputFile="$RUNNER_TEMP/int.json" \
             packages/trader/test/router.int.test.ts packages/trader/test/escrow.int.test.ts \
-            packages/trader/test/executor.int.test.ts packages/trader/test/settle.int.test.ts
+            packages/trader/test/executor.int.test.ts packages/trader/test/settle.int.test.ts \
+            packages/trader/test/canton-delivery.int.test.ts
           node -e "
             const r = require(process.env.RUNNER_TEMP + '/int.json');
             console.log(r.numTotalTestSuites, 'suites,', r.numPassedTests, 'passed,', r.numPendingTests + r.numTodoTests, 'skipped');
-            if (r.numTotalTestSuites !== 4 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
+            if (r.numTotalTestSuites !== 5 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
           "
 
   # Transaction pricing and nonce allocation of @cancore/trader against a real node (CAN-2299, CAN-2636): an anvil of its own, no contracts and no
