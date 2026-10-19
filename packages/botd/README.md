@@ -259,7 +259,7 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
    **Deliberate:** a take whose accept answer was lost stays booked, holding its open-order slot and
    its reservation, for as long as the maker's order stays open — the daemon cannot tell whether that
    accept landed, and releasing it early could let a real trade escape the limits. An owner command
-   to release such a booking after checking the order is planned as a follow-up: [CAN-2826](https://linear.app/cancore/issue/CAN-2826).
+   to release such a booking after checking the order is planned as a follow-up: [CAN-2836](https://linear.app/cancore/issue/CAN-2836).
 
 **Crash safety.** Every `order.make` (agent or strategy) is written to the state file as an intent,
 with a client key, before the API is called; the key rides on the order as its description. An
