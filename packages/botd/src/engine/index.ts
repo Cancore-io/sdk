@@ -9,6 +9,14 @@ declare module '../types' {
     /** Set once the order has a taker: whether it is this account. */
     takenBySelf?: boolean;
   }
+  interface Engine {
+    /** Forget a take the venue shows was never accepted (see ServeHandle.forget). */
+    forget?(orderId: string): void;
+  }
+  interface BotState {
+    /** Taken bookings whose order read open with no taker: when that was first seen (ms). */
+    takeOpenSeen?: Record<string, number>;
+  }
   interface EngineHooks {
     /** A take or settle step of the loop failed; `errorName` is the error's class, never its text. */
     onTakeFailed?(orderId: string, errorName: string): void;
@@ -150,6 +158,9 @@ export function createEngine(options: EngineOptions): Engine {
     },
     untake(orderId) {
       return loop ? loop.untake(orderId) : true;
+    },
+    forget(orderId) {
+      loop?.forget(orderId);
     },
     async cancel(orderId) {
       await acct.swap.cancel(orderId);

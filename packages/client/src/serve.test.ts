@@ -410,3 +410,28 @@ test('a refusal after an earlier accept with an unknown outcome keeps the take i
   expect(handle.untake('twice')).toBe(false);
   await handle.stop();
 });
+
+test('forget drops an ambiguous take: untake no longer reports it in flight and no accept goes out for it', async () => {
+  const theirs = order('gone', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let runs = 0;
+  const { acct } = account([theirs], async () => {
+    throw new Error('unused');
+  });
+  (acct as unknown as { take: (id: string, o: SettleRun) => Promise<Settled> }).take = async (_id, o) => {
+    runs++;
+    if (o.beforeAccept && !o.beforeAccept()) throw Object.assign(new Error('called off'), { name: 'TakeCancelledError' });
+    throw new TypeError('fetch failed');
+  };
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 5 }, noneLocked);
+  handle.take('gone');
+  await until(() => runs >= 1);
+  await new Promise((r) => setImmediate(r));
+  handle.forget('gone');
+  const after = runs;
+  await new Promise((r) => setTimeout(r, 30));
+  expect(runs).toBe(after);
+  handle.take('gone');
+  // Re-queued from scratch: no leftover in-flight state, so untake can call it off.
+  expect(handle.untake('gone')).toBe(true);
+  await handle.stop();
+});

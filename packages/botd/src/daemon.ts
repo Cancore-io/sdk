@@ -242,6 +242,17 @@ export function createDispatcher(deps: Deps): Dispatcher {
       else if (info.takenBySelf === false) hooks.onEnded(orderId, 'taken_by_other');
     } else if (info?.status === 'completed') hooks.onSettled(orderId);
     else if (info && ENDED.has(info.status)) hooks.onEnded(orderId, info.status);
+    else if (info?.status === 'open' && taken && info.takenBySelf === undefined) {
+      // A take whose accept answer was lost: still open with no taker after the settle window means it never landed.
+      const seen = (await deps.state.load()).takeOpenSeen?.[orderId];
+      const now = deps.now();
+      if (seen === undefined) await mutate((s) => ({ ...s, takeOpenSeen: { ...s.takeOpenSeen, [orderId]: now } }));
+      else if (now - seen >= INTENT_SETTLE_MS) {
+        e.forget?.(orderId);
+        await mutate(({ takeOpenSeen: { [orderId]: _, ...rest } = {}, ...s }) => ({ ...s, takeOpenSeen: rest }));
+        hooks.onEnded(orderId, 'take_released');
+      }
+    }
   }
 
   /**
