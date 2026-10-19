@@ -1030,6 +1030,16 @@ describe('a settle that lands in the lock window (CAN-2834)', () => {
       return e.method === 'settle' && p?.orderId === orderId ? [p.usdValue ? `${p.event}:${p.usdValue}` : `${p.event}`] : [];
     });
 
+  it('a settle for an order the book never knew still pauses trading when it lands under the lock: the deferral is only for booked orders (pr3 F-3)', async () => {
+    const w = world(dayOfOneUsd);
+    await w.unlock();
+    await w.call('lock', {}, true);
+    await w.fill('ghost');
+    expect(w.state()).toMatchObject({ paused: true, pauseReason: 'unbooked_fill' });
+    expect(w.audited).toContainEqual(expect.objectContaining({ method: 'settle', decision: 'deny', reason: 'unbooked_fill' }));
+    expect(settleEvents(w, 'ghost')).toEqual(['settled']);
+  });
+
   it('a deferred settle is audited once as settle_deferred, and as settled only when the unlock books it (audit r2 N3, N4, N6)', async () => {
     const w = world(dayOfOneUsd);
     await w.unlock();
