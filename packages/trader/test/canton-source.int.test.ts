@@ -276,7 +276,9 @@ const until = async <T>(what: string, read: () => Promise<T | undefined>, timeou
 live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_SettleWithProof (CAN-2321)', () => {
   jest.setTimeout(20 * 60_000);
   const DST = 'eip155:11155111' as const;
-  const signer = partySigner(E.STAND_FILLER_CANTON_PARTY_KEY);
+  // Built on first use: a skipped suite still runs this body, without the stand's keys.
+  let party: CantonPartySigner | undefined;
+  const signerOf = () => (party ??= partySigner(E.STAND_FILLER_CANTON_PARTY_KEY));
   const store = new InMemoryFillerStore();
   const events = createRecordingEventSink();
   const logger = createRecordingLogger();
@@ -296,7 +298,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
       tickets: { deltaIssueMs: 3_000 },
       canton: {
         party: E.STAND_FILLER_CANTON_PARTY,
-        partySigner: signer,
+        partySigner: signerOf(),
         participantUid: E.CANTON_PARTICIPANT_UID,
         destination: { minTicketTtlSec: 60, requiredProofWindowSec: MIN_PROOF_WINDOW_S, sendGuardSec: 10 },
         registries: registries(),
@@ -324,7 +326,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
     const opened = await openIntent({ fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 });
     const ops = createCantonOperations({
       gatewayUrl: E.FILLER_GATEWAY_URL, fillerId: E.STAND_FILLER_ID, gatewaySigner: E.FILLER_GATEWAY_SIGNER as Hex,
-      messageSigner: createTestTypedDataSigner(E.STAND_FILLER_MESSAGE_KEY as Hex), partySigner: signer, participantUid: E.CANTON_PARTICIPANT_UID, registries: registries(),
+      messageSigner: createTestTypedDataSigner(E.STAND_FILLER_MESSAGE_KEY as Hex), partySigner: signerOf(), participantUid: E.CANTON_PARTICIPANT_UID, registries: registries(),
     });
     const ticket = { orderHash: opened.orderHash, repayTo: repayToFromParty(E.STAND_FILLER_CANTON_PARTY) };
     const passed: string[] = [];
