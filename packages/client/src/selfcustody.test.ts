@@ -2757,6 +2757,41 @@ async function until(check: () => boolean, budgetMs = 10_000): Promise<void> {
   }
 }
 
+describe('serve(): an untake during the fee split matches what is sent', () => {
+  test('the first accept is refused for a fee holding; an untake during the split reports in flight, and the second accept goes out', async () => {
+    const api = venue({ refuseAt: { accept: 'feeHoldingUntilSplit' }, coded: true, sendBytes: 'honest' });
+    let refused = false;
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let atSplit!: () => void;
+    const reachedSplit = new Promise<void>((r) => (atSplit = r));
+    const fetchImpl: typeof api.fetchImpl = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (init.method === 'POST' && path === '/wallet/operations/prepare' && refused) {
+        atSplit();
+        await held;
+      }
+      const res = await api.fetchImpl(url, init);
+      if (init.method === 'POST' && path === '/orders/o1/accept' && !res.ok) refused = true;
+      return res;
+    };
+    const { maker, taker } = await tradingPair(api, [78, 79], {}, { fetchImpl });
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    const handle = taker.serve({ reconcileMs: 3_600_000 });
+    handle.take('o1');
+    await reachedSplit;
+    // The first accept went out: the take is in flight, and so the untake must say so.
+    expect(handle.untake('o1')).toBe(false);
+    release();
+    await until(() => api.takes() === 2);
+    expect(api.order.status).not.toBe('open');
+    await handle.stop();
+  });
+});
+
 describe('take: onAccepted marks the trade', () => {
   test('called once this account holds the order', async () => {
     const api = venue();

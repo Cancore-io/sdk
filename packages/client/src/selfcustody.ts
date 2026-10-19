@@ -1275,8 +1275,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     const autoSplit = opts.autoSplitForFee ?? true;
     let split: string | null = null;
     for (;;) {
-      // Last synchronous step before the request: a caller that called the take off is honoured here.
-      if (opts.beforeAccept && !opts.beforeAccept()) throw new TakeCancelledError(order.id);
+      // Last synchronous step before the first request: a caller that called the take off is honoured here.
+      // Not again after a fee split: the caller was already told this take is in flight, so it must go through.
+      if (split === null && opts.beforeAccept && !opts.beforeAccept()) throw new TakeCancelledError(order.id);
       try {
         return await swap.accept(order.id);
       } catch (err) {
