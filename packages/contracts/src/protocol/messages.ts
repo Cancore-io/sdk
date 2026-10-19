@@ -354,6 +354,51 @@ export interface CantonDeliveryOrder {
 }
 /** `GET /v1/filler/canton/delivery-orders`. */
 export type CantonDeliveryOrderList = Page<CantonDeliveryOrder>;
+/** One leg side of an AllocationV2 view; `otherside` is the owner of the other account. */
+export interface CantonAllocationLeg { legId: string; side: 'SENDER' | 'RECEIVER'; otherside: string | null; amount: string; instrumentId: string }
+/** A Token Standard V2 allocation by its view, as the operator (an executor) reads it. */
+export interface CantonAllocation {
+  contractId: string;
+  /** `<package id>:<module>:<entity>`. */
+  templateId: string;
+  admin: string;
+  /** The owner of the authorizer account. */
+  authorizer: string | null;
+  committed: boolean;
+  settlementId: string;
+  executors: string[];
+  /** Unix seconds; null when the allocation has none. */
+  settlementDeadline: DecString | null;
+  legs: CantonAllocationLeg[];
+}
+/**
+ * `GET /v1/filler/canton/intents/{orderHash}`: the live Canton-source `SwapIntent` naming the party as its
+ * filler, as that party sees it, and its committed allocation (null when not live). The node checks it
+ * before `ticket.receipt` (fillers.md V-C1…V-C6) and recomputes `orderHash` from these fields itself.
+ */
+export interface CantonIntent {
+  intentCid: string;
+  templateId: string;
+  orderHash: Hex;
+  owner: string;
+  operator: string;
+  filler: string;
+  fillerId: string;
+  requestId: string;
+  asset: CantonAsset;
+  /** The committed give, fee-inclusive, Daml Decimal. */
+  amount: string;
+  /** `Destination.Evm`. */
+  destination: { chainId: DecString; token: Hex; recipient: Hex };
+  minReceived: { units: DecString; decimals: number };
+  feeRate: string;
+  fillDeadline: DecString;
+  refundAfter: DecString;
+  /** The owner's signing time: the order's `createdAt`. */
+  orderCreatedAt: DecString;
+  allocationCid: string;
+  allocation: CantonAllocation | null;
+}
 
 // --- Public records (auction-and-draw §3.3–3.4) and the gateway identity.
 

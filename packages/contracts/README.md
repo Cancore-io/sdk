@@ -346,7 +346,9 @@ other leg is the fee to the operator — against the intent it delivered for.
 
 On any difference it does not sign. The kind of a leg is closed: an unknown kind is refused. Submit is idempotent per `operationId`. REST: `POST /v1/filler/canton/prepare`,
 `POST /v1/filler/canton/submit`; reads of the own party: `GET /v1/filler/canton/party`,
-`/holdings`, `/delivery-orders`. Refusals: `CANTON_NOT_READY` (409), `CANTON_REFUSED` (422),
+`/holdings`, `/delivery-orders`, and `/intents/{orderHash}` — the live Canton-source `SwapIntent`
+naming the party as its filler, with its committed allocation, which the node checks before
+`ticket.receipt` (V-C1…V-C6; 404 `UNKNOWN_TICKET` when none names it). Refusals: `CANTON_NOT_READY` (409), `CANTON_REFUSED` (422),
 `CANTON_UNAVAILABLE` (503, retry), `OPERATION_EXPIRED` (410, prepare again), plus
 `UNKNOWN_TICKET`, `TICKET_CLOSED` and `NOT_ELIGIBLE` for an operation on someone else's ticket or party.
 
@@ -451,6 +453,12 @@ A contract change is a release of this package. `CONTRACTS_RELEASE.version` says
 Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
+
+- `0.2.0-rc.15` — REST read `GET /v1/filler/canton/intents/{orderHash}` (CAN-1863): the live
+  Canton-source `SwapIntent` naming the filler's party, with its committed allocation by its
+  AllocationV2 view (`CantonIntent`, `CantonAllocation`, `CantonAllocationLeg`; `$defs`
+  `cantonIntent`, `cantonAllocation`). What a filler node checks before `ticket.receipt` on a Canton
+  source (V-C1…V-C6). Additive.
 
 - `0.2.0-rc.14` — `CANTON_PARTICIPANTS`: the Cancore participant per environment, next to
   `FILLER_GATEWAYS` (decision Ын-1, CAN-2352). A filler node checks its party's hosting against it
