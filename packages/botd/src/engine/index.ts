@@ -78,6 +78,8 @@ export function createEngine(options: EngineOptions): Engine {
   });
   let loop: ServeHandle | undefined;
 
+  // This account's user id, cached after the first order that needs it.
+  let selfId: string | undefined;
   const engine: Engine = {
     async make({ ttlSeconds, clientKey, ...params }) {
       const { give, giveAmount, get, getAmount } = legs(params);
@@ -153,9 +155,10 @@ export function createEngine(options: EngineOptions): Engine {
       await acct.swap.cancel(orderId);
     },
     async order(orderId) {
-      const [o, self] = await Promise.all([acct.swap.get(orderId), acct.me()]);
-      // Who took it: this account, another one, or not known (no opponent yet).
-      const takenBySelf = o.opponentUserId ? o.opponentUserId === self.id : undefined;
+      const o = await acct.swap.get(orderId);
+      // Who took it: this account, another one, or not known (no opponent yet). Our id is asked once, and only when needed.
+      if (o.opponentUserId && selfId === undefined) selfId = (await acct.me()).id;
+      const takenBySelf = o.opponentUserId ? o.opponentUserId === selfId : undefined;
       return { orderId: o.id, status: o.status, source: o.sourceTokenAddress, sourceAmount: o.sourceAmount, target: o.targetTokenAddress, targetAmount: o.targetAmount, ...(takenBySelf !== undefined && { takenBySelf }) };
     },
     async balances(instruments) {
