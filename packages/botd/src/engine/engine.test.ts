@@ -29,6 +29,16 @@ describe('engine.findIntent', () => {
     expect(await e.findIntent(intent, [])).toBe('same');
     expect(await e.findIntent({ ...intent, amount: '11' }, [])).toBeUndefined();
   });
+  it('never falls back to the order of another intent, nor to one made before this intent (goodmai #1)', async () => {
+    const items = [
+      order({ id: 'theirs', description: 'cancore-botd:k0' }),
+      order({ id: 'earlier', createdAt: new Date(1_000_000 - 60_000).toISOString() }),
+      order({ id: 'skewed', createdAt: new Date(1_000_000 - 4_000).toISOString() }),
+    ];
+    const e = await engineOver({ swap: { listMine: async () => ({ items }) } });
+    expect(await e.findIntent(intent, [])).toBe('skewed');
+    expect(await e.findIntent(intent, ['skewed'])).toBeUndefined();
+  });
 });
 
 describe('engine.quote', () => {

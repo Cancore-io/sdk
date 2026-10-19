@@ -39,13 +39,16 @@ function fakeDeps(log: string[]) {
       log.push('riskgate');
       return (cmd.params as { amount: string }).amount === '1' ? { allow: true } : { allow: false, reason: 'order_size_exceeded' };
     }),
-    createEngine: () => ({
+    createEngine: () => {
+      // A cancelled order reads cancelled; the rest read open.
+      const gone = new Set<string>();
+      return {
       make: async () => (log.push('engine:make'), { orderId: 'o1' }),
       take: jest.fn(),
       untake: jest.fn(() => true),
-      cancel: jest.fn(async () => void log.push('engine:cancel')),
+      cancel: jest.fn(async (id: string) => void (log.push('engine:cancel'), gone.add(id))),
       // Our resting orders read open, so a pause or cancel takes them off the book.
-      order: jest.fn(async (id: string) => ({ orderId: id, status: 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' })),
+      order: jest.fn(async (id: string) => ({ orderId: id, status: gone.has(id) ? 'cancelled' : 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' })),
       balances: jest.fn(),
       referencePrices: async () => ({}),
       usdPrices: async () => ({}),
@@ -56,7 +59,8 @@ function fakeDeps(log: string[]) {
       onboard: async () => 'bot::1220',
       start: jest.fn(),
       stop: jest.fn(async () => undefined),
-    }),
+      };
+    },
     now: () => 1_000_000,
   };
   return { deps, audited, getState: () => state };
@@ -201,8 +205,11 @@ describe('pause against an in-flight order.make', () => {
   async function unlockedWith(engineOverrides: Record<string, unknown>) {
     const { deps, getState } = fakeDeps([]);
     const base = deps.createEngine;
-    const cancel = jest.fn(async () => undefined);
-    deps.createEngine = ((...a: Parameters<typeof base>) => ({ ...base(...a), cancel, ...engineOverrides })) as never;
+    // The venue applies the cancel, so the order reads cancelled afterwards.
+    const gone = new Set<string>();
+    const cancel = jest.fn(async (id: string) => void gone.add(id));
+    const order = async (id: string) => ({ orderId: id, status: gone.has(id) ? 'cancelled' : 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' });
+    deps.createEngine = ((...a: Parameters<typeof base>) => ({ ...base(...a), cancel, order, ...engineOverrides })) as never;
     const d = createDispatcher(deps);
     await d.handle(req('unlock', { passphrase: 'right' }), { owner: true });
     return { d, getState, cancel, deps };

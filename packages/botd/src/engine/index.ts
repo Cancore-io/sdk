@@ -14,6 +14,8 @@ declare module '../types' {
     settledOrders?: Record<string, number>;
     /** Settles for orders not on the book that arrived while intents were unresolved, with when (ms): judged once they drain. */
     unknownSettles?: Record<string, number>;
+    /** Orders the daemon itself sent a cancel for (pause, strategy stop, a late make on pause), with when (ms): not the user's cancels. */
+    daemonCancels?: Record<string, number>;
   }
   interface EngineHooks {
     /** A take or settle step of the loop failed; `errorName` is the error's class, never its text. */
@@ -49,6 +51,8 @@ const FETCH_TIMEOUT_MS = 20_000;
 
 /** The client key as it rides on the order. */
 export const intentTag = (key: string) => `cancore-botd:${key}`;
+/** How far the venue's clock may be behind ours when matching an order to an intent by its creation time. */
+const CLOCK_SKEW_MS = 5_000;
 
 /** The venue the config pins, or the SDK's for the network; undefined when neither is known. */
 export function pinnedVenue(options: Pick<EngineOptions, 'venuePartyId' | 'network' | 'baseUrl'>): string | undefined {
@@ -112,11 +116,13 @@ export function createEngine(options: EngineOptions): Engine {
       const tagged = mine.find((o) => o.description === intentTag(intent.key));
       if (tagged) return tagged.id;
       // The API may rewrite the description (a cancel reason): fall back to the same order, made around the same time.
+      // Never another intent's order (its own tag), nor one made before this intent existed (beyond clock skew).
       const same = mine.find((o) => {
         const at = Date.parse(o.createdAt);
-        return o.sourceTokenAddress === give && o.targetTokenAddress === get
+        return !o.description?.startsWith(intentTag(''))
+          && o.sourceTokenAddress === give && o.targetTokenAddress === get
           && dec(o.sourceAmount) === dec(giveAmount) && dec(o.targetAmount) === dec(getAmount)
-          && Math.abs(at - intent.at) <= INTENT_WINDOW_MS;
+          && at >= intent.at - CLOCK_SKEW_MS && at - intent.at <= INTENT_WINDOW_MS;
       });
       return same?.id;
     },

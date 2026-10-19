@@ -30,10 +30,12 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
   const statuses: Record<string, string> = {};
   // Who took an order, as the venue reports it: absent until it has a taker.
   const takers: Record<string, boolean> = {};
+  // Per-order amounts, when a test needs someone else's order to take.
+  const infos: Record<string, { source: string; sourceAmount: string; target: string; targetAmount: string }> = {};
   let ticker: (() => void) | undefined;
   const audited: { method: string; decision: string; reason?: string }[] = [];
   let hooks: Parameters<Deps['createEngine']>[1] | undefined;
-  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[], orderDown: false, orderFailOnce: undefined as string | undefined };
+  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[], orderDown: false, orderFailOnce: undefined as string | undefined, takeOnCancel: undefined as string | undefined };
   const deps = (): Deps => ({
     keystore: { init: jest.fn(), initSeed: jest.fn(), unlock: async () => ({ destroy: () => undefined }) as never, lock: () => void (crash.wiped = true), isLocked: () => false, publicKey: async () => 'ab' },
     audit: {
@@ -61,7 +63,13 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         },
         take: jest.fn(),
         untake: jest.fn(() => true),
-        cancel: async (id) => void cancelled.push(id),
+        // The venue applies a cancel: the order then reads cancelled, unless the test already set it otherwise.
+        cancel: async (id) => {
+          cancelled.push(id);
+          // A taker accepted just before the cancel landed: the order is taken, not cancelled.
+          if (crash.takeOnCancel === id) statuses[id] = 'accepted';
+          else if ((statuses[id] ?? 'open') === 'open') statuses[id] = 'cancelled';
+        },
         order: async (id) => {
           crash.orderLookups.push(id);
           if (crash.orderDown) throw new Error('ECONNRESET');
@@ -69,7 +77,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
             crash.orderFailOnce = undefined;
             throw new Error('ECONNRESET');
           }
-          return { orderId: id, status: statuses[id] ?? 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1', ...(id in takers && { takenBySelf: takers[id] }) };
+          return { orderId: id, status: statuses[id] ?? 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1', ...infos[id], ...(id in takers && { takenBySelf: takers[id] }) };
         },
         balances: jest.fn(),
         referencePrices: async () => ({ 'CC/USDCx': '0.15' }),
@@ -108,6 +116,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
     audited,
     statuses,
     takers,
+    infos,
     state: () => state,
     advance: (ms: number) => void (clock += ms),
     fill: async (orderId: string) => {
@@ -697,6 +706,165 @@ describe('one rule for the book: booked until the venue shows the outcome, recon
     await expect(making).resolves.toMatchObject({ result: { order: { orderId: 'o1' } } });
     expect(w.cancelled).toEqual([]);
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['o1']);
+  });
+});
+
+describe('round on 0d5f493: wadguk and goodmai', () => {
+  const make = { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' };
+  const someoneElses = { source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '0.15' };
+
+  it('an ambiguous take keeps its reservation past the old 60 s release window, and its late fill is booked once (F128-TEST-RELEASE-WINDOW-1)', async () => {
+    // One take of 1 CC at 0.15 USD fits the 0.20 USD day; two do not.
+    const w = world({ ...LIMITS, perOrderUsd: '1', perDayUsd: '0.2' });
+    await w.unlock();
+    w.infos.A = someoneElses;
+    w.infos.B = someoneElses;
+    await w.call('order.take', { orderId: 'A', amount: '1' }, false);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+    // First read: open, no taker. Then past the old release threshold, a second read.
+    await w.tick();
+    w.advance(61_000);
+    await w.tick();
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+    await expect(w.call('order.take', { orderId: 'B', amount: '1' }, false)).rejects.toMatchObject({ data: { reason: 'usd_daily_exceeded' } });
+    // A's outcome: we took it and it completed.
+    w.statuses.A = 'completed';
+    w.takers.A = true;
+    for (let i = 0; i < 3; i++) {
+      w.advance(31_000);
+      await w.tick();
+    }
+    expect(w.state().openOrders).toEqual([]);
+    expect(w.state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '1', usdValue: '0.15' })]);
+    expect(w.state().positions).toMatchObject({ CC: '1' });
+  });
+
+  it('an intent matched to an order already settled books nothing twice and does not linger on the book (goodmai #1)', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    w.statuses.o1 = 'completed';
+    await w.fill('o1');
+    expect(w.state().fills).toHaveLength(1);
+    // A second make with the same terms loses its answer, and the lookup returns the settled o1.
+    w.crash.make = true;
+    await expect(w.call('order.make', make, false)).rejects.toBeDefined();
+    w.crash.make = false;
+    w.crash.found = 'o1';
+    for (let i = 0; i < 3; i++) {
+      w.advance(61_000);
+      await w.tick();
+    }
+    expect(w.state().openOrders).toEqual([]);
+    // A day later the settled id is pruned; nothing can book o1 again.
+    for (let i = 0; i < 3; i++) {
+      w.advance(86_400_000);
+      await w.tick();
+    }
+    expect(w.state().fills).toHaveLength(1);
+    expect(w.state().positions).toMatchObject({ CC: '1' });
+  });
+
+  it('an intent whose order already ended is dropped, not booked, so a strategy places it again (goodmai #1)', async () => {
+    const w = world();
+    await w.unlock();
+    w.crash.make = true;
+    await expect(w.call('order.make', make, false)).rejects.toBeDefined();
+    w.crash.make = false;
+    w.crash.found = 'gone';
+    w.statuses.gone = 'cancelled';
+    for (let i = 0; i < 3; i++) {
+      w.advance(61_000);
+      await w.tick();
+    }
+    expect(w.state().intents).toEqual([]);
+    expect(w.state().openOrders).toEqual([]);
+    expect(w.audited).toContainEqual(expect.objectContaining({ params: expect.objectContaining({ event: 'intent_dropped', orderId: 'gone' }) }));
+  });
+
+  it('a tick that ends in an unbooked_fill pause places no strategy order in that tick (goodmai #2)', async () => {
+    const w = world();
+    await w.unlock();
+    w.crash.make = true;
+    await expect(w.call('order.make', make, false)).rejects.toBeDefined();
+    w.crash.make = false;
+    await w.fill('ghost');
+    await w.call('strategy.start', grid, false);
+    expect(w.made).toHaveLength(0);
+    // Two empty lookups drop the intent; the held ghost is then judged in the same tick, and trading stops.
+    w.advance(61_000);
+    await w.tick();
+    const placedBefore = w.made.length;
+    w.advance(61_000);
+    await w.tick();
+    expect(w.state()).toMatchObject({ paused: true, pauseReason: 'unbooked_fill' });
+    expect(w.made).toHaveLength(placedBefore);
+    expect(strategyOf(w).status).toBe('running');
+  });
+
+  it('a DCA whose last order lost its answer is not done until the intent resolves, and places again once it is dropped (goodmai #2)', async () => {
+    const dca = { kind: 'dca', base: 'CC', quote: 'USDCx', config: { side: 'buy', amountPerOrder: '10', intervalSeconds: 600, maxOrders: 1 } };
+    const w = world();
+    await w.unlock();
+    await w.call('strategy.start', dca, false);
+    w.crash.make = true;
+    await w.tick();
+    w.crash.make = false;
+    expect(w.state().intents).toHaveLength(1);
+    await w.tick();
+    expect(strategyOf(w).status).toBe('running');
+    // Two empty lookups a minute apart drop it; the next steps place the order for real.
+    for (let i = 0; i < 4; i++) {
+      w.advance(61_000);
+      await w.tick();
+    }
+    expect(w.made).toHaveLength(1);
+    expect(strategyOf(w).status).toBe('done');
+  });
+
+  it('an unlock reconciles the book at once, whatever the lookup schedule said before the lock (goodmai #3)', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    await w.tick();
+    await w.call('lock', {}, true);
+    // Filled while locked, unlocked again within the 30 s poll interval.
+    w.statuses.o1 = 'completed';
+    w.advance(5_000);
+    await w.unlock();
+    expect(w.state().fills).toHaveLength(1);
+    expect(w.state().openOrders).toEqual([]);
+  });
+
+  it('a cancel taken over by a taker between the status read and the cancel keeps the order booked (F-8)', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    w.crash.takeOnCancel = 'o1';
+    await w.call('pause', {}, true);
+    expect(w.cancelled).toEqual(['o1']);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['o1']);
+  });
+
+  it('a cancel the daemon itself sent is not a user cancel: the grid keeps the slot (coordinator)', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('strategy.start', grid, false);
+    for (let i = 0; i < 3; i++) await w.tick();
+    const [id] = w.state().openOrders.map((o) => o.orderId);
+    const want = [...strategyOf(w).want];
+    // The pause cannot read the status, so its cancel goes out unconfirmed and the order stays booked.
+    w.crash.orderDown = true;
+    await w.call('pause', {}, true);
+    w.crash.orderDown = false;
+    expect(w.state().openOrders.map((o) => o.orderId)).toContain(id);
+    // Reconcile then sees it cancelled: the daemon's cancel, not the user's.
+    w.advance(31_000);
+    await w.tick();
+    expect(w.state().openOrders.map((o) => o.orderId)).not.toContain(id);
+    expect(strategyOf(w).cancelled ?? []).toEqual([]);
+    // A user cancel would drop the slot from what the grid wants; the daemon's own cancel leaves it.
+    expect(strategyOf(w).want).toEqual(want);
   });
 });
 

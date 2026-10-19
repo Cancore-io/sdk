@@ -65,7 +65,11 @@ export function fakeEngine(): FakeEngine {
       e.taken.push(p);
       return { orderId: p.orderId, filled: '0' };
     },
-    async cancel() {},
+    async cancel(id: string) {
+      // The venue applies it: a resting order then reads cancelled.
+      const o = e.orders.get(id);
+      if (o?.status === 'open') o.status = 'cancelled';
+    },
     async order(id) {
       e.onGateHold?.();
       await e.gateHold;
