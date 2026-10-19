@@ -368,6 +368,13 @@ never signs blind. Before signing, every leg passes these checks (`verifyTransac
   only its own participant's hosting; everything else is checked here alone.
 - **Any other leg kind** is refused (`legKind`).
 
+Inside a filler, `FillerConfig.canton` names the party, its `CantonPartySigner`, the Cancore
+participant (release data) and the policy for a Canton destination (`minTicketTtlSec`,
+`requiredProofWindowSec`, `sendGuardSec`; no defaults). The party must be in the namespace of the
+signer's key. `createFiller` then builds one `CantonOperations` on the session's own REST login and
+message key, exposed as `filler.canton`; `createCantonOperations` builds a standalone one for a node
+command run outside the session.
+
 `CantonOperations` runs one operation end to end:
 1. `canton.prepare`, then the verified `canton.prepared` answering it;
 2. the leg checks above, then the operation's own check (`CantonOpCheck`) of the decoded transactions

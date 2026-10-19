@@ -1,8 +1,11 @@
 import type { Hex, QuoteReconfirm, QuoteRequest, StakeBindingRequest, TicketIssued, TicketOffer } from '@cancore/contracts';
 import {
+  CantonOperations,
+  cantonFingerprint,
   createFiller,
   FillerConfigError,
   NotImplementedError,
+  type CantonConfig,
   type DrawVerification,
   type EscrowVerification,
   type Filler,
@@ -176,6 +179,36 @@ describe('the skeleton of sdk.md §3.6', () => {
   test('a malformed transport option is refused up front', () => {
     expect(configErrorField(() => createFiller({ ...baseConfig(), transport: { heartbeatMisses: 0 } }))).toBe('transport.heartbeatMisses');
     expect(configErrorField(() => createFiller({ ...baseConfig(), transport: { reconnect: { maxDelayMs: -1 } } }))).toBe('transport.reconnect.maxDelayMs');
+  });
+
+  describe('canton: the party, its key and the Canton destination policy (CAN-1867)', () => {
+    const KEY = `0x${'11'.repeat(32)}` as Hex;
+    const PARTY = `acme-1::${cantonFingerprint(KEY)}`;
+    const canton = (over: Partial<CantonConfig> = {}): CantonConfig => ({
+      party: PARTY,
+      partySigner: { publicKey: KEY, signHash: async () => `0x${'00'.repeat(64)}` as Hex },
+      participantUid: 'PAR::cancore::1220aa',
+      destination: { minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 20 },
+      ...over,
+    });
+
+    test('a party of the key builds a filler with one Canton operations client', () => {
+      const filler = createFiller({ ...baseConfig(), canton: canton() });
+      expect(filler.canton).toBeInstanceOf(CantonOperations);
+      expect(filler.canton?.publicKey).toBe(KEY);
+      expect(createFiller(baseConfig()).canton).toBeUndefined();
+    });
+
+    test.each([
+      ['a party of another key', { party: `acme-1::${cantonFingerprint(`0x${'22'.repeat(32)}`)}` }, 'canton.party'],
+      ['a key that is not 32 bytes', { partySigner: { publicKey: '0x11' as Hex, signHash: async () => '0x' as Hex } }, 'canton.partySigner.publicKey'],
+      ['a signer without signHash', { partySigner: { publicKey: KEY } as never }, 'canton.partySigner'],
+      ['no participant uid', { participantUid: 'cancore' }, 'canton.participantUid'],
+      ['no destination policy', { destination: undefined as never }, 'canton.destination'],
+      ['a negative sendGuard', { destination: { minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: -1 } }, 'canton.destination.sendGuardSec'],
+    ])('%s is refused', (_name, over, field) => {
+      expect(configErrorField(() => createFiller({ ...baseConfig(), canton: canton(over as Partial<CantonConfig>) }))).toBe(field);
+    });
   });
 
   test('stop() is safe before start()', async () => {
