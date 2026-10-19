@@ -435,3 +435,25 @@ test('forget drops an ambiguous take: untake no longer reports it in flight and 
   expect(handle.untake('gone')).toBe(true);
   await handle.stop();
 });
+
+test('forget leaves a take alone while a run for it is still in progress', async () => {
+  const theirs = order('busy', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  const { acct } = account([theirs], async () => {
+    throw new Error('unused');
+  });
+  let started!: () => void;
+  const running = new Promise<void>((r) => (started = r));
+  (acct as unknown as { take: (id: string, o: SettleRun) => Promise<Settled> }).take = async () => {
+    started();
+    await held;
+    throw new TypeError('fetch failed');
+  };
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
+  handle.take('busy');
+  await running;
+  expect(handle.forget('busy')).toBe(false);
+  release();
+  await handle.stop();
+});

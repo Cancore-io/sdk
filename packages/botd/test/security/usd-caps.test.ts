@@ -51,4 +51,39 @@ describe('security: USD caps through the dispatcher', () => {
     r.engine.usdPrices = async () => ({ CC: '0.075', USDCx: '1' });
     expect(await outcome(r.dispatcher.handle(make('100'), agent))).toBe('usd_daily_exceeded');
   });
+  it('a settle for an order the book never knew pauses the bot; a repeated settle of a booked fill does not', async () => {
+    r = await rig({ ...LIMITS, perOrderUsd: '1000', perDayUsd: '1000' });
+    await r.unlock();
+    expect(await outcome(r.dispatcher.handle(make('10'), agent))).toBe('ok');
+    const orderId = r.state().openOrders[0]!.orderId;
+    r.hooks().onSettled(orderId);
+    while (!r.state().fills?.length) await new Promise((res) => setImmediate(res));
+    // The same settle again (serve and reconcile both saw it): booked once, nothing paused.
+    r.hooks().onSettled(orderId);
+    // Unknown: limits never saw this trade, so the owner must look before anything else trades.
+    r.hooks().onSettled('ghost');
+    // Settle work runs in order: once the ghost's entry is written, the repeated settle has been handled too.
+    while (!r.audit().some((e) => e.reason === 'unbooked_fill')) await new Promise((res) => setImmediate(res));
+    expect(r.audit().filter((e) => (e.params as { event?: string; orderId?: string })?.event === 'settled' && (e.params as { orderId?: string }).orderId === orderId)).toHaveLength(1);
+    expect(r.state().openOrders).toEqual([]);
+    // Only the ghost paused: the repeated settle of a booked fill did not.
+    expect(r.audit().filter((e) => e.reason === 'unbooked_fill').map((e) => (e.params as { orderId?: string }).orderId)).toEqual(['ghost']);
+    expect(r.state()).toMatchObject({ paused: true, pauseReason: 'unbooked_fill' });
+    expect(r.state().fills).toHaveLength(1);
+    expect(r.audit()).toContainEqual(expect.objectContaining({ method: 'settle', decision: 'deny', reason: 'unbooked_fill' }));
+  });
+  it('takeOpenSeen does not accumulate: a settle or an end of the booking clears its entry', async () => {
+    r = await rig({ ...LIMITS, perOrderUsd: '1000', perDayUsd: '1000' });
+    await r.unlock();
+    expect(await outcome(r.dispatcher.handle(make('1'), agent))).toBe('ok');
+    expect(await outcome(r.dispatcher.handle(make('1'), agent))).toBe('ok');
+    const [a, b] = r.state().openOrders.map((o) => o.orderId);
+    const seeded = await r.deps.state.load();
+    await r.deps.state.save({ ...seeded, takeOpenSeen: { [a!]: 1, [b!]: 1 } } as never);
+    r.hooks().onSettled(a!);
+    r.hooks().onEnded(b!, 'cancelled');
+    while (r.state().openOrders.length) await new Promise((res) => setImmediate(res));
+    for (let i = 0; i < 20 && Object.keys((r.state() as { takeOpenSeen?: object }).takeOpenSeen ?? {}).length; i++) await new Promise((res) => setImmediate(res));
+    expect((r.state() as { takeOpenSeen?: object }).takeOpenSeen ?? {}).toEqual({});
+  });
 });

@@ -61,6 +61,14 @@ const LOCK_DRAIN_MS = 5_000;
 
 /** An intent younger than this may still be in flight: no lookup can tell it was never made. */
 const INTENT_SETTLE_MS = 60_000;
+/** How long a released take and a booked fill's id are kept, for a late accept or a repeated settle. */
+const KEEP_MS = 86_400_000;
+
+/** Drops released takes and settled ids older than KEEP_MS. */
+function withoutStale(s: BotState, now: number): BotState {
+  const fresh = <T>(r: Record<string, T> | undefined, at: (v: T) => number) => Object.fromEntries(Object.entries(r ?? {}).filter(([, v]) => now - at(v) < KEEP_MS));
+  return { ...s, releasedTakes: fresh(s.releasedTakes, (v) => v.releasedAt), settledOrders: fresh(s.settledOrders, (v) => v) };
+}
 /** Ceiling of the backoff between lookups of one intent while the API keeps failing. */
 const LOOKUP_BACKOFF_MAX_MS = 15 * 60_000;
 
@@ -204,14 +212,39 @@ export function createDispatcher(deps: Deps): Dispatcher {
         // The fill's USD value is fixed now, at a fresh API price: the daily USD budget never reprices it later.
         const usdPrices: Record<string, string> = (await engine?.usdPrices().catch(() => ({}))) ?? {};
         let usdValue: string | undefined;
-        await mutate((s) => {
+        let unbooked = false;
+        let repeated = false;
+        const now = deps.now();
+        await mutate((s0) => {
+          let s = withoutStale(s0, now);
+          // A take released as never accepted that landed late after all: back on the book, so it is booked once.
+          const released = s.releasedTakes?.[orderId];
+          if (released && !s.openOrders.some((o) => o.orderId === orderId)) {
+            const { releasedAt: _, ...entry } = released;
+            const { [orderId]: __, ...rest } = s.releasedTakes!;
+            s = { ...s, openOrders: [...s.openOrders, entry], releasedTakes: rest };
+          }
           const filled = s.openOrders.find((o) => o.orderId === orderId);
-          const tag = filled?.strategy;
-          const base = filled?.pair.split('/')[0];
-          const next = applyFill(s, orderId, deps.now(), base !== undefined && Object.hasOwn(usdPrices, base) ? usdPrices[base] : undefined);
-          if (next !== s) usdValue = next.fills?.at(-1)?.usdValue;
-          return tag ? { ...next, strategies: strategyFilled(next.strategies, tag) } : next;
+          if (!filled) {
+            if (s.settledOrders?.[orderId] !== undefined) return (repeated = true), s;
+            // A trade on this account the book never knew: limits cannot have seen it, so trading stops for the owner.
+            unbooked = true;
+            return { ...s, paused: true, pauseReason: 'unbooked_fill' };
+          }
+          const tag = filled.strategy;
+          const base = filled.pair.split('/')[0];
+          const next = applyFill(s, orderId, now, base !== undefined && Object.hasOwn(usdPrices, base) ? usdPrices[base] : undefined);
+          usdValue = next.fills?.at(-1)?.usdValue;
+          const { [orderId]: _seen, ...openSeen } = next.takeOpenSeen ?? {};
+          const done = { ...next, takeOpenSeen: openSeen, settledOrders: { ...next.settledOrders, [orderId]: now } };
+          return tag ? { ...done, strategies: strategyFilled(done.strategies, tag) } : done;
         });
+        // Already booked (serve and reconcile both saw it): nothing more to record.
+        if (repeated) return;
+        if (unbooked) {
+          await append({ ...settleEntry, decision: 'deny', reason: 'unbooked_fill', params: { orderId, event: 'settled' } });
+          return;
+        }
         // No price at fill time: the fill counts as the whole day spent until it ages out; say so in the log.
         await append({ ...settleEntry, decision: 'allow', params: { orderId, event: 'settled', ...(usdValue ? { usdValue } : { usdValue: 'unpriced' }) } });
       }),
@@ -220,7 +253,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
         // Cancelled outside the daemon (the web app): by hand, so a grid does not place it again.
         await mutate((s) => {
           const next = reason === 'cancelled' ? userCancelled(s, [orderId]) : s;
-          return { ...next, openOrders: next.openOrders.filter((o) => o.orderId !== orderId) };
+          const { [orderId]: _seen, ...openSeen } = next.takeOpenSeen ?? {};
+          return { ...next, takeOpenSeen: openSeen, openOrders: next.openOrders.filter((o) => o.orderId !== orderId) };
         });
         await append({ ...settleEntry, decision: 'allow', params: { orderId, event: reason } });
       }),
@@ -248,8 +282,13 @@ export function createDispatcher(deps: Deps): Dispatcher {
       const now = deps.now();
       if (seen === undefined) await mutate((s) => ({ ...s, takeOpenSeen: { ...s.takeOpenSeen, [orderId]: now } }));
       else if (now - seen >= INTENT_SETTLE_MS) {
-        e.forget?.(orderId);
-        await mutate(({ takeOpenSeen: { [orderId]: _, ...rest } = {}, ...s }) => ({ ...s, takeOpenSeen: rest }));
+        // Serve still running for it: wait for the next reconcile.
+        if (e.forget?.(orderId) === false) return;
+        // Kept for a day: if the accept lands late after all, onSettled books it from this view.
+        await mutate(({ takeOpenSeen: { [orderId]: _, ...rest } = {}, ...s }) => {
+          const entry = s.openOrders.find((o) => o.orderId === orderId);
+          return { ...s, takeOpenSeen: rest, ...(entry && { releasedTakes: { ...s.releasedTakes, [orderId]: { ...entry, releasedAt: now } } }) };
+        });
         hooks.onEnded(orderId, 'take_released');
       }
     }
@@ -288,6 +327,11 @@ export function createDispatcher(deps: Deps): Dispatcher {
   async function reconcile(e: Engine) {
     await reconcileIntents(e);
     for (const o of (await deps.state.load()).openOrders) await settleIfDone(e, o.orderId);
+    // A released take the venue now shows completed by us landed late: book it (onSettled puts it back first).
+    for (const orderId of Object.keys((await deps.state.load()).releasedTakes ?? {})) {
+      const info = await e.order(orderId).catch(() => undefined);
+      if (info?.status === 'completed' && info.takenBySelf === true) hooks.onSettled(orderId);
+    }
   }
 
   const needEngine = () => {

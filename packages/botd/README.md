@@ -311,6 +311,7 @@ Every strategy order is an `order.make` through the same trade lock, risk gate, 
 | `order.make` `rate_limited` with `maxCommandsPerMinute` set | the hourly `ordersPerHour` budget is spent | wait; it is the platform's limit |
 | daemon exits `no venue is pinned for …` | a `baseUrl` that is not one of Cancore's hosts | set `network` or `venuePartyId` |
 | `register` fails, or the first unlock logs `not registered: run cancore-bot register` | a new account, or a wrong invite code | `cancore-bot register` with the right code |
+| paused with `pauseReason: unbooked_fill` | a trade settled on the bot account that the daemon never booked (for example one made by hand in the web app on the bot's account); the limits cannot account for it, so the bot stops | check the audit log and the account's orders, then `cancore-bot resume`; do not trade by hand on the bot account |
 | every trade `usd_cap_missing` | `perOrderUsd` or `perDayUsd` not set | set both, or `usdCapsOptOut: true` |
 | every trade `usd_daily_exceeded`, audit shows a settle with `usdValue: "unpriced"` | a fill settled while the API gave no USD price (or one from before USD caps) is in the 24 h window; its value is unknown, so the whole day counts as spent | wait until that fill is 24 h old, or set `usdCapsOptOut: true` (owner, `limits.json`) to trade without USD caps meanwhile |
 | every trade `usd_price_missing` | the API gives no USD price for an instrument involved | wait for the price feed; check the pair is listed |

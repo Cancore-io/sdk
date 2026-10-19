@@ -509,12 +509,114 @@ describe('cancore-botd end to end: a lost accept that never landed is released (
     try {
       await owner('unlock', { passphrase: 'bot-pass-2026' });
       await until(() => state().openOrders.length === 0 && event('x4', 'take_released'));
+      expect(state().takeOpenSeen ?? {}).toEqual({});
       expect(state().fills ?? []).toEqual([]);
       expect(state().positions ?? {}).toEqual({});
       expect(api.accepts).toBe(1);
       // The released slot is free again: the next take is not blocked by maxOpenOrders.
       await owner('resume');
       expect(await agent('order.take', { orderId: 'x5', amount: '1' })).toMatchObject({ orderId: 'x5' });
+    } finally {
+      await stop();
+    }
+  });
+});
+
+describe('cancore-botd end to end: a released take that lands late is booked once (round-21 X-1)', () => {
+  let dir: string;
+  let config: BotConfig;
+  const api = fakeApi();
+  const boot = async () => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 }));
+  const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
+    const c = await connect(socket);
+    try {
+      return (await c.call(method as never, params as never)) as T;
+    } finally {
+      c.close();
+    }
+  };
+  const refusal = (p: Promise<unknown>) => p.then(() => undefined, (e: RpcCallError) => e.error);
+  const owner = <T = unknown>(m: string, p?: unknown) => call<T>(config.ownerSocket, m, p);
+  const agent = <T = unknown>(m: string, p?: unknown) => call<T>(config.agentSocket, m, p);
+  type Extra = { takeOpenSeen?: Record<string, number>; releasedTakes?: Record<string, unknown>; settledOrders?: Record<string, number> };
+  const state = () => JSON.parse(readFileSync(paths(config).state, 'utf8')) as BotState & Extra;
+  const until = async (check: () => boolean) => {
+    for (let i = 0; i < 250 && !check(); i++) await new Promise((r) => setTimeout(r, 20));
+    expect(check()).toBe(true);
+  };
+  const audit = () => readFileSync(paths(config).audit, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { params?: { orderId?: string; event?: string } });
+  const event = (orderId: string, name: string) => audit().some((e) => e.params?.event === name && e.params.orderId === orderId);
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'botd-e2e-late-'));
+    config = {
+      ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
+      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
+    };
+    delete (config as Partial<BotConfig>).clientsGroup;
+    await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
+    // 1 CC at 0.15 USD; a second 0.15 USD order would pass the 0.2 USD day.
+    writeFileSync(paths(config).limits, JSON.stringify({ ...LIMITS, perOrderUsd: '100', perDayUsd: '0.2' }), { mode: 0o600 });
+    api.orders.set('x6', {
+      id: 'x6', status: 'open', sourceNetwork: 'canton', targetNetwork: 'canton', dvp: true,
+      initiatorUserId: 'someone', opponentUserId: null, swapId: null,
+      sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: '1', targetTokenAddress: 'USDCx', targetTokenName: 'USDCx', targetAmount: '0.15',
+      expiresAt: '', createdAt: '', updatedAt: '',
+    });
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('keeps the released view, books the late trade exactly once, and enforces the day', async () => {
+    api.dropAccept = true;
+    api.applyAccept = false;
+    let stop = await boot();
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      expect(await agent('order.take', { orderId: 'x6', amount: '1' })).toMatchObject({ orderId: 'x6' });
+      await until(() => event('x6', 'take_failed'));
+      await owner('pause', { reason: 'owner stop' });
+    } finally {
+      await stop();
+    }
+    stop = await boot();
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      await until(() => state().takeOpenSeen?.x6 !== undefined);
+    } finally {
+      await stop();
+    }
+    const s = state();
+    writeFileSync(paths(config).state, JSON.stringify({ ...s, takeOpenSeen: { x6: s.takeOpenSeen!.x6! - 61_000 } }), { mode: 0o600 });
+    stop = await boot();
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      await until(() => event('x6', 'take_released') && state().openOrders.length === 0);
+      expect(Object.keys(state().releasedTakes ?? {})).toEqual(['x6']);
+    } finally {
+      await stop();
+    }
+
+    // The accept the venue was still holding lands late, and the trade completes.
+    Object.assign(api.orders.get('x6')!, { status: 'completed', opponentUserId: 'bot' });
+    for (let round = 0; round < 2; round++) {
+      stop = await boot();
+      try {
+        await owner('unlock', { passphrase: 'bot-pass-2026' });
+        await until(() => (state().fills ?? []).length === 1 && Object.keys(state().releasedTakes ?? {}).length === 0);
+      } finally {
+        await stop();
+      }
+    }
+    expect(state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '1', usdValue: '0.15' })]);
+    expect(state().positions).toMatchObject({ CC: '1' });
+    expect(state()).toMatchObject({ pauseReason: 'owner stop' });
+
+    stop = await boot();
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      await owner('resume');
+      expect(await refusal(agent('order.make', { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' })))
+        .toMatchObject({ code: ERROR.DENIED, data: { reason: 'usd_daily_exceeded' } });
     } finally {
       await stop();
     }

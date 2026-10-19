@@ -11,11 +11,16 @@ declare module '../types' {
   }
   interface Engine {
     /** Forget a take the venue shows was never accepted (see ServeHandle.forget). */
-    forget?(orderId: string): void;
+    /** False while serve is still working on the order: nothing is forgotten then. */
+    forget?(orderId: string): boolean;
   }
   interface BotState {
     /** Taken bookings whose order read open with no taker: when that was first seen (ms). */
     takeOpenSeen?: Record<string, number>;
+    /** Takes released as never accepted, kept for a day in case the accept lands late: booked once if it does. */
+    releasedTakes?: Record<string, BotState['openOrders'][number] & { releasedAt: number }>;
+    /** Orders whose fill was booked, with when (ms), for a day: a repeated settle is not an unknown one. */
+    settledOrders?: Record<string, number>;
   }
   interface EngineHooks {
     /** A take or settle step of the loop failed; `errorName` is the error's class, never its text. */
@@ -160,7 +165,7 @@ export function createEngine(options: EngineOptions): Engine {
       return loop ? loop.untake(orderId) : true;
     },
     forget(orderId) {
-      loop?.forget(orderId);
+      return loop ? loop.forget(orderId) : true;
     },
     async cancel(orderId) {
       await acct.swap.cancel(orderId);
