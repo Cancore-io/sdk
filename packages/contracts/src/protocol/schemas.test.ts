@@ -263,6 +263,7 @@ test('the enums of the schemas are the exported constants', () => {
   expect(known(((transferResult.properties as Defs).result!.properties as Defs).outcome)).toEqual([...CANTON_TRANSFER_OUTCOMES]);
   expect([(m.cantonLegTransaction!.properties as Defs).kind, (m.cantonLegTopology!.properties as Defs).kind]).toEqual(CANTON_LEG_KINDS.map((k) => ({ const: k })));
   expect(known(((r.cantonParty!.properties as Defs).registry!.properties as Defs).state)).toEqual([...CANTON_REGISTRY_STATES]);
+  expect(known(((((r.cantonAllocation!.properties as Defs).legs!.items as Defs).properties as Defs).side))).toEqual(['SENDER', 'RECEIVER']);
 });
 
 // A closed enum is allowed only where the gateway owns the value (a request filter); every other enum is open (V-2).
@@ -288,7 +289,7 @@ test('V-2: no object is closed, and no enum outside the allow-list is closed', (
 describe('REST', () => {
   const rest = (def: string, value: unknown) => ajv.validate(`https://cancore.io/schemas/filler-protocol/v1/rest.schema.json#/$defs/${def}`, value);
   test('every endpoint names schemas that resolve', () => {
-    expect(REST_ENDPOINTS).toHaveLength(19);
+    expect(REST_ENDPOINTS).toHaveLength(20);
     const base = 'https://cancore.io/schemas/filler-protocol/v1/';
     for (const e of REST_ENDPOINTS) {
       for (const ref of [e.request, e.query, e.response, e.errorBody].filter((x): x is string => !!x)) {
@@ -431,5 +432,32 @@ describe('Canton operations of the filler party (§3.19)', () => {
     };
     expect(rest('cantonDeliveryOrderList', { items: [order], nextCursor: 'c-2' })).toBe(true);
     expect(rest('cantonDeliveryOrderList', { items: [{ ...order, validUntil: 1790000400 }], nextCursor: null })).toBe(false);
+  });
+
+  test('reads: the Canton-source intent naming the party, with its committed allocation (CAN-1863)', () => {
+    const cnrx = { admin: 'cancore-registry::1220aa', id: 'CNRX' };
+    const allocation = {
+      contractId: '00cc', templateId: `${'ab'.repeat(32)}:Cnrx.Allocation:CnrxAllocationV2`, admin: cnrx.admin, authorizer: 'alice::1220ff',
+      committed: true, settlementId: `cancore-intent/${ORDER_HASH.slice(2)}`, executors: ['cancore::1220ee', 'alice::1220ff'], settlementDeadline: '1790003600',
+      legs: [
+        { legId: 'payout', side: 'SENDER', otherside: 'acme::1220ab', amount: '99.7008973081', instrumentId: 'CNRX' },
+        { legId: 'fee', side: 'SENDER', otherside: 'cancore::1220ee', amount: '0.2991026919', instrumentId: 'CNRX' },
+      ],
+    };
+    const intent = {
+      intentCid: '00dd', templateId: `${'cd'.repeat(32)}:Intent.SwapIntent:SwapIntent`, orderHash: ORDER_HASH,
+      owner: 'alice::1220ff', operator: 'cancore::1220ee', filler: 'acme::1220ab', fillerId: 'acme', requestId: 'req-1',
+      asset: cnrx, amount: '100.0', destination: { chainId: '11155111', token: `0x${'11'.repeat(20)}`, recipient: `0x${'22'.repeat(20)}` },
+      minReceived: { units: '99000000', decimals: 6 }, feeRate: '0.003', fillDeadline: '1790000400', refundAfter: '1790003600', orderCreatedAt: '1789999800',
+      allocationCid: '00cc', allocation,
+    };
+    expect(rest('cantonIntent', intent)).toBe(true);
+    expect(rest('cantonIntent', { ...intent, allocation: null })).toBe(true);
+    const { allocation: _a, ...noAllocation } = intent;
+    expect(rest('cantonIntent', noAllocation)).toBe(false);
+    expect(rest('cantonIntent', { ...intent, fillDeadline: 1790000400 })).toBe(false);
+    expect(rest('cantonIntent', { ...intent, destination: { ...intent.destination, token: `0x${'AB'.repeat(20)}` } })).toBe(false);
+    expect(rest('cantonIntent', { ...intent, allocation: { ...allocation, legs: [{ ...allocation.legs[0], side: 'sender' }] } })).toBe(false);
+    expect(rest('cantonIntent', { ...intent, allocation: { ...allocation, settlementDeadline: null } })).toBe(true);
   });
 });
