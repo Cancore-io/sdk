@@ -3,26 +3,30 @@
 Every change starts from a Linear ticket and lands through a pull request. These
 rules apply to every package under `packages/`.
 
-## 1. No comments in code
+## 1. Comments: why only
 
-Do not add comments to source or test files. The explanation of a change belongs
-where it stays attached to the change:
+No comments that restate what the code does: say it with intention-revealing
+names of functions, variables and types, and put the why of a change where it
+stays attached to the change:
 
 - the **Linear ticket**: what is asked, why, the decisions taken;
 - the **pull request description**: what changed, why this way, what was run;
 - the **commit message**: the cause of the change, in a sentence or two.
 
 `git blame` and `git log` lead from any line back to its commit, PR and ticket.
-A comment next to the code drifts away from what the code does; the history does
-not.
 
-The code explains itself through names. A function, variable, type or test is
-named after what it does or proves: `refuseExpiredQuote`, not `check2`;
-`settledFillUsdValue`, not `val`. If a line needs a comment to be understood,
-rename or split it instead.
+A short comment is allowed only for a why the code cannot carry: an invariant,
+a money or security constraint, a reference to an external fact (a pin, a
+platform limit), or `shortcut: <limit>, <when to redo>`. Comments are in
+English.
 
-Existing comments are not rewritten for the sake of it; code you touch follows
-the rule.
+A function, variable, type or test is named after what it does or proves:
+`refuseExpiredQuote`, not `check2`; `settledFillUsdValue`, not `val`. If a
+comment restates a line, rename or split the code instead.
+
+Existing comments stay — do not delete them when touching a file.
+
+(CAN-2777; operator decision 2026-10-19 on the CTO compromise.)
 
 ## 2. What a pull request must carry
 
@@ -108,7 +112,7 @@ Review is requested only after the Qase run is attached.
 ## Before you request review
 
 - [ ] The ticket is linked in the PR title or body.
-- [ ] No new comments in code; names say what the code does.
+- [ ] No new comments that restate the code; why-comments only for invariants, money/security, external facts, `shortcut:`.
 - [ ] Typecheck, unit with coverage, mutation table, integration (none skipped)
       and build results are in the PR description.
 - [ ] Stand run named, RTM row updated, Qase run linked on the PR and the ticket.
