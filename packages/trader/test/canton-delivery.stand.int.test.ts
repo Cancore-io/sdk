@@ -89,13 +89,20 @@ const signDigest = (key: Hex, digest: Hex): Hex => {
 };
 
 /**
- * The stand user's bearer token: STAND_USER_JWT as given, else a password grant
- * at KEYCLOAK_TOKEN_URL for STAND_USER_EMAIL / STAND_USER_PASSWORD (client KEYCLOAK_CLIENT_ID).
+ * The stand user's bearer token, fresh per call (a token lives minutes, the run
+ * longer): a password grant for STAND_USER_NAME (a Keycloak username) through
+ * the gateway's own client (CAN-2380 admits it).
  */
 async function userToken(): Promise<string> {
-  if (process.env.STAND_USER_JWT) return process.env.STAND_USER_JWT;
-  const form = new URLSearchParams({ grant_type: 'password', client_id: env('KEYCLOAK_CLIENT_ID'), username: env('STAND_USER_EMAIL'), password: env('STAND_USER_PASSWORD'), scope: 'openid' });
-  const response = await fetch(env('KEYCLOAK_TOKEN_URL'), { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form });
+  const form = new URLSearchParams({
+    grant_type: 'password',
+    client_id: env('STAND_USER_CLIENT_ID'),
+    client_secret: env('STAND_USER_CLIENT_SECRET'),
+    username: env('STAND_USER_NAME'),
+    password: env('STAND_USER_PASSWORD'),
+    scope: 'openid',
+  });
+  const response = await fetch(env('STAND_USER_TOKEN_URL'), { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form });
   if (!response.ok) throw new Error(`stand user login: ${response.status}`);
   return ((await response.json()) as { access_token: string }).access_token;
 }
@@ -182,13 +189,18 @@ live('CAN-1867: EVM → Canton on the full intent stand', () => {
   test('TC-CAN-1867-STAND-01: an order to canton:devnet is delivered by the filler’s party and settled on the router: repayTo paid, the party’s CNRX spent', async () => {
     // -- quote → pick → openFor, as a user of Cancore (backend quote.service): only a picked order is ticketed,
     // and the Canton recipient is recorded with the quote (the readiness check and DeliveryBook_Dispatch read it).
-    const trading = process.env.TRADING_URL ?? env('GATEWAY_URL');
-    const jwt = await userToken();
+    // trading serves /v1/intents/quote with its own JWT guard; the gateway is tried when trading refuses the token.
+    const bases = [process.env.TRADING_URL, process.env.GATEWAY_URL].filter((u): u is string => !!u);
     const api = async <T>(path: string, body: unknown): Promise<T> => {
-      const response = await fetch(`${trading}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${jwt}` }, body: JSON.stringify(body) });
-      const text = await response.text();
-      if (!response.ok) throw new Error(`POST ${path}: ${response.status} ${text.slice(0, 500)}\n${diagnostics()}`);
-      return JSON.parse(text) as T;
+      let last = '';
+      for (const base of bases) {
+        const response = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${await userToken()}` }, body: JSON.stringify(body) });
+        const text = await response.text();
+        if (response.ok) return JSON.parse(text) as T;
+        last = `${base}${path}: ${response.status} ${text.slice(0, 500)}`;
+        if (response.status !== 401 && response.status !== 404) break;
+      }
+      throw new Error(`POST ${last}\n${diagnostics()}`);
     };
     const token = env('INPUT_TOKEN_ADDRESS').toLowerCase() as Hex;
     // The stand's test tokens carry their own decimals.
