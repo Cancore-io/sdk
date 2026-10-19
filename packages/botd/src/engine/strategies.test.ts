@@ -35,7 +35,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
   let ticker: (() => void) | undefined;
   const audited: { method: string; decision: string; reason?: string }[] = [];
   let hooks: Parameters<Deps['createEngine']>[1] | undefined;
-  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[], orderDown: false, orderFailOnce: undefined as string | undefined, takeOnCancel: undefined as string | undefined };
+  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[], orderDown: false, orderFailOnce: undefined as string | undefined, cancelFails: false, takeOnCancel: undefined as string | undefined };
   const deps = (): Deps => ({
     keystore: { init: jest.fn(), initSeed: jest.fn(), unlock: async () => ({ destroy: () => undefined }) as never, lock: () => void (crash.wiped = true), isLocked: () => false, publicKey: async () => 'ab' },
     audit: {
@@ -65,6 +65,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         untake: jest.fn(() => true),
         // The venue applies a cancel: the order then reads cancelled, unless the test already set it otherwise.
         cancel: async (id) => {
+          if (crash.cancelFails) throw new Error('ECONNRESET');
           cancelled.push(id);
           // A taker accepted just before the cancel landed: the order is taken, not cancelled.
           if (crash.takeOnCancel === id) statuses[id] = 'accepted';
@@ -83,10 +84,11 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         referencePrices: async () => ({ 'CC/USDCx': '0.15' }),
         usdPrices: async () => ({ CC: '0.15', USDCx: '1' }),
         withdraw: jest.fn(),
-        findIntent: async () => {
+        // Like the real lookup: an order the daemon already knows is never offered for another intent.
+        findIntent: async (_intent: unknown, known: string[] = []) => {
           crash.lookups++;
           if (crash.lookupDown) throw new Error('ECONNRESET');
-          return crash.found;
+          return crash.found !== undefined && known.includes(crash.found) ? undefined : crash.found;
         },
         quote: jest.fn(),
         register: async () => 'bot::1220',
@@ -844,6 +846,17 @@ describe('round on 0d5f493: wadguk and goodmai', () => {
     await w.call('pause', {}, true);
     expect(w.cancelled).toEqual(['o1']);
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['o1']);
+  });
+
+  it('a daemon cancel that was not sent leaves no daemon mark, so a later manual cancel still counts as the user\'s', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    const id = w.state().openOrders[0]!.orderId;
+    w.crash.cancelFails = true;
+    await w.call('pause', {}, true);
+    expect(Object.keys(w.state().daemonCancels ?? {})).not.toContain(id);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual([id]);
   });
 
   it('a cancel the daemon itself sent is not a user cancel: the grid keeps the slot (coordinator)', async () => {
