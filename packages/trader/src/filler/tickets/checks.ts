@@ -32,11 +32,15 @@
  * Every check's result — `passed`, `failed` or `skipped` — is reported to
  * the `EventSink` as stage `ticket.checked`.
  *
- * Not here: a Canton source (V-C1…V-C6, CAN-1863) and a Canton-form ticket
- * (CAN-1867) are declined `OTHER`; the draw (V-T5) is V2 (CAN-1848).
+ * A Canton source runs V-C1…V-C6 (`canton-source.ts`) in place of V-E1…V-E4:
+ * there is no escrow on a router, the give is a committed allocation on
+ * Canton. V-T1 and V-E5 are read on the EVM destination for both sources.
+ *
+ * Not here: a Canton-form ticket (CAN-1867) is declined `OTHER`; the draw
+ * (V-T5) is V2 (CAN-1848).
  */
 import type { DeclineReason, Hex, TicketIntentMessage, TicketIssued, TicketIssuedEvm, TicketOffer } from '@cancore/contracts';
-import type { FillerChains } from '../chain';
+import type { ChainReaders, FillerChains } from '../chain';
 import { ChainReadError } from '../chain/client';
 import { erc20Allowance, erc20BalanceOf, erc20Blocklisted } from '../chain/erc20';
 import { hashOrder, hashTicket } from '../chain/hashes';
@@ -45,9 +49,11 @@ import type { EvmChainId } from '../chains';
 import type { EventSink } from '../events';
 import type { Clock, Logger } from '../runtime';
 import { recoverAddress, type FillSigner } from '../signer';
-import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from './terms';
+import { checkCantonSource, type CantonSourceReader } from './canton-source';
+import { Refusal, type TicketCheckId } from './refusal';
+import { CANTON_ORIGIN_FLOOR, chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from './terms';
 
-export type TicketCheckId = 'form' | 'V-T4' | 'V-T2' | 'V-T3' | 'V-E1' | 'V-E2' | 'V-E3' | 'V-T1' | 'V-E4' | 'V-E5';
+export type { TicketCheckId } from './refusal';
 
 /**
  * `passed` — the condition holds; `failed` — it does not, or could not be
@@ -83,6 +89,8 @@ export interface TicketVerifierOptions {
   fillerId: string;
   /** The filler's Canton party, the payee of a Canton source. */
   cantonParty?: string;
+  /** The Canton-source reads through Cancore (V-C1…V-C6); without it a Canton source is declined. */
+  cantonSource?: CantonSourceReader;
   /** Pinned ticket signers (`FILLER_GATEWAYS[env].ticketSigners`). */
   ticketSigners: readonly Hex[];
   /** δ_issue, ms (V-T4, protocol S-2). */
@@ -100,16 +108,6 @@ export interface TicketCheckInput {
   issuedAtMs: number;
   /** The consent sent for this attempt, when one was. */
   intent?: TicketIntentMessage;
-}
-
-class Refusal extends Error {
-  constructor(
-    readonly check: TicketCheckId,
-    readonly reason: DeclineReason,
-    readonly detail: string,
-  ) {
-    super(`${check}: ${reason} (${detail})`);
-  }
 }
 
 const UINT64 = /^(0|[1-9][0-9]*)$/;
@@ -145,11 +143,11 @@ export class TicketVerifier {
     const ticket = issued.ticket;
     const chains = chainsOf(offer.order);
     if (!chains) throw new Refusal('form', 'OTHER', 'the offered order does not parse');
-    if (!chains.source) throw new Refusal('form', 'OTHER', 'a Canton source is not supported yet (CAN-1863)');
     if (!chains.destination) throw new Refusal('form', 'OTHER', 'an EVM-form ticket for a non-EVM destination');
-    const source = this.options.chains.get(chains.source);
+    const canton = chains.source ? undefined : this.cantonSourceOf(chains.origin);
+    const source = chains.source ? this.options.chains.get(chains.source) : undefined;
     const destination = this.options.chains.get(chains.destination);
-    if (!source) throw new Refusal('form', 'OTHER', `no router configured for the source ${chains.source}`);
+    if (chains.source && !source) throw new Refusal('form', 'OTHER', `no router configured for the source ${chains.source}`);
     if (!destination) throw new Refusal('form', 'OTHER', `no router configured for the destination ${chains.destination}`);
     const policy = destination.config;
     pass('form');
@@ -196,24 +194,36 @@ export class TicketVerifier {
     if (leftMs < BigInt(policy.sendGuardSec) * 1000n) throw new Refusal('V-T3', 'TICKET_TTL_TOO_SHORT', `send-guard: ${leftMs} ms left < sendGuard ${policy.sendGuardSec} s`);
     pass('V-T3');
 
-    // -- V-E1: the ticket is for this order ---------------------------------------------
-    const order = orderOf(offer.order);
     let digest: Hex;
-    try {
-      digest = hashOrder(order, { chainId: chains.origin, router: source.router.address });
-    } catch (error) {
-      throw new Refusal('V-E1', 'ESCROW_MISMATCH', `the offered order does not hash: ${String(error)}`);
-    }
-    if (digest !== ticket.orderHash.toLowerCase()) throw new Refusal('V-E1', 'ESCROW_MISMATCH', 'orderHash is not the order digest in the source router domain');
-    pass('V-E1');
+    if (source) {
+      // -- V-E1: the ticket is for this order ---------------------------------------------
+      const order = orderOf(offer.order);
+      try {
+        digest = hashOrder(order, { chainId: chains.origin, router: source.router.address });
+      } catch (error) {
+        throw new Refusal('V-E1', 'ESCROW_MISMATCH', `the offered order does not hash: ${String(error)}`);
+      }
+      if (digest !== ticket.orderHash.toLowerCase()) throw new Refusal('V-E1', 'ESCROW_MISMATCH', 'orderHash is not the order digest in the source router domain');
+      pass('V-E1');
 
-    // -- V-E2, V-E3: the escrow, at depth --------------------------------------------------
-    const intent = await this.chainRead('V-E2', 'ESCROW_NOT_OPEN', () => source.router.intents(digest, { confirmations: source.config.openConfirmations }));
-    if (intent.status !== INTENT_STATUS.Opened) throw new Refusal('V-E2', 'ESCROW_NOT_OPEN', `status ${intent.status} at ${source.config.openConfirmations} confirmations`);
-    pass('V-E2');
-    const window = intent.refundAfter - fillDeadline;
-    if (window < BigInt(policy.requiredProofWindowSec)) throw new Refusal('V-E3', 'PROOF_WINDOW_TOO_SHORT', `refundAfter − fillDeadline = ${window} s < ${policy.requiredProofWindowSec} s`);
-    pass('V-E3');
+      // -- V-E2, V-E3: the escrow, at depth --------------------------------------------------
+      const escrow = digest;
+      const intent = await this.chainRead('V-E2', 'ESCROW_NOT_OPEN', () => source.router.intents(escrow, { confirmations: source.config.openConfirmations }));
+      if (intent.status !== INTENT_STATUS.Opened) throw new Refusal('V-E2', 'ESCROW_NOT_OPEN', `status ${intent.status} at ${source.config.openConfirmations} confirmations`);
+      pass('V-E2');
+      const window = intent.refundAfter - fillDeadline;
+      if (window < BigInt(policy.requiredProofWindowSec)) throw new Refusal('V-E3', 'PROOF_WINDOW_TOO_SHORT', `refundAfter − fillDeadline = ${window} s < ${policy.requiredProofWindowSec} s`);
+      pass('V-E3');
+    } else {
+      // -- V-C1…V-C6: the committed give on Canton (canton-source.ts) -------------------------
+      const { reader, party } = canton as { reader: CantonSourceReader; party: string };
+      await checkCantonSource(
+        { order: offer.order, ticket, party, fillerId: this.options.fillerId, requiredProofWindowSec: policy.requiredProofWindowSec, reader },
+        (check, detail) => pass(check, detail),
+      );
+      // V-C3 holds ticket.orderHash to the hash of the intent's own terms.
+      digest = ticket.orderHash.toLowerCase() as Hex;
+    }
 
     // -- V-T1: signed by Cancore -------------------------------------------------------------
     let signer: Hex;
@@ -230,23 +240,43 @@ export class TicketVerifier {
     // -- V-E4: repayTo will be paid ----------------------------------------------------------------
     // V-T2 already holds ticket.repayTo to the node's own padded address: here, that the source
     // token does not blocklist it — a blocklisted payee makes settle revert, and the advance is lost (R-8).
-    const repayTo = String(ticket.repayTo);
+    // A Canton source has no blocklist view: V-C5 held the payee there.
+    if (source) {
+      await this.checkRepayTo(ticket.repayTo, offer.order.inputToken, source);
+      pass('V-E4');
+    }
+
+    // -- V-E5: the filler can fill ---------------------------------------------------------------
+    await this.checkCapacity(digest, offer.order.outputAsset, amountOut, identity.signer.address, destination, pass);
+  }
+
+  /** V-E4 on an EVM source. */
+  private async checkRepayTo(repayToValue: Hex, inputTokenValue: unknown, source: ChainReaders): Promise<void> {
+    const repayTo = String(repayToValue);
     if (!/^0x0{24}[0-9a-fA-F]{40}$/.test(repayTo)) throw new Refusal('V-E4', 'TICKET_MISMATCH', 'repayTo of an EVM source is not a padded address');
-    const inputToken = String(offer.order.inputToken);
+    const inputToken = String(inputTokenValue);
     if (!/^0x[0-9a-fA-F]{40}$/.test(inputToken)) throw new Refusal('V-E4', 'OTHER', 'the input token is not an EVM address');
     const payee = `0x${repayTo.slice(26)}`.toLowerCase() as Hex;
     const blocklisted = await this.chainRead('V-E4', 'OTHER', () => erc20Blocklisted(source.client, inputToken.toLowerCase() as Hex, payee));
     if (blocklisted) throw new Refusal('V-E4', 'OTHER', `repayTo-blocklisted: the input token ${inputToken} blocklists ${payee}`);
-    pass('V-E4');
+  }
 
-    // -- V-E5: the filler can fill ---------------------------------------------------------------
+  /** V-E5: no fill yet, and balance, allowance and gas at the delivery address. */
+  private async checkCapacity(
+    digest: Hex,
+    outputAssetValue: unknown,
+    amount: bigint,
+    deliveryAddress: string,
+    destination: ChainReaders,
+    pass: (check: TicketCheckId, detail?: string, status?: TicketCheckStatus) => void,
+  ): Promise<void> {
+    const policy = destination.config;
     const filled = await this.chainRead('V-E5', 'OTHER', () => destination.router.filled(digest));
     if (filled) throw new Refusal('V-E5', 'OTHER', 'already-filled: the destination router has a fill for this order');
-    const outputAsset = String(offer.order.outputAsset);
+    const outputAsset = String(outputAssetValue);
     if (!/^0x0{24}[0-9a-fA-F]{40}$/.test(outputAsset)) throw new Refusal('V-E5', 'OTHER', 'the output asset is not an EVM token');
     const token = `0x${outputAsset.slice(26)}` as Hex;
-    const amount = amountOut;
-    const delivery = identity.signer.address.toLowerCase() as Hex;
+    const delivery = deliveryAddress.toLowerCase() as Hex;
     const [balance, allowance, gas] = await this.chainRead('V-E5', 'OTHER', () =>
       Promise.all([
         erc20BalanceOf(destination.client, token, delivery),
@@ -258,6 +288,14 @@ export class TicketVerifier {
     if (allowance < amount) throw new Refusal('V-E5', 'NO_INVENTORY', `allowance: ${allowance} < amountOut ${amount}`);
     if (gas < policy.minGasWei) throw new Refusal('V-E5', 'NO_INVENTORY', `gas: ${gas} wei < ${policy.minGasWei} wei`);
     pass('V-E5');
+  }
+
+  /** The Canton-source reader and payee, or the refusal of a Canton source the node is not set up for. */
+  private cantonSourceOf(origin: bigint): { reader: CantonSourceReader; party: string } {
+    if (origin < CANTON_ORIGIN_FLOOR) throw new Refusal('form', 'OTHER', `originChainId ${origin} is neither an EVM chain nor a Canton network`);
+    const { cantonSource: reader, cantonParty: party } = this.options;
+    if (!reader || !party) throw new Refusal('form', 'OTHER', 'a Canton source, and this node has no Canton party configured');
+    return { reader, party };
   }
 
   /** A chain read; any failure to read is a refusal by the check that needed it (N-12). */

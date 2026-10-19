@@ -310,8 +310,26 @@ A fact that cannot be read declines with the code of the check that needed it (`
 detail): an unverifiable ticket is never receipted. No setting turns a check off. Each check's result —
 `passed`, `failed` or `skipped` — is emitted as stage `ticket.checked`. V-T4 compares the
 time `ticket.issued` arrived, which the protocol client writes on the attempt when the frame is received; a
-ticket whose arrival is not recorded is refused as unverifiable. A Canton source and a Canton-form ticket are declined `OTHER` until their
+ticket whose arrival is not recorded is refused as unverifiable. A Canton-form ticket is declined `OTHER` until its
 checks land; V1 does not check the draw.
+
+**Canton source** (an EVM-form ticket for an order whose `originChainId` is a `CANTON_ORIGIN_ID`). There is no
+escrow on a router: the owner's give is a committed allocation only `SwapIntent_SettleWithProof` — this filler's
+submission — pays out, strictly before `refundAfter`. V-C1…V-C6 run in place of V-E1…V-E4 (V-T1 and V-E5 stay,
+on the destination), reading through Cancore — `GET /v1/filler/canton/intents/{orderHash}` and
+`/party` — with `cantonSource` (a `CantonOperations`); the node has no Ledger API (operator decision T-1), so
+every fact is recomputed, not taken:
+
+| Check | What | Decline |
+|---|---|---|
+| V-C1 | a live `SwapIntent` with `ticket.orderHash` names this filler: its party and `fillerId` | `ESCROW_NOT_OPEN` (none), `ESCROW_MISMATCH` |
+| V-C2 | the EVM-form order built from the intent's own terms (protocol §3.7) is `offer.order`, field by field | `ESCROW_MISMATCH` |
+| V-C3 | that order's hash in the Canton source domain is `ticket.orderHash` | `ESCROW_MISMATCH` |
+| V-C4 | the allocation `allocationCid` is live, a pinned registry template (`CANTON_ALLOCATION_TEMPLATES`), `committed`, the owner's, executors exactly operator and owner, `settlementDeadline == refundAfter`, legs exactly `payout` (`amount` less the fee, Numeric 10 half to even) to this party and `fee` to the operator | `ESCROW_NOT_OPEN` (not live), `ESCROW_MISMATCH` |
+| V-C5 | `ticket.repayTo == keccak256(utf8(party))`; the `FillerRegistryEntry` of the party is `ACTIVE` | `TICKET_MISMATCH`, `OTHER` (`payout-not-ready`) |
+| V-C6 | `refundAfter − fillDeadline ≥ requiredProofWindowSec` of the destination | `PROOF_WINDOW_TOO_SHORT` |
+
+A node without `cantonParty` and `cantonSource` declines a Canton source `OTHER` at `form`.
 
 ## Quotes
 

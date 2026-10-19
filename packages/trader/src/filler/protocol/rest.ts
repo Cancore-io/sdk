@@ -33,6 +33,7 @@ import {
   type AuthToken,
   type CantonDeliveryOrder,
   type CantonHolding,
+  type CantonIntent,
   type CantonParty,
   type CantonPrepare,
   type CantonSubmit,
@@ -243,6 +244,28 @@ export class GatewayRest {
     const out: CantonDeliveryOrder[] = [];
     await this.pages('/v1/filler/canton/delivery-orders', {}, (item) => out.push(item as CantonDeliveryOrder));
     return out;
+  }
+
+  /**
+   * `GET /v1/filler/canton/intents/{orderHash}`: the live Canton-source intent
+   * naming this filler's party, with its committed allocation (CAN-1863). Its
+   * fields are checked by V-C1…V-C6, never trusted; here only its shape.
+   */
+  async getCantonIntent(orderHash: Hex): Promise<CantonIntent> {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(orderHash)) throw new GatewayError('BAD_REQUEST', false, `orderHash ${orderHash} is not 32 bytes of hex`);
+    const path = `/v1/filler/canton/intents/${orderHash.toLowerCase()}`;
+    const { text } = await this.authed('GET', path, 'read');
+    const body = parseJson(text, path);
+    const shaped =
+      isObject(body) &&
+      typeof body.intentCid === 'string' &&
+      typeof body.orderHash === 'string' &&
+      isObject(body.asset) &&
+      isObject(body.destination) &&
+      isObject(body.minReceived) &&
+      (body.allocation === null || (isObject(body.allocation) && Array.isArray(body.allocation.legs) && Array.isArray(body.allocation.executors)));
+    if (!shaped) throw new GatewayError('BAD_RESPONSE', false, `${path}: expected a CantonIntent`);
+    return body as unknown as CantonIntent;
   }
 
   // -------------------------------------------------------------------------

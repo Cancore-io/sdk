@@ -156,7 +156,7 @@ describe('each check refuses with its own code, and nothing after it runs', () =
     ['V-E5: allowance below amountOut', {}, (h) => h.dst.token(TOKEN).approve(fill.address, DST_ROUTER, 98n), 'V-E5', 'NO_INVENTORY'],
     ['V-E5: no gas at the delivery address', {}, (h) => void h.dst.nativeBalances.set(fill.address.toLowerCase(), 10n ** 15n - 1n), 'V-E5', 'NO_INVENTORY'],
     ['form: a Canton-form ticket (CAN-1867)', {}, (h) => void ((h.input as { issued: unknown }).issued = { ...h.issued, form: 'canton' }), 'form', 'OTHER'],
-    ['form: a Canton source (CAN-1863)', {}, (h) => void (h.offer.order = { ...h.offer.order, originChainId: '9223372036854775809' }), 'form', 'OTHER'],
+    ['form: a Canton source on a node without a Canton party (CAN-1863)', {}, (h) => void (h.offer.order = { ...h.offer.order, originChainId: '9223372036854775809' }), 'form', 'OTHER'],
     ['form: a destination with no router configured', {}, (h) => void (h.offer.order = { ...h.offer.order, destination: `0x${'00'.repeat(31)}89` }), 'form', 'OTHER'],
   ];
 
