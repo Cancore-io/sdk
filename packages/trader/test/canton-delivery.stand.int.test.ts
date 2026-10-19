@@ -12,9 +12,12 @@
  *
  * The stand provisions the filler (ACTIVE, its routes, its external party
  * with a live registry entry and ≥ 1000 free CNRX), the recipient's CNRX
- * preapproval and the maker (funded, Permit2-approved). The order is opened on
- * the router by the maker with the stand's quote signer; trading picks it up
- * from the indexer.
+ * preapproval, the maker (funded, Permit2-approved, its wallet linked to the
+ * stand user). The order goes the user's way: POST /v1/intents/quote (the SDK
+ * filler answers the quote.request), POST /v1/intents/quote/{id}/pick of the
+ * stand filler, then openFor on the router with the pick's quote signature —
+ * trading tickets only a picked order and records the Canton recipient with
+ * the quote.
  *
  * Skipped without INTENT_STAND_ENV (the path of the stand's env file; the job
  * also exports every key). Run by the shared stand job:
@@ -25,21 +28,18 @@
 import {
   CANCORE_ROUTER_ABI,
   IBURN_MINT_ERC20_ABI,
-  QUOTE_TYPES,
   encodeCantonAmount,
   encodeCantonDestination,
   encodeCantonOutputAsset,
   encodeCantonRecipient,
   fillerIdHash,
   hashPermitWitness,
-  routerDomain,
   type Hex,
   type OrderJson,
 } from '@cancore/contracts';
 import { ed25519 } from '@noble/curves/ed25519';
 import { secp256k1 } from '@noble/curves/secp256k1';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../src/filler/canton/factories';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { ChainClient } from '../src/filler/chain/client';
@@ -87,6 +87,18 @@ const signDigest = (key: Hex, digest: Hex): Hex => {
   const sig = secp256k1.sign(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)), { lowS: true });
   return `0x${bytesToHex(sig.toCompactRawBytes())}${(27 + sig.recovery).toString(16)}`;
 };
+
+/**
+ * The stand user's bearer token: STAND_USER_JWT as given, else a password grant
+ * at KEYCLOAK_TOKEN_URL for STAND_USER_EMAIL / STAND_USER_PASSWORD (client KEYCLOAK_CLIENT_ID).
+ */
+async function userToken(): Promise<string> {
+  if (process.env.STAND_USER_JWT) return process.env.STAND_USER_JWT;
+  const form = new URLSearchParams({ grant_type: 'password', client_id: env('KEYCLOAK_CLIENT_ID'), username: env('STAND_USER_EMAIL'), password: env('STAND_USER_PASSWORD'), scope: 'openid' });
+  const response = await fetch(env('KEYCLOAK_TOKEN_URL'), { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form });
+  if (!response.ok) throw new Error(`stand user login: ${response.status}`);
+  return ((await response.json()) as { access_token: string }).access_token;
+}
 
 async function waitFor<T>(what: string, read: () => Promise<T | undefined>, timeoutMs: number, diagnostics: () => string): Promise<T> {
   const until = Date.now() + timeoutMs;
@@ -154,7 +166,10 @@ live('CAN-1867: EVM → Canton on the full intent stand', () => {
       events,
       settlement: { pullIntervalMs: 5_000 },
     });
-    filler.onQuoteRequest(async () => null);
+    // The stand filler prices the Canton route only: 5 CNRX for any input, firm for a minute.
+    filler.onQuoteRequest(async (request) =>
+      request.route.dst === env('CANTON_CHAIN') ? { amountOut: encodeCantonAmount('5'), validUntil: BigInt(Math.floor(Date.now() / 1000) + 60) } : null,
+    );
     filler.onReconfirm(async () => true);
     filler.onTicketOffer(async () => 'accept');
     await filler.start();
@@ -165,49 +180,52 @@ live('CAN-1867: EVM → Canton on the full intent stand', () => {
   });
 
   test('TC-CAN-1867-STAND-01: an order to canton:devnet is delivered by the filler’s party and settled on the router: repayTo paid, the party’s CNRX spent', async () => {
-    // -- the route as Cancore serves it ------------------------------------------------------
-    // trading serves the catalog (RouteCatalogService over INTENT_ROUTES); the gateway may not proxy it on the stand.
-    type Route = { src: string; dst: string; feeBps: number; fillDeadlineTtlS: number; inputs: Array<{ asset: unknown; decimals: number }> };
-    let route: Route | undefined;
-    for (const base of [process.env.TRADING_URL, process.env.GATEWAY_URL].filter((u): u is string => !!u)) {
-      const response = await fetch(`${base}/v1/intents/routes`).catch(() => undefined);
-      if (!response?.ok) continue;
-      route = ((await response.json()) as { routes: Route[] }).routes.find((r) => r.src === chain && r.dst === env('CANTON_CHAIN'));
-      if (route) break;
-    }
-    if (!route) throw new Error(`no route ${chain} → ${env('CANTON_CHAIN')} at TRADING_URL or GATEWAY_URL /v1/intents/routes`);
-
-    // -- open, as the maker, on the router -----------------------------------------------------
-    const maker = createTestFillSigner(env('MAKER_EVM_KEY') as Hex);
+    // -- quote → pick → openFor, as a user of Cancore (backend quote.service): only a picked order is ticketed,
+    // and the Canton recipient is recorded with the quote (the readiness check and DeliveryBook_Dispatch read it).
+    const trading = process.env.TRADING_URL ?? env('GATEWAY_URL');
+    const jwt = await userToken();
+    const api = async <T>(path: string, body: unknown): Promise<T> => {
+      const response = await fetch(`${trading}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${jwt}` }, body: JSON.stringify(body) });
+      const text = await response.text();
+      if (!response.ok) throw new Error(`POST ${path}: ${response.status} ${text.slice(0, 500)}\n${diagnostics()}`);
+      return JSON.parse(text) as T;
+    };
     const token = env('INPUT_TOKEN_ADDRESS').toLowerCase() as Hex;
-    // The stand's test tokens carry their own decimals: the catalog's, else the token's own.
-    const listed = route.inputs.find((i) => typeof i.asset === 'string' && i.asset.toLowerCase() === token);
-    const decimals = listed?.decimals ?? Number(BigInt(await client.call(token, '0x313ce567')));
-    const permit2 = env('PERMIT2_ADDRESS') as Hex;
-    const head = await client.block('latest');
-    const now = BigInt((await rpc.request<{ timestamp: string }>({ method: 'eth_getBlockByHash', params: [head.hash, false] })).timestamp);
-    const order: OrderJson = {
-      user: maker.address.toLowerCase() as Hex,
-      originChainId: env('EVM_CHAIN_ID'),
+    // The stand's test tokens carry their own decimals.
+    const decimals = Number(BigInt(await client.call(token, '0x313ce567')));
+    const quote = await api<{ quoteId: string; offers: Array<{ fillerId: string; amountOut: string }> }>('/v1/intents/quote', {
+      src: chain,
+      dst: env('CANTON_CHAIN'),
       inputToken: token,
       inputAmount: (10n * 10n ** BigInt(decimals)).toString(),
-      destination: encodeCantonDestination('devnet'),
-      outputAsset: encodeCantonOutputAsset(asset),
-      minReceived: encodeCantonAmount('5').toString(),
-      recipient: encodeCantonRecipient(env('STAND_CANTON_RECIPIENT_PARTY')),
-      createdAt: String(now - 5n),
-      fillDeadline: String(now + BigInt(route.fillDeadlineTtlS)),
-      feeBps: String(route.feeBps),
-      fillerId: fillerIdHash(env('STAND_FILLER_ID')),
-    };
-    const orderHash = hashOrder(order, { chainId: BigInt(env('EVM_CHAIN_ID')), router });
-    const quoteDeadline = now + 300n;
-    const quoteSig = await createTestTypedDataSigner(env('QUOTE_SIGNER_KEY') as Hex).signTypedData({ domain: routerDomain(Number(env('EVM_CHAIN_ID')), router), types: QUOTE_TYPES, primaryType: 'Quote', message: { orderHash, quoteDeadline } });
-    const permit = { permitted: { token, amount: order.inputAmount }, nonce: BigInt(`0x${bytesToHex(keccak_256(utf8ToBytes(orderHash)))}`) >> 8n, deadline: order.fillDeadline };
-    const permitSig = signDigest(env('MAKER_EVM_KEY') as Hex, hashPermitWitness({ ...permit, spender: router, witness: order }, Number(env('EVM_CHAIN_ID')), permit2));
-    const data = encodeFunctionCall(entryOf(abi(CANCORE_ROUTER_ABI), 'function', 'openFor'), [order, permit, permitSig, quoteDeadline, quoteSig]);
+      outputAsset: asset,
+      recipient: env('STAND_CANTON_RECIPIENT_PARTY'),
+    });
+    if (!quote.offers.some((o) => o.fillerId === env('STAND_FILLER_ID'))) throw new Error(`the quote has no offer of ${env('STAND_FILLER_ID')}: ${JSON.stringify(quote.offers)}\n${diagnostics()}`);
+    const pick = await api<{ orderHash: Hex; toSign: { chainId: number; router: Hex; order: OrderJson; permit: { message: { permitted: { token: Hex; amount: string }; nonce: string; deadline: string } }; quoteDeadline: number; quoteSig: Hex } | null }>(
+      `/v1/intents/quote/${quote.quoteId}/pick`,
+      { fillerId: env('STAND_FILLER_ID') },
+    );
+    const toSign = pick.toSign;
+    if (!toSign) throw new Error('the pick of an EVM-source quote came back without toSign');
+    const order = toSign.order;
+    const orderHash = pick.orderHash.toLowerCase() as Hex;
+    expect(toSign.router.toLowerCase()).toBe(router);
+    expect(hashOrder(order, { chainId: BigInt(toSign.chainId), router })).toBe(orderHash);
+    expect(order.recipient.toLowerCase()).toBe(encodeCantonRecipient(env('STAND_CANTON_RECIPIENT_PARTY')));
+    expect(order.outputAsset.toLowerCase()).toBe(encodeCantonOutputAsset(asset));
+    expect(order.destination.toLowerCase()).toBe(encodeCantonDestination('devnet'));
+    expect(order.fillerId.toLowerCase()).toBe(fillerIdHash(env('STAND_FILLER_ID')));
+
+    const maker = createTestFillSigner(env('MAKER_EVM_KEY') as Hex);
+    const permit2 = env('PERMIT2_ADDRESS') as Hex;
+    const { permitted, nonce: permitNonce, deadline } = toSign.permit.message;
+    const permit = { permitted, nonce: permitNonce, deadline };
+    // The Permit2 witness is a nested struct: the package's own digest, signed with the maker's key.
+    const permitSig = signDigest(env('MAKER_EVM_KEY') as Hex, hashPermitWitness({ ...permit, spender: router, witness: order }, toSign.chainId, permit2));
+    const data = encodeFunctionCall(entryOf(abi(CANCORE_ROUTER_ABI), 'function', 'openFor'), [order, permit, permitSig, BigInt(toSign.quoteDeadline), toSign.quoteSig]);
     const nonce = BigInt(await rpc.request<string>({ method: 'eth_getTransactionCount', params: [maker.address, 'pending'] }));
-    const raw = await maker.signTransaction({ chainId: BigInt(env('EVM_CHAIN_ID')), nonce, to: router, data, value: 0n, gasLimit: 1_500_000n, maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n });
+    const raw = await maker.signTransaction({ chainId: BigInt(toSign.chainId), nonce, to: router, data, value: 0n, gasLimit: 1_500_000n, maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n });
     await rpc.request({ method: 'eth_sendRawTransaction', params: [raw] });
     await waitFor('the intent opened', async () => ((await reader.intents(orderHash)).status === INTENT_STATUS.Opened ? true : undefined), 60_000, diagnostics);
 
