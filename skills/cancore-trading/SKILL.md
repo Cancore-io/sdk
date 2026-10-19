@@ -95,11 +95,11 @@ Prefer `trade_pause` when something looks wrong.
 | `paused` / `locked` | as in the session start | tell the human the CLI command |
 
 Other errors: `locked` / `paused` carry an `instruction` to relay to the human; `forbidden` means
-the method is not on your socket; `invalid_params` (when the tool itself rejected the arguments) lists which
-field failed; `not_open` (on
-`trade_order_cancel`) means the order is already taken, settling or ended — do not retry. A `cancelled: true` may be
-unconfirmed (the venue did not answer the status read): check `trade_status` / `trade_orders_list` before
-placing a replacement; `socket_unavailable`
+the method is not on your socket; `invalid_params` (when the tool itself rejected the arguments)
+lists which field failed; `not_open` (on `trade_order_cancel`) means the order is already taken,
+settling or ended — do not retry. A `cancelled: true` may be unconfirmed (the venue did not answer
+the status read), and `trade_orders_cancelAll` lists only the cancels already confirmed: check
+`trade_status` / `trade_orders_list` before cancelling again or placing a replacement; `socket_unavailable`
 means the daemon is down or your user lacks the `cancore-bot-clients` group — tell the human;
 `daemon_error` is anything else.
 
@@ -112,7 +112,7 @@ and every attempt, allowed or denied, lands in the audit log the human reads
 `trade_strategy_start { kind, base, quote, config }` starts a loop in the daemon; every order it
 places goes through the same gate and audit log as yours, and shares your hourly budget. A strategy
 waiting for that budget shows `status: "rate_limited"`; one stopped by a refusal shows `denied` with
-the reason. If you `trade_order_cancel` a strategy's order, the strategy does not place it again:
+the reason. If you `trade_order_cancel` (or `trade_orders_cancelAll`) a strategy's order, the strategy does not place it again:
 the slot appears in its `cancelledByUser`. The configs the gate accepts:
 
 - grid: `{ side, levels (1–100), amountPerLevel, lowerPrice, upperPrice }` — the gate checks all
