@@ -33,6 +33,15 @@ export interface CantonTransferFactory {
    * a contract the sender is a stakeholder of, as `<module>:<entity>.<choice>`.
    */
   serviceChoices: readonly string[];
+  /** The V2 allocation template the registry's allocation factory creates, when the registry has one (V-C4). */
+  allocation?: string;
+  /**
+   * The registry's receipt-only allocation needs nothing from its receiver — no
+   * holding, no preapproval, no other contract of the receiver's — so any party
+   * can be paid through it (fillers.md T-9, V-C5). Set only from the registry's
+   * own code; a registry without it is not paid out to on a Canton source.
+   */
+  openReceipt?: boolean;
 }
 
 const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
@@ -43,6 +52,11 @@ const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
   offer: 'Cnrx.Transfer:CnrxTransferOffer',
   // The CNRX transfer body exercises nothing on the sender's contracts but the archive of its inputs.
   serviceChoices: [],
+  // Committed V2 allocations from 0.2.1 on (CAN-2415).
+  allocation: 'Cnrx.Allocation:CnrxAllocationV2',
+  // Cnrx.Allocation cnrx_allocateImplV2: a receipt-only allocation (no debit) takes no input holdings and
+  // checks only that its actor owns the authorizer account — nothing of the receiver must exist beforehand.
+  openReceipt: true,
 };
 
 /** By instrument admin party. */
@@ -50,3 +64,12 @@ export const CANTON_TRANSFER_FACTORIES: Readonly<Record<string, readonly CantonT
   // dev: the CNRX registrar (gitops k8s/envs/dev CNRX_REGISTRY_ADMIN_PARTY).
   'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b': [CNRX_REGISTRY_0_2_3],
 };
+
+/**
+ * The allocation templates a Canton-source give may be committed in (V-C4),
+ * by instrument admin, as `<package id>:<module>:<entity>`: the V2 allocation
+ * of each pinned registry that has one.
+ */
+export const CANTON_ALLOCATION_TEMPLATES: Readonly<Record<string, readonly string[]>> = Object.fromEntries(
+  Object.entries(CANTON_TRANSFER_FACTORIES).map(([admin, factories]) => [admin, factories.flatMap((f) => (f.allocation ? [`${f.packageId}:${f.allocation}`] : []))]),
+);

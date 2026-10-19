@@ -1,7 +1,24 @@
 /** A failed check before the receipt, and the read rule every check shares (N-12). */
 import type { DeclineReason } from '@cancore/contracts';
 import { ChainReadError } from '../chain/client';
-import type { TicketCheckId } from './checks';
+
+export type TicketCheckId =
+  | 'form'
+  | 'V-T4'
+  | 'V-T2'
+  | 'V-T3'
+  | 'V-E1'
+  | 'V-E2'
+  | 'V-E3'
+  | 'V-T1'
+  | 'V-E4'
+  | 'V-E5'
+  | 'V-C1'
+  | 'V-C2'
+  | 'V-C3'
+  | 'V-C4'
+  | 'V-C5'
+  | 'V-C6';
 
 export class TicketRefusal extends Error {
   constructor(

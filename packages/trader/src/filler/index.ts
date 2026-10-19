@@ -62,6 +62,7 @@ export type { EvmRpc, EvmRpcMap, EvmRpcRequest } from './rpc';
 export { TicketVerifier } from './tickets/checks';
 export { DEFAULT_OFFER_REPLY_MARGIN_MS, OFFER_DECLINE_REASONS } from './tickets/desk';
 export type { EscrowVerification, TicketCheckId, TicketCheckInput, TicketCheckResult, TicketVerifierOptions } from './tickets/checks';
+export type { CantonSourceReader } from './tickets/canton-source';
 export { chainsOf, fillTicketOf, identityFor, ticketMismatch } from './tickets/terms';
 export type { OfferTerms, OrderChains, TicketIdentity } from './tickets/terms';
 
@@ -173,5 +174,5 @@ export type { TransferExpectation } from './canton/checks';
 export { checkDeliveryFill, INTENT_PACKAGE_NAME } from './canton/delivery-check';
 export type { DeliveryFillExpectation } from './canton/delivery-check';
 export { cantonFillRef } from './delivery/canton';
-export { CANTON_TRANSFER_FACTORIES } from './canton/factories';
+export { CANTON_ALLOCATION_TEMPLATES, CANTON_TRANSFER_FACTORIES } from './canton/factories';
 export type { CantonTransferFactory } from './canton/factories';

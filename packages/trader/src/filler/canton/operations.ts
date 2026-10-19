@@ -17,6 +17,7 @@
 import type {
   CantonDeliveryOrder,
   CantonHolding,
+  CantonIntent,
   CantonLegTopology,
   CantonLegTransaction,
   CantonOp,
@@ -87,7 +88,7 @@ export type SubmittedOf<K extends CantonOp> = Extract<CantonSubmitted, { op: K }
 export type CantonOpCheck<K extends CantonOp> = (prepared: PreparedOf<K>, transactions: readonly CantonTransaction[]) => void | Promise<void>;
 
 export interface CantonOperationsOptions {
-  rest: Pick<GatewayRest, 'postCanton' | 'getCantonParty' | 'listCantonHoldings' | 'listCantonDeliveryOrders'>;
+  rest: Pick<GatewayRest, 'postCanton' | 'getCantonParty' | 'listCantonHoldings' | 'listCantonDeliveryOrders' | 'getCantonIntent'>;
   /** Seals every filler → filler-gateway message with the message key. */
   seal: Sealer;
   nextId: () => string;
@@ -159,6 +160,11 @@ export class CantonOperations {
 
   deliveryOrders(): Promise<CantonDeliveryOrder[]> {
     return this.options.rest.listCantonDeliveryOrders();
+  }
+
+  /** The live Canton-source intent of `orderHash` naming the party, with its committed allocation (V-C1…V-C6). */
+  intent(orderHash: Hex): Promise<CantonIntent> {
+    return this.options.rest.getCantonIntent(orderHash);
   }
 
   /**
