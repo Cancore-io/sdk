@@ -36,7 +36,7 @@ test('tool list is read/reduce/trade only, plus trade_tools', async () => {
   expect(owner.length).toBeGreaterThan(0);
   for (const m of owner) expect(names).not.toContain(toolName(m));
   expect(names).toEqual([...AGENT_METHODS.map(toolName), 'trade_tools'].sort());
-  expect(names.some((n) => /withdraw|unlock|resume|limits_set|send|export/.test(n))).toBe(false);
+  expect(names.some((n) => /withdraw|unlock|resume|limits_set|release|send|export/.test(n))).toBe(false);
   const make = tools.find((t) => t.name === 'trade_order_make')!;
   expect(make.annotations).toMatchObject({ destructiveHint: true, openWorldHint: true });
   expect(make.inputSchema.required).toEqual(expect.arrayContaining(['base', 'quote', 'side', 'amount', 'price']));

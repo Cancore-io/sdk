@@ -66,7 +66,8 @@ Selling gives `amount` of base for `amount × price` of quote (rounded down); bu
 `trade_order_take { orderId, amount }` fills somebody else's open order. `amount` must be the
 **whole** order's amount (there are no partial takes) and the pair must be allowed in one
 orientation. The result (`filled: "0"`) means queued: settlement runs in the background. The taken
-order counts as open until it settles.
+order counts as open until it settles. One whose accept answer was lost keeps counting until the venue
+shows how it ended; only the human can release it earlier (`release` below).
 
 To reduce risk at any time: `trade_order_cancel`, `trade_orders_cancelAll`, `trade_strategy_stop`,
 or `trade_pause` (stops strategies and cancels the bot's resting orders; only the human can resume).
@@ -130,13 +131,14 @@ the bot wallet for it.
 
 ## What you cannot do
 
-Withdraw, send, unlock, lock, resume, change limits or export a key. If the human wants any of
+Withdraw, send, unlock, lock, resume, change limits, release a booked take or export a key. If the human wants any of
 these, give them the command:
 
 ```sh
 sudo -u cancore-bot cancore-bot unlock | lock | resume | status
 sudo -u cancore-bot cancore-bot limits set /dev/stdin < limits.json
 sudo -u cancore-bot cancore-bot withdraw --to <their own party> --instrument CC --amount <n>
+sudo -u cancore-bot cancore-bot release <orderId>   # a booked take whose accept answer was lost
 ```
 
 Details: `packages/botd/README.md` and `packages/bot-mcp/README.md` in

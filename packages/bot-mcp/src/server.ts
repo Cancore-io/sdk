@@ -9,7 +9,7 @@ export interface BotClient {
 
 /**
  * The daemon methods an agent may reach. Owner-class methods (unlock, lock,
- * resume, limits.set, withdraw) are absent by construction: withdraw exists only
+ * resume, limits.set, withdraw, order.release) are absent by construction: withdraw exists only
  * on the owner socket, to the pinned owner party. No key export exists at all.
  */
 export const AGENT_METHODS: readonly Method[] = (Object.keys(RISK_CLASS) as Method[]).filter(
@@ -38,6 +38,7 @@ const EFFECT: Record<Method, string> = {
   resume: '',
   'limits.set': '',
   withdraw: '',
+  'order.release': '',
 };
 
 const ANNOTATIONS: Record<Exclude<RiskClass, 'owner'>, ToolAnnotations> = {
@@ -120,6 +121,7 @@ const VIEW: Record<Method, (r: any) => unknown> = {
   resume: () => ({}),
   'limits.set': () => ({}),
   withdraw: () => ({}),
+  'order.release': () => ({}),
 };
 
 export const view = (method: Method, result: unknown): unknown => VIEW[method](result);
