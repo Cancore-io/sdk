@@ -1,7 +1,7 @@
 import {
   FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, fillerIdHash, repayToFromEvm, type Hex, type OrderJson, type TicketIntentMessage, type TicketIssuedEvm, type TicketOffer,
 } from '@cancore/contracts';
-import { FillerChains, hashOrder, type ChainConfig } from '../chain';
+import { FillerChains, hashOrder, type ChainConfig, type OpenDepth } from '../chain';
 import type { FillSigner } from '../signer';
 import { createRecordingEventSink, createRecordingLogger, createTestTypedDataSigner, FakeChain, FakeClock } from '../testing';
 import { TicketVerifier, type TicketCheckInput } from './checks';
@@ -27,6 +27,8 @@ interface Shape {
   ticket?: Record<string, unknown>;
   signer?: typeof ticketSigner;
   refundAfter?: bigint;
+  /** The source chain's `openConfirmations`; default 3. */
+  openConfirmations?: OpenDepth;
 }
 
 async function setup(shape: Shape = {}) {
@@ -77,10 +79,10 @@ async function setup(shape: Shape = {}) {
   const ticketSig = await (shape.signer ?? ticketSigner).signTypedData({ domain: FILL_TICKET_DOMAIN, types: FILL_TICKET_TYPES, primaryType: 'FillTicket', message: ticket });
   const issued = { type: 'ticket.issued', form: 'evm', fillerId: 'acme-1', sentAt: clock.now(), sig: '0x', orderHash, attempt: 0, ticket, ticketSig } as unknown as TicketIssuedEvm;
 
-  const config = (chain: Hex, openConfirmations: number): ChainConfig => ({ router: chain, openConfirmations, ...POLICY });
+  const config = (chain: Hex, openConfirmations: OpenDepth): ChainConfig => ({ router: chain, openConfirmations, ...POLICY });
   const logger = createRecordingLogger();
   const events = createRecordingEventSink();
-  const chains = new FillerChains({ 'eip155:56': [src], 'eip155:1': [dst] }, { 'eip155:56': config(SRC_ROUTER, 3), 'eip155:1': config(DST_ROUTER, 3) }, logger);
+  const chains = new FillerChains({ 'eip155:56': [src], 'eip155:1': [dst] }, { 'eip155:56': config(SRC_ROUTER, shape.openConfirmations ?? 3), 'eip155:1': config(DST_ROUTER, 3) }, logger);
   const verifier = new TicketVerifier({ chains, fillSigners: { 'eip155:1': fill }, fillerId: 'acme-1', ticketSigners: [ticketSigner.address], deltaIssueMs: 3_000, clock, events, logger });
   const input: TicketCheckInput = { offer, issued, issuedAtMs: clock.now() };
   return { clock, src, dst, dstRouter, offer, issued, input, verifier, events, orderHash, nowS };
@@ -218,6 +220,46 @@ describe('boundaries pass', () => {
     const h = await setup({ amountOut: '1000' });
     h.dst.nativeBalances.set(fill.address.toLowerCase(), 10n ** 15n);
     await expect(h.verifier.verify(h.input)).resolves.toMatchObject({ ok: true });
+  });
+});
+
+describe('CAN-2808: openConfirmations as a finality tag reads V-E2 at that tag', () => {
+  const escrowReadBlocks = (h: Awaited<ReturnType<typeof setup>>) =>
+    h.src.calls
+      .filter((c) => c.method === 'eth_call' && (c.params![0] as { to: string }).to === SRC_ROUTER)
+      .map((c) => h.src.numberOfHash((c.params![1] as { blockHash: string }).blockHash));
+
+  test.each(['safe', 'finalized'] as const)('CAN-2808: an escrow opened at or below the %s block is open; the read is pinned to that block', async (tag) => {
+    const h = await setup({ openConfirmations: tag });
+    h.src[tag] = 95n;
+    h.src.router(SRC_ROUTER).intents.get(h.orderHash)!.atBlock = 95n;
+    await expect(h.verifier.verify(h.input)).resolves.toMatchObject({ ok: true });
+    expect(escrowReadBlocks(h)).toEqual([95n]);
+  });
+
+  test.each(['safe', 'finalized'] as const)('CAN-2808: an escrow opened above the %s block is refused ESCROW_NOT_OPEN, although it is 5 blocks deep', async (tag) => {
+    const h = await setup({ openConfirmations: tag });
+    h.src[tag] = 95n;
+    h.src.router(SRC_ROUTER).intents.get(h.orderHash)!.atBlock = 96n;
+    const result = await h.verifier.verify(h.input);
+    expect(result).toMatchObject({ ok: false, reason: 'ESCROW_NOT_OPEN', detail: `V-E2: status 0 at the ${tag} block` });
+    expect(result.checks.at(-1)).toMatchObject({ check: 'V-E2', status: 'failed' });
+  });
+
+  test('CAN-2808: finalized and safe are distinct blocks: finalized behind safe refuses an escrow safe already holds', async () => {
+    const h = await setup({ openConfirmations: 'finalized' });
+    h.src.safe = 98n;
+    h.src.finalized = 90n;
+    h.src.router(SRC_ROUTER).intents.get(h.orderHash)!.atBlock = 95n;
+    await expect(h.verifier.verify(h.input)).resolves.toMatchObject({ ok: false, reason: 'ESCROW_NOT_OPEN' });
+    expect(escrowReadBlocks(h)).toEqual([90n]);
+  });
+
+  test('CAN-2808: a numeric openConfirmations still reads head − N + 1', async () => {
+    const h = await setup({ openConfirmations: 5 });
+    h.src.safe = 50n;
+    await h.verifier.verify(h.input);
+    expect(escrowReadBlocks(h)).toEqual([96n]);
   });
 });
 

@@ -155,6 +155,39 @@ describe('Executor — fill (T-25)', () => {
     executor.stop();
   });
 
+  test('CAN-2808: openConfirmations "finalized" and no fillConfirmations: the fill is done once the finalized block reaches it, however deep it is', async () => {
+    const w = await world({ chain: { openConfirmations: 'finalized' } });
+    w.dst.finalized = w.dst.head;
+    const executor = w.executor();
+    await executor.start();
+    const result = await executor.deliver(w.orderHash, 0);
+    await w.tick(10_000);
+    const included = await fillOf(w);
+    expect(included).toMatchObject({ state: 'included', txRef: result.txHash });
+    const inclusionBlock = BigInt(included!.inclusion!.blockNumber);
+    expect(w.dst.head - inclusionBlock + 1n).toBeGreaterThanOrEqual(10n);
+
+    w.dst.finalized = inclusionBlock - 1n;
+    await w.tick(1_000);
+    expect(await fillOf(w)).toMatchObject({ state: 'included' });
+
+    w.dst.finalized = inclusionBlock;
+    await w.tick(1_000);
+    expect(await fillOf(w)).toMatchObject({ state: 'confirmed', txRef: result.txHash });
+    executor.stop();
+  });
+
+  test('CAN-2808: an explicit fillConfirmations wins over a finality tag in openConfirmations', async () => {
+    const w = await world({ chain: { openConfirmations: 'finalized', fillConfirmations: 3 } });
+    w.dst.finalized = w.dst.head;
+    const executor = w.executor();
+    await executor.start();
+    await executor.deliver(w.orderHash, 0);
+    await w.tick(3_000);
+    expect(await fillOf(w)).toMatchObject({ state: 'confirmed' });
+    executor.stop();
+  });
+
   test('a fee-on-transfer output: the hook over-sends and the router measures what arrived (T-26)', async () => {
     const w = await world({ delivery: { fillAmount: ({ amountOut }) => (amountOut * 10_000n + 9_899n) / 9_900n } });
     w.dst.token(TOKEN).transferFeeBps = 100n;

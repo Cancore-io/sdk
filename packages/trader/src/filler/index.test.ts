@@ -97,6 +97,17 @@ describe('createFiller: injected dependencies are validated up front', () => {
     expect(configErrorField(() => createFiller({ ...baseConfig(), ...patch } as FillerConfig))).toBe(field);
   });
 
+  const withOpenConfirmations = (openConfirmations: unknown): FillerConfig =>
+    ({ ...baseConfig(), chains: { 'eip155:1': { ...baseConfig().chains['eip155:1']!, openConfirmations } } }) as FillerConfig;
+
+  test.each(['safe', 'finalized', 0, 12] as const)('CAN-2808: openConfirmations %p is accepted', (openConfirmations) => {
+    expect(() => createFiller(withOpenConfirmations(openConfirmations))).not.toThrow();
+  });
+
+  test.each(['latest', 'pending', 'Safe', -1, 1.5, '3'])('CAN-2808: openConfirmations %p is refused', (openConfirmations) => {
+    expect(configErrorField(() => createFiller(withOpenConfirmations(openConfirmations)))).toBe('chains.eip155:1.openConfirmations');
+  });
+
   test('a fill-signer key that is not an eip155 chain id is refused', () => {
     const config = { ...baseConfig(), fillSigners: { 'canton:mainnet': fillSigner(FILL_KEY) } } as unknown as FillerConfig;
     expect(configErrorField(() => createFiller(config))).toBe('fillSigners.canton:mainnet');

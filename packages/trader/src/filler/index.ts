@@ -85,6 +85,7 @@ export type {
   ChainReadFailure,
   EndpointHealth,
   IntentRecord,
+  OpenDepth,
   ReadAt,
   RouterEventName,
   RouterEventUpdate,

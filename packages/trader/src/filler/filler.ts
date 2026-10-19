@@ -408,7 +408,11 @@ function validateChains(config: FillerConfig): void {
     if (!isEvmChainId(chain)) throw new FillerConfigError(`chains.${chain}`, 'key must be an eip155 CAIP-2 chain id');
     if (!isObject(entry)) throw new FillerConfigError(`chains.${chain}`, 'expected an object');
     requireAddress(`chains.${chain}.router`, entry.router);
-    count(`chains.${chain}.openConfirmations`, entry.openConfirmations);
+    const open: unknown = entry.openConfirmations;
+    const openIsTag = open === 'safe' || open === 'finalized';
+    if (!openIsTag && (typeof open !== 'number' || !Number.isSafeInteger(open) || open < 0)) {
+      throw new FillerConfigError(`chains.${chain}.openConfirmations`, "expected a non-negative integer, 'safe' or 'finalized'");
+    }
     count(`chains.${chain}.maxHeadLagBlocks`, entry.maxHeadLagBlocks);
     count(`chains.${chain}.minTicketTtlSec`, entry.minTicketTtlSec);
     count(`chains.${chain}.requiredProofWindowSec`, entry.requiredProofWindowSec);
