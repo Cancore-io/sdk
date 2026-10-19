@@ -24,6 +24,14 @@
  *   of answering from its own block at the same height. `pin()` gives the
  *   hash once for several calls of one check.
  *
+ * - **A block not there yet** (CAN-2776). Behind a load balancer the node
+ *   that answers may not have the block the depth points at, or the block
+ *   hash a read is pinned to, although another node does. That is
+ *   `unavailable` with `blockMissing`, never `malformed`: the block is asked
+ *   of every endpoint in turn, and a depth-pinned read (`call`, `balance`,
+ *   `pin`, `resolve`, `block`) is tried again from the head after a pause, a
+ *   few times (`missingBlockRetry`), before it fails.
+ *
  * Every failure is a `ChainReadError` naming the chain and the reason. The
  * SDK never reads a chain it could not verify: a caller that gets one refuses
  * whatever depended on the read (fillers.md N-12: unverifiable → decline).
@@ -60,20 +68,31 @@ export type ChainReadFailure =
   | 'unavailable'
   /** The call reverted. */
   | 'reverted'
-  /** An answer that is not what the method returns (bad hex, bad ABI encoding, missing block). */
+  /** An answer that is not what the method returns (bad hex, bad ABI encoding). A block that is missing is `unavailable`. */
   | 'malformed';
 
 export class ChainReadError extends Error {
   override readonly name = 'ChainReadError';
+  /** `unavailable` because no endpoint had the block the read needed (yet): transient, tried again. */
+  readonly blockMissing: boolean;
   constructor(
     readonly chain: EvmChainId,
     readonly reason: ChainReadFailure,
     message: string,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; blockMissing?: boolean },
   ) {
     super(`${chain}: ${message}`, options);
+    this.blockMissing = options?.blockMissing === true;
   }
 }
+
+/** How a read that met a missing block is tried again: `attempts` in all, waiting `delayMs`, doubled each time. */
+export interface MissingBlockRetry {
+  attempts: number;
+  delayMs: number;
+}
+
+export const DEFAULT_MISSING_BLOCK_RETRY: MissingBlockRetry = { attempts: 4, delayMs: 250 };
 
 export interface ChainClientOptions {
   chain: EvmChainId;
@@ -81,6 +100,10 @@ export interface ChainClientOptions {
   endpoints: readonly EvmRpc[];
   maxHeadLagBlocks: number;
   logger: Logger;
+  /** Default `DEFAULT_MISSING_BLOCK_RETRY` (~1.75 s in all). */
+  missingBlockRetry?: MissingBlockRetry;
+  /** Waits between tries; defaults to a timer. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** What `health()` reports per endpoint, for the node's `check` (C-1). */
@@ -110,6 +133,8 @@ interface Endpoint {
 
 const HEX_QUANTITY = /^0x(0|[1-9a-f][0-9a-f]*)$/i;
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
+/** A `eth_getBlockBy*` answer that is a block at all; `null` is the node not having it. */
+const isBlock = (raw: unknown): boolean => typeof raw === 'object' && raw !== null;
 
 export function quantity(value: unknown, what: string): bigint {
   if (typeof value !== 'string' || !HEX_QUANTITY.test(value)) throw new TypeError(`${what}: expected a hex quantity, got ${String(value)}`);
@@ -124,6 +149,9 @@ function isRevert(error: unknown): boolean {
   const { code, message } = error as { code?: unknown; message?: unknown };
   return code === 3 || (typeof message === 'string' && /revert/i.test(message));
 }
+
+/** An endpoint error that means it does not have the block a call is pinned to (geth, erigon, reth, anvil, provider wordings). */
+const MISSING_BLOCK = /header not found|unknown block|block not found|could not find block|no block|missing trie node|block .* not found/i;
 
 const describeError = (error: unknown): string => (error instanceof Error ? error.message : typeof error === 'object' && error !== null && 'message' in error ? String((error as { message: unknown }).message) : String(error));
 
@@ -145,19 +173,55 @@ export class ChainClient {
    * lagging ones. A revert is thrown as `reverted` at once.
    */
   async request<T>(method: string, params: readonly unknown[] = []): Promise<T> {
+    return this.ask<T>(method, params);
+  }
+
+  /**
+   * `request`, where an answer `has` refuses (a `null` block) counts as this
+   * endpoint lacking the block: the next endpoint is asked. When every
+   * endpoint failed and each failure was a missing block, the error is
+   * `unavailable` with `blockMissing`.
+   */
+  private async ask<T>(method: string, params: readonly unknown[], has?: (result: T) => boolean): Promise<T> {
     const ordered = [...this.endpoints.filter((e) => !e.lagging), ...this.endpoints.filter((e) => e.lagging)];
     const errors: string[] = [];
+    let missing = 0;
     for (const endpoint of ordered) {
       if (!(await this.verified(endpoint, errors))) continue;
       try {
-        return await endpoint.rpc.request<T>({ method, params });
+        const result = await endpoint.rpc.request<T>({ method, params });
+        if (!has || has(result)) return result;
+        missing += 1;
+        errors.push(`${endpoint.rpc.label}: no such block`);
+        this.options.logger.warn('chain: endpoint has no such block, trying the next', { chain: this.chain, endpoint: endpoint.rpc.label, method });
       } catch (error) {
         if (isRevert(error)) throw new ChainReadError(this.chain, 'reverted', `${method} reverted: ${describeError(error)}`, { cause: error });
+        if (MISSING_BLOCK.test(describeError(error))) missing += 1;
         errors.push(`${endpoint.rpc.label}: ${describeError(error)}`);
         this.options.logger.warn('chain: endpoint failed, trying the next', { chain: this.chain, endpoint: endpoint.rpc.label, method, error: describeError(error) });
       }
     }
-    throw this.exhausted(method, errors);
+    const error = this.exhausted(method, errors);
+    if (error.reason === 'unavailable' && missing > 0 && missing === errors.length) {
+      throw new ChainReadError(this.chain, 'unavailable', `${method}: no endpoint has the block yet (${errors.join('; ')})`, { blockMissing: true });
+    }
+    throw error;
+  }
+
+  /** Runs a depth-pinned read again, from the head, while it fails only for a missing block. */
+  private async retried<T>(read: () => Promise<T>): Promise<T> {
+    const { attempts, delayMs } = this.options.missingBlockRetry ?? DEFAULT_MISSING_BLOCK_RETRY;
+    const sleep = this.options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await read();
+      } catch (error) {
+        if (!(error instanceof ChainReadError && error.blockMissing) || attempt >= attempts) throw error;
+        const wait = delayMs * 2 ** (attempt - 1);
+        this.options.logger.warn('chain: block not there yet, reading again', { chain: this.chain, attempt, waitMs: wait, error: error.message });
+        await sleep(wait);
+      }
+    }
   }
 
   /**
@@ -194,40 +258,58 @@ export class ChainClient {
   }
 
   /** The block number a read at `at` reads. */
-  async resolve(at: ReadAt): Promise<bigint> {
-    if (typeof at === 'object' && 'blockHash' in at) return (await this.blockByHash(at.blockHash)).number;
+  resolve(at: ReadAt): Promise<bigint> {
+    return this.retried(() => this.resolveOnce(at));
+  }
+
+  private async resolveOnce(at: ReadAt): Promise<bigint> {
+    if (typeof at === 'object' && 'blockHash' in at) return (await this.blockByHashOnce(at.blockHash)).number;
     if (typeof at === 'object' && 'blockNumber' in at) return at.blockNumber;
     if (typeof at === 'object') {
       if (!Number.isSafeInteger(at.confirmations) || at.confirmations < 0) throw new TypeError('confirmations must be a non-negative integer');
       return confirmedBlock(await this.head(), at.confirmations);
     }
     if (at === 'latest') return this.head();
-    return (await this.block(at)).number;
+    return (await this.blockOnce(at)).number;
   }
 
   /** The one block a read at `at` reads, as `{ blockHash }` for further calls of the same check. */
-  async pin(at: ReadAt): Promise<{ blockHash: Hex }> {
+  pin(at: ReadAt): Promise<{ blockHash: Hex }> {
+    return this.retried(() => this.pinOnce(at));
+  }
+
+  private async pinOnce(at: ReadAt): Promise<{ blockHash: Hex }> {
     if (typeof at === 'object' && 'blockHash' in at) return { blockHash: at.blockHash };
-    if (at === 'safe' || at === 'finalized') return { blockHash: (await this.block(at)).hash };
-    return { blockHash: (await this.block(await this.resolve(at))).hash };
+    if (at === 'safe' || at === 'finalized') return { blockHash: (await this.blockOnce(at)).hash };
+    return { blockHash: (await this.blockOnce(await this.resolveOnce(at))).hash };
   }
 
-  /** `eth_call` of `data` on `to`, in the one block `at` resolves to. */
-  async call(to: Hex, data: Hex, at: ReadAt = 'latest'): Promise<Hex> {
-    const { blockHash } = await this.pin(at);
-    const result = await this.request<unknown>('eth_call', [{ to, data }, { blockHash, requireCanonical: true }]);
-    if (typeof result !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(result)) throw new ChainReadError(this.chain, 'malformed', `eth_call returned ${String(result)}`);
-    return result as Hex;
+  /**
+   * `eth_call` of `data` on `to`, in the one block `at` resolves to. A block
+   * missing on every endpoint — at pinning or at the call — re-pins from the
+   * head and calls again (a depth read moves with the head; a hash stays).
+   */
+  call(to: Hex, data: Hex, at: ReadAt = 'latest'): Promise<Hex> {
+    return this.retried(async () => {
+      const { blockHash } = await this.pinOnce(at);
+      const result = await this.ask<unknown>('eth_call', [{ to, data }, { blockHash, requireCanonical: true }]);
+      if (typeof result !== 'string' || !/^0x([0-9a-fA-F]{2})*$/.test(result)) throw new ChainReadError(this.chain, 'malformed', `eth_call returned ${String(result)}`);
+      return result as Hex;
+    });
   }
 
-  /** A block header by number or tag; `malformed` when the node has no such block. */
-  async block(at: bigint | 'latest' | 'safe' | 'finalized'): Promise<BlockHeader> {
+  /** A block header by number or tag; `unavailable` (`blockMissing`) when no endpoint has it after the retries. */
+  block(at: bigint | 'latest' | 'safe' | 'finalized'): Promise<BlockHeader> {
+    return this.retried(() => this.blockOnce(at));
+  }
+
+  private async blockOnce(at: bigint | 'latest' | 'safe' | 'finalized'): Promise<BlockHeader> {
     const tag = typeof at === 'bigint' ? toQuantity(at) : at;
-    return this.header(await this.request<unknown>('eth_getBlockByNumber', [tag, false]), tag);
+    return this.header(await this.ask<unknown>('eth_getBlockByNumber', [tag, false], isBlock), tag);
   }
 
   private header(raw: unknown, tag: string): BlockHeader {
-    if (typeof raw !== 'object' || raw === null) throw new ChainReadError(this.chain, 'malformed', `no block ${tag}`);
+    if (typeof raw !== 'object' || raw === null) throw new ChainReadError(this.chain, 'unavailable', `no block ${tag}`, { blockMissing: true });
     const { number, hash, parentHash } = raw as Record<string, unknown>;
     try {
       if (typeof hash !== 'string' || !HEX32.test(hash) || typeof parentHash !== 'string' || !HEX32.test(parentHash)) throw new TypeError('bad hash');
@@ -237,20 +319,26 @@ export class ChainClient {
     }
   }
 
-  /** A block header by hash; `malformed` when the node has no such block. */
-  async blockByHash(hash: Hex): Promise<BlockHeader> {
-    return this.header(await this.request<unknown>('eth_getBlockByHash', [hash, false]), hash);
+  /** A block header by hash; `unavailable` (`blockMissing`) when no endpoint has it after the retries. */
+  blockByHash(hash: Hex): Promise<BlockHeader> {
+    return this.retried(() => this.blockByHashOnce(hash));
   }
 
-  /** Native balance of `address`, in the one block `at` resolves to. */
-  async balance(address: Hex, at: ReadAt = 'latest'): Promise<bigint> {
-    const { blockHash } = await this.pin(at);
-    const raw = await this.request<unknown>('eth_getBalance', [address, { blockHash, requireCanonical: true }]);
-    try {
-      return quantity(raw, 'eth_getBalance');
-    } catch (error) {
-      throw new ChainReadError(this.chain, 'malformed', describeError(error), { cause: error });
-    }
+  private async blockByHashOnce(hash: Hex): Promise<BlockHeader> {
+    return this.header(await this.ask<unknown>('eth_getBlockByHash', [hash, false], isBlock), hash);
+  }
+
+  /** Native balance of `address`, in the one block `at` resolves to; a missing block is tried again as in `call`. */
+  balance(address: Hex, at: ReadAt = 'latest'): Promise<bigint> {
+    return this.retried(async () => {
+      const { blockHash } = await this.pinOnce(at);
+      const raw = await this.ask<unknown>('eth_getBalance', [address, { blockHash, requireCanonical: true }]);
+      try {
+        return quantity(raw, 'eth_getBalance');
+      } catch (error) {
+        throw new ChainReadError(this.chain, 'malformed', describeError(error), { cause: error });
+      }
+    });
   }
 
   /** Every endpoint, probed now: chain id, head, lag. Never throws. */

@@ -23,7 +23,7 @@ import type { FillSigner } from '../signer';
 import { createRecordingEventSink, createRecordingLogger, createTestTypedDataSigner, FakeChain, FakeClock } from '../testing';
 import { checkCantonSource, type CantonSourceReader } from './canton-source';
 import { TicketVerifier } from './checks';
-import { Refusal } from './refusal';
+import { TicketRefusal } from './refusal';
 
 const PARTY = 'filler-acme::12206c81aa';
 const OPERATOR = 'cancore-intent-operator::1220ee';
@@ -127,11 +127,11 @@ function golden3(mutate: (i: CantonIntent) => void = () => undefined, party: Can
   return { run, passed, reader: r, orderHash };
 }
 
-async function refusal(promise: Promise<unknown>): Promise<Refusal> {
+async function refusal(promise: Promise<unknown>): Promise<TicketRefusal> {
   try {
     await promise;
   } catch (error) {
-    if (error instanceof Refusal) return error;
+    if (error instanceof TicketRefusal) return error;
     throw error;
   }
   throw new Error('expected a refusal');

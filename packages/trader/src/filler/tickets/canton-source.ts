@@ -45,7 +45,7 @@ import {
 import { canonicalDecimal, scaled } from '../canton/checks';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../canton/factories';
 import { GatewayError } from '../errors';
-import { Refusal, type TicketCheckId } from './refusal';
+import { TicketRefusal, type TicketCheckId } from './refusal';
 
 /** What the Canton-source checks read through Cancore: `CantonOperations` is one. */
 export interface CantonSourceReader {
@@ -103,7 +103,7 @@ export function intentOrder(intent: CantonIntent, originChainId: string): Canton
 const ORDER_FIELDS = ['user', 'originChainId', 'inputToken', 'inputAmount', 'destination', 'outputAsset', 'minReceived', 'recipient', 'createdAt', 'fillDeadline', 'feeBps', 'fillerId'] as const;
 
 /**
- * Runs V-C1…V-C6 in order; throws `Refusal` at the first failure, calls
+ * Runs V-C1…V-C6 in order; throws `TicketRefusal` at the first failure, calls
  * `pass` for each that holds. A read that fails is a failure of the check
  * that needed it (N-12).
  */
@@ -116,13 +116,13 @@ export async function checkCantonSource(input: CantonSourceCheckInput, pass: (ch
   try {
     intent = await input.reader.intent(orderHash);
   } catch (error) {
-    if (error instanceof GatewayError && error.code === 'UNKNOWN_TICKET') throw new Refusal('V-C1', 'ESCROW_NOT_OPEN', 'no live SwapIntent with this orderHash names this filler');
-    throw new Refusal('V-C1', 'ESCROW_NOT_OPEN', `unverifiable: ${String(error)}`);
+    if (error instanceof GatewayError && error.code === 'UNKNOWN_TICKET') throw new TicketRefusal('V-C1', 'ESCROW_NOT_OPEN', 'no live SwapIntent with this orderHash names this filler');
+    throw new TicketRefusal('V-C1', 'ESCROW_NOT_OPEN', `unverifiable: ${String(error)}`);
   }
-  if (qualified(String(intent?.templateId)) !== 'Intent.SwapIntent:SwapIntent') throw new Refusal('V-C1', 'ESCROW_MISMATCH', `the contract is a ${String(intent?.templateId)}, not a SwapIntent`);
-  if (lower(intent.orderHash) !== orderHash) throw new Refusal('V-C1', 'ESCROW_MISMATCH', 'the intent read is for another orderHash');
-  if (intent.filler !== party) throw new Refusal('V-C1', 'ESCROW_MISMATCH', `the intent's filler is ${intent.filler}, not this node's party`);
-  if (intent.fillerId !== fillerId) throw new Refusal('V-C1', 'ESCROW_MISMATCH', `the intent's fillerId is ${intent.fillerId}, not ${fillerId}`);
+  if (qualified(String(intent?.templateId)) !== 'Intent.SwapIntent:SwapIntent') throw new TicketRefusal('V-C1', 'ESCROW_MISMATCH', `the contract is a ${String(intent?.templateId)}, not a SwapIntent`);
+  if (lower(intent.orderHash) !== orderHash) throw new TicketRefusal('V-C1', 'ESCROW_MISMATCH', 'the intent read is for another orderHash');
+  if (intent.filler !== party) throw new TicketRefusal('V-C1', 'ESCROW_MISMATCH', `the intent's filler is ${intent.filler}, not this node's party`);
+  if (intent.fillerId !== fillerId) throw new TicketRefusal('V-C1', 'ESCROW_MISMATCH', `the intent's fillerId is ${intent.fillerId}, not ${fillerId}`);
   pass('V-C1');
 
   // -- V-C2: its terms are the offered order -----------------------------------------------------
@@ -130,16 +130,16 @@ export async function checkCantonSource(input: CantonSourceCheckInput, pass: (ch
   try {
     built = intentOrder(intent, order.originChainId);
   } catch (error) {
-    throw new Refusal('V-C2', 'ESCROW_MISMATCH', `the intent's terms do not encode as an order: ${String(error)}`);
+    throw new TicketRefusal('V-C2', 'ESCROW_MISMATCH', `the intent's terms do not encode as an order: ${String(error)}`);
   }
   const offered = order as unknown as Record<string, unknown>;
   const derived = built.order as unknown as Record<string, unknown>;
   const differs = ORDER_FIELDS.find((f) => lower(derived[f]) !== lower(offered[f]));
-  if (differs) throw new Refusal('V-C2', 'ESCROW_MISMATCH', `order.${differs} differs from the intent's terms`);
+  if (differs) throw new TicketRefusal('V-C2', 'ESCROW_MISMATCH', `order.${differs} differs from the intent's terms`);
   pass('V-C2');
 
   // -- V-C3: the label binds these terms ------------------------------------------------------------
-  if (lower(built.orderHash) !== orderHash) throw new Refusal('V-C3', 'ESCROW_MISMATCH', 'the order hash of the intent’s terms is not ticket.orderHash');
+  if (lower(built.orderHash) !== orderHash) throw new TicketRefusal('V-C3', 'ESCROW_MISMATCH', 'the order hash of the intent’s terms is not ticket.orderHash');
   pass('V-C3');
 
   // -- V-C4: the give is committed to this filler ------------------------------------------------------
@@ -147,27 +147,27 @@ export async function checkCantonSource(input: CantonSourceCheckInput, pass: (ch
   pass('V-C4');
 
   // -- V-C5: the filler can be paid -------------------------------------------------------------------
-  if (lower(ticket.repayTo) !== repayToFromParty(party)) throw new Refusal('V-C5', 'TICKET_MISMATCH', 'ticket.repayTo is not keccak256(utf8(party)) of this node');
+  if (lower(ticket.repayTo) !== repayToFromParty(party)) throw new TicketRefusal('V-C5', 'TICKET_MISMATCH', 'ticket.repayTo is not keccak256(utf8(party)) of this node');
   let registered: CantonParty;
   try {
     registered = await input.reader.party();
   } catch (error) {
-    throw new Refusal('V-C5', 'OTHER', `payout-not-ready: unverifiable: ${String(error)}`);
+    throw new TicketRefusal('V-C5', 'OTHER', `payout-not-ready: unverifiable: ${String(error)}`);
   }
-  if (registered?.party !== party) throw new Refusal('V-C5', 'OTHER', `payout-not-ready: the party registered for ${fillerId} is ${String(registered?.party)}`);
+  if (registered?.party !== party) throw new TicketRefusal('V-C5', 'OTHER', `payout-not-ready: the party registered for ${fillerId} is ${String(registered?.party)}`);
   if (registered.registry?.state !== 'ACTIVE' || !registered.registry.entryCid) {
-    throw new Refusal('V-C5', 'OTHER', `payout-not-ready: the FillerRegistryEntry is ${String(registered.registry?.state)}`);
+    throw new TicketRefusal('V-C5', 'OTHER', `payout-not-ready: the FillerRegistryEntry is ${String(registered.registry?.state)}`);
   }
   // T-9: the receipt allocation of the settle must be one this party can create.
   if (registry.openReceipt !== true) {
-    throw new Refusal('V-C5', 'OTHER', `payout-not-ready: the registry ${registry.packageId} of ${intent.asset.admin} is not pinned as paying any party (T-9)`);
+    throw new TicketRefusal('V-C5', 'OTHER', `payout-not-ready: the registry ${registry.packageId} of ${intent.asset.admin} is not pinned as paying any party (T-9)`);
   }
   pass('V-C5');
 
   // -- V-C6: the settlement window ----------------------------------------------------------------------
   const window = BigInt(intent.refundAfter) - BigInt(intent.fillDeadline);
   if (window < BigInt(input.requiredProofWindowSec)) {
-    throw new Refusal('V-C6', 'PROOF_WINDOW_TOO_SHORT', `refundAfter − fillDeadline = ${window} s < ${input.requiredProofWindowSec} s`);
+    throw new TicketRefusal('V-C6', 'PROOF_WINDOW_TOO_SHORT', `refundAfter − fillDeadline = ${window} s < ${input.requiredProofWindowSec} s`);
   }
   pass('V-C6');
 }
@@ -181,9 +181,9 @@ function checkAllocation(
   registries: Readonly<Record<string, readonly CantonTransferFactory[]>>,
 ): CantonTransferFactory {
   const mismatch = (detail: string): never => {
-    throw new Refusal('V-C4', 'ESCROW_MISMATCH', detail);
+    throw new TicketRefusal('V-C4', 'ESCROW_MISMATCH', detail);
   };
-  if (!a) throw new Refusal('V-C4', 'ESCROW_NOT_OPEN', 'the committed allocation is not live');
+  if (!a) throw new TicketRefusal('V-C4', 'ESCROW_NOT_OPEN', 'the committed allocation is not live');
   if (a.contractId !== intent.allocationCid) mismatch('the allocation read is not the intent’s allocationCid');
   const registry = (registries[intent.asset.admin] ?? []).find((f) => f.allocation !== undefined && a.templateId === `${f.packageId}:${f.allocation}`);
   if (!registry) return mismatch(`the allocation ${a.templateId} is not a pinned allocation of the admin ${intent.asset.admin}`);
