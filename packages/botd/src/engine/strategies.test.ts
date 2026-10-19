@@ -1,7 +1,7 @@
 import { createDispatcher, type Deps } from '../daemon';
 import { initialState } from '../state';
 import { check } from '../riskgate';
-import { JSONRPC_VERSION, type Method, type RpcRequest } from '../protocol/index';
+import { ERROR, JSONRPC_VERSION, type Method, type RpcRequest } from '../protocol/index';
 import type { BotState, Limits } from '../types';
 import { gridPrice } from './grid';
 
@@ -35,7 +35,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
   let ticker: (() => void) | undefined;
   const audited: { method: string; decision: string; reason?: string }[] = [];
   let hooks: Parameters<Deps['createEngine']>[1] | undefined;
-  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[], orderDown: false, orderFailOnce: undefined as string | undefined, cancelFails: false, takeOnCancel: undefined as string | undefined, pricesDown: false, pricesHold: undefined as Promise<void> | undefined };
+  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[], orderDown: false, orderFailOnce: undefined as string | undefined, cancelFails: false, takeOnCancel: undefined as string | undefined, takeHold: undefined as Promise<void> | undefined, refuseStatus: 400, pricesDown: false, pricesHold: undefined as Promise<void> | undefined };
   const deps = (): Deps => ({
     keystore: { init: jest.fn(), initSeed: jest.fn(), unlock: async () => ({ destroy: () => undefined }) as never, lock: () => void (crash.wiped = true), isLocked: () => false, publicKey: async () => 'ab' },
     audit: {
@@ -57,11 +57,14 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
           if (crash.slow) return crash.slow;
           if (crash.make) throw new Error('socket hang up');
           // The API answered and refused: no order exists.
-          if (crash.refuse) throw Object.assign(new Error('POST /orders → 400'), { status: 400 });
+          if (crash.refuse) throw Object.assign(new Error(`POST /orders → ${crash.refuseStatus}`), { status: crash.refuseStatus });
           made.push({ orderId, side: p.side, price: p.price });
           return { orderId };
         },
-        take: jest.fn(),
+        take: jest.fn(async () => {
+          await crash.takeHold;
+          return undefined as never;
+        }),
         untake: jest.fn(() => true),
         // The venue applies a cancel: the order then reads cancelled, unless the test already set it otherwise.
         cancel: async (id) => {
@@ -124,6 +127,8 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
     takers,
     infos,
     state: () => state,
+    hooks: () => hooks!,
+    ticking: () => ticker !== undefined,
     advance: (ms: number) => void (clock += ms),
     fill: async (orderId: string) => {
       hooks!.onSettled(orderId);
@@ -980,6 +985,152 @@ describe('a settle that lands in the lock window (CAN-2834)', () => {
     await w.unlock();
     expect(w.state().fills).toEqual([{ at: expect.any(Number), instrument: 'CC', amount: '1' }]);
     expect(w.audited).toContainEqual(expect.objectContaining({ method: 'settle', params: expect.objectContaining({ orderId: 'o1', usdValue: 'unpriced' }) }));
+  });
+});
+
+describe('mutant pins on the sdk#128 lock/settle/gate paths (CAN-2833)', () => {
+  const make = { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' };
+  const someoneElses = { source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '0.15' };
+
+  it('a lock between the gate and the booking calls the take off and answers LOCKED, not PAUSED (L5, L6)', async () => {
+    const w = world();
+    await w.unlock();
+    w.infos.A = someoneElses;
+    let release!: () => void;
+    w.crash.takeHold = new Promise((r) => (release = r));
+    const taking = w.call('order.take', { orderId: 'A', amount: '1' }, false);
+    const outcome = taking.then(() => 'resolved', (err: unknown) => err);
+    await new Promise((r) => setTimeout(r, 0));
+    const locking = w.call('lock', {}, true);
+    await new Promise((r) => setTimeout(r, 0));
+    release();
+    await locking;
+    expect(await outcome).toMatchObject({ code: ERROR.LOCKED });
+    expect(w.state().openOrders).toEqual([]);
+  });
+
+  it('the take gate refuses an order that is no longer open, before any take (R5)', async () => {
+    const w = world();
+    await w.unlock();
+    w.infos.A = someoneElses;
+    w.statuses.A = 'accepted';
+    await expect(w.call('order.take', { orderId: 'A', amount: '1' }, false)).rejects.toMatchObject({ data: { reason: 'no_rule' } });
+    expect(w.state().openOrders).toEqual([]);
+  });
+
+  it('a completed take whose taker the venue does not report yet stays booked, not a fill (F9)', async () => {
+    const w = world();
+    await w.unlock();
+    w.infos.A = someoneElses;
+    await w.call('order.take', { orderId: 'A', amount: '1' }, false);
+    w.statuses.A = 'completed';
+    w.advance(31_000);
+    await w.tick();
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+    expect(w.state().fills ?? []).toEqual([]);
+  });
+
+  it('a fill with no USD price at fill time spends the whole day: the next order is refused (F6)', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    w.crash.pricesDown = true;
+    await w.fill('o1');
+    w.crash.pricesDown = false;
+    expect(w.state().fills).toEqual([{ at: expect.any(Number), instrument: 'CC', amount: '1' }]);
+    await expect(w.call('order.make', make, false)).rejects.toMatchObject({ data: { reason: 'usd_daily_exceeded' } });
+  });
+
+  it.each([408, 429])('a make answered %i is not a refusal: the intent stays and the answer is unconfirmed (F22)', async (status) => {
+    const w = world();
+    await w.unlock();
+    w.crash.refuse = true;
+    w.crash.refuseStatus = status;
+    await expect(w.call('order.make', make, false)).rejects.toMatchObject({ code: ERROR.UNCONFIRMED });
+    expect(w.state().intents).toHaveLength(1);
+  });
+
+  it('a 400 is the API\'s refusal: the intent is dropped (F22 control)', async () => {
+    const w = world();
+    await w.unlock();
+    w.crash.refuse = true;
+    await expect(w.call('order.make', make, false)).rejects.toMatchObject({ status: 400 });
+    expect(w.state().intents).toEqual([]);
+  });
+
+  it('a repeated settle takes an order that came back onto the book off it again, without a second fill (F7)', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    const booked = w.state().openOrders[0]!;
+    await w.fill('o1');
+    w.state().openOrders.push(booked);
+    await w.fill('o1');
+    expect(w.state().openOrders).toEqual([]);
+    expect(w.state().fills).toHaveLength(1);
+  });
+
+  it('a settle held while an intent was unresolved is booked once that intent is adopted, even with the order still in progress (F20)', async () => {
+    const w = world();
+    await w.unlock();
+    w.crash.make = true;
+    await expect(w.call('order.make', make, false)).rejects.toBeDefined();
+    w.crash.make = false;
+    await w.fill('lost');
+    expect(w.state().unknownSettles).toHaveProperty('lost');
+    w.crash.found = 'lost';
+    w.statuses.lost = 'accepted';
+    for (let i = 0; i < 2; i++) {
+      w.advance(61_000);
+      await w.tick();
+    }
+    expect(w.state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '1' })]);
+    expect(w.state().openOrders).toEqual([]);
+  });
+
+  it('an unresolved intent takes a strategy slot: a full book places nothing and the strategy keeps running (F29)', async () => {
+    const w = world({ ...LIMITS, maxOpenOrders: 3 });
+    await w.unlock();
+    await w.call('strategy.start', grid, false);
+    // Two booked agent orders and one unresolved intent fill the three slots.
+    await w.call('order.make', make, false);
+    await w.call('order.make', make, false);
+    w.crash.make = true;
+    await expect(w.call('order.make', make, false)).rejects.toBeDefined();
+    w.crash.make = false;
+    await w.tick();
+    expect(w.made).toHaveLength(2);
+    expect(strategyOf(w).status).toBe('running');
+    expect(w.audited.filter((a) => a.method === 'order.make' && a.decision === 'deny')).toEqual([]);
+  });
+
+  it('a lock stops the ticker (K11)', async () => {
+    const w = world();
+    await w.unlock();
+    expect(w.ticking()).toBe(true);
+    await w.call('lock', {}, true);
+    expect(w.ticking()).toBe(false);
+  });
+
+  it('resume clears the pause reason (P19)', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('pause', { reason: 'owner' }, true);
+    expect(w.state().pauseReason).toBe('owner');
+    await w.call('resume', {}, true);
+    expect(w.state()).toMatchObject({ paused: false });
+    expect(w.state().pauseReason).toBeUndefined();
+    expect(await w.call('status')).not.toHaveProperty('result.pauseReason');
+  });
+
+  it('a take failure is audited by a bare error class only, never free text from the API (E17)', async () => {
+    const w = world();
+    await w.unlock();
+    w.hooks().onTakeFailed!('A', 'POST /orders → 500: secret detail');
+    w.hooks().onTakeFailed!('B', 'SettleError');
+    await new Promise((r) => setTimeout(r, 0));
+    const failed = w.audited.filter((a) => (a as { params?: { event?: string } }).params?.event === 'take_failed');
+    expect(failed.map((a) => a.reason)).toEqual(['Error', 'SettleError']);
   });
 });
 

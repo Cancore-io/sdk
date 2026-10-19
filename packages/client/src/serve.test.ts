@@ -368,6 +368,28 @@ test('a take accepted on an earlier run stays a trade: a failed later step does 
   await handle.stop();
 });
 
+test('a take accepted in this run stays a trade after a later accept is refused: untake cannot drop it (V3, CAN-2833)', async () => {
+  const theirs = order('ours', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let runs = 0;
+  const { acct } = account([theirs], async () => {
+    throw new Error('unused');
+  });
+  (acct as unknown as { take: (id: string, o: SettleRun) => Promise<Settled> }).take = async (_id, o) => {
+    runs++;
+    if (o.beforeAccept && !o.beforeAccept()) throw Object.assign(new Error('called off'), { name: 'TakeCancelledError' });
+    o.onAccepted?.();
+    // A retried accept is refused because the first one already took the order: no longer in flight, but a trade.
+    o.onAcceptRefused?.();
+    throw new Error('409');
+  };
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
+  handle.take('ours');
+  await until(() => runs >= 1);
+  await new Promise((r) => setImmediate(r));
+  expect(handle.untake('ours')).toBe(false);
+  await handle.stop();
+});
+
 test('untake of a take this loop never queued reports it may be a trade', () => {
   const { acct } = account([], async () => { throw new Error('unused'); });
   const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
