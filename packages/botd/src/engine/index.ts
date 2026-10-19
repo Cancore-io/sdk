@@ -9,16 +9,7 @@ declare module '../types' {
     /** Set once the order has a taker: whether it is this account. */
     takenBySelf?: boolean;
   }
-  interface Engine {
-    /** Forget a take the venue shows was never accepted (see ServeHandle.forget). */
-    /** False while serve is still working on the order: nothing is forgotten then. */
-    forget?(orderId: string): boolean;
-  }
   interface BotState {
-    /** Taken bookings whose order read open with no taker: when that was first seen (ms). */
-    takeOpenSeen?: Record<string, number>;
-    /** Takes released as never accepted, kept for a day in case the accept lands late: booked once if it does. */
-    releasedTakes?: Record<string, BotState['openOrders'][number] & { releasedAt: number }>;
     /** Orders whose fill was booked, with when (ms), for a day: a repeated settle is not an unknown one. */
     settledOrders?: Record<string, number>;
     /** Settles for orders not on the book that arrived while intents were unresolved, with when (ms): judged once they drain. */
@@ -165,9 +156,6 @@ export function createEngine(options: EngineOptions): Engine {
     },
     untake(orderId) {
       return loop ? loop.untake(orderId) : true;
-    },
-    forget(orderId) {
-      return loop ? loop.forget(orderId) : true;
     },
     async cancel(orderId) {
       await acct.swap.cancel(orderId);

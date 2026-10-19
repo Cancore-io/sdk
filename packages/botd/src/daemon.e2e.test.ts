@@ -38,6 +38,8 @@ function fakeApi() {
     /** When set, decides each POST accept by attempt number (1-based) instead of dropAccept/applyAccept. */
     acceptScript: undefined as undefined | ((attempt: number) => 'lost-unapplied' | 'applied-then-400'),
     accepts: 0,
+    /** GET /orders/<id> per order: a reconcile is observable by its lookup. */
+    reads: {} as Record<string, number>,
     orders,
     async fetch(url: string, init: RequestInit): Promise<Response> {
       const { pathname } = new URL(url);
@@ -73,6 +75,7 @@ function fakeApi() {
       }
       const order = /^\/orders\/([ox]\d+)(\/cancel)?$/.exec(pathname);
       if (order && orders.has(order[1]!)) {
+        if (!order[2]) api.reads[order[1]!] = (api.reads[order[1]!] ?? 0) + 1;
         if (order[2]) {
           api.cancelled.push(order[1]!);
           orders.get(order[1]!)!.status = 'cancelled';
@@ -434,95 +437,7 @@ describe('cancore-botd end to end: a 400 after a lost accept answer (F128-ACCEPT
   });
 });
 
-describe('cancore-botd end to end: a lost accept that never landed is released (F128-AMBIG-OPEN-1)', () => {
-  let dir: string;
-  let config: BotConfig;
-  const api = fakeApi();
-  const boot = async () => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 }));
-  const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
-    const c = await connect(socket);
-    try {
-      return (await c.call(method as never, params as never)) as T;
-    } finally {
-      c.close();
-    }
-  };
-  const owner = <T = unknown>(m: string, p?: unknown) => call<T>(config.ownerSocket, m, p);
-  const agent = <T = unknown>(m: string, p?: unknown) => call<T>(config.agentSocket, m, p);
-  const state = () => JSON.parse(readFileSync(paths(config).state, 'utf8')) as BotState & { takeOpenSeen?: Record<string, number> };
-  const until = async (check: () => boolean) => {
-    for (let i = 0; i < 250 && !check(); i++) await new Promise((r) => setTimeout(r, 20));
-    expect(check()).toBe(true);
-  };
-  const audit = () => readFileSync(paths(config).audit, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { params?: { orderId?: string; event?: string } });
-  const event = (orderId: string, name: string) => audit().some((e) => e.params?.event === name && e.params.orderId === orderId);
-  const order = (id: string) => ({
-    id, status: 'open', sourceNetwork: 'canton', targetNetwork: 'canton', dvp: true,
-    initiatorUserId: 'someone', opponentUserId: null, swapId: null,
-    sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: '1', targetTokenAddress: 'USDCx', targetTokenName: 'USDCx', targetAmount: '0.15',
-    expiresAt: '', createdAt: '', updatedAt: '',
-  });
-
-  beforeAll(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'botd-e2e-release-'));
-    config = {
-      ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
-      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
-    };
-    delete (config as Partial<BotConfig>).clientsGroup;
-    await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
-    // One open order at a time: a leftover booking would block the next take.
-    writeFileSync(paths(config).limits, JSON.stringify({ ...LIMITS, maxOpenOrders: 1, perOrderUsd: '100', perDayUsd: '100' }), { mode: 0o600 });
-    api.orders.set('x4', order('x4'));
-    api.orders.set('x5', order('x5'));
-  });
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
-
-  it('releases the booking after two open reads a settle window apart, with no fill', async () => {
-    api.dropAccept = true;
-    api.applyAccept = false;
-    let stop = await boot();
-    try {
-      await owner('unlock', { passphrase: 'bot-pass-2026' });
-      expect(await agent('order.take', { orderId: 'x4', amount: '1' })).toMatchObject({ orderId: 'x4' });
-      await until(() => event('x4', 'take_failed'));
-      await owner('pause', { reason: 'owner stop' });
-      expect(state().openOrders.map((o) => o.orderId)).toEqual(['x4']);
-    } finally {
-      await stop();
-    }
-    // First reconcile: the order still reads open with no taker; when that was seen is recorded.
-    stop = await boot();
-    try {
-      await owner('unlock', { passphrase: 'bot-pass-2026' });
-      await until(() => state().takeOpenSeen?.x4 !== undefined);
-      expect(state().openOrders.map((o) => o.orderId)).toEqual(['x4']);
-    } finally {
-      await stop();
-    }
-    // The settle window passes (the first read is moved back, instead of waiting a minute).
-    const s = state();
-    writeFileSync(paths(config).state, JSON.stringify({ ...s, takeOpenSeen: { x4: s.takeOpenSeen!.x4! - 61_000 } }), { mode: 0o600 });
-    api.dropAccept = false;
-    api.applyAccept = true;
-    stop = await boot();
-    try {
-      await owner('unlock', { passphrase: 'bot-pass-2026' });
-      await until(() => state().openOrders.length === 0 && event('x4', 'take_released'));
-      expect(state().takeOpenSeen ?? {}).toEqual({});
-      expect(state().fills ?? []).toEqual([]);
-      expect(state().positions ?? {}).toEqual({});
-      expect(api.accepts).toBe(1);
-      // The released slot is free again: the next take is not blocked by maxOpenOrders.
-      await owner('resume');
-      expect(await agent('order.take', { orderId: 'x5', amount: '1' })).toMatchObject({ orderId: 'x5' });
-    } finally {
-      await stop();
-    }
-  });
-});
-
-describe('cancore-botd end to end: a released take that lands late is booked once (round-21 X-1)', () => {
+describe('cancore-botd end to end: an ambiguous take stays booked until the venue shows its outcome (F128-AMBIG-OPEN-1, F128-RELEASE-RISK-1)', () => {
   let dir: string;
   let config: BotConfig;
   const api = fakeApi();
@@ -538,83 +453,112 @@ describe('cancore-botd end to end: a released take that lands late is booked onc
   const refusal = (p: Promise<unknown>) => p.then(() => undefined, (e: RpcCallError) => e.error);
   const owner = <T = unknown>(m: string, p?: unknown) => call<T>(config.ownerSocket, m, p);
   const agent = <T = unknown>(m: string, p?: unknown) => call<T>(config.agentSocket, m, p);
-  type Extra = { takeOpenSeen?: Record<string, number>; releasedTakes?: Record<string, unknown>; settledOrders?: Record<string, number> };
-  const state = () => JSON.parse(readFileSync(paths(config).state, 'utf8')) as BotState & Extra;
+  const state = () => JSON.parse(readFileSync(paths(config).state, 'utf8')) as BotState;
   const until = async (check: () => boolean) => {
     for (let i = 0; i < 250 && !check(); i++) await new Promise((r) => setTimeout(r, 20));
     expect(check()).toBe(true);
   };
   const audit = () => readFileSync(paths(config).audit, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { params?: { orderId?: string; event?: string } });
   const event = (orderId: string, name: string) => audit().some((e) => e.params?.event === name && e.params.orderId === orderId);
-
-  beforeAll(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'botd-e2e-late-'));
+  const order = (id: string) => ({
+    id, status: 'open', sourceNetwork: 'canton', targetNetwork: 'canton', dvp: true,
+    initiatorUserId: 'someone', opponentUserId: null, swapId: null,
+    sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: '1', targetTokenAddress: 'USDCx', targetTokenName: 'USDCx', targetAmount: '0.15',
+    expiresAt: '', createdAt: '', updatedAt: '',
+  });
+  const setup = async (prefix: string, limits: object) => {
+    dir = mkdtempSync(join(tmpdir(), prefix));
     config = {
       ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
       baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
     };
     delete (config as Partial<BotConfig>).clientsGroup;
     await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
-    // 1 CC at 0.15 USD; a second 0.15 USD order would pass the 0.2 USD day.
-    writeFileSync(paths(config).limits, JSON.stringify({ ...LIMITS, perOrderUsd: '100', perDayUsd: '0.2' }), { mode: 0o600 });
-    api.orders.set('x6', {
-      id: 'x6', status: 'open', sourceNetwork: 'canton', targetNetwork: 'canton', dvp: true,
-      initiatorUserId: 'someone', opponentUserId: null, swapId: null,
-      sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: '1', targetTokenAddress: 'USDCx', targetTokenName: 'USDCx', targetAmount: '0.15',
-      expiresAt: '', createdAt: '', updatedAt: '',
-    });
-  });
-  afterAll(() => rmSync(dir, { recursive: true, force: true }));
-
-  it('keeps the released view, books the late trade exactly once, and enforces the day', async () => {
-    api.dropAccept = true;
-    api.applyAccept = false;
-    let stop = await boot();
+    writeFileSync(paths(config).limits, JSON.stringify({ ...LIMITS, ...limits }), { mode: 0o600 });
+  };
+  /** One daemon run that reconciles the book once (unlock does) and has looked `id` up. */
+  const reconcileOnce = async (id: string) => {
+    const before = api.reads[id] ?? 0;
+    const stop = await boot();
     try {
       await owner('unlock', { passphrase: 'bot-pass-2026' });
-      expect(await agent('order.take', { orderId: 'x6', amount: '1' })).toMatchObject({ orderId: 'x6' });
-      await until(() => event('x6', 'take_failed'));
+      await until(() => (api.reads[id] ?? 0) > before);
+      await new Promise((r) => setTimeout(r, 50));
+    } finally {
+      await stop();
+    }
+  };
+  /** A take whose accept answer is lost and which the venue never applied, then a pause. */
+  const lostTake = async (id: string) => {
+    api.dropAccept = true;
+    api.applyAccept = false;
+    const stop = await boot();
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      expect(await agent('order.take', { orderId: id, amount: '1' })).toMatchObject({ orderId: id });
+      await until(() => event(id, 'take_failed'));
       await owner('pause', { reason: 'owner stop' });
     } finally {
       await stop();
     }
-    stop = await boot();
-    try {
-      await owner('unlock', { passphrase: 'bot-pass-2026' });
-      await until(() => state().takeOpenSeen?.x6 !== undefined);
-    } finally {
-      await stop();
-    }
-    const s = state();
-    writeFileSync(paths(config).state, JSON.stringify({ ...s, takeOpenSeen: { x6: s.takeOpenSeen!.x6! - 61_000 } }), { mode: 0o600 });
-    stop = await boot();
-    try {
-      await owner('unlock', { passphrase: 'bot-pass-2026' });
-      await until(() => event('x6', 'take_released') && state().openOrders.length === 0);
-      expect(Object.keys(state().releasedTakes ?? {})).toEqual(['x6']);
-    } finally {
-      await stop();
-    }
+    api.dropAccept = false;
+    api.applyAccept = true;
+  };
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-    // The accept the venue was still holding lands late, and the trade completes.
-    Object.assign(api.orders.get('x6')!, { status: 'completed', opponentUserId: 'bot' });
-    for (let round = 0; round < 2; round++) {
-      stop = await boot();
-      try {
-        await owner('unlock', { passphrase: 'bot-pass-2026' });
-        await until(() => (state().fills ?? []).length === 1 && Object.keys(state().releasedTakes ?? {}).length === 0);
-      } finally {
-        await stop();
-      }
-    }
-    expect(state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '1', usdValue: '0.15' })]);
-    expect(state().positions).toMatchObject({ CC: '1' });
-    expect(state()).toMatchObject({ pauseReason: 'owner stop' });
-
-    stop = await boot();
+  it('stays booked while the order reads open with no taker, and comes off with no fill once another account took it', async () => {
+    await setup('botd-e2e-open-', { maxOpenOrders: 1, perOrderUsd: '100', perDayUsd: '100' });
+    api.orders.set('x4', order('x4'));
+    api.orders.set('x5', order('x5'));
+    await lostTake('x4');
+    // Reconciled twice, as long apart as it likes: open with no taker is not an outcome.
+    await reconcileOnce('x4');
+    await reconcileOnce('x4');
+    expect(state().openOrders.map((o) => o.orderId)).toEqual(['x4']);
+    // Another account takes it: off the book, nothing booked as ours.
+    Object.assign(api.orders.get('x4')!, { status: 'accepted', opponentUserId: 'other' });
+    await reconcileOnce('x4');
+    expect(state().openOrders).toEqual([]);
+    expect(event('x4', 'taken_by_other')).toBe(true);
+    expect(state().fills ?? []).toEqual([]);
+    expect(state().positions ?? {}).toEqual({});
+    // The slot is free again.
+    const stop = await boot();
     try {
       await owner('unlock', { passphrase: 'bot-pass-2026' });
       await owner('resume');
+      expect(await agent('order.take', { orderId: 'x5', amount: '1' })).toMatchObject({ orderId: 'x5' });
+    } finally {
+      await stop();
+    }
+  });
+
+  it('keeps its full reservation until the outcome: a second take past the day is refused, the late trade is booked once', async () => {
+    // 1 CC at 0.15 USD each: two of them pass the 0.2 USD day.
+    await setup('botd-e2e-risk-', { perOrderUsd: '100', perDayUsd: '0.2' });
+    api.orders.set('x6', order('x6'));
+    api.orders.set('x7', order('x7'));
+    await lostTake('x6');
+    await reconcileOnce('x6');
+    // A is still unresolved: B must not pass on budget A may yet spend.
+    let stop = await boot();
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      await owner('resume');
+      expect(await refusal(agent('order.take', { orderId: 'x7', amount: '1' }))).toMatchObject({ code: ERROR.DENIED, data: { reason: 'usd_daily_exceeded' } });
+    } finally {
+      await stop();
+    }
+    // The accept the venue was holding lands late and the trade completes: booked once, over two reconciles.
+    Object.assign(api.orders.get('x6')!, { status: 'completed', opponentUserId: 'bot' });
+    await reconcileOnce('x6');
+    stop = await boot();
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      await new Promise((r) => setTimeout(r, 100));
+      expect(state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '1', usdValue: '0.15' })]);
+      expect(state().positions).toMatchObject({ CC: '1' });
+      expect(state().openOrders).toEqual([]);
       expect(await refusal(agent('order.make', { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' })))
         .toMatchObject({ code: ERROR.DENIED, data: { reason: 'usd_daily_exceeded' } });
     } finally {

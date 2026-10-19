@@ -28,6 +28,8 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
   const made: { orderId: string; side: string; price: string }[] = [];
   const cancelled: string[] = [];
   const statuses: Record<string, string> = {};
+  // Who took an order, as the venue reports it: absent until it has a taker.
+  const takers: Record<string, boolean> = {};
   let ticker: (() => void) | undefined;
   const audited: { method: string; decision: string; reason?: string }[] = [];
   let hooks: Parameters<Deps['createEngine']>[1] | undefined;
@@ -67,7 +69,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
             crash.orderFailOnce = undefined;
             throw new Error('ECONNRESET');
           }
-          return { orderId: id, status: statuses[id] ?? 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' };
+          return { orderId: id, status: statuses[id] ?? 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1', ...(id in takers && { takenBySelf: takers[id] }) };
         },
         balances: jest.fn(),
         referencePrices: async () => ({ 'CC/USDCx': '0.15' }),
@@ -105,6 +107,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
     cancelled,
     audited,
     statuses,
+    takers,
     state: () => state,
     advance: (ms: number) => void (clock += ms),
     fill: async (orderId: string) => {
@@ -557,27 +560,6 @@ describe('an order whose answer was lost', () => {
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual([id]);
   });
 
-  it('released takes are pruned: past their day without a lookup, or once the venue shows they ended (round-22 X-2)', async () => {
-    const w = world();
-    const view = { pair: 'CC/USDCx', side: 'buy' as const, amount: '1', price: '0.15', taken: true };
-    const state = w.state();
-    state.releasedTakes = {
-      old: { orderId: 'old', ...view, releasedAt: 1_000_000 - 86_400_001 },
-      gone: { orderId: 'gone', ...view, releasedAt: 1_000_000 },
-      live: { orderId: 'live', ...view, releasedAt: 1_000_000 },
-    };
-    w.statuses.gone = 'cancelled';
-    await w.unlock();
-    expect(Object.keys(w.state().releasedTakes ?? {})).toEqual(['live']);
-    expect(w.crash.orderLookups).not.toContain('old');
-    // Still open: kept, in case its accept lands late.
-    w.crash.orderLookups.length = 0;
-    await w.restart();
-    await w.unlock();
-    expect(Object.keys(w.state().releasedTakes ?? {})).toEqual(['live']);
-    expect(w.crash.orderLookups).not.toContain('gone');
-  });
-
   it('an adopted order that filled while it was an intent goes into the position', async () => {
     const w = world();
     await w.unlock();
@@ -637,6 +619,84 @@ describe('an order whose answer was lost', () => {
     w.crash.refuse = true;
     await expect(w.call('order.make', make, false)).rejects.toBeDefined();
     expect(w.state().orderTimes).toHaveLength(1);
+  });
+});
+
+describe('one rule for the book: booked until the venue shows the outcome, reconciled every tick', () => {
+  const make = { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' };
+
+  it('a running daemon resolves the book on its ticks, with no lock or unlock: cancelled, completed, an unconfirmed cancel (goodmai #1)', async () => {
+    const w = world();
+    await w.unlock();
+    for (let i = 0; i < 3; i++) await w.call('order.make', make, false);
+    const [a, b, c] = w.state().openOrders.map((o) => o.orderId);
+    // c: a cancel sent while no status could be read stays booked.
+    w.crash.orderDown = true;
+    expect(await w.call('order.cancel', { orderId: c }, false)).toMatchObject({ result: { cancelled: true } });
+    w.crash.orderDown = false;
+    w.statuses[a!] = 'cancelled';
+    w.statuses[b!] = 'completed';
+    w.statuses[c!] = 'cancelled';
+    w.advance(31_000);
+    await w.tick();
+    await w.tick();
+    expect(w.state().openOrders).toEqual([]);
+    expect(w.state().fills).toHaveLength(1);
+    expect(w.audited).toContainEqual(expect.objectContaining({ params: expect.objectContaining({ orderId: a, event: 'cancelled' }) }));
+  });
+
+  it('a fill reported by serve and by reconcile is booked once and pauses nothing (F128-RELEASE-DOUBLE-FILL-1)', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    const [id] = w.state().openOrders.map((o) => o.orderId);
+    w.statuses[id!] = 'completed';
+    // serve's settle event, then the tick's reconcile finding the same completed order, then serve again.
+    await w.fill(id!);
+    w.advance(31_000);
+    await w.tick();
+    await w.fill(id!);
+    expect(w.state().fills).toHaveLength(1);
+    expect(w.state().positions).toMatchObject({ CC: '1' });
+    expect(w.state()).toMatchObject({ paused: false });
+  });
+
+  it('no false unbooked_fill when the lookup fails after a first miss, or answers for one intent but not another (goodmai #2)', async () => {
+    for (const twoIntents of [false, true]) {
+      const w = world();
+      await w.unlock();
+      w.crash.make = true;
+      await expect(w.call('order.make', make, false)).rejects.toBeDefined();
+      if (twoIntents) await expect(w.call('order.make', make, false)).rejects.toBeDefined();
+      w.crash.make = false;
+      await w.fill('mine');
+      // A first answered lookup (a miss), then the lookup API goes down for 20 minutes.
+      w.advance(61_000);
+      await w.tick();
+      w.crash.lookupDown = true;
+      for (let i = 0; i < 20; i++) {
+        w.advance(61_000);
+        await w.tick();
+      }
+      expect(w.state()).toMatchObject({ paused: false });
+      expect(Object.keys(w.state().unknownSettles ?? {})).toEqual(['mine']);
+    }
+  });
+
+  it('a make that lands after a pause on an order already taken stays booked as a trade, not reported cancelled (goodmai #3)', async () => {
+    const w = world();
+    await w.unlock();
+    let answer: (v: { orderId: string }) => void = () => undefined;
+    w.crash.slow = new Promise((r) => (answer = r));
+    const making = w.call('order.make', make, false);
+    await new Promise((r) => setTimeout(r, 0));
+    await w.call('pause', {}, true);
+    // By the time its answer arrives the order is taken: it cannot be cancelled.
+    w.statuses.o1 = 'accepted';
+    answer({ orderId: 'o1' });
+    await expect(making).resolves.toMatchObject({ result: { order: { orderId: 'o1' } } });
+    expect(w.cancelled).toEqual([]);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['o1']);
   });
 });
 

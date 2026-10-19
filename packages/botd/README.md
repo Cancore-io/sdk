@@ -250,11 +250,15 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
    ```
 
    On unlock the daemon starts the settlement loop and reconciles orders that settled or ended while
-   it was down, and orders whose creation it could not confirm (below).
+   it was down, and orders whose creation it could not confirm (below). While it runs it reconciles
+   the book every 30 s (a failed lookup backs off): an order stays booked, with its full reservation
+   against the limits, until the venue shows how it ended — completed by this account (booked as a
+   fill once), taken by another account or ended (off the book, no fill). A take whose accept answer
+   was lost stays booked the same way, however long its order stays open.
 
 **Crash safety.** Every `order.make` (agent or strategy) is written to the state file as an intent,
 with a client key, before the API is called; the key rides on the order as its description. An
-unconfirmed intent counts as an open order for the risk gate. On the next unlock the daemon looks
+unconfirmed intent counts as an open order for the risk gate. On unlock and on its ticks the daemon looks
 for the order among one page of 100 of the bot's orders (the API's default order): by the key, or, if the API rewrote the description,
 by the same pair, side and amounts created within 10 minutes of the intent. A match is adopted onto
 the book (and settles or ends like any other, including a fill that happened while it was an intent);
@@ -313,7 +317,7 @@ Every strategy order is an `order.make` through the same trade lock, risk gate, 
 | `register` fails, or the first unlock logs `not registered: run cancore-bot register` | a new account, or a wrong invite code | `cancore-bot register` with the right code |
 | paused with `pauseReason: unbooked_fill` | a trade settled on the bot account that the daemon never booked (for example one made by hand in the web app on the bot's account); the limits cannot account for it, so the bot stops | check the audit log and the account's orders, then `cancore-bot resume`; do not trade by hand on the bot account |
 | `order.cancel` fails with `reason: not_open` | the venue shows the order taken, settling or ended; cancelling it could leave an HTLC that still executes, so the daemon keeps it booked as a trade | nothing to do: it settles or ends on its own (`status`, audit log) |
-| `order.cancel` answers `cancelled: true` but the order is still in `status` | the venue did not answer the status read, so the cancel was sent unconfirmed; the order stays booked (it still counts against open orders) until the next unlock reconciles it | nothing, or `lock` and `unlock` to reconcile sooner |
+| `order.cancel` answers `cancelled: true` but the order is still in `status` | the venue did not answer the status read, so the cancel was sent unconfirmed; the order stays booked (it still counts against open orders) until reconcile sees it ended, within about 30 s once the venue answers | nothing |
 | every trade `usd_cap_missing` | `perOrderUsd` or `perDayUsd` not set | set both, or `usdCapsOptOut: true` |
 | every trade `usd_daily_exceeded`, audit shows a settle with `usdValue: "unpriced"` | a fill settled while the API gave no USD price (or one from before USD caps) is in the 24 h window; its value is unknown, so the whole day counts as spent | wait until that fill is 24 h old, or set `usdCapsOptOut: true` (owner, `limits.json`) to trade without USD caps meanwhile |
 | every trade `usd_price_missing` | the API gives no USD price for an instrument involved | wait for the price feed; check the pair is listed |

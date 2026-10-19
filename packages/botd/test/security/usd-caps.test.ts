@@ -72,18 +72,4 @@ describe('security: USD caps through the dispatcher', () => {
     expect(r.state().fills).toHaveLength(1);
     expect(r.audit()).toContainEqual(expect.objectContaining({ method: 'settle', decision: 'deny', reason: 'unbooked_fill' }));
   });
-  it('takeOpenSeen does not accumulate: a settle or an end of the booking clears its entry', async () => {
-    r = await rig({ ...LIMITS, perOrderUsd: '1000', perDayUsd: '1000' });
-    await r.unlock();
-    expect(await outcome(r.dispatcher.handle(make('1'), agent))).toBe('ok');
-    expect(await outcome(r.dispatcher.handle(make('1'), agent))).toBe('ok');
-    const [a, b] = r.state().openOrders.map((o) => o.orderId);
-    const seeded = await r.deps.state.load();
-    await r.deps.state.save({ ...seeded, takeOpenSeen: { [a!]: 1, [b!]: 1 } } as never);
-    r.hooks().onSettled(a!);
-    r.hooks().onEnded(b!, 'cancelled');
-    while (r.state().openOrders.length) await new Promise((res) => setImmediate(res));
-    for (let i = 0; i < 20 && Object.keys((r.state() as { takeOpenSeen?: object }).takeOpenSeen ?? {}).length; i++) await new Promise((res) => setImmediate(res));
-    expect((r.state() as { takeOpenSeen?: object }).takeOpenSeen ?? {}).toEqual({});
-  });
 });

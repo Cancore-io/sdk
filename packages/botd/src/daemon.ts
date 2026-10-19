@@ -61,13 +61,16 @@ const LOCK_DRAIN_MS = 5_000;
 
 /** An intent younger than this may still be in flight: no lookup can tell it was never made. */
 const INTENT_SETTLE_MS = 60_000;
-/** How long a released take and a booked fill's id are kept, for a late accept or a repeated settle. */
+/** How long a booked fill's order id is kept, so a repeated settle books nothing. */
 const KEEP_MS = 86_400_000;
+/** How often an order on the book is looked up while it lasts; a failed lookup backs off up to LOOKUP_BACKOFF_MAX_MS. */
+const BOOK_POLL_MS = 30_000;
+/** A held settle for an order not on the book is judged after this long whatever the intents say: fail-safe. */
+const UNKNOWN_SETTLE_MAX_MS = 60 * 60_000;
 
-/** Drops released takes and settled ids older than KEEP_MS. */
+/** Drops settled ids older than KEEP_MS. */
 function withoutStale(s: BotState, now: number): BotState {
-  const fresh = <T>(r: Record<string, T> | undefined, at: (v: T) => number) => Object.fromEntries(Object.entries(r ?? {}).filter(([, v]) => now - at(v) < KEEP_MS));
-  return { ...s, releasedTakes: fresh(s.releasedTakes, (v) => v.releasedAt), settledOrders: fresh(s.settledOrders, (v) => v) };
+  return { ...s, settledOrders: Object.fromEntries(Object.entries(s.settledOrders ?? {}).filter(([, at]) => now - at < KEEP_MS)) };
 }
 /** Ceiling of the backoff between lookups of one intent while the API keeps failing. */
 const LOOKUP_BACKOFF_MAX_MS = 15 * 60_000;
@@ -211,13 +214,13 @@ export function createDispatcher(deps: Deps): Dispatcher {
 
   /**
    * Books a confirmed order. One that lands after a pause (its make or its intent was in flight) is cancelled
-   * at once; true when it was paused. A cancel that fails leaves the order booked, for the owner to see.
+   * at once. True only when it was actually cancelled and unbooked; otherwise it stays booked as a trade.
    */
   async function adoptOrCancel(e: Engine, intent: OrderIntent, orderId: string): Promise<boolean> {
     let paused = false;
     await mutate((s) => ((paused = s.paused), adoptIntent(s, intent, orderId)));
-    if (!paused) return false;
-    if ((await cancelResting(e, orderId)) === 'cancelled') await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) }));
+    if (!paused || (await cancelResting(e, orderId)) !== 'cancelled') return false;
+    await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) }));
     return true;
   }
   const hooks: EngineHooks = {
@@ -230,18 +233,12 @@ export function createDispatcher(deps: Deps): Dispatcher {
         let repeated = false;
         let pending = false;
         const now = deps.now();
+        // The one place a fill is booked (serve's settle event and reconcile both come here): once per order id.
         await mutate((s0) => {
-          let s = withoutStale(s0, now);
-          // A take released as never accepted that landed late after all: back on the book, so it is booked once.
-          const released = s.releasedTakes?.[orderId];
-          if (released && !s.openOrders.some((o) => o.orderId === orderId)) {
-            const { releasedAt: _, ...entry } = released;
-            const { [orderId]: __, ...rest } = s.releasedTakes!;
-            s = { ...s, openOrders: [...s.openOrders, entry], releasedTakes: rest };
-          }
+          const s = withoutStale(s0, now);
+          if (s.settledOrders?.[orderId] !== undefined) return (repeated = true), s;
           const filled = s.openOrders.find((o) => o.orderId === orderId);
           if (!filled) {
-            if (s.settledOrders?.[orderId] !== undefined) return (repeated = true), s;
             // It may be the order of an intent not adopted yet (a make whose answer was lost): judged once intents drain.
             if ((s.intents ?? []).length > 0) return (pending = true), { ...s, unknownSettles: { [orderId]: now, ...s.unknownSettles } };
             // A trade on this account the book never knew: limits cannot have seen it, so trading stops for the owner.
@@ -252,8 +249,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
           const base = filled.pair.split('/')[0];
           const next = applyFill(s, orderId, now, base !== undefined && Object.hasOwn(usdPrices, base) ? usdPrices[base] : undefined);
           usdValue = next.fills?.at(-1)?.usdValue;
-          const { [orderId]: _seen, ...openSeen } = next.takeOpenSeen ?? {};
-          const done = { ...next, takeOpenSeen: openSeen, settledOrders: { ...next.settledOrders, [orderId]: now } };
+          const done = { ...next, settledOrders: { ...next.settledOrders, [orderId]: now } };
           return tag ? { ...done, strategies: strategyFilled(done.strategies, tag) } : done;
         });
         // Already booked (serve and reconcile both saw it): nothing more to record.
@@ -274,8 +270,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
         // Cancelled outside the daemon (the web app): by hand, so a grid does not place it again.
         await mutate((s) => {
           const next = reason === 'cancelled' ? userCancelled(s, [orderId]) : s;
-          const { [orderId]: _seen, ...openSeen } = next.takeOpenSeen ?? {};
-          return { ...next, takeOpenSeen: openSeen, openOrders: next.openOrders.filter((o) => o.orderId !== orderId) };
+          return { ...next, openOrders: next.openOrders.filter((o) => o.orderId !== orderId) };
         });
         await append({ ...settleEntry, decision: 'allow', params: { orderId, event: reason } });
       }),
@@ -287,40 +282,26 @@ export function createDispatcher(deps: Deps): Dispatcher {
   /** Per-intent lookup state, in memory: failed lookups back off, an empty one is confirmed once more. */
   const lookups = new Map<string, { failures: number; misses: number; next: number }>();
 
-  /** An order of ours that settled or ended while nobody listened goes through the same hooks as a live one. */
-  async function settleIfDone(e: Engine, orderId: string) {
+  /**
+   * The one rule for an order on the book, taken or ours: it stays booked, with its full risk reservation,
+   * until the venue shows how it ended. Completed by us → the fill (once); taken by another account or ended
+   * → off the book with no fill; anything else (open, in progress, taker not known yet) → still booked.
+   * False when the lookup failed.
+   */
+  async function settleIfDone(e: Engine, orderId: string): Promise<boolean> {
     const info = await e.order(orderId).catch(() => undefined);
+    if (!info) return false;
     const taken = (await deps.state.load()).openOrders.find((o) => o.orderId === orderId)?.taken;
-    // A take of ours is our fill only if we are its taker; someone else's take ends our booking; unknown waits.
-    if (info?.status === 'completed' && taken) {
-      if (info.takenBySelf === true) hooks.onSettled(orderId);
-      else if (info.takenBySelf === false) hooks.onEnded(orderId, 'taken_by_other');
-    } else if (info?.status === 'completed') hooks.onSettled(orderId);
-    else if (info && ENDED.has(info.status)) hooks.onEnded(orderId, info.status);
-    else if (info?.status === 'open' && taken && info.takenBySelf === undefined) {
-      // A take whose accept answer was lost: still open with no taker after the settle window means it never landed.
-      const seen = (await deps.state.load()).takeOpenSeen?.[orderId];
-      const now = deps.now();
-      if (seen === undefined) await mutate((s) => ({ ...s, takeOpenSeen: { ...s.takeOpenSeen, [orderId]: now } }));
-      else if (now - seen >= INTENT_SETTLE_MS) {
-        // Serve still running for it: wait for the next reconcile.
-        if (e.forget?.(orderId) === false) return;
-        // Kept for a day: if the accept lands late after all, onSettled books it from this view.
-        await mutate(({ takeOpenSeen: { [orderId]: _, ...rest } = {}, ...s }) => {
-          const entry = s.openOrders.find((o) => o.orderId === orderId);
-          return { ...s, takeOpenSeen: rest, ...(entry && { releasedTakes: { ...s.releasedTakes, [orderId]: { ...entry, releasedAt: now } } }) };
-        });
-        hooks.onEnded(orderId, 'take_released');
-      }
-    }
+    if (taken && info.takenBySelf === false) hooks.onEnded(orderId, 'taken_by_other');
+    else if (info.status === 'completed' && (!taken || info.takenBySelf === true)) hooks.onSettled(orderId);
+    else if (ENDED.has(info.status)) hooks.onEnded(orderId, info.status);
+    return true;
   }
 
   /**
    * Adopts the order an intent made, or drops an intent the API never saw. An intent possibly still in
    * flight waits; one is dropped only after two empty lookups INTENT_SETTLE_MS apart.
    */
-  // When an intent lookup last answered: an outage of the lookup API must not turn into an unbooked-fill pause.
-  let lastIntentLookupOk: number | undefined;
   async function reconcileIntents(e: Engine) {
     const now = deps.now();
     for (const intent of (await deps.state.load()).intents ?? []) {
@@ -328,7 +309,6 @@ export function createDispatcher(deps: Deps): Dispatcher {
       if (now - intent.at < INTENT_SETTLE_MS || now < seen.next) continue;
       const known = (await deps.state.load()).openOrders.map((o) => o.orderId);
       const found = await e.findIntent(intent, known).then((id) => ({ id }), () => undefined);
-      if (found) lastIntentLookupOk = deps.now();
       if (!found) {
         const failures = seen.failures + 1;
         lookups.set(intent.key, { ...seen, failures, next: now + Math.min(INTENT_SETTLE_MS * 2 ** failures, LOOKUP_BACKOFF_MAX_MS) });
@@ -350,20 +330,19 @@ export function createDispatcher(deps: Deps): Dispatcher {
   }
 
   /**
-   * Settles that found no booking while intents were unresolved. Once intents drain (or after the longest
-   * lookup backoff), one now booked is settled by the normal path, one already settled is dropped, and one
-   * still unknown pauses trading like any unbooked fill.
+   * Settles that found no booking while intents were unresolved. Only an intent recorded before the settle
+   * arrived can own its order, and an intent leaves the state only on an actual answer (adopted or dropped):
+   * so it is judged once those have all gone, or after the fail-safe ceiling. Booked by then → the normal
+   * path; already settled → dropped; still unknown → trading pauses like any unbooked fill.
    */
-  const UNKNOWN_SETTLE_MAX_MS = 60 * 60_000;
   async function resolveUnknownSettles() {
     const s = await deps.state.load();
     const now = deps.now();
-    // Past the longest backoff, judged only if a lookup has answered since: a down API keeps it held, not paused.
     const due = Object.entries(s.unknownSettles ?? {}).filter(
-      ([, at]) =>
-        (s.intents ?? []).length === 0 ||
-        (now - at >= LOOKUP_BACKOFF_MAX_MS && lastIntentLookupOk !== undefined && lastIntentLookupOk > at) ||
-        // Fail-safe ceiling: an hour of a held, unbooked fill is judged (and pauses) even with the lookup API down.
+      ([id, at]) =>
+        s.settledOrders?.[id] !== undefined ||
+        s.openOrders.some((o) => o.orderId === id) ||
+        !(s.intents ?? []).some((i) => i.at <= at) ||
         now - at >= UNKNOWN_SETTLE_MAX_MS,
     );
     if (due.length === 0) return;
@@ -380,20 +359,23 @@ export function createDispatcher(deps: Deps): Dispatcher {
     }
   }
 
-  /** Orders that settled or ended while the daemon was down. A failed lookup leaves the order as it was. */
+  /** Per-order lookup schedule for the book, in memory: every BOOK_POLL_MS, a failed lookup backs off. */
+  const bookLookups = new Map<string, { failures: number; next: number }>();
+
+  /** Run on unlock and on every tick: intents, then every order on the book that is due a lookup. */
   async function reconcile(e: Engine) {
     await reconcileIntents(e);
-    for (const o of (await deps.state.load()).openOrders) await settleIfDone(e, o.orderId);
-    // Released takes past their day are dropped first, so they are not polled forever.
-    await mutate((s) => withoutStale(s, deps.now()));
-    // A released take the venue now shows completed by us landed late: book it (onSettled puts it back first).
-    // One that ended, or that another account took, can no longer land: forget it.
-    for (const orderId of Object.keys((await deps.state.load()).releasedTakes ?? {})) {
-      const info = await e.order(orderId).catch(() => undefined);
-      if (info?.status === 'completed' && info.takenBySelf === true) hooks.onSettled(orderId);
-      else if (info && (ENDED.has(info.status) || info.takenBySelf === false)) {
-        await mutate(({ releasedTakes: { [orderId]: _, ...rest } = {}, ...s }) => ({ ...s, releasedTakes: rest }));
-      }
+    const now = deps.now();
+    const state = await deps.state.load();
+    // Pruned only when something aged out: a tick must not rewrite the state file for nothing.
+    if (Object.values(state.settledOrders ?? {}).some((at) => now - at >= KEEP_MS)) await mutate((s) => withoutStale(s, now));
+    const book = state.openOrders.map((o) => o.orderId);
+    for (const id of bookLookups.keys()) if (!book.includes(id)) bookLookups.delete(id);
+    for (const orderId of book) {
+      const seen = bookLookups.get(orderId) ?? { failures: 0, next: 0 };
+      if (now < seen.next) continue;
+      const failures = (await settleIfDone(e, orderId)) ? 0 : seen.failures + 1;
+      bookLookups.set(orderId, { failures, next: now + (failures ? Math.min(BOOK_POLL_MS * 2 ** failures, LOOKUP_BACKOFF_MAX_MS) : BOOK_POLL_MS) });
     }
   }
 
@@ -447,7 +429,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
   async function tick() {
     if (!engine) return;
     const [state, limits] = await Promise.all([deps.state.load(), deps.limits.load()]);
-    await reconcileIntents(engine);
+    await reconcile(engine);
     for (const rec of (state.strategies ?? []).filter(active)) await step(rec, limits);
   }
 
