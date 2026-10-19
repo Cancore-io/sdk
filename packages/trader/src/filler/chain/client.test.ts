@@ -6,8 +6,11 @@ import { RouterReader, INTENT_STATUS } from './router';
 const ROUTER: Hex = '0x3333333333333333333333333333333333333333';
 const ORDER_HASH: Hex = `0x${'ab'.repeat(32)}`;
 
-const client = (endpoints: ConstructorParameters<typeof ChainClient>[0]['endpoints'], maxHeadLagBlocks = 5) =>
-  new ChainClient({ chain: 'eip155:1', endpoints, maxHeadLagBlocks, logger: createRecordingLogger() });
+const client = (
+  endpoints: ConstructorParameters<typeof ChainClient>[0]['endpoints'],
+  maxHeadLagBlocks = 5,
+  chain: `eip155:${string}` = 'eip155:1',
+) => new ChainClient({ chain, endpoints, maxHeadLagBlocks, logger: createRecordingLogger() });
 
 const rejection = async (promise: Promise<unknown>): Promise<ChainReadError> => {
   try {
@@ -234,7 +237,7 @@ describe('reads at a depth', () => {
     const chain = new FakeChain(11155111n);
     chain.head = 11_929_058n;
     chain.router(ROUTER).openIntent(ORDER_HASH, { refundAfter: 2_000n, openedAt: 1_000n, atBlock: 11_929_057n });
-    const reader = new RouterReader('eip155:11155111', ROUTER, client([chain]));
+    const reader = new RouterReader('eip155:11155111', ROUTER, client([chain], 5, 'eip155:11155111'));
     await expect(reader.intents(ORDER_HASH, { confirmations: 3 })).resolves.toMatchObject({ status: INTENT_STATUS.None });
     chain.mine(1n);
     expect(chain.head - 11_929_057n + 1n).toBe(3n);
