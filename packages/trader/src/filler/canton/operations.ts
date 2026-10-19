@@ -28,6 +28,7 @@ import type {
   CantonSubmitted,
   Hex,
 } from '@cancore/contracts';
+import { encodeCantonAmount } from '@cancore/contracts';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { GatewayError } from '../errors';
 import { FillerConfigError } from '../errors';
@@ -35,7 +36,8 @@ import { createSealer, type Sealer, type Unsealed } from '../protocol/envelope';
 import { GatewayRest } from '../protocol/rest';
 import { silentLogger, systemClock, type Clock, type HttpFetch, type Logger } from '../runtime';
 import type { QuoteSigner } from '../signer';
-import { checkHoldingsTransfer, checkRegistryAccept } from './checks';
+import { canonicalDecimal, checkHoldingsTransfer, checkRegistryAccept } from './checks';
+import { checkDeliveryFill, type DeliveryFillExpectation } from './delivery-check';
 import { CantonRefusal, legKind, verifyTopologyLeg, verifyTransactionLeg } from './legs';
 import type { CantonTransaction } from './transaction';
 
@@ -102,6 +104,22 @@ export class CantonOperations {
   /** Moves the party's own holdings to another party (operator decision Yu-1): exactly what is asked, checked. */
   transfer(params: CantonOpParams['holdings.transfer']): Promise<SubmittedOf<'holdings.transfer'>> {
     return this.run('holdings.transfer', params, checkHoldingsTransfer({ params, publicKey: this.publicKey, nowMs: this.options.clock.now() }));
+  }
+
+  /**
+   * Delivers the node's receipted Canton-form ticket (`DeliveryOrder_Fill`,
+   * CAN-1867): the prepared transaction is held to `expect` — the ticket, the
+   * offered order and the node's identity — before the party key signs it.
+   * `delivered` is the checked amount in the order's units (Numeric 10 × 10¹⁰).
+   */
+  async fill(expect: Omit<DeliveryFillExpectation, 'publicKey' | 'nowMs'>): Promise<SubmittedOf<'delivery.fill'> & { delivered: string }> {
+    const check = checkDeliveryFill({ ...expect, publicKey: this.publicKey, nowMs: this.options.clock.now() });
+    let delivered = '';
+    const submitted = await this.run('delivery.fill', { orderHash: expect.orderHash.toLowerCase() as Hex, attempt: expect.attempt }, (prepared, transactions) => {
+      check(prepared, transactions);
+      delivered = encodeCantonAmount(canonicalDecimal(prepared.summary.amount)).toString();
+    });
+    return { ...submitted, delivered };
   }
 
   /** Reads the party registered for this fillerId and its registry entry. */

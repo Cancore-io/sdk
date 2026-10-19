@@ -531,6 +531,9 @@ export function createFiller(config: FillerConfig): Filler {
     clock,
     events,
     logger,
+    ...(canton && config.canton
+      ? { canton: { party: config.canton.party, policy: config.canton.destination, deliveryOrders: () => canton.deliveryOrders(), holdings: () => canton.holdings() } }
+      : {}),
   });
 
   const context: FillerContext = { config, clock, logger, events, fetch, instanceId, protocol, nextId, chains };
@@ -574,6 +577,7 @@ export function createFiller(config: FillerConfig): Filler {
     fillSigners: config.fillSigners,
     fillerId: config.fillerId,
     ...(cantonParty ? { cantonParty } : {}),
+    ...(config.canton ? { cantonSendGuardSec: config.canton.destination.sendGuardSec } : {}),
     messageSigner: config.quoteSigner,
     clock,
     logger,
@@ -600,6 +604,7 @@ export function createFiller(config: FillerConfig): Filler {
     // R-14: a settle this close to refundAfter is priced at the fee ceiling.
     settleUrgencyMs: config.settlement?.alertBeforeRefundMs ?? DEFAULT_SETTLEMENT.alertBeforeRefundMs,
     onFilled: (orderHash) => settler.onFilled(orderHash),
+    ...(canton && config.canton ? { canton: { operations: canton, sendGuardSec: config.canton.destination.sendGuardSec } } : {}),
   });
   const delivery = executor;
   const settler = new Settler({

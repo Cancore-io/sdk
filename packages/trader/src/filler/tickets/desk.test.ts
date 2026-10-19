@@ -412,7 +412,7 @@ describe('the issued stage: a failed check declines with its code, never a recei
       h.w.src.down = true;
       return h.issuedFrame(offer);
     }],
-    ['a Canton-form ticket (CAN-1867)', 'OTHER', async (h, offer) => ({ type: 'ticket.issued', fillerId: FILLER, form: 'canton', orderHash: h.w.orderHash, attempt: 0, deliveryOrderCid: '00ab', validUntil: offer.validUntil })],
+    ['a Canton-form ticket without canton configured (CAN-1867)', 'OTHER', async (h, offer) => ({ type: 'ticket.issued', fillerId: FILLER, form: 'canton', orderHash: h.w.orderHash, attempt: 0, deliveryOrderCid: '00ab', validUntil: offer.validUntil })],
   ];
 
   test.each(cases)('%s → %s', async (_name, reason, make) => {

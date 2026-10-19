@@ -32,12 +32,12 @@
  * Every check's result — `passed`, `failed` or `skipped` — is reported to
  * the `EventSink` as stage `ticket.checked`.
  *
- * Not here: a Canton source (V-C1…V-C6, CAN-1863) and a Canton-form ticket
- * (CAN-1867) are declined `OTHER`; the draw (V-T5) is V2 (CAN-1848).
+ * A Canton-form ticket (a Canton destination) is checked in `canton-ticket.ts`
+ * (CAN-1867). Not here: a Canton source (V-C1…V-C6, CAN-1863) is declined
+ * `OTHER`; the draw (V-T5) is V2 (CAN-1848).
  */
 import type { DeclineReason, Hex, TicketIntentMessage, TicketIssued, TicketIssuedEvm, TicketOffer } from '@cancore/contracts';
 import type { FillerChains } from '../chain';
-import { ChainReadError } from '../chain/client';
 import { erc20Allowance, erc20BalanceOf, erc20Blocklisted } from '../chain/erc20';
 import { hashOrder, hashTicket } from '../chain/hashes';
 import { INTENT_STATUS } from '../chain/router';
@@ -45,6 +45,8 @@ import type { EvmChainId } from '../chains';
 import type { EventSink } from '../events';
 import type { Clock, Logger } from '../runtime';
 import { recoverAddress, type FillSigner } from '../signer';
+import { verifyCantonTicket, type CantonTicketOptions } from './canton-ticket';
+import { readFor, TicketRefusal } from './refusal';
 import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from './terms';
 
 export type TicketCheckId = 'form' | 'V-T4' | 'V-T2' | 'V-T3' | 'V-E1' | 'V-E2' | 'V-E3' | 'V-T1' | 'V-E4' | 'V-E5';
@@ -90,6 +92,8 @@ export interface TicketVerifierOptions {
   clock: Clock;
   events: EventSink;
   logger: Logger;
+  /** The filler's Canton party and what it reads through filler-gateway: required for a Canton-form ticket (CAN-1867). */
+  canton?: CantonTicketOptions;
 }
 
 /** One issued ticket, with the offer and consent it answers. */
@@ -100,16 +104,6 @@ export interface TicketCheckInput {
   issuedAtMs: number;
   /** The consent sent for this attempt, when one was. */
   intent?: TicketIntentMessage;
-}
-
-class Refusal extends Error {
-  constructor(
-    readonly check: TicketCheckId,
-    readonly reason: DeclineReason,
-    readonly detail: string,
-  ) {
-    super(`${check}: ${reason} (${detail})`);
-  }
 }
 
 const UINT64 = /^(0|[1-9][0-9]*)$/;
@@ -127,7 +121,7 @@ export class TicketVerifier {
     try {
       await this.run(input, pass);
     } catch (error) {
-      if (!(error instanceof Refusal)) throw error;
+      if (!(error instanceof TicketRefusal)) throw error;
       this.record(checks, { check: error.check, status: 'failed', reason: error.reason, detail: error.detail }, orderHash, attempt);
       this.options.logger.info('tickets: issued ticket refused', { orderHash, attempt, check: error.check, reason: error.reason, detail: error.detail });
       return { ok: false, reason: error.reason, detail: `${error.check}: ${error.detail}`, checks };
@@ -140,47 +134,51 @@ export class TicketVerifier {
     const now = this.options.clock.now();
 
     // -- The form and the chains ---------------------------------------------
-    if (input.issued?.form !== 'evm') throw new Refusal('form', 'OTHER', `form ${String(input.issued?.form)}: a Canton-form ticket is not supported yet (CAN-1867)`);
+    if (input.issued?.form === 'canton') {
+      if (!this.options.canton) throw new TicketRefusal('form', 'OTHER', 'a Canton-form ticket, and no Canton party configured (canton)');
+      return verifyCantonTicket({ ...this.options, canton: this.options.canton }, input, pass);
+    }
+    if (input.issued?.form !== 'evm') throw new TicketRefusal('form', 'OTHER', `form ${String((input.issued as { form?: unknown } | undefined)?.form)}: an unknown ticket form`);
     const issued = input.issued as TicketIssuedEvm;
     const ticket = issued.ticket;
     const chains = chainsOf(offer.order);
-    if (!chains) throw new Refusal('form', 'OTHER', 'the offered order does not parse');
-    if (!chains.source) throw new Refusal('form', 'OTHER', 'a Canton source is not supported yet (CAN-1863)');
-    if (!chains.destination) throw new Refusal('form', 'OTHER', 'an EVM-form ticket for a non-EVM destination');
+    if (!chains) throw new TicketRefusal('form', 'OTHER', 'the offered order does not parse');
+    if (!chains.source) throw new TicketRefusal('form', 'OTHER', 'a Canton source is not supported yet (CAN-1863)');
+    if (!chains.destination) throw new TicketRefusal('form', 'OTHER', 'an EVM-form ticket for a non-EVM destination');
     const source = this.options.chains.get(chains.source);
     const destination = this.options.chains.get(chains.destination);
-    if (!source) throw new Refusal('form', 'OTHER', `no router configured for the source ${chains.source}`);
-    if (!destination) throw new Refusal('form', 'OTHER', `no router configured for the destination ${chains.destination}`);
+    if (!source) throw new TicketRefusal('form', 'OTHER', `no router configured for the source ${chains.source}`);
+    if (!destination) throw new TicketRefusal('form', 'OTHER', `no router configured for the destination ${chains.destination}`);
     const policy = destination.config;
     pass('form');
 
     // -- V-T4: issued in time ---------------------------------------------------
     if (!(issuedAtMs <= offer.acceptBy + this.options.deltaIssueMs)) {
-      throw new Refusal('V-T4', 'TICKET_ISSUED_LATE', `arrived ${issuedAtMs - offer.acceptBy} ms after acceptBy (δ_issue ${this.options.deltaIssueMs} ms)`);
+      throw new TicketRefusal('V-T4', 'TICKET_ISSUED_LATE', `arrived ${issuedAtMs - offer.acceptBy} ms after acceptBy (δ_issue ${this.options.deltaIssueMs} ms)`);
     }
     pass('V-T4');
 
     // -- V-T2: this offer, this filler ---------------------------------------------
     const identity = identityFor(offer.order, this.options);
-    if (!identity) throw new Refusal('V-T2', 'TICKET_MISMATCH', 'no fill key or payee of this filler for the order');
+    if (!identity) throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', 'no fill key or payee of this filler for the order');
     if (String(issued.orderHash).toLowerCase() !== String(offer.orderHash).toLowerCase() || issued.attempt !== offer.attempt) {
-      throw new Refusal('V-T2', 'TICKET_MISMATCH', 'the frame names another order or attempt than the offer');
+      throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', 'the frame names another order or attempt than the offer');
     }
     const terms = { orderHash: offer.orderHash, attempt: offer.attempt, validFrom: offer.validFrom, validUntil: offer.validUntil };
     const field = ticketMismatch(ticket, terms, identity);
-    if (field) throw new Refusal('V-T2', 'TICKET_MISMATCH', `ticket.${field} differs from the offer and this filler`);
+    if (field) throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', `ticket.${field} differs from the offer and this filler`);
     // The filler delivers its own quote, never less than the order lets the router accept (T-19, T-25).
     const amountOut = seconds(offer.amountOut);
     const minReceived = seconds(offer.order.minReceived);
     if (amountOut === undefined || minReceived === undefined || amountOut < minReceived) {
-      throw new Refusal('V-T2', 'TICKET_MISMATCH', `offer.amountOut ${String(offer.amountOut)} is below order.minReceived ${String(offer.order.minReceived)}`);
+      throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', `offer.amountOut ${String(offer.amountOut)} is below order.minReceived ${String(offer.order.minReceived)}`);
     }
     if (input.intent && (input.intent.validFrom !== ticket.validFrom || input.intent.validUntil !== ticket.validUntil)) {
-      throw new Refusal('V-T2', 'TICKET_MISMATCH', 'the ticket window differs from the signed ticket.intent');
+      throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', 'the ticket window differs from the signed ticket.intent');
     }
     // T-15: the ticket carries the delivery key and the payee this filler named in its signed consent.
     if (input.intent && (input.intent.deliveryKey?.toLowerCase() !== ticket.deliveryKey?.toLowerCase() || input.intent.repayTo?.toLowerCase() !== ticket.repayTo?.toLowerCase())) {
-      throw new Refusal('V-T2', 'TICKET_MISMATCH', 'deliveryKey or repayTo differs from the signed ticket.intent');
+      throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', 'deliveryKey or repayTo differs from the signed ticket.intent');
     }
     pass('V-T2');
 
@@ -188,12 +186,12 @@ export class TicketVerifier {
     const validFrom = seconds(ticket.validFrom);
     const validUntil = seconds(ticket.validUntil);
     const fillDeadline = seconds(offer.order.fillDeadline);
-    if (validFrom === undefined || validUntil === undefined || fillDeadline === undefined) throw new Refusal('V-T3', 'TICKET_MISMATCH', 'ticket or order times do not parse');
-    if (!(validUntil < fillDeadline)) throw new Refusal('V-T3', 'TICKET_BEYOND_DEADLINE', `validUntil ${validUntil} ≥ fillDeadline ${fillDeadline}`);
-    if (validUntil - validFrom < BigInt(policy.minTicketTtlSec)) throw new Refusal('V-T3', 'TICKET_TTL_TOO_SHORT', `validUntil − validFrom = ${validUntil - validFrom} s < MIN_TICKET_TTL ${policy.minTicketTtlSec} s`);
+    if (validFrom === undefined || validUntil === undefined || fillDeadline === undefined) throw new TicketRefusal('V-T3', 'TICKET_MISMATCH', 'ticket or order times do not parse');
+    if (!(validUntil < fillDeadline)) throw new TicketRefusal('V-T3', 'TICKET_BEYOND_DEADLINE', `validUntil ${validUntil} ≥ fillDeadline ${fillDeadline}`);
+    if (validUntil - validFrom < BigInt(policy.minTicketTtlSec)) throw new TicketRefusal('V-T3', 'TICKET_TTL_TOO_SHORT', `validUntil − validFrom = ${validUntil - validFrom} s < MIN_TICKET_TTL ${policy.minTicketTtlSec} s`);
     // The protocol has no own code for a ticket that leaves less than sendGuard: it is a TTL too short for this filler (T-29).
     const leftMs = validUntil * 1000n - BigInt(now);
-    if (leftMs < BigInt(policy.sendGuardSec) * 1000n) throw new Refusal('V-T3', 'TICKET_TTL_TOO_SHORT', `send-guard: ${leftMs} ms left < sendGuard ${policy.sendGuardSec} s`);
+    if (leftMs < BigInt(policy.sendGuardSec) * 1000n) throw new TicketRefusal('V-T3', 'TICKET_TTL_TOO_SHORT', `send-guard: ${leftMs} ms left < sendGuard ${policy.sendGuardSec} s`);
     pass('V-T3');
 
     // -- V-E1: the ticket is for this order ---------------------------------------------
@@ -202,17 +200,17 @@ export class TicketVerifier {
     try {
       digest = hashOrder(order, { chainId: chains.origin, router: source.router.address });
     } catch (error) {
-      throw new Refusal('V-E1', 'ESCROW_MISMATCH', `the offered order does not hash: ${String(error)}`);
+      throw new TicketRefusal('V-E1', 'ESCROW_MISMATCH', `the offered order does not hash: ${String(error)}`);
     }
-    if (digest !== ticket.orderHash.toLowerCase()) throw new Refusal('V-E1', 'ESCROW_MISMATCH', 'orderHash is not the order digest in the source router domain');
+    if (digest !== ticket.orderHash.toLowerCase()) throw new TicketRefusal('V-E1', 'ESCROW_MISMATCH', 'orderHash is not the order digest in the source router domain');
     pass('V-E1');
 
     // -- V-E2, V-E3: the escrow, at depth --------------------------------------------------
     const intent = await this.chainRead('V-E2', 'ESCROW_NOT_OPEN', () => source.router.intents(digest, { confirmations: source.config.openConfirmations }));
-    if (intent.status !== INTENT_STATUS.Opened) throw new Refusal('V-E2', 'ESCROW_NOT_OPEN', `status ${intent.status} at ${source.config.openConfirmations} confirmations`);
+    if (intent.status !== INTENT_STATUS.Opened) throw new TicketRefusal('V-E2', 'ESCROW_NOT_OPEN', `status ${intent.status} at ${source.config.openConfirmations} confirmations`);
     pass('V-E2');
     const window = intent.refundAfter - fillDeadline;
-    if (window < BigInt(policy.requiredProofWindowSec)) throw new Refusal('V-E3', 'PROOF_WINDOW_TOO_SHORT', `refundAfter − fillDeadline = ${window} s < ${policy.requiredProofWindowSec} s`);
+    if (window < BigInt(policy.requiredProofWindowSec)) throw new TicketRefusal('V-E3', 'PROOF_WINDOW_TOO_SHORT', `refundAfter − fillDeadline = ${window} s < ${policy.requiredProofWindowSec} s`);
     pass('V-E3');
 
     // -- V-T1: signed by Cancore -------------------------------------------------------------
@@ -220,30 +218,30 @@ export class TicketVerifier {
     try {
       signer = recoverAddress(hashTicket(fillTicketOf(ticket)), issued.ticketSig);
     } catch {
-      throw new Refusal('V-T1', 'TICKET_SIGNER_UNKNOWN', 'ticketSig is not a valid signature over the ticket');
+      throw new TicketRefusal('V-T1', 'TICKET_SIGNER_UNKNOWN', 'ticketSig is not a valid signature over the ticket');
     }
-    if (!this.options.ticketSigners.some((s) => s.toLowerCase() === signer)) throw new Refusal('V-T1', 'TICKET_SIGNER_UNKNOWN', `${signer} is not a pinned ticket signer`);
+    if (!this.options.ticketSigners.some((s) => s.toLowerCase() === signer)) throw new TicketRefusal('V-T1', 'TICKET_SIGNER_UNKNOWN', `${signer} is not a pinned ticket signer`);
     const registered = await this.chainRead('V-T1', 'TICKET_SIGNER_UNKNOWN', () => destination.router.ticketSigners(signer));
-    if (!registered) throw new Refusal('V-T1', 'TICKET_SIGNER_UNKNOWN', `${signer} is not a ticket signer of the destination router`);
+    if (!registered) throw new TicketRefusal('V-T1', 'TICKET_SIGNER_UNKNOWN', `${signer} is not a ticket signer of the destination router`);
     pass('V-T1');
 
     // -- V-E4: repayTo will be paid ----------------------------------------------------------------
     // V-T2 already holds ticket.repayTo to the node's own padded address: here, that the source
     // token does not blocklist it — a blocklisted payee makes settle revert, and the advance is lost (R-8).
     const repayTo = String(ticket.repayTo);
-    if (!/^0x0{24}[0-9a-fA-F]{40}$/.test(repayTo)) throw new Refusal('V-E4', 'TICKET_MISMATCH', 'repayTo of an EVM source is not a padded address');
+    if (!/^0x0{24}[0-9a-fA-F]{40}$/.test(repayTo)) throw new TicketRefusal('V-E4', 'TICKET_MISMATCH', 'repayTo of an EVM source is not a padded address');
     const inputToken = String(offer.order.inputToken);
-    if (!/^0x[0-9a-fA-F]{40}$/.test(inputToken)) throw new Refusal('V-E4', 'OTHER', 'the input token is not an EVM address');
+    if (!/^0x[0-9a-fA-F]{40}$/.test(inputToken)) throw new TicketRefusal('V-E4', 'OTHER', 'the input token is not an EVM address');
     const payee = `0x${repayTo.slice(26)}`.toLowerCase() as Hex;
     const blocklisted = await this.chainRead('V-E4', 'OTHER', () => erc20Blocklisted(source.client, inputToken.toLowerCase() as Hex, payee));
-    if (blocklisted) throw new Refusal('V-E4', 'OTHER', `repayTo-blocklisted: the input token ${inputToken} blocklists ${payee}`);
+    if (blocklisted) throw new TicketRefusal('V-E4', 'OTHER', `repayTo-blocklisted: the input token ${inputToken} blocklists ${payee}`);
     pass('V-E4');
 
     // -- V-E5: the filler can fill ---------------------------------------------------------------
     const filled = await this.chainRead('V-E5', 'OTHER', () => destination.router.filled(digest));
-    if (filled) throw new Refusal('V-E5', 'OTHER', 'already-filled: the destination router has a fill for this order');
+    if (filled) throw new TicketRefusal('V-E5', 'OTHER', 'already-filled: the destination router has a fill for this order');
     const outputAsset = String(offer.order.outputAsset);
-    if (!/^0x0{24}[0-9a-fA-F]{40}$/.test(outputAsset)) throw new Refusal('V-E5', 'OTHER', 'the output asset is not an EVM token');
+    if (!/^0x0{24}[0-9a-fA-F]{40}$/.test(outputAsset)) throw new TicketRefusal('V-E5', 'OTHER', 'the output asset is not an EVM token');
     const token = `0x${outputAsset.slice(26)}` as Hex;
     const amount = amountOut;
     const delivery = identity.signer.address.toLowerCase() as Hex;
@@ -254,20 +252,15 @@ export class TicketVerifier {
         destination.client.balance(delivery),
       ]),
     );
-    if (balance < amount) throw new Refusal('V-E5', 'NO_INVENTORY', `balance: ${balance} < amountOut ${amount}`);
-    if (allowance < amount) throw new Refusal('V-E5', 'NO_INVENTORY', `allowance: ${allowance} < amountOut ${amount}`);
-    if (gas < policy.minGasWei) throw new Refusal('V-E5', 'NO_INVENTORY', `gas: ${gas} wei < ${policy.minGasWei} wei`);
+    if (balance < amount) throw new TicketRefusal('V-E5', 'NO_INVENTORY', `balance: ${balance} < amountOut ${amount}`);
+    if (allowance < amount) throw new TicketRefusal('V-E5', 'NO_INVENTORY', `allowance: ${allowance} < amountOut ${amount}`);
+    if (gas < policy.minGasWei) throw new TicketRefusal('V-E5', 'NO_INVENTORY', `gas: ${gas} wei < ${policy.minGasWei} wei`);
     pass('V-E5');
   }
 
   /** A chain read; any failure to read is a refusal by the check that needed it (N-12). */
-  private async chainRead<T>(check: TicketCheckId, reason: DeclineReason, read: () => Promise<T>): Promise<T> {
-    try {
-      return await read();
-    } catch (error) {
-      const why = error instanceof ChainReadError ? `${error.reason}: ${error.message}` : String(error);
-      throw new Refusal(check, reason, `unverifiable: ${why}`);
-    }
+  private chainRead<T>(check: TicketCheckId, reason: DeclineReason, read: () => Promise<T>): Promise<T> {
+    return readFor(check, reason, read);
   }
 
   private record(checks: TicketCheckResult[], result: TicketCheckResult, orderHash: string, attempt: number): void {
