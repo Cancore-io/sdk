@@ -95,8 +95,11 @@ Prefer `trade_pause` when something looks wrong.
 | `paused` / `locked` | as in the session start | tell the human the CLI command |
 
 Other errors: `locked` / `paused` carry an `instruction` to relay to the human; `forbidden` means
-the method is not on your socket; `invalid_params` lists which field failed; `not_open` (on
-`trade_order_cancel`) means the order is already taken, settling or ended — do not retry; `socket_unavailable`
+the method is not on your socket; `invalid_params` (when the tool itself rejected the arguments) lists which
+field failed; `not_open` (on
+`trade_order_cancel`) means the order is already taken, settling or ended — do not retry. A `cancelled: true` may be
+unconfirmed (the venue did not answer the status read): check `trade_status` / `trade_orders` before
+placing a replacement; `socket_unavailable`
 means the daemon is down or your user lacks the `cancore-bot-clients` group — tell the human;
 `daemon_error` is anything else.
 
