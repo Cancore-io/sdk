@@ -437,6 +437,17 @@ describe('v1 is dev only', () => {
     }
   });
 
+  it('refuses a state dir owned by another user, even with mode 0700 (X5, CAN-2833)', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'botd-uid-'));
+    const uid = jest.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1);
+    try {
+      await expect(defaultDeps({ ...DEFAULTS, stateDir: d })).rejects.toThrow(/owned by this user/);
+    } finally {
+      uid.mockRestore();
+      rmSync(d, { recursive: true, force: true });
+    }
+  });
+
   it('defaults to the dev API', () => {
     expect(DEFAULTS).toMatchObject({ baseUrl: 'https://api-dev.cancore.app' });
   });

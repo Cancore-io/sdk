@@ -155,3 +155,41 @@ describe('engine.usdPrices', () => {
     expect(await e.usdPrices()).toMatchObject({ CBTC: '111111.1111111112', X: '0.3333333334' });
   });
 });
+
+describe('engine serve events (CAN-2833)', () => {
+  async function served() {
+    const events: string[] = [];
+    let onEvent!: (event: Record<string, unknown>) => void;
+    const acct = { serve: (opts: { onEvent: typeof onEvent }) => ((onEvent = opts.onEvent), { stop: async () => undefined, take: () => undefined, untake: () => true }) };
+    jest.resetModules();
+    jest.doMock('@cancore/client/selfcustody', () => ({ ...jest.requireActual('@cancore/client/selfcustody'), createSelfCustody: () => acct }));
+    const { createEngine } = await import('./index');
+    const e = createEngine({
+      signer,
+      baseUrl: 'https://api.cancore.io',
+      hooks: {
+        onSettled: (id) => events.push(`settled:${id}`),
+        onEnded: (id, reason) => events.push(`ended:${id}:${reason}`),
+        onVerifyFailed: () => undefined,
+        onTakeFailed: (id, name) => events.push(`take_failed:${id}:${name}`),
+      },
+    });
+    e.start();
+    return { events, emit: (event: Record<string, unknown>) => onEvent(event) };
+  }
+
+  it('an expired swap ends its order (E16)', async () => {
+    const { events, emit } = await served();
+    emit({ type: 'expired', orderId: 'o1', swapId: 's1', error: new Error('dvp_expired') });
+    expect(events).toEqual(['ended:o1:expired']);
+  });
+
+  it('a take error reaches the hook as its class name, never its message (E12)', async () => {
+    const { events, emit } = await served();
+    class SettleError extends Error {
+      override name = 'SettleError';
+    }
+    emit({ type: 'error', orderId: 'o1', error: new SettleError('POST /accept → 500: detail from the API') });
+    expect(events).toEqual(['take_failed:o1:SettleError']);
+  });
+});
