@@ -263,6 +263,7 @@ test('the enums of the schemas are the exported constants', () => {
   expect(known(((transferResult.properties as Defs).result!.properties as Defs).outcome)).toEqual([...CANTON_TRANSFER_OUTCOMES]);
   expect([(m.cantonLegTransaction!.properties as Defs).kind, (m.cantonLegTopology!.properties as Defs).kind]).toEqual(CANTON_LEG_KINDS.map((k) => ({ const: k })));
   expect(known(((r.cantonParty!.properties as Defs).registry!.properties as Defs).state)).toEqual([...CANTON_REGISTRY_STATES]);
+  expect(known(((((r.cantonAllocation!.properties as Defs).legs!.items as Defs).properties as Defs).side))).toEqual(['SENDER', 'RECEIVER']);
 });
 
 // A closed enum is allowed only where the gateway owns the value (a request filter); every other enum is open (V-2).
@@ -288,7 +289,7 @@ test('V-2: no object is closed, and no enum outside the allow-list is closed', (
 describe('REST', () => {
   const rest = (def: string, value: unknown) => ajv.validate(`https://cancore.io/schemas/filler-protocol/v1/rest.schema.json#/$defs/${def}`, value);
   test('every endpoint names schemas that resolve', () => {
-    expect(REST_ENDPOINTS).toHaveLength(19);
+    expect(REST_ENDPOINTS).toHaveLength(20);
     const base = 'https://cancore.io/schemas/filler-protocol/v1/';
     for (const e of REST_ENDPOINTS) {
       for (const ref of [e.request, e.query, e.response, e.errorBody].filter((x): x is string => !!x)) {
@@ -456,7 +457,7 @@ describe('Canton operations of the filler party (§3.19)', () => {
     expect(rest('cantonIntent', noAllocation)).toBe(false);
     expect(rest('cantonIntent', { ...intent, fillDeadline: 1790000400 })).toBe(false);
     expect(rest('cantonIntent', { ...intent, destination: { ...intent.destination, token: `0x${'AB'.repeat(20)}` } })).toBe(false);
-    expect(rest('cantonIntent', { ...intent, allocation: { ...allocation, legs: [{ ...allocation.legs[0], side: 'BOTH' }] } })).toBe(false);
+    expect(rest('cantonIntent', { ...intent, allocation: { ...allocation, legs: [{ ...allocation.legs[0], side: 'sender' }] } })).toBe(false);
     expect(rest('cantonIntent', { ...intent, allocation: { ...allocation, settlementDeadline: null } })).toBe(true);
   });
 });

@@ -250,7 +250,7 @@
             "required": ["legId", "side", "otherside", "amount", "instrumentId"],
             "properties": {
               "legId": { "type": "string" },
-              "side": { "enum": ["SENDER", "RECEIVER"] },
+              "side": { "anyOf": [{ "enum": ["SENDER", "RECEIVER"] }, { "$ref": "messages.schema.json#/$defs/futureEnumValue" }], "description": "a side the node does not know is refused by it" },
               "otherside": { "type": ["string", "null"], "minLength": 1, "description": "the owner of the other side's account" },
               "amount": { "type": "string", "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,10})?$", "description": "Daml Decimal" },
               "instrumentId": { "type": "string", "minLength": 1 }
