@@ -365,3 +365,10 @@ test('a take accepted on an earlier run stays a trade: a failed later step does 
   expect(handle.untake('mine')).toBe(false);
   await handle.stop();
 });
+
+test('untake of a take this loop never queued reports it may be a trade', () => {
+  const { acct } = account([], async () => { throw new Error('unused'); });
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
+  expect(handle.untake('unknown')).toBe(false);
+  void handle.stop();
+});

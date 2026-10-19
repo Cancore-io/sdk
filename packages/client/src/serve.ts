@@ -316,7 +316,8 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
     },
     untake(orderId) {
       // Always dequeued, so no retry starts later; false only while an accept is actually in flight.
-      toTake.delete(orderId);
+      // Not queued here (a restart, or an accept that failed on our side but landed): it may be a trade already, keep it.
+      if (!toTake.delete(orderId)) return false;
       return !accepting.has(orderId) && !accepted.has(orderId);
     },
     stop,

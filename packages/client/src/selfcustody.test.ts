@@ -2757,6 +2757,22 @@ async function until(check: () => boolean, budgetMs = 10_000): Promise<void> {
   }
 }
 
+describe('take: onAccepted marks the trade', () => {
+  test('called once this account holds the order', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [72, 73]);
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    const mine = jest.fn();
+    // The take runs past the accept; only the hook matters here, so the rest is left to fail or hang.
+    void taker.take('o1', { deadlineMs: 50, onAccepted: mine } as never).catch(() => undefined);
+    await until(() => mine.mock.calls.length > 0);
+    expect(mine).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('serve(): an untake is honoured up to the accept request itself', () => {
   test('the take preflight GET is held past serve.look, untake lands, and no POST accept is ever sent', async () => {
     const api = venue();
