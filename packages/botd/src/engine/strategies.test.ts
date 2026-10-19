@@ -45,6 +45,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
     foundIgnoresKnown: false,
     takeHold: undefined as Promise<void> | undefined, atTake: undefined as undefined | (() => void), untaken: [] as string[],
     cancelHold: undefined as Promise<void> | undefined, atCancel: undefined as undefined | (() => void), cancelThrows: false,
+    atOrder: undefined as undefined | ((id: string) => void),
     // One-shot: the next state read waits here, and so does the write it belongs to.
     loadHold: undefined as Promise<void> | undefined };
   const deps = (): Deps => ({
@@ -107,6 +108,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         },
         order: async (id) => {
           crash.orderLookups.push(id);
+          crash.atOrder?.(id);
           if (crash.orderDown) throw new Error('ECONNRESET');
           if (crash.orderFailOnce === id) {
             crash.orderFailOnce = undefined;
@@ -1118,6 +1120,14 @@ describe('owner release of a booked take (CAN-2836)', () => {
     expect(w.state().openOrders).toEqual([]);
     expect(w.state().fills ?? []).toEqual([]);
     expect(w.audited).toContainEqual(expect.objectContaining({ method: 'settle', params: expect.objectContaining({ orderId: 'A', event: 'released' }) }));
+  });
+
+  it('calls the take off before it reads the venue: no retry of its accept can start after the read', async () => {
+    const w = await tookA();
+    let atRead: string[] | undefined;
+    w.crash.atOrder = (id) => void (id === 'A' && (atRead ??= [...w.untaken]));
+    await expect(release(w)).resolves.toMatchObject({ result: { released: true } });
+    expect(atRead).toEqual(['A']);
   });
 
   it('the venue shows this account as the taker: the accept may have gone through, so it stays booked (G0-CAN-2836.2)', async () => {
