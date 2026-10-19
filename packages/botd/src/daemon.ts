@@ -241,11 +241,13 @@ export function createDispatcher(deps: Deps): Dispatcher {
   /** The one place a fill is booked: serve's settle event and reconcile both come here, once per order id. */
   async function settleOrder(orderId: string) {
     // The fill's USD value is fixed now, at a fresh API price: the daily USD budget never reprices it later.
-    const usdPrices: Record<string, string> = (await engine?.usdPrices().catch(() => ({}))) ?? {};
+    const e = engine;
+    const usdPrices: Record<string, string> = (await e?.usdPrices().catch(() => ({}))) ?? {};
     let usdValue: string | undefined;
     let unbooked = false;
     let repeated = false;
     let pending = false;
+    let deferred = false;
     const now = deps.now();
     // The one place a fill is booked (serve's settle event and reconcile both come here): once per order id.
     await mutate((s0) => {
@@ -260,6 +262,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
         unbooked = true;
         return { ...s, paused: true, pauseReason: 'unbooked_fill' };
       }
+      // Locked: no price to fix it at. It stays booked with its full reservation; the unlock's reconcile books it priced.
+      if (!e) return (deferred = true), s0;
       const tag = filled.strategy;
       const base = filled.pair.split('/')[0];
       const next = applyFill(s, orderId, now, base !== undefined && Object.hasOwn(usdPrices, base) ? usdPrices[base] : undefined);
@@ -269,6 +273,10 @@ export function createDispatcher(deps: Deps): Dispatcher {
     });
     // Already booked (serve and reconcile both saw it): nothing more to record.
     if (repeated) return;
+    if (deferred) {
+      await append({ ...settleEntry, decision: 'allow', params: { orderId, event: 'settle_deferred' } });
+      return;
+    }
     if (pending) {
       await append({ ...settleEntry, decision: 'allow', params: { orderId, event: 'settle_pending' } });
       return;
