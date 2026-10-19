@@ -89,6 +89,14 @@ if out=$(as botagent timeout 5 "$NODE" "$DIST/daemon.js" --config "$W/config.jso
 elif grep -q "must run as" <<<"$out"; then pass "daemon refuses to run as another user"
 else fail "daemon refuses to run as another user (wrong reason: $out)"; fi
 
+# The state dir must be the daemon user's own: one owned by anyone else is refused before anything is opened in it.
+install -d -m 0700 -o outsider -g outsider "$W/foreign"
+cat >"$W/foreign.json" <<JSON
+{"stateDir":"$W/foreign","agentSocket":"$W/run/f-bot.sock","ownerSocket":"$W/run/f-owner.sock","baseUrl":"https://api-dev.cancore.app"}
+JSON
+chmod 0644 "$W/foreign.json"
+expect_refused "daemon refuses a state dir owned by another user" "owned by this user" as cancore-bot timeout 5 "$NODE" "$DIST/daemon.js" --config "$W/foreign.json"
+
 # systemd hardening (ProtectSystem, NoNewPrivileges, SystemCallFilter …) needs a systemd host, not a container:
 # there, after `cancore-bot install`, run `systemd-analyze security cancore-botd`.
 

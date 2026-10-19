@@ -491,9 +491,11 @@ export function createDispatcher(deps: Deps): Dispatcher {
   async function endStrategy(id: string, status: StrategyRecord['status'], reason?: string) {
     const state = await deps.state.load();
     const cancelled: string[] = [];
-    if (engine) {
+    // The engine as the stop began: a lock mid-loop must not turn the rest into a TypeError and skip the status write.
+    const e = engine;
+    if (e) {
       for (const o of state.openOrders.filter((x) => x.strategy?.id === id && !x.taken)) {
-        if ((await cancelResting(engine, o.orderId, true)) === 'cancelled') cancelled.push(o.orderId);
+        if ((await cancelResting(e, o.orderId, true).catch(() => 'failed' as const)) === 'cancelled') cancelled.push(o.orderId);
       }
     }
     await mutate((now) => ({
@@ -612,10 +614,12 @@ export function createDispatcher(deps: Deps): Dispatcher {
         // Our own resting orders are cancelled. A take whose accept has not been sent is dropped;
         // one already accepted is a trade and settles.
         const cancelled: string[] = [];
-        if (engine) {
-          for (const o of book.filter((x) => x.taken)) if (engine.untake(o.orderId)) cancelled.push(o.orderId);
+        // Captured once: a lock mid-pause must not turn the rest into a TypeError and skip the book cleanup.
+        const e = engine;
+        if (e) {
+          for (const o of book.filter((x) => x.taken)) if (e.untake(o.orderId)) cancelled.push(o.orderId);
           for (const o of book.filter((x) => !x.taken)) {
-            if ((await cancelResting(engine, o.orderId, true)) === 'cancelled') cancelled.push(o.orderId);
+            if ((await cancelResting(e, o.orderId, true).catch(() => 'failed' as const)) === 'cancelled') cancelled.push(o.orderId);
           }
         }
         await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => !cancelled.includes(o.orderId)) }));

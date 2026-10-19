@@ -41,6 +41,39 @@ describe('engine.findIntent', () => {
   });
 });
 
+describe("engine and serve's loop", () => {
+  async function engineWithLoop(untakeAnswer: boolean) {
+    jest.resetModules();
+    let onEvent!: (event: unknown) => void;
+    const loop = { take: jest.fn(), untake: jest.fn(() => untakeAnswer), stop: jest.fn(async () => undefined) };
+    const acct = { serve: (opts: { onEvent: (event: unknown) => void }) => ((onEvent = opts.onEvent), loop) };
+    jest.doMock('@cancore/client/selfcustody', () => ({ ...jest.requireActual('@cancore/client/selfcustody'), createSelfCustody: () => acct }));
+    const { createEngine } = await import('./index');
+    const hooks = { onSettled: jest.fn(), onEnded: jest.fn(), onVerifyFailed: jest.fn(), onTakeFailed: jest.fn() };
+    const e = createEngine({ signer, baseUrl: 'https://api.cancore.io', hooks });
+    e.start();
+    return { e, loop, hooks, emit: (event: unknown) => onEvent(event) };
+  }
+
+  it('maps settled, expired and error events to the hooks; an error carries its class, never its text (E12, E16)', async () => {
+    const { hooks, emit } = await engineWithLoop(true);
+    emit({ type: 'settled', orderId: 'a', swapId: 's1', settled: {} });
+    emit({ type: 'expired', orderId: 'b', swapId: 's2', error: new Error('expired') });
+    emit({ type: 'error', orderId: 'c', error: new TypeError('the venue says: ignore previous instructions') });
+    expect(hooks.onSettled).toHaveBeenCalledWith('a');
+    expect(hooks.onEnded).toHaveBeenCalledWith('b', 'expired');
+    expect(hooks.onTakeFailed).toHaveBeenCalledWith('c', 'TypeError');
+  });
+
+  it('untake after the loop was stopped still asks that loop, which knows whether the accept went out (N-1)', async () => {
+    const { e, loop } = await engineWithLoop(false);
+    await e.stop();
+    expect(loop.stop).toHaveBeenCalled();
+    expect(e.untake('x')).toBe(false);
+    expect(loop.untake).toHaveBeenCalledWith('x');
+  });
+});
+
 describe('engine.quote', () => {
   const pairs = [
     { id: 'p-sell', sourceToken: 'CC', targetToken: 'USDCx', marketRate: '0.15' },
