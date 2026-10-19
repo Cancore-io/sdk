@@ -203,7 +203,7 @@ describe('pause against an in-flight order.make', () => {
     return { gate, release };
   };
   async function unlockedWith(engineOverrides: Record<string, unknown>) {
-    const { deps, getState } = fakeDeps([]);
+    const { deps, getState, audited } = fakeDeps([]);
     const base = deps.createEngine;
     // The venue applies the cancel, so the order reads cancelled afterwards.
     const gone = new Set<string>();
@@ -212,16 +212,18 @@ describe('pause against an in-flight order.make', () => {
     deps.createEngine = ((...a: Parameters<typeof base>) => ({ ...base(...a), cancel, order, ...engineOverrides })) as never;
     const d = createDispatcher(deps);
     await d.handle(req('unlock', { passphrase: 'right' }), { owner: true });
-    return { d, getState, cancel, deps };
+    return { d, getState, cancel, deps, audited };
   }
 
   it('a lock while the gate loads its limits answers LOCKED, not an internal error (round-32 X-1)', async () => {
     const h = held();
-    const { d, deps } = await unlockedWith({});
+    const make = jest.fn(async () => ({ orderId: 'o1' }));
+    const { d, deps, getState, audited } = await unlockedWith({ make });
     const load = deps.limits.load;
     let reached!: () => void;
     const atLoad = new Promise<void>((r) => (reached = r));
     deps.limits.load = async () => (reached(), await h.gate, load());
+    const commands = (getState().recentCommands ?? []).length;
     const sent = d.handle(order('1'), { owner: false });
     await atLoad;
     const locking = d.handle(req('lock', {}), { owner: true });
@@ -229,6 +231,11 @@ describe('pause against an in-flight order.make', () => {
     h.release();
     await locking;
     await expect(sent).rejects.toMatchObject({ code: ERROR.LOCKED });
+    // The gate itself refused: nothing allowed, nothing counted, nothing sent.
+    const makes = audited.filter((e) => e.method === 'order.make');
+    expect(makes.map((e) => e.decision)).toEqual(['deny']);
+    expect((getState().recentCommands ?? []).length).toBe(commands);
+    expect(make).not.toHaveBeenCalled();
   });
 
   it('a lock while the make records its intent sends nothing to the API and leaves no intent (round-32 X-2)', async () => {
