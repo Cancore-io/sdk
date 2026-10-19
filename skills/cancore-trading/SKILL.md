@@ -24,12 +24,13 @@ v1 runs on **devnet only** (`https://api-dev.cancore.app`): the daemon refuses t
 ## Start of every session
 
 1. `trade_tools` — the tools available and their risk class (`read`, `reduce`, `trade`).
-2. `trade_status` — `locked`, `paused` (and `pauseReason`), `partyId` (the bot's address; absent
+2. `trade_status` — `locked`, `paused`, `partyId` (the bot's address; absent
    until the human runs `cancore-bot register`), strategies.
    - `locked: true` → stop and tell the human: *"The bot is locked. Please run
      `sudo -u cancore-bot cancore-bot unlock` in your terminal."*
-   - `paused: true` → tell them the reason and that only they can resume:
-     `sudo -u cancore-bot cancore-bot resume`.
+   - `paused: true` → tell them it is paused and that only they can resume:
+     `sudo -u cancore-bot cancore-bot resume`. You are not shown why (free text stays out of your
+     context); the human sees the reason with `cancore-bot status` or in the audit log.
 3. `trade_limits_get` — the box you trade in: `allowedPairs`, per-instrument `maxOrderAmount`,
    `maxOrderNotional` (per quote), `maxDailyVolume`, `maxPosition`, `maxOpenOrders`,
    `maxPriceDeviationBps`, `maxCommandsPerMinute`, and the USD caps `perOrderUsd` and `perDayUsd`
@@ -88,7 +89,7 @@ Prefer `trade_pause` when something looks wrong.
 | `rate_limited` | `maxCommandsPerMinute` trade commands in the last 60 s (0 means trading is off), or the hourly new-order budget (`ordersPerHour`, default 5) is spent | wait; do not loop |
 | `usd_cap_missing` | `perOrderUsd` / `perDayUsd` not set and no `usdCapsOptOut` | ask the human to set them; nothing trades until then |
 | `usd_order_exceeded` | the order's USD value is above `perOrderUsd` | smaller order |
-| `usd_daily_exceeded` | 24 h fills + open orders + this order would pass `perDayUsd` (also checked on `trade_strategy_start`) | cancel resting orders or wait; tell the human |
+| `usd_daily_exceeded` | 24 h fills + open orders + this order would pass `perDayUsd` (also checked on `trade_strategy_start`). A fill settled while no USD price was available counts as the whole day spent until it is 24 h old | cancel resting orders or wait; tell the human (they can wait out the window or set `usdCapsOptOut`) |
 | `usd_price_missing` | the API has no USD price for an instrument involved | wait for the price feed; do not loop |
 | `verify_failed` | the daemon refused to sign a transaction whose hash it could not recompute | stop trading, `trade_pause`, tell the human |
 | `paused` / `locked` | as in the session start | tell the human the CLI command |
