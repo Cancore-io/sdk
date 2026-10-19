@@ -19,8 +19,8 @@
  *   of exactly this transfer (pending); the change is at most the inputs minus
  *   the amount.
  *
- * `delivery.fill` and `intent.settle` check against the node's ticket and
- * order and come with those flows (CAN-1867, CAN-2321).
+ * `delivery.fill` checks against the node’s ticket and order (CAN-1867,
+ * `delivery-check.ts`); `intent.settle` against the intent (CAN-2321).
  */
 import type { CantonOpParams, Hex } from '@cancore/contracts';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
@@ -31,12 +31,12 @@ import type { CantonTransaction, DamlValue, ExerciseNode, TransactionNode } from
 const REGISTRY_MODULE = 'Intent.FillerRegistry';
 const TRANSFER_FACTORY = 'Splice.Api.Token.TransferInstructionV1:TransferFactory';
 
-const refuse = (detail: string): never => {
+export const refuse = (detail: string): never => {
   throw new CantonRefusal('-', detail);
 };
 
 /** `<module>:<entity>` of a `<package id>:<module>:<entity>` id. */
-const qualified = (templateId: string | undefined): string => (templateId ?? '').split(':').slice(1).join(':');
+export const qualified = (templateId: string | undefined): string => (templateId ?? '').split(':').slice(1).join(':');
 
 /** Whether `party` is in the namespace of the node key: `<hint>::fingerprint(key)`, nothing after it. */
 export function isOwnParty(party: unknown, publicKey: Hex): boolean {
@@ -53,18 +53,18 @@ export function canonicalDecimal(value: string): string {
   return trimmed ? `${whole}.${trimmed}` : whole;
 }
 
-function field(value: DamlValue | undefined, name: string): DamlValue {
+export function field(value: DamlValue | undefined, name: string): DamlValue {
   if (value?.t !== 'record' || !(name in value.v)) return refuse(`no field ${name}`);
   return value.v[name] as DamlValue;
 }
-const party = (v: DamlValue): string => (v.t === 'party' ? v.v : refuse('expected a party'));
-const textOf = (v: DamlValue): string => (v.t === 'text' ? v.v : refuse('expected text'));
-const numeric = (v: DamlValue): string => (v.t === 'numeric' ? canonicalDecimal(v.v) : refuse('expected a decimal'));
-const optionalParty = (v: DamlValue | undefined): string | undefined => (v?.t === 'optional' ? (v.v ? party(v.v) : undefined) : v ? party(v) : undefined);
-const cids = (v: DamlValue): string[] => (v.t === 'list' ? v.v.map((x) => (x.t === 'contractId' ? x.v : refuse('expected a contract id'))) : refuse('expected a list'));
+export const party = (v: DamlValue): string => (v.t === 'party' ? v.v : refuse('expected a party'));
+export const textOf = (v: DamlValue): string => (v.t === 'text' ? v.v : refuse('expected text'));
+export const numeric = (v: DamlValue): string => (v.t === 'numeric' ? canonicalDecimal(v.v) : refuse('expected a decimal'));
+export const optionalParty = (v: DamlValue | undefined): string | undefined => (v?.t === 'optional' ? (v.v ? party(v.v) : undefined) : v ? party(v) : undefined);
+export const cids = (v: DamlValue): string[] => (v.t === 'list' ? v.v.map((x) => (x.t === 'contractId' ? x.v : refuse('expected a contract id'))) : refuse('expected a list'));
 
 /** The one transaction of the op and its one root, an exercise. */
-function soleRoot(transactions: readonly CantonTransaction[]): { tx: CantonTransaction; root: ExerciseNode } {
+export function soleRoot(transactions: readonly CantonTransaction[]): { tx: CantonTransaction; root: ExerciseNode } {
   if (transactions.length !== 1) refuse(`expected one transaction, got ${transactions.length}`);
   const tx = transactions[0] as CantonTransaction;
   if (tx.roots.length !== 1) refuse(`expected one root, got ${tx.roots.length}`);
@@ -74,7 +74,7 @@ function soleRoot(transactions: readonly CantonTransaction[]): { tx: CantonTrans
 }
 
 /** Every node under `root`, root included; a node id missing from the transaction is refused. */
-function subtree(tx: CantonTransaction, rootId: string): TransactionNode[] {
+export function subtree(tx: CantonTransaction, rootId: string): TransactionNode[] {
   const out: TransactionNode[] = [];
   const stack = [rootId];
   while (stack.length > 0) {
@@ -87,7 +87,7 @@ function subtree(tx: CantonTransaction, rootId: string): TransactionNode[] {
   return out;
 }
 
-const sameSet = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && [...a].sort().join('\n') === [...b].sort().join('\n');
+export const sameSet = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && [...a].sort().join('\n') === [...b].sort().join('\n');
 
 /** `registry.accept`: the party accepts exactly its own registry entry for `fillerId`. */
 export function checkRegistryAccept(expect: { fillerId: string; publicKey: Hex }): CantonOpCheck<'registry.accept'> {
@@ -134,30 +134,26 @@ export function checkHoldingsTransfer(expect: {
     if (others.length > 0 || !isOwnParty(sender, expect.publicKey)) refuse('the transfer acts as another party than the node key’s');
     if (!sameSet(tx.actAs, [sender as string])) refuse('the transaction acts as another party');
     if (sender === asked.toParty) refuse('a transfer to the party itself');
-    if (qualified(root.interfaceId) !== TRANSFER_FACTORY || root.choice !== 'TransferFactory_Transfer') refuse('the root is not TransferFactory_Transfer');
-    if (party(field(root.chosenValue, 'expectedAdmin')) !== asked.asset.admin) refuse('the factory is for another instrument admin');
-    const transfer = field(root.chosenValue, 'transfer');
-    if (party(field(transfer, 'sender')) !== sender) refuse('the transfer is from another sender');
-    if (party(field(transfer, 'receiver')) !== asked.toParty) refuse('the transfer is to another receiver');
-    if (numeric(field(transfer, 'amount')) !== canonicalDecimal(asked.amount)) refuse('the transfer moves another amount');
-    const instrument = field(transfer, 'instrumentId');
-    if (party(field(instrument, 'admin')) !== asked.asset.admin || textOf(field(instrument, 'id')) !== asked.asset.id) refuse('the transfer moves another instrument');
-    if (!sameSet(cids(field(transfer, 'inputHoldingCids')), s.inputHoldingCids)) refuse('the transfer spends other holdings than stated');
-    const before = field(transfer, 'executeBefore');
-    if (before.t !== 'timestamp' || BigInt(before.v) !== BigInt(s.executeBefore) * 1_000_000n) refuse('executeBefore is not the stated one');
     if (BigInt(s.executeBefore) * 1000n <= BigInt(expect.nowMs)) refuse('executeBefore has passed');
-    checkTransferSubtree(tx, root, { sender: sender as string, asked, stated: s.inputHoldingCids, factories: expect.factories ?? CANTON_TRANSFER_FACTORIES });
+    if (subtree(tx, root.nodeId).length !== Object.keys(tx.nodes).length) refuse('the transaction holds nodes outside the transfer');
+    checkTransferExercise(tx, root, {
+      sender: sender as string,
+      asked,
+      stated: s.inputHoldingCids,
+      executeBefore: s.executeBefore,
+      factories: expect.factories ?? CANTON_TRANSFER_FACTORIES,
+    });
   };
 }
 
 /** Daml Decimal (scale 10) as an integer count of 10⁻¹⁰. */
-function scaled(value: string): bigint {
+export function scaled(value: string): bigint {
   const [whole, fraction = ''] = canonicalDecimal(value).split('.') as [string, string?];
   if (fraction.length > 10) refuse(`more than 10 decimals: ${value}`);
   const sign = whole.startsWith('-') ? -1n : 1n;
   return sign * (BigInt(whole.replace('-', '')) * 10n ** 10n + BigInt(fraction.padEnd(10, '0')));
 }
-const decimal = (units: bigint): string => {
+export const decimal = (units: bigint): string => {
   const abs = units < 0n ? -units : units;
   const fraction = (abs % 10n ** 10n).toString().padStart(10, '0').replace(/0+$/, '');
   return `${units < 0n ? '-' : ''}${abs / 10n ** 10n}${fraction ? `.${fraction}` : ''}`;
@@ -187,16 +183,47 @@ function holdingOf(argument: DamlValue, f: CantonTransferFactory): HoldingSeen {
 /** The owner of a token-standard account (V2), or a party (V1). */
 const accountOwner = (v: DamlValue): string | undefined => (v.t === 'record' ? optionalParty(v.v.owner) : party(v));
 
+/** What a `TransferFactory_Transfer` exercise must be: exactly the asked transfer from `sender`. */
+export interface TransferExpectation {
+  sender: string;
+  asked: CantonOpParams['holdings.transfer'];
+  /** The holdings stated to be spent. */
+  stated: readonly string[];
+  /** The transfer's `executeBefore`, unix seconds. */
+  executeBefore: string;
+  factories: Readonly<Record<string, readonly CantonTransferFactory[]>>;
+  /** Refuse a pending transfer: the receiver must be credited in this transaction (`delivery.fill`). */
+  completedOnly?: boolean;
+}
+
+/**
+ * `TransferFactory_Transfer` on `node`, acting as the sender alone, with the
+ * asked receiver, amount, instrument, holdings and `executeBefore` — and what
+ * the factory does under it (`checkTransferSubtree`).
+ */
+export function checkTransferExercise(tx: CantonTransaction, node: ExerciseNode, o: TransferExpectation): void {
+  const { sender, asked } = o;
+  if (!sameSet(node.actingParties, [sender])) refuse('the transfer acts as another party than the sender');
+  if (qualified(node.interfaceId) !== TRANSFER_FACTORY || node.choice !== 'TransferFactory_Transfer') refuse('the transfer is not TransferFactory_Transfer');
+  if (party(field(node.chosenValue, 'expectedAdmin')) !== asked.asset.admin) refuse('the factory is for another instrument admin');
+  const transfer = field(node.chosenValue, 'transfer');
+  if (party(field(transfer, 'sender')) !== sender) refuse('the transfer is from another sender');
+  if (party(field(transfer, 'receiver')) !== asked.toParty) refuse('the transfer is to another receiver');
+  if (numeric(field(transfer, 'amount')) !== canonicalDecimal(asked.amount)) refuse('the transfer moves another amount');
+  const instrument = field(transfer, 'instrumentId');
+  if (party(field(instrument, 'admin')) !== asked.asset.admin || textOf(field(instrument, 'id')) !== asked.asset.id) refuse('the transfer moves another instrument');
+  if (!sameSet(cids(field(transfer, 'inputHoldingCids')), o.stated)) refuse('the transfer spends other holdings than stated');
+  const before = field(transfer, 'executeBefore');
+  if (before.t !== 'timestamp' || BigInt(before.v) !== BigInt(o.executeBefore) * 1_000_000n) refuse('executeBefore is not the stated one');
+  checkTransferSubtree(tx, node, o);
+}
+
 /**
  * What the factory does under the root of `holdings.transfer` (sdk#105
  * review): pinned factory, only the stated inputs consumed, every holding
  * accounted for, the receiver credited exactly the amount, the change bounded.
  */
-function checkTransferSubtree(
-  tx: CantonTransaction,
-  root: ExerciseNode,
-  o: { sender: string; asked: CantonOpParams['holdings.transfer']; stated: readonly string[]; factories: Readonly<Record<string, readonly CantonTransferFactory[]>> },
-): void {
+function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: TransferExpectation): void {
   const { sender, asked } = o;
   const f = (o.factories[asked.asset.admin] ?? []).find((e) => root.templateId === `${e.packageId}:${e.factory}`);
   if (!f) return refuse(`the transfer factory ${root.templateId} is not a pinned factory of the admin ${asked.asset.admin}`);
@@ -217,7 +244,6 @@ function checkTransferSubtree(
   if (inputs < amount) refuse(`the stated inputs hold ${decimal(inputs)}, less than ${decimal(amount)}`);
 
   const nodes = subtree(tx, root.nodeId);
-  if (nodes.length !== Object.keys(tx.nodes).length) refuse('the transaction holds nodes outside the transfer');
   const archived = new Set<string>();
   let receiver = 0n;
   let locked = 0n;
@@ -258,6 +284,7 @@ function checkTransferSubtree(
     if (receiver !== amount) refuse(`the receiver is credited ${decimal(receiver)}, not ${decimal(amount)}`);
     if (locked !== 0n) refuse(`a direct transfer locks ${decimal(locked)} of the sender`);
   } else {
+    if (o.completedOnly) refuse('a pending transfer is not a delivery: the receiver must be credited in this transaction');
     if (offers.length > 1) refuse(`the transfer creates ${offers.length} pending transfers`);
     if (receiver !== 0n) refuse(`a pending transfer credits the receiver ${decimal(receiver)} already`);
     if (locked !== amount) refuse(`a pending transfer locks ${decimal(locked)} of the sender, not ${decimal(amount)}`);

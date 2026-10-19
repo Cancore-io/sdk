@@ -31,6 +31,8 @@ import {
   type ReconnectPolicy,
 } from './protocol/session';
 import { noopEventSink, type EventSink } from './events';
+import { isOwnParty } from './canton/checks';
+import { CantonOperations, type CantonPartySigner } from './canton/operations';
 import type { CantonLedger } from './ledger';
 import type { EvmRpcMap } from './rpc';
 import { silentLogger, systemClock, type Clock, type HttpFetch, type Logger, type WebSocketFactory } from './runtime';
@@ -71,6 +73,13 @@ export interface FillerConfig {
   tickets: TicketPolicy;
   /** The filler's own Canton participant; required only for Canton routes. */
   ledger?: CantonLedger;
+  /**
+   * The filler's Canton party (protocol §3.19, operator decision T-1): Cancore's
+   * backend prepares each party operation over filler-gateway, the SDK checks it
+   * and the party key signs. Required for a Canton destination (CAN-1867) and a
+   * Canton source (CAN-1863).
+   */
+  canton?: CantonConfig;
   /** All filler state (sdk.md S16). The filler node passes its Postgres store. */
   store: FillerStore;
   /** Connections to filler-gateway. Required: Node 20 has no global `WebSocket`. */
@@ -94,6 +103,27 @@ export interface FillerConfig {
   delivery?: DeliveryOptions;
   /** Settlement: the attestation pull cadence and the alert margin before `refundAfter`. The defaults suit production. */
   settlement?: SettlementOptions;
+}
+
+export interface CantonConfig {
+  /** The party, `<hint>::<fingerprint>`: in the namespace of `partySigner`'s key. */
+  party: string;
+  /** Holds the party's Ed25519 key; the SDK never sees it. */
+  partySigner: CantonPartySigner;
+  /** The Cancore participant the party is hosted on (`CANTON_PARTICIPANTS[env]`, release data), never taken from the backend. */
+  participantUid: string;
+  /** The filler's policy for a Canton destination; no defaults (CAN-1720). */
+  destination: CantonDestinationPolicy;
+}
+
+/** What `ChainConfig` holds for an EVM destination, for a Canton one. */
+export interface CantonDestinationPolicy {
+  /** `MIN_TICKET_TTL[canton]`, seconds (V-T3). */
+  minTicketTtlSec: number;
+  /** The filler's own proof window for Canton deliveries, seconds: attestation p99 + `settle` p99 + margin (V-E3). */
+  requiredProofWindowSec: number;
+  /** Time a `delivery.fill` needs end to end — prepare, check, sign, submit — seconds: a ticket with less left is refused (V-T3, T-29). */
+  sendGuardSec: number;
 }
 
 export interface TicketPolicy {
@@ -214,6 +244,8 @@ export interface Filler {
    * every `TicketReceipt`; never sends anything.
    */
   verifyEscrow(ticket: TicketIssued): Promise<EscrowVerification>;
+  /** The Canton operations of the filler's party, over this filler's own login; undefined without `canton`. */
+  readonly canton: CantonOperations | undefined;
   /** Signs a `StakeBinding` with the staking key. */
   bindStake(stakingSigner: StakingSigner, options: BindStakeOptions): Promise<StakeBindingRequest>;
   stats(): Promise<FillerStatsSnapshot>;
@@ -293,6 +325,7 @@ function validate(config: FillerConfig): void {
     throw new FillerConfigError('tickets.offerReplyMarginMs', 'expected a non-negative integer (ms)');
   }
   if (config.ledger !== undefined) requireMethods('ledger', config.ledger, ['activeContracts', 'exercise']);
+  if (config.canton !== undefined) validateCanton(config.canton);
   requireMethods('store', config.store, ['now', 'withOrder', 'listOpenOrders', 'appendEvidence', 'getOverrides']);
   requireMethods('store.quotes', config.store.quotes, ['nextNonce', 'recordQuote', 'recordAck', 'listQuotes']);
   requireMethods('store.nonces', config.store.nonces, ['allocate', 'renew', 'recordTransaction', 'complete', 'claimExpired', 'listOpen']);
@@ -315,6 +348,20 @@ function validate(config: FillerConfig): void {
       const value = config.settlement[field];
       if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0)) throw new FillerConfigError(`settlement.${field}`, 'expected a positive integer (ms)');
     }
+  }
+}
+
+function validateCanton(canton: CantonConfig): void {
+  if (!isObject(canton as unknown)) throw new FillerConfigError('canton', 'expected an object');
+  requireMethods('canton.partySigner', canton.partySigner, ['signHash']);
+  const key = canton.partySigner.publicKey;
+  if (typeof key !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(key)) throw new FillerConfigError('canton.partySigner.publicKey', 'expected a 32-byte Ed25519 public key, hex');
+  if (!isOwnParty(canton.party, key)) throw new FillerConfigError('canton.party', 'expected <hint>::<fingerprint> of canton.partySigner.publicKey');
+  if (typeof canton.participantUid !== 'string' || !canton.participantUid.includes('::')) throw new FillerConfigError('canton.participantUid', 'expected a Canton participant uid');
+  if (!isObject(canton.destination as unknown)) throw new FillerConfigError('canton.destination', 'is required');
+  for (const field of ['minTicketTtlSec', 'requiredProofWindowSec', 'sendGuardSec'] as const) {
+    const value = canton.destination[field];
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new FillerConfigError(`canton.destination.${field}`, 'expected a non-negative integer');
   }
 }
 
@@ -468,12 +515,17 @@ export function createFiller(config: FillerConfig): Filler {
     protocol,
   );
   protocol.attach(session, rest);
+  // The party's operations ride the same REST login and message key as the session.
+  const canton = config.canton
+    ? new CantonOperations({ rest, seal, nextId, signer: config.canton.partySigner, participantUid: config.canton.participantUid, clock, logger })
+    : undefined;
+  const cantonParty = config.canton?.party ?? config.ledger?.party;
 
   const verifier = new TicketVerifier({
     chains,
     fillSigners: config.fillSigners,
     fillerId: config.fillerId,
-    ...(config.ledger ? { cantonParty: config.ledger.party } : {}),
+    ...(cantonParty ? { cantonParty } : {}),
     ticketSigners: config.ticketSigners,
     deltaIssueMs: config.tickets.deltaIssueMs,
     clock,
@@ -521,7 +573,7 @@ export function createFiller(config: FillerConfig): Filler {
     chains,
     fillSigners: config.fillSigners,
     fillerId: config.fillerId,
-    ...(config.ledger ? { cantonParty: config.ledger.party } : {}),
+    ...(cantonParty ? { cantonParty } : {}),
     messageSigner: config.quoteSigner,
     clock,
     logger,
@@ -538,7 +590,7 @@ export function createFiller(config: FillerConfig): Filler {
     chains,
     fillSigners: config.fillSigners,
     fillerId: config.fillerId,
-    ...(config.ledger ? { cantonParty: config.ledger.party } : {}),
+    ...(cantonParty ? { cantonParty } : {}),
     receipted: (orderHash, attempt) => tickets.receipted(orderHash, attempt),
     instanceId,
     clock,
@@ -591,6 +643,7 @@ export function createFiller(config: FillerConfig): Filler {
       delivery.stop();
       await protocol.stop();
     },
+    canton,
     selfSettle: (orderHash) => settler.selfSettle(orderHash),
     verifyDraw: async () => {
       throw new NotImplementedError('verifyDraw', 'CAN-1848');

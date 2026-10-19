@@ -9,6 +9,8 @@
 export { createFiller } from './filler';
 export type {
   BindStakeOptions,
+  CantonConfig,
+  CantonDestinationPolicy,
   DrawVerification,
   Filler,
   FillerConfig,
@@ -166,6 +168,7 @@ export type { PartyExpectation } from './canton/legs';
 export type { CantonTransaction, CreateNode, DamlValue, ExerciseNode, FetchNode, RollbackNode, TransactionNode } from './canton/transaction';
 export { CantonOperations, createCantonOperations, signatureHex } from './canton/operations';
 export type { CantonClientConfig, CantonOperationsOptions, CantonOpCheck, CantonPartySigner, PreparedOf, SubmittedOf } from './canton/operations';
-export { canonicalDecimal, checkHoldingsTransfer, checkRegistryAccept, isOwnParty } from './canton/checks';
+export { canonicalDecimal, checkHoldingsTransfer, checkRegistryAccept, checkTransferExercise, isOwnParty } from './canton/checks';
+export type { TransferExpectation } from './canton/checks';
 export { CANTON_TRANSFER_FACTORIES } from './canton/factories';
 export type { CantonTransferFactory } from './canton/factories';
