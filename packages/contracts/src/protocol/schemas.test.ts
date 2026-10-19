@@ -41,8 +41,8 @@ test('the three schemas compile in strict mode, every $def of every one', () => 
   }
 });
 
-test('27 frame types, each with a direction and at least one valid example', () => {
-  expect(Object.keys(MESSAGE_DIRECTIONS)).toHaveLength(27);
+test('29 frame types, each with a direction and at least one valid example', () => {
+  expect(Object.keys(MESSAGE_DIRECTIONS)).toHaveLength(29);
   expect(MESSAGE_DIRECTIONS['ticket.offer']).toBe('S2F');
   expect(MESSAGE_DIRECTIONS['ticket.intent']).toBe('F2S');
   expect(MESSAGE_DIRECTIONS.ping).toBe('both');
