@@ -742,6 +742,24 @@ export function createDispatcher(deps: Deps): Dispatcher {
         await needEngine().withdraw(to, instrument, amount);
         return { to, instrument, amount };
       }
+      case 'order.release': {
+        const { orderId } = p as Params<'order.release'>;
+        const e = needEngine();
+        if (!state.openOrders.some((o) => o.orderId === orderId && o.taken)) {
+          throw new RpcFault(ERROR.INVALID_PARAMS, 'not released: no booked take with this id', { reason: 'not_a_take' } as never);
+        }
+        // Dequeued before the venue is read: no retry of the accept can start after the read.
+        e.untake(orderId);
+        const info = await e.order(orderId).catch(() => undefined);
+        if (!info) throw new RpcFault(ERROR.INTERNAL, 'not released: the order could not be read; try again');
+        // Only the venue's word that this account is not the taker releases it. An accept that lands later anyway
+        // settles an order the book no longer knows, and that pauses trading (unbooked_fill).
+        if (info.status === 'open' && info.takenBySelf === undefined) await endOrder(orderId, 'released');
+        else if (info.takenBySelf === false) await endOrder(orderId, 'taken_by_other');
+        else if (ENDED.has(info.status)) await endOrder(orderId, info.status);
+        else throw new RpcFault(ERROR.INVALID_PARAMS, 'not released: the accept may have gone through; it stays booked until the venue shows how it ended', { reason: 'may_be_trade' } as never);
+        return { orderId, released: true };
+      }
       case 'resume': {
         await mutate(({ pauseReason: _, ...rest }) => ({ ...rest, paused: false }));
         return { paused: false };

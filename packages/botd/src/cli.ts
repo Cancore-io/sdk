@@ -20,6 +20,7 @@ const USAGE = `usage: cancore-bot [--config <path>] <command>
   status
   limits show | limits set <file.json>
   pause [reason] | resume
+  release <orderId>        drop a booked take whose accept answer was lost, once the venue shows it did not land
   withdraw --to <party> --instrument <id> --amount <n>
                            only to the owner party pinned in config
   audit verify
@@ -144,6 +145,10 @@ export async function main(argv: string[]): Promise<number> {
         return 0;
       case 'resume':
         print(await rpc(config, 'resume', {}));
+        return 0;
+      case 'release':
+        if (!sub) break;
+        print(await rpc(config, 'order.release', { orderId: sub }));
         return 0;
       case 'limits':
         if (sub === 'show') return print(await rpc(config, 'limits.get', {})), 0;
