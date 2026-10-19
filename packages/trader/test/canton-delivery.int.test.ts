@@ -127,6 +127,11 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
   const logger = createRecordingLogger();
   const policy: ChainConfig = { router, openConfirmations: 1, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: 900, sendGuardSec: 10, minGasWei: 0n, fillConfirmations: 1 };
   const cantonPolicy = { minTicketTtlSec: 60, requiredProofWindowSec: 900, sendGuardSec: 20 };
+  // Every executor is stopped after its test, passed or not: no timer outlives the suite.
+  const running: Executor[] = [];
+  afterEach(() => {
+    for (const e of running.splice(0)) e.stop();
+  });
   const chains = () => new FillerChains({ [chain]: [rpc] }, { [chain]: policy }, logger);
 
   const chainTime = async (): Promise<bigint> => BigInt((await rpc.request<{ timestamp: string }>({ method: 'eth_getBlockByNumber', params: ['latest', false] })).timestamp);
@@ -244,6 +249,7 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
       receipted: async (h, a) => store.withOrder(h, (tx) => tx.getTicket(a)), instanceId: 'int-1867', clock, logger, events, delivery: { pollIntervalMs: 200 },
       canton: { operations, sendGuardSec: cantonPolicy.sendGuardSec },
     });
+    running.push(executor);
     await executor.start();
     const result = await executor.deliver(orderHash, 0);
     return { executor, events, result, asked, t };
@@ -294,8 +300,8 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
     expect(await store.withOrder(orderHash, (tx) => tx.getFill(0))).toMatchObject({ state: 'confirmed', txRef: updateId, chain: 'canton:devnet', received: order.minReceived });
     expect((await store.withOrder(orderHash, (tx) => tx.getTicket(0)))?.state).toBe('filled');
     expect(events.events).toContainEqual({ type: 'filled', orderHash, attempt: 0, txHash: cantonFillRef(updateId), amount: order.minReceived });
-    // A filled ticket is never delivered again.
-    expect(await executor.deliver(orderHash, 0)).toMatchObject({ status: 'refused', reason: 'no-receipt' });
+    // A recorded fill is never delivered again.
+    expect(await executor.deliver(orderHash, 0)).toMatchObject({ status: 'tracking' });
     expect(asked).toHaveLength(1);
 
     const payeeBefore = await balanceOf(createTestFillSigner(key('FILLER1')).address.toLowerCase() as Hex);

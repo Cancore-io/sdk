@@ -231,7 +231,7 @@ jobs:
           node -e "
             const r = require(process.env.RUNNER_TEMP + '/int.json');
             console.log(r.numTotalTestSuites, 'suites,', r.numPassedTests, 'passed,', r.numPendingTests + r.numTodoTests, 'skipped');
-            if (r.numTotalTestSuites !== 4 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
+            if (r.numTotalTestSuites !== 5 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
           "
 
   # Transaction pricing and nonce allocation of @cancore/trader against a real node (CAN-2299, CAN-2636): an anvil of its own, no contracts and no
