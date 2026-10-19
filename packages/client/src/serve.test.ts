@@ -344,3 +344,24 @@ test('a take whose accept failed is not retried after untake', async () => {
   expect(calls.length).toBe(before);
   await handle.stop();
 });
+
+test('a take accepted on an earlier run stays a trade: a failed later step does not make it untakeable', async () => {
+  const theirs = order('mine', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let runs = 0;
+  const { acct } = account([theirs], async () => {
+    throw new Error('unused');
+  });
+  (acct as unknown as { take: (id: string, o: SettleRun) => Promise<Settled> }).take = async (_id, o) => {
+    runs++;
+    if (o.beforeAccept && !o.beforeAccept()) throw Object.assign(new Error('called off'), { name: 'TakeCancelledError' });
+    o.onAccepted?.();
+    // The accept went through; a later DvP step fails.
+    throw new Error('allocate failed');
+  };
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
+  handle.take('mine');
+  await until(() => runs >= 1);
+  await new Promise((r) => setImmediate(r));
+  expect(handle.untake('mine')).toBe(false);
+  await handle.stop();
+});

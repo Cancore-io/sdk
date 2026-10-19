@@ -392,7 +392,6 @@ export interface Withdrawal {
   failed: Array<{ leg: string; error: unknown }>;
 }
 
-/** A settle that cannot finish: the swap went somewhere it cannot come back from, or time ran out. */
 /** The take was called off (serve `untake`) before its accept request was sent: nothing was accepted or signed. */
 export class TakeCancelledError extends Error {
   constructor(readonly orderId: string) {
@@ -401,6 +400,7 @@ export class TakeCancelledError extends Error {
   }
 }
 
+/** A settle that cannot finish: the swap went somewhere it cannot come back from, or time ran out. */
 export class SettleError extends Error {
   constructor(
     message: string,
@@ -1313,6 +1313,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     if (order.opponentUserId && order.opponentUserId !== self.id) {
       throw new SettleError(`order ${orderId} was taken by another account`, null, order);
     }
+    // Accepted by this account (now, or on an earlier run): from here it is a trade, never called off.
+    opts.onAccepted?.();
     if (!self.partyId) throw new Error('the account has no party yet — run onboard()');
     const party = self.partyId;
     order = await waitFor(

@@ -159,6 +159,21 @@ describe('security: through the dispatcher', () => {
     expect(r.state().openOrders.map((o) => o.orderId)).toEqual(['sent']);
   });
 
+  it('a pause written between the take gate and its booking drops the queued take', async () => {
+    r.engine.orders.set('late', { orderId: 'late', status: 'open', source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
+    let release!: () => void;
+    r.engine.takeHold = new Promise((res) => (release = res));
+    const started = new Promise<void>((res) => (r.engine.onTakeStart = res));
+    const pending = outcome(r.dispatcher.handle(req('order.take', { orderId: 'late', amount: '10' }), agent));
+    await started;
+    // The pause reads a book without this take: only the booking write can still stop it.
+    await r.dispatcher.handle(req('pause', { reason: 'owner stop' }), owner);
+    release();
+    expect(await pending).toBe(-32003);
+    expect(r.engine.untaken).toContain('late');
+    expect(r.state().openOrders).toEqual([]);
+  });
+
   it('a take larger than the limits, or at a hostile price, is refused', async () => {
     r.engine.orders.set('big', { orderId: 'big', status: 'open', source: 'CC', sourceAmount: '500', target: 'USDCx', targetAmount: '75' });
     expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'big', amount: '500' }), agent))).toBe('order_size_exceeded');

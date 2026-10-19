@@ -34,6 +34,9 @@ export interface FakeEngine extends Engine {
   makeDelayMs: number;
   /** When set, every make waits for it: a test decides exactly when the API answers. */
   makeHold?: Promise<void>;
+  /** When set, every take waits for it after it is queued. */
+  takeHold?: Promise<void>;
+  onTakeStart?: () => void;
   /** Called when a make reaches the API, before it waits. */
   onMakeStart?: () => void;
   /** When set, reference prices and order lookups (the gate's own awaits) wait for it; `onGateHold` fires first. */
@@ -54,6 +57,8 @@ export function fakeEngine(): FakeEngine {
     },
     untake: (orderId: string) => (e.untaken.push(orderId), true),
     async take(p) {
+      e.onTakeStart?.();
+      await e.takeHold;
       e.taken.push(p);
       return { orderId: p.orderId, filled: '0' };
     },

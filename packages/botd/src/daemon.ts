@@ -485,10 +485,18 @@ export function createDispatcher(deps: Deps): Dispatcher {
       }
       case 'order.take': {
         const params = p as Params<'order.take'>;
-        const result = await needEngine().take(params);
+        const e = needEngine();
+        const result = await e.take(params);
         // On the book until it settles: it counts against open orders and the worst-case position.
+        // Booked in the same write that re-checks pause: a pause that landed since the gate drops the
+        // queued take (as make's adoptOrCancel does); one already in flight is a trade and is booked.
         const view = taken!;
-        await mutate((s) => ({ ...s, openOrders: [...s.openOrders, { orderId: params.orderId, pair: `${view.base}/${view.quote}`, side: view.side, amount: view.amount, price: view.price, taken: true }] }));
+        let dropped = false;
+        await mutate((s) => {
+          if (s.paused && e.untake(params.orderId)) return (dropped = true), s;
+          return { ...s, openOrders: [...s.openOrders, { orderId: params.orderId, pair: `${view.base}/${view.quote}`, side: view.side, amount: view.amount, price: view.price, taken: true }] };
+        });
+        if (dropped) throw new RpcFault(ERROR.PAUSED, 'paused: the take was called off');
         return result;
       }
       case 'strategy.start': {

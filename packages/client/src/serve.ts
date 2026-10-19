@@ -28,6 +28,8 @@ export interface SettleRun extends SettleOptions {
    * read. False calls the take off (`TakeCancelledError`); true means the accept is now in flight.
    */
   beforeAccept?: () => boolean;
+  /** `take` only: the order is accepted by this account (this run or an earlier one); it is a trade from here. */
+  onAccepted?: () => void;
 }
 
 export interface ServeOptions extends Omit<SettleOptions, 'signal'> {
@@ -131,8 +133,10 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   /** Orders with nothing left to do. ponytail: grows with the account's history; prune if a loop runs for months. */
   const done = new Set<string>();
   const toTake = new Set<string>();
-  // Takes whose accept has started: past this point untake cannot stop them.
+  // Takes whose accept request is in flight: untake cannot stop them.
   const accepting = new Set<string>();
+  // Takes accepted by this account: trades, whatever later steps or retries do.
+  const accepted = new Set<string>();
   const again = new Set<string>();
   /** Swaps an `expired` event was sent for. */
   const reported = new Set<string>();
@@ -198,7 +202,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
       return true;
     };
     try {
-      const takeRun: SettleRun = { ...settle, beforeAccept };
+      const takeRun: SettleRun = { ...settle, beforeAccept, onAccepted: () => void accepted.add(orderId) };
       const settled = await (maker ? acct.make(orderId, settle) : acct.take(orderId, takeRun));
       done.add(orderId);
       emit({ type: 'settled', orderId, swapId: settled.swap.id, settled });
@@ -313,7 +317,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
     untake(orderId) {
       // Always dequeued, so no retry starts later; false only while an accept is actually in flight.
       toTake.delete(orderId);
-      return !accepting.has(orderId);
+      return !accepting.has(orderId) && !accepted.has(orderId);
     },
     stop,
   };
