@@ -31,7 +31,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
   let ticker: (() => void) | undefined;
   const audited: { method: string; decision: string; reason?: string }[] = [];
   let hooks: Parameters<Deps['createEngine']>[1] | undefined;
-  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[], orderDown: false };
+  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[], orderDown: false, orderFailOnce: undefined as string | undefined };
   const deps = (): Deps => ({
     keystore: { init: jest.fn(), initSeed: jest.fn(), unlock: async () => ({ destroy: () => undefined }) as never, lock: () => void (crash.wiped = true), isLocked: () => false, publicKey: async () => 'ab' },
     audit: {
@@ -63,6 +63,10 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         order: async (id) => {
           crash.orderLookups.push(id);
           if (crash.orderDown) throw new Error('ECONNRESET');
+          if (crash.orderFailOnce === id) {
+            crash.orderFailOnce = undefined;
+            throw new Error('ECONNRESET');
+          }
           return { orderId: id, status: statuses[id] ?? 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' };
         },
         balances: jest.fn(),
@@ -539,6 +543,18 @@ describe('an order whose answer was lost', () => {
     const id = w.state().openOrders[0]!.orderId;
     w.statuses[id] = 'accepted';
     await expect(w.call('order.cancel', { orderId: id }, false)).rejects.toMatchObject({ data: { reason: 'not_open' } });
+  });
+
+  it('a status read that fails once and then shows the order taken keeps it booked and sends no cancel', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    const id = w.state().openOrders[0]!.orderId;
+    w.statuses[id] = 'accepted';
+    w.crash.orderFailOnce = id;
+    await expect(w.call('order.cancel', { orderId: id }, false)).rejects.toMatchObject({ data: { reason: 'not_open' } });
+    expect(w.cancelled).toEqual([]);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual([id]);
   });
 
   it('released takes are pruned: past their day without a lookup, or once the venue shows they ended (round-22 X-2)', async () => {
