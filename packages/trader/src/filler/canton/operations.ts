@@ -39,6 +39,7 @@ import { silentLogger, systemClock, type Clock, type HttpFetch, type Logger } fr
 import type { QuoteSigner } from '../signer';
 import { canonicalDecimal, checkHoldingsTransfer, checkRegistryAccept } from './checks';
 import { checkDeliveryFill, type DeliveryFillExpectation } from './delivery-check';
+import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
 import { CantonRefusal, legKind, verifyTopologyLeg, verifyTransactionLeg } from './legs';
 import type { CantonTransaction } from './transaction';
 
@@ -99,6 +100,8 @@ export interface CantonOperationsOptions {
   logger: Logger;
   /** Submit attempts on a retryable refusal (`CANTON_UNAVAILABLE`, `INTERNAL`, transport); default 3. */
   submitAttempts?: number;
+  /** The registries the party's holdings move through and its payouts come from, by instrument admin; `CANTON_TRANSFER_FACTORIES` unless set (a stand of its own). */
+  registries?: Readonly<Record<string, readonly CantonTransferFactory[]>>;
 }
 
 const HEX = /^0x[0-9a-f]+$/;
@@ -109,6 +112,11 @@ const lower = (hex: string): Hex => (hex.startsWith('0x') ? hex : `0x${hex}`).to
 
 export class CantonOperations {
   constructor(private readonly options: CantonOperationsOptions) {}
+
+  /** The pinned registries every operation's check holds the registry contracts to. */
+  get registries(): Readonly<Record<string, readonly CantonTransferFactory[]>> {
+    return this.options.registries ?? CANTON_TRANSFER_FACTORIES;
+  }
 
   /** The party's Ed25519 public key, as the operations name it. */
   get publicKey(): Hex {
@@ -130,7 +138,7 @@ export class CantonOperations {
 
   /** Moves the party's own holdings to another party (operator decision Yu-1): exactly what is asked, checked. */
   transfer(params: CantonOpParams['holdings.transfer']): Promise<SubmittedOf<'holdings.transfer'>> {
-    return this.run('holdings.transfer', params, checkHoldingsTransfer({ params, publicKey: this.publicKey, nowMs: this.options.clock.now() }));
+    return this.run('holdings.transfer', params, checkHoldingsTransfer({ params, publicKey: this.publicKey, nowMs: this.options.clock.now(), factories: this.registries }));
   }
 
   /**
@@ -140,7 +148,7 @@ export class CantonOperations {
    * `delivered` is the checked amount in the order's units (Numeric 10 × 10¹⁰).
    */
   async fill(expect: Omit<DeliveryFillExpectation, 'publicKey' | 'nowMs'>, hooks: RunHooks = {}): Promise<SubmittedOf<'delivery.fill'> & { delivered: string }> {
-    const check = checkDeliveryFill({ ...expect, publicKey: this.publicKey, nowMs: this.options.clock.now() });
+    const check = checkDeliveryFill({ factories: this.registries, ...expect, publicKey: this.publicKey, nowMs: this.options.clock.now() });
     let delivered = '';
     const submitted = await this.run('delivery.fill', { orderHash: expect.orderHash.toLowerCase() as Hex, attempt: expect.attempt }, (prepared, transactions) => {
       check(prepared, transactions);
@@ -261,6 +269,8 @@ export interface CantonClientConfig {
   logger?: Logger;
   /** Distinguishes this process's message ids; defaults to a random UUID. */
   instanceId?: string;
+  /** As `CantonConfig.registries`: the registries of a network with its own registrar. */
+  registries?: Readonly<Record<string, readonly CantonTransferFactory[]>>;
 }
 
 /**
@@ -290,5 +300,5 @@ export function createCantonOperations(config: CantonClientConfig): CantonOperat
     logger,
     nextId,
   });
-  return new CantonOperations({ rest, seal, nextId, signer: config.partySigner, participantUid: config.participantUid, clock, logger });
+  return new CantonOperations({ rest, seal, nextId, signer: config.partySigner, participantUid: config.participantUid, clock, logger, ...(config.registries ? { registries: config.registries } : {}) });
 }

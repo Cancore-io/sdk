@@ -176,7 +176,7 @@ export type { DeliveryFillExpectation } from './canton/delivery-check';
 export { cantonFillRef } from './delivery/canton';
 export { checkIntentSettle, intentSplit } from './canton/settle-check';
 export type { IntentSettleExpectation } from './canton/settle-check';
-export { CANTON_ALLOCATION_TEMPLATES, CANTON_TRANSFER_FACTORIES } from './canton/factories';
+export { CANTON_ALLOCATION_TEMPLATES, CANTON_TRANSFER_FACTORIES, registriesProblem } from './canton/factories';
 export type { CantonTransferFactory } from './canton/factories';
 // The filler's own routes within those Cancore approved (§3.20).
 export { createFillerRoutes, FillerRoutes, MAX_ROUTES } from './routes';

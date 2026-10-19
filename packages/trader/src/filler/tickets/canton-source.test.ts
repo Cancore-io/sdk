@@ -258,6 +258,18 @@ describe('V-C1…V-C6 on the golden Canton-source order (CAN-1863)', () => {
     expect(isCantonIntent({ ...ok, minReceived: { units: '1', decimals: '6' } })).toBe(false);
   });
 
+  test('the registries come from the reader (CantonOperations.registries) when the input names none: a stand registrar', async () => {
+    const { input, order, orderHash } = golden.vector;
+    const intent = intentOf(input, orderHash, GOLDEN_LEGS, String(input.fillDeadline + 3_600));
+    const ticket = { orderHash, repayTo: repayToFromParty(PARTY) } as TicketJson;
+    const run = (registries?: Record<string, CantonTransferFactory[]>) =>
+      checkCantonSource({ order, ticket, party: PARTY, fillerId: 'acme', requiredProofWindowSec: 2_700, reader: { ...reader(intent), ...(registries ? { registries } : {}) } }, () => undefined);
+    await expect(run({ [input.instrumentAdmin]: [registryOf(true)] })).resolves.toBeUndefined();
+    // Without it, the published pins: the stand's registrar is not among them.
+    const r = await refusal(run());
+    expect(r).toMatchObject({ check: 'V-C4', reason: 'ESCROW_MISMATCH' });
+  });
+
   test('V-C6: exactly the required window passes', async () => {
     await expect(golden3().run({ requiredProofWindowSec: 3_600 })).resolves.toBeUndefined();
   });

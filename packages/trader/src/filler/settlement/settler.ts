@@ -127,7 +127,7 @@ export interface SettlerOptions {
   events: EventSink;
   settlement?: SettlementOptions;
   /** The Canton operations of the filler's party: a Canton source settles through them. */
-  canton?: Pick<CantonOperations, 'run' | 'intent' | 'party' | 'publicKey'>;
+  canton?: Pick<CantonOperations, 'run' | 'intent' | 'party' | 'publicKey' | 'registries'>;
   /** The filler's Canton party: the payee of a Canton source. */
   cantonParty?: string;
 }
@@ -538,7 +538,7 @@ export class Settler {
       const submitted = await canton.run(
         'intent.settle',
         { orderHash },
-        checkIntentSettle({ publicKey: canton.publicKey, party, intent, feeBps: BigInt(built.order.feeBps as string), proof: expected, entryCid: registered.registry.entryCid }),
+        checkIntentSettle({ publicKey: canton.publicKey, party, intent, feeBps: BigInt(built.order.feeBps as string), proof: expected, entryCid: registered.registry.entryCid, factories: canton.registries }),
       );
       updateId = submitted.updateId ?? submitted.operationId;
     } catch (error) {
