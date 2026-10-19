@@ -53,7 +53,10 @@ export function fakeEngine(): FakeEngine {
       await new Promise((r) => setTimeout(r, e.makeDelayMs));
       await e.makeHold;
       e.made.push(p);
-      return { orderId: `o${++n}` };
+      const orderId = `o${++n}`;
+      // A made order rests on the venue, so a pause can still cancel it.
+      e.orders.set(orderId, { orderId, status: 'open', source: p.base, sourceAmount: p.amount, target: p.quote, targetAmount: p.amount });
+      return { orderId };
     },
     untake: (orderId: string) => (e.untaken.push(orderId), true),
     async take(p) {

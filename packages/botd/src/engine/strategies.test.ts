@@ -486,6 +486,33 @@ describe('an order whose answer was lost', () => {
     expect(w.state()).toMatchObject({ paused: true, pauseReason: 'unbooked_fill' });
   });
 
+  it('an unknown settle held through a lookup outage still pauses after an hour (fail-safe ceiling)', async () => {
+    const w = world();
+    await w.unlock();
+    w.crash.make = true;
+    await expect(w.call('order.make', make, false)).rejects.toBeDefined();
+    w.crash.make = false;
+    await w.fill('ghost');
+    w.crash.lookupDown = true;
+    for (let i = 0; i < 70 && !w.state().paused; i++) {
+      w.advance(61_000);
+      await w.tick();
+    }
+    expect(w.state()).toMatchObject({ paused: true, pauseReason: 'unbooked_fill' });
+  });
+
+  it('pause and order.cancel leave a taken own order on the book: the venue shows it settling, not open (round-24 X-5)', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    const id = w.state().openOrders[0]!.orderId;
+    w.statuses[id] = 'swap_created';
+    await expect(w.call('order.cancel', { orderId: id }, false)).rejects.toBeDefined();
+    await w.call('pause', {}, true);
+    expect(w.cancelled).toEqual([]);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual([id]);
+  });
+
   it('released takes are pruned: past their day without a lookup, or once the venue shows they ended (round-22 X-2)', async () => {
     const w = world();
     const view = { pair: 'CC/USDCx', side: 'buy' as const, amount: '1', price: '0.15', taken: true };
