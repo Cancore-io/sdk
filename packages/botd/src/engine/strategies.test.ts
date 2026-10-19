@@ -43,7 +43,9 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
     // A lookup that offers the found order even when the daemon already knows it.
     foundIgnoresKnown: false,
     takeHold: undefined as Promise<void> | undefined, atTake: undefined as undefined | (() => void), untaken: [] as string[],
-    cancelHold: undefined as Promise<void> | undefined, atCancel: undefined as undefined | (() => void), cancelThrows: false };
+    cancelHold: undefined as Promise<void> | undefined, atCancel: undefined as undefined | (() => void), cancelThrows: false,
+    // One-shot: the next state read waits here, and so does the write it belongs to.
+    loadHold: undefined as Promise<void> | undefined };
   const deps = (): Deps => ({
     keystore: { init: jest.fn(), initSeed: jest.fn(), unlock: async () => ({ destroy: () => undefined }) as never, lock: () => void (crash.wiped = true), isLocked: () => false, publicKey: async () => 'ab' },
     audit: {
@@ -52,7 +54,18 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
       tail: async () => [],
       close: async () => undefined,
     },
-    state: { load: async () => state, save: async (s) => void (state = s), recordAudit: async () => undefined },
+    state: {
+      load: async () => {
+        const hold = crash.loadHold;
+        // No hold, no extra await: every other test keeps its exact timing.
+        if (!hold) return state;
+        crash.loadHold = undefined;
+        await hold;
+        return state;
+      },
+      save: async (s) => void (state = s),
+      recordAudit: async () => undefined,
+    },
     limits: { load: async () => limits, save: jest.fn() },
     riskgate: check,
     createEngine: (_signer, h) => {
@@ -1005,6 +1018,69 @@ describe('a settle that lands in the lock window (CAN-2834)', () => {
     expect(w.state().fills).toEqual([{ at: expect.any(Number), instrument: 'CC', amount: '1' }]);
     expect(w.audited).toContainEqual(expect.objectContaining({ method: 'settle', params: expect.objectContaining({ orderId: 'o1', usdValue: 'unpriced' }) }));
   });
+
+  /** One order's settle records in the audit log, in order: the event, and the USD value when it has one. */
+  const settleEvents = (w: ReturnType<typeof world>, orderId: string) =>
+    w.audited.flatMap((e) => {
+      const p = (e as { params?: { orderId?: string; event?: string; usdValue?: string } }).params;
+      return e.method === 'settle' && p?.orderId === orderId ? [p.usdValue ? `${p.event}:${p.usdValue}` : `${p.event}`] : [];
+    });
+
+  it('a deferred settle is audited once as settle_deferred, and as settled only when the unlock books it (audit r2 N3, N4, N6)', async () => {
+    const w = world(dayOfOneUsd);
+    await w.unlock();
+    await w.call('order.make', make, false);
+    await w.call('lock', {}, true);
+    w.statuses.o1 = 'completed';
+    await w.fill('o1');
+    // While locked: nothing booked, and the log says the settle waits, not that it settled.
+    expect(w.state().fills ?? []).toEqual([]);
+    expect(settleEvents(w, 'o1')).toEqual(['settle_deferred']);
+    await w.unlock();
+    expect(settleEvents(w, 'o1')).toEqual(['settle_deferred', 'settled:0.15']);
+  });
+
+  it('a settle that fetched its USD price before the lock is booked at that price, not deferred (audit r2 N2)', async () => {
+    const w = world(dayOfOneUsd);
+    await w.unlock();
+    await w.call('order.make', make, false);
+    w.statuses.o1 = 'completed';
+    let release!: () => void;
+    w.crash.pricesHold = new Promise((r) => (release = r));
+    w.settleEvent('o1');
+    // The settle holds its engine and waits on the price when the lock lands.
+    await new Promise((r) => setTimeout(r, 0));
+    const locking = w.call('lock', {}, true);
+    await new Promise((r) => setTimeout(r, 0));
+    w.crash.pricesHold = undefined;
+    release();
+    await locking;
+    // Booked before any unlock, at the price fetched while unlocked.
+    expect(w.state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '1', usdValue: '0.15' })]);
+    expect(w.state().openOrders).toEqual([]);
+    expect(settleEvents(w, 'o1')).toEqual(['settled:0.15']);
+  });
+
+  it('a settle that began under the lock stays deferred when the unlock lands before its write: never booked unpriced (audit r2 N2)', async () => {
+    const w = world(dayOfOneUsd);
+    await w.unlock();
+    await w.call('order.make', make, false);
+    await w.call('lock', {}, true);
+    w.statuses.o1 = 'completed';
+    // The settle starts with no engine; its state write waits on the read while the unlock brings a new engine up.
+    let release!: () => void;
+    w.crash.loadHold = new Promise((r) => (release = r));
+    w.settleEvent('o1');
+    await new Promise((r) => setTimeout(r, 0));
+    const unlocking = w.call('unlock', { passphrase: 'x' });
+    await new Promise((r) => setTimeout(r, 0));
+    release();
+    await unlocking;
+    await new Promise((r) => setTimeout(r, 0));
+    // Deferred by the engine it started with, then booked by the unlock's reconcile at a fresh price.
+    expect(w.state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '1', usdValue: '0.15' })]);
+    expect(settleEvents(w, 'o1')).toEqual(['settle_deferred', 'settled:0.15']);
+  });
 });
 
 describe('mutation audit of e422a58 (CAN-2833)', () => {
@@ -1195,6 +1271,8 @@ describe('mutation audit of e422a58 (CAN-2833)', () => {
     w.crash.cancelThrows = true;
     await expect(w.call('strategy.stop', { strategyId: strategyOf(w).strategyId }, false)).resolves.toMatchObject({ result: { stopped: true } });
     expect(strategyOf(w).status).toBe('stopped');
+    // The order whose cancel blew up still rests at the venue: it stays on the book, counted against the limits.
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['o1']);
   });
 
   it('a cancel that throws in pause still answers paused and keeps that order booked (N-3)', async () => {
