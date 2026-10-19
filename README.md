@@ -66,6 +66,14 @@ and `postMessage`, and the wallet core is WebCrypto — a runtime old enough to
 need CommonJS has none of them, so a CJS build would be a build nobody can use
 pretending otherwise.
 
+## Making a change
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before the first PR. In short: no
+comments in code (the why goes into the Linear ticket, the PR and the commit),
+names that say what the code does, and a PR that carries its unit, coverage,
+mutation and integration results, a run on the local stand from
+[Cancore-io/meta](https://github.com/Cancore-io/meta), its RTM row and a Qase run.
+
 ## Releasing
 
 A package is published by pushing a tag, never by hand:
