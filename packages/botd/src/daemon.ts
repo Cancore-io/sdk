@@ -196,13 +196,17 @@ export function createDispatcher(deps: Deps): Dispatcher {
   };
   const settleEntry = { method: 'settle' as const, riskClass: 'trade' as const };
   /**
-   * Cancels one of our resting orders only while the venue still shows it open. A taken one is a trade in
-   * progress: the venue may accept a cancel there while its HTLC still executes, so it stays on the book.
+   * Cancels one of our resting orders. Read open → cancelled and unbooked. Read taken/settling/ended → kept:
+   * the venue may accept a cancel while an HTLC still executes. Status unreadable (twice) → the cancel is
+   * still sent to stop the exposure, but the order stays booked until reconcile sees how it ended.
    */
-  async function cancelResting(e: Engine, orderId: string): Promise<boolean> {
-    const info = await e.order(orderId).catch(() => undefined);
-    if (info?.status !== 'open') return false;
-    return e.cancel(orderId).then(() => true, () => false);
+  async function cancelResting(e: Engine, orderId: string): Promise<'cancelled' | 'kept' | 'sent' | 'failed'> {
+    const read = () => e.order(orderId).then((o) => o, () => undefined);
+    const info = (await read()) ?? (await read());
+    if (info && info.status !== 'open') return 'kept';
+    const sent = await e.cancel(orderId).then(() => true, () => false);
+    if (!sent) return 'failed';
+    return info ? 'cancelled' : 'sent';
   }
 
   /**
@@ -213,7 +217,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
     let paused = false;
     await mutate((s) => ((paused = s.paused), adoptIntent(s, intent, orderId)));
     if (!paused) return false;
-    if (await cancelResting(e, orderId)) await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) }));
+    if ((await cancelResting(e, orderId)) === 'cancelled') await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) }));
     return true;
   }
   const hooks: EngineHooks = {
@@ -453,7 +457,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
     const cancelled: string[] = [];
     if (engine) {
       for (const o of state.openOrders.filter((x) => x.strategy?.id === id && !x.taken)) {
-        if (await cancelResting(engine, o.orderId)) cancelled.push(o.orderId);
+        if ((await cancelResting(engine, o.orderId)) === 'cancelled') cancelled.push(o.orderId);
       }
     }
     await mutate((now) => ({
@@ -524,7 +528,12 @@ export function createDispatcher(deps: Deps): Dispatcher {
       }
       case 'order.cancel': {
         const { orderId } = p as Params<'order.cancel'>;
-        if (!(await cancelResting(needEngine(), orderId))) throw new RpcFault(ERROR.INVALID_PARAMS, 'not cancelled: the order is no longer open (taken, settling or ended)');
+        const outcome = await cancelResting(needEngine(), orderId);
+        // A fixed code, so a client tells it from bad parameters: the order is taken, settling or ended.
+        if (outcome === 'kept') throw new RpcFault(ERROR.INVALID_PARAMS, 'not cancelled: the order is no longer open', { reason: 'not_open' } as never);
+        // Sent without a readable status: it stays booked until reconcile sees it ended.
+        if (outcome === 'sent') return { orderId, cancelled: true };
+        if (outcome === 'failed') throw new RpcFault(ERROR.INTERNAL, 'cancel failed; try again');
         await mutate((s) => {
           const next = userCancelled(s, [orderId]);
           return { ...next, openOrders: next.openOrders.filter((o) => o.orderId !== orderId) };
@@ -536,7 +545,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
         const cancelled: string[] = [];
         // One that will not cancel stays on the book; the rest still come off it.
         for (const o of state.openOrders) {
-          if (await cancelResting(e, o.orderId)) cancelled.push(o.orderId);
+          if ((await cancelResting(e, o.orderId)) === 'cancelled') cancelled.push(o.orderId);
         }
         await mutate((s) => {
           const next = userCancelled(s, cancelled);
@@ -564,7 +573,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
         if (engine) {
           for (const o of book.filter((x) => x.taken)) if (engine.untake(o.orderId)) cancelled.push(o.orderId);
           for (const o of book.filter((x) => !x.taken)) {
-            if (await cancelResting(engine, o.orderId)) cancelled.push(o.orderId);
+            if ((await cancelResting(engine, o.orderId)) === 'cancelled') cancelled.push(o.orderId);
           }
         }
         await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => !cancelled.includes(o.orderId)) }));

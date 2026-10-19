@@ -31,7 +31,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
   let ticker: (() => void) | undefined;
   const audited: { method: string; decision: string; reason?: string }[] = [];
   let hooks: Parameters<Deps['createEngine']>[1] | undefined;
-  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[] };
+  const crash = { slow: undefined as Promise<{ orderId: string }> | undefined, hang: false, wiped: false, make: false, refuse: false, found: undefined as string | undefined, lookupDown: false, lookups: 0, orderLookups: [] as string[], orderDown: false };
   const deps = (): Deps => ({
     keystore: { init: jest.fn(), initSeed: jest.fn(), unlock: async () => ({ destroy: () => undefined }) as never, lock: () => void (crash.wiped = true), isLocked: () => false, publicKey: async () => 'ab' },
     audit: {
@@ -60,7 +60,11 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         take: jest.fn(),
         untake: jest.fn(() => true),
         cancel: async (id) => void cancelled.push(id),
-        order: async (id) => (crash.orderLookups.push(id), { orderId: id, status: statuses[id] ?? 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' }),
+        order: async (id) => {
+          crash.orderLookups.push(id);
+          if (crash.orderDown) throw new Error('ECONNRESET');
+          return { orderId: id, status: statuses[id] ?? 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' };
+        },
         balances: jest.fn(),
         referencePrices: async () => ({ 'CC/USDCx': '0.15' }),
         usdPrices: async () => ({ CC: '0.15', USDCx: '1' }),
@@ -511,6 +515,30 @@ describe('an order whose answer was lost', () => {
     await w.call('pause', {}, true);
     expect(w.cancelled).toEqual([]);
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual([id]);
+  });
+
+  it('with the order status unreadable, pause and order.cancel still send the cancel but keep the order booked (round-25 X-6)', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    await w.call('order.make', make, false);
+    const [a, b] = w.state().openOrders.map((o) => o.orderId);
+    w.crash.orderDown = true;
+    expect(await w.call('order.cancel', { orderId: a }, false)).toMatchObject({ result: { orderId: a, cancelled: true } });
+    await w.call('pause', {}, true);
+    // Both cancels went out: the exposure is stopped even though no status could be read.
+    expect([...new Set(w.cancelled)].sort()).toEqual([a, b].sort());
+    // Neither is unbooked: reconcile decides once the venue answers.
+    expect(w.state().openOrders.map((o) => o.orderId).sort()).toEqual([a, b].sort());
+  });
+
+  it('order.cancel of an order no longer open fails with the fixed reason not_open', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    const id = w.state().openOrders[0]!.orderId;
+    w.statuses[id] = 'accepted';
+    await expect(w.call('order.cancel', { orderId: id }, false)).rejects.toMatchObject({ data: { reason: 'not_open' } });
   });
 
   it('released takes are pruned: past their day without a lookup, or once the venue shows they ended (round-22 X-2)', async () => {
