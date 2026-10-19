@@ -87,6 +87,15 @@ describe('security: bot-mcp', () => {
     expect(limits).not.toHaveProperty('usdCapsOptOut');
   });
 
+  it('a cancel refused as not open says so, and only the fixed code passes', async () => {
+    for (const [reason, expected] of [['not_open', 'not_open'], [INJECT_TOKEN, 'invalid_params']] as const) {
+      const mcp = await connected({ call: async () => Promise.reject({ error: { code: ERROR.INVALID_PARAMS, message: INJECT, data: { reason } } }) });
+      const res = await mcp.callTool({ name: toolName('order.cancel'), arguments: { orderId: 'o1' } });
+      expect((res as { structuredContent?: { error?: string } }).structuredContent?.error).toBe(expected);
+      expect(JSON.stringify(res)).not.toContain(INJECT_TOKEN);
+    }
+  });
+
   it('error replies carry no daemon message text', async () => {
     for (const error of [
       { code: ERROR.DENIED, message: INJECT, data: { reason: INJECT } },

@@ -149,6 +149,8 @@ export function errorReply(err: unknown, method?: Method): ToolReply {
     case ERROR.FORBIDDEN:
       return reply({ error: 'forbidden', instruction: 'This socket peer is not allowed this method.' }, true);
     case ERROR.INVALID_PARAMS:
+      // The one fixed code the daemon sends here: the order is no longer open, so there is nothing to fix.
+      if (e.data?.reason === 'not_open') return reply({ error: 'not_open', instruction: 'The order is taken, settling or ended; it cannot be cancelled. Do not retry.' }, true);
       return reply({ error: 'invalid_params' }, true);
     case ERROR.UNCONFIRMED:
       return reply({ error: 'unconfirmed', instruction: UNCONFIRMED_ACT }, true);
