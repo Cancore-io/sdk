@@ -2792,6 +2792,33 @@ describe('serve(): an untake during the fee split matches what is sent', () => {
   });
 });
 
+describe('serve(): which accept failures prove nothing was accepted', () => {
+  test.each([
+    ['a 403 refusal ends the take: untake confirms it is off', 'notAllowed' as const, true],
+    ['a 409 is not proof (it may be our own accept, read late): untake reports it may be a trade', 'conflict' as const, false],
+  ])('%s', async (_, refusal, untaken) => {
+    const api = venue(refusal === 'notAllowed' ? { refuseAt: { accept: 'notAllowed' } } : {});
+    let failed = false;
+    const fetchImpl: typeof api.fetchImpl = async (url, init) => {
+      const accept = init.method === 'POST' && new URL(url).pathname === '/orders/o1/accept';
+      const res = refusal === 'conflict' && accept ? json({ message: 'Order already accepted' }, 409) : await api.fetchImpl(url, init);
+      if (accept) failed = true;
+      return res;
+    };
+    const { maker, taker } = await tradingPair(api, [80, 81], {}, { fetchImpl });
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    const events: ServeEvent[] = [];
+    const handle = taker.serve({ reconcileMs: 3_600_000, onEvent: (e) => events.push(e) });
+    handle.take('o1');
+    await until(() => failed && events.some((e) => e.type === 'error'));
+    expect(handle.untake('o1')).toBe(untaken);
+    await handle.stop();
+  });
+});
+
 describe('take: onAccepted marks the trade', () => {
   test('called once this account holds the order', async () => {
     const api = venue();

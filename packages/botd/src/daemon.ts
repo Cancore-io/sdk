@@ -225,6 +225,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
         await append({ ...settleEntry, decision: 'allow', params: { orderId, event: reason } });
       }),
     onVerifyFailed: (detail) => later(() => append({ ...settleEntry, decision: 'deny', reason: 'verify_failed', params: { detail } })),
+    onTakeFailed: (orderId, errorName) =>
+      later(() => append({ ...settleEntry, decision: 'error', reason: /^\w{1,64}$/.test(errorName) ? errorName : 'Error', params: { orderId, event: 'take_failed' } })),
   };
 
   /** Per-intent lookup state, in memory: failed lookups back off, an empty one is confirmed once more. */
@@ -233,7 +235,12 @@ export function createDispatcher(deps: Deps): Dispatcher {
   /** An order of ours that settled or ended while nobody listened goes through the same hooks as a live one. */
   async function settleIfDone(e: Engine, orderId: string) {
     const info = await e.order(orderId).catch(() => undefined);
-    if (info?.status === 'completed') hooks.onSettled(orderId);
+    const taken = (await deps.state.load()).openOrders.find((o) => o.orderId === orderId)?.taken;
+    // A take of ours is our fill only if we are its taker; someone else's take ends our booking; unknown waits.
+    if (info?.status === 'completed' && taken) {
+      if (info.takenBySelf === true) hooks.onSettled(orderId);
+      else if (info.takenBySelf === false) hooks.onEnded(orderId, 'taken_by_other');
+    } else if (info?.status === 'completed') hooks.onSettled(orderId);
     else if (info && ENDED.has(info.status)) hooks.onEnded(orderId, info.status);
   }
 

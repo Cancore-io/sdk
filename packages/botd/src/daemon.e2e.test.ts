@@ -31,8 +31,10 @@ function fakeApi() {
     /** Hashes the API received signed, each checked against the bot's key. */
     signed: [] as { hash: string; bytes: string }[],
     tamper: false,
-    /** POST accept of x1: applied on the venue, then the answer is lost (fetch throws). */
+    /** POST accept of someone else's order: the answer is lost (fetch throws). */
     dropAccept: false,
+    /** Whether the venue applied that accept before the answer was lost. */
+    applyAccept: true,
     accepts: 0,
     orders,
     async fetch(url: string, init: RequestInit): Promise<Response> {
@@ -53,11 +55,12 @@ function fakeApi() {
         api.created.push(body);
         return json(order, 201);
       }
-      if (route === 'POST /orders/x1/accept' && orders.has('x1')) {
+      const accepting = /^\/orders\/(x\d+)\/accept$/.exec(pathname);
+      if (init.method === 'POST' && accepting && orders.has(accepting[1]!)) {
         api.accepts++;
-        Object.assign(orders.get('x1')!, { status: 'accepted', opponentUserId: 'bot' });
+        if (api.applyAccept) Object.assign(orders.get(accepting[1]!)!, { status: 'accepted', opponentUserId: 'bot' });
         if (api.dropAccept) throw new TypeError('fetch failed: the response was lost');
-        return json(orders.get('x1'));
+        return json(orders.get(accepting[1]!));
       }
       const order = /^\/orders\/([ox]\d+)(\/cancel)?$/.exec(pathname);
       if (order && orders.has(order[1]!)) {
@@ -242,10 +245,9 @@ describe('cancore-botd end to end: an accept whose answer was lost (F128-LOST-AC
     for (let i = 0; i < 250 && !check(); i++) await new Promise((r) => setTimeout(r, 20));
     expect(check()).toBe(true);
   };
-  // Every pending promise chain of the failed take runs to its catch: macrotask turns, not a timing guess.
-  const drain = async () => {
-    for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
-  };
+  const audit = () => readFileSync(paths(config).audit, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { params?: { orderId?: string; event?: string } });
+  // Observable: the daemon audits the failed take step once serve's catch has run.
+  const takeFailed = (orderId: string) => audit().some((e) => e.params?.event === 'take_failed' && e.params.orderId === orderId);
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'botd-e2e-lost-'));
@@ -273,8 +275,7 @@ describe('cancore-botd end to end: an accept whose answer was lost (F128-LOST-AC
       api.dropAccept = true;
       expect(await agent('order.take', { orderId: 'x1', amount: '10' })).toMatchObject({ orderId: 'x1' });
       // The venue applied the accept; the bot only saw a network error.
-      await until(() => api.accepts === 1);
-      await drain();
+      await until(() => api.accepts === 1 && takeFailed('x1'));
       // Paused before any reconcile: the take may be a trade, so its booking must survive.
       await owner('pause', { reason: 'owner stop' });
       expect(state().openOrders.map((o) => o.orderId)).toEqual(['x1']);
@@ -289,7 +290,6 @@ describe('cancore-botd end to end: an accept whose answer was lost (F128-LOST-AC
       try {
         await owner('unlock', { passphrase: 'bot-pass-2026' });
         await until(() => state().openOrders.length === 0 && (state().fills ?? []).length === 1);
-        await drain();
       } finally {
         await stop();
       }
@@ -309,5 +309,36 @@ describe('cancore-botd end to end: an accept whose answer was lost (F128-LOST-AC
     } finally {
       await stop();
     }
+  });
+  it('an accept that the venue never applied, then someone else completes the order, books no fill', async () => {
+    // 2 CC (0.3 USD) fits what is left of the 2 USD day.
+    api.orders.set('x2', { ...api.orders.get('x1')!, id: 'x2', status: 'open', opponentUserId: null, sourceAmount: '2', targetAmount: '0.3' });
+    api.dropAccept = true;
+    api.applyAccept = false;
+    let stop = await boot();
+    let before: { fills: number; positions: BotState['positions'] };
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      await owner('resume').catch(() => undefined);
+      before = { fills: (state().fills ?? []).length, positions: state().positions };
+      expect(await agent('order.take', { orderId: 'x2', amount: '2' })).toMatchObject({ orderId: 'x2' });
+      await until(() => takeFailed('x2'));
+      // Ambiguous answer: the booking stays until the venue shows who took it.
+      await owner('pause', { reason: 'owner stop' });
+      expect(state().openOrders.map((o) => o.orderId)).toEqual(['x2']);
+    } finally {
+      await stop();
+    }
+    // Another account took and completed it: not our trade.
+    Object.assign(api.orders.get('x2')!, { status: 'completed', opponentUserId: 'other' });
+    stop = await boot();
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      await until(() => state().openOrders.length === 0);
+    } finally {
+      await stop();
+    }
+    expect((state().fills ?? []).length).toBe(before.fills);
+    expect(state().positions).toEqual(before.positions);
   });
 });

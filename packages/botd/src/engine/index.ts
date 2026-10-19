@@ -3,6 +3,18 @@ import { dec, fmt, mul, SCALE } from '../decimal';
 import { guardSigning } from '../verify';
 import type { BotSigner, Engine, EngineHooks } from '../types';
 
+// Daemon-layer additions to the core engine types.
+declare module '../types' {
+  interface OrderInfo {
+    /** Set once the order has a taker: whether it is this account. */
+    takenBySelf?: boolean;
+  }
+  interface EngineHooks {
+    /** A take or settle step of the loop failed; `errorName` is the error's class, never its text. */
+    onTakeFailed?(orderId: string, errorName: string): void;
+  }
+}
+
 export interface EngineOptions {
   signer: BotSigner;
   /** Gateway root, e.g. https://api.cancore.io */
@@ -141,8 +153,10 @@ export function createEngine(options: EngineOptions): Engine {
       await acct.swap.cancel(orderId);
     },
     async order(orderId) {
-      const o = await acct.swap.get(orderId);
-      return { orderId: o.id, status: o.status, source: o.sourceTokenAddress, sourceAmount: o.sourceAmount, target: o.targetTokenAddress, targetAmount: o.targetAmount };
+      const [o, self] = await Promise.all([acct.swap.get(orderId), acct.me()]);
+      // Who took it: this account, another one, or not known (no opponent yet).
+      const takenBySelf = o.opponentUserId ? o.opponentUserId === self.id : undefined;
+      return { orderId: o.id, status: o.status, source: o.sourceTokenAddress, sourceAmount: o.sourceAmount, target: o.targetTokenAddress, targetAmount: o.targetAmount, ...(takenBySelf !== undefined && { takenBySelf }) };
     },
     async balances(instruments) {
       return Promise.all(instruments.map(async (instrument) => ({ instrument, amount: (await acct.balance(instrument)).balance })));
@@ -196,6 +210,8 @@ export function createEngine(options: EngineOptions): Engine {
         onEvent: (event) => {
           if (event.type === 'settled') hooks.onSettled(event.orderId);
           else if (event.type === 'expired') hooks.onEnded(event.orderId, 'expired');
+          // The error's class only: its message may carry text from the API.
+          else if (event.type === 'error' && event.orderId) hooks.onTakeFailed?.(event.orderId, (event.error as Error)?.name ?? 'Error');
         },
       });
     },
