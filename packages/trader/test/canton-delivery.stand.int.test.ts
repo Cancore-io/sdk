@@ -161,13 +161,23 @@ live('CAN-1867: EVM → Canton on the full intent stand', () => {
 
   test('TC-CAN-1867-STAND-01: an order to canton:devnet is delivered by the filler’s party and settled on the router: repayTo paid, the party’s CNRX spent', async () => {
     // -- the route as Cancore serves it ------------------------------------------------------
-    const catalog = (await (await fetch(`${env('GATEWAY_URL')}/v1/intents/routes`)).json()) as { routes: Array<{ src: string; dst: string; feeBps: number; fillDeadlineTtlS: number }> };
-    const route = catalog.routes.find((r) => r.src === chain && r.dst === env('CANTON_CHAIN'));
-    if (!route) throw new Error(`no route ${chain} → ${env('CANTON_CHAIN')} in ${env('GATEWAY_URL')}/v1/intents/routes`);
+    // trading serves the catalog (RouteCatalogService over INTENT_ROUTES); the gateway may not proxy it on the stand.
+    type Route = { src: string; dst: string; feeBps: number; fillDeadlineTtlS: number; inputs: Array<{ asset: unknown; decimals: number }> };
+    let route: Route | undefined;
+    for (const base of [process.env.TRADING_URL, process.env.GATEWAY_URL].filter((u): u is string => !!u)) {
+      const response = await fetch(`${base}/v1/intents/routes`).catch(() => undefined);
+      if (!response?.ok) continue;
+      route = ((await response.json()) as { routes: Route[] }).routes.find((r) => r.src === chain && r.dst === env('CANTON_CHAIN'));
+      if (route) break;
+    }
+    if (!route) throw new Error(`no route ${chain} → ${env('CANTON_CHAIN')} at TRADING_URL or GATEWAY_URL /v1/intents/routes`);
 
     // -- open, as the maker, on the router -----------------------------------------------------
     const maker = createTestFillSigner(env('MAKER_EVM_KEY') as Hex);
     const token = env('INPUT_TOKEN_ADDRESS').toLowerCase() as Hex;
+    // The stand's test tokens carry their own decimals: the catalog's, else the token's own.
+    const listed = route.inputs.find((i) => typeof i.asset === 'string' && i.asset.toLowerCase() === token);
+    const decimals = listed?.decimals ?? Number(BigInt(await client.call(token, '0x313ce567')));
     const permit2 = env('PERMIT2_ADDRESS') as Hex;
     const head = await client.block('latest');
     const now = BigInt((await rpc.request<{ timestamp: string }>({ method: 'eth_getBlockByHash', params: [head.hash, false] })).timestamp);
@@ -175,7 +185,7 @@ live('CAN-1867: EVM → Canton on the full intent stand', () => {
       user: maker.address.toLowerCase() as Hex,
       originChainId: env('EVM_CHAIN_ID'),
       inputToken: token,
-      inputAmount: (10n * 10n ** 18n).toString(),
+      inputAmount: (10n * 10n ** BigInt(decimals)).toString(),
       destination: encodeCantonDestination('devnet'),
       outputAsset: encodeCantonOutputAsset(asset),
       minReceived: encodeCantonAmount('5').toString(),
