@@ -67,7 +67,8 @@ Selling gives `amount` of base for `amount × price` of quote (rounded down); bu
 **whole** order's amount (there are no partial takes) and the pair must be allowed in one
 orientation. The result (`filled: "0"`) means queued: settlement runs in the background. The taken
 order counts as open until it settles. One whose accept answer was lost keeps counting until the venue
-shows how it ended; only the human can release it earlier (`release` below).
+shows how it ended (the venue cancels an open order once it expires): that accept may still land, so
+the human cannot release it while the order is open either.
 
 To reduce risk at any time: `trade_order_cancel`, `trade_orders_cancelAll`, `trade_strategy_stop`,
 or `trade_pause` (stops strategies and cancels the bot's resting orders; only the human can resume).
@@ -138,7 +139,7 @@ these, give them the command:
 sudo -u cancore-bot cancore-bot unlock | lock | resume | status
 sudo -u cancore-bot cancore-bot limits set /dev/stdin < limits.json
 sudo -u cancore-bot cancore-bot withdraw --to <their own party> --instrument CC --amount <n>
-sudo -u cancore-bot cancore-bot release <orderId>   # a booked take whose accept answer was lost
+sudo -u cancore-bot cancore-bot release <orderId>   # a booked take no accept of which can still land
 ```
 
 Details: `packages/botd/README.md` and `packages/bot-mcp/README.md` in
