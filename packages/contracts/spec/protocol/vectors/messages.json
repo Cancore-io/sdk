@@ -522,6 +522,17 @@
           "amount": "250.5",
           "toParty": "alice::1220f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a5968778695a4b3c2d1e0f"
         }
+      },
+      {
+        "type": "canton.prepare",
+        "id": "cp-6",
+        "fillerId": "acme-markets",
+        "sentAt": 1789990200000,
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "op": "preapproval.create",
+        "params": {
+          "admin": "cancore-registry::1220aa"
+        }
       }
     ],
     "canton.prepared": [
@@ -594,6 +605,33 @@
           "transferFactoryCid": "00tf"
         },
         "expiresAt": 1790000326300
+      },
+      {
+        "type": "canton.prepared",
+        "id": "g-25",
+        "fillerId": "acme-markets",
+        "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "sentAt": 1789990200200,
+        "re": "cp-6",
+        "operationId": "op-6",
+        "op": "preapproval.create",
+        "legs": [
+          {
+            "legId": "preapproval-create-0",
+            "kind": "transaction",
+            "hash": "0x71bb89bb58a7348d8860b4a84b1e598fc03e1368f144ef24d1cc9e292a1be331",
+            "preparedTransaction": "CgMyLjESBTAuMC4x",
+            "hashingSchemeVersion": "HASHING_SCHEME_VERSION_V2"
+          }
+        ],
+        "summary": {
+          "party": "acme-markets::1220a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+          "admin": "cancore-registry::1220aa",
+          "instrumentAllowances": [],
+          "requestedAt": "1789990200",
+          "executeBefore": "1821526200"
+        },
+        "expiresAt": 1789990500200
       }
     ],
     "canton.submit": [
@@ -653,6 +691,20 @@
         "result": {
           "outcome": "PENDING",
           "transferInstructionCid": "00ti"
+        }
+      },
+      {
+        "type": "canton.submitted",
+        "id": "g-26",
+        "fillerId": "acme-markets",
+        "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "sentAt": 1789990202000,
+        "re": "cs-6",
+        "operationId": "op-6",
+        "op": "preapproval.create",
+        "updateId": "1220ab0e",
+        "result": {
+          "preapprovalCid": "00pa"
         }
       }
     ],
