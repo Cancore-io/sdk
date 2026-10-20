@@ -2797,9 +2797,14 @@ describe('serve(): which accept failures prove nothing was accepted', () => {
     ['a 403 refusal ends the take: untake confirms it is off', 'notAllowed' as const, true],
     ['a 409 is not proof (it may be our own accept, read late): untake reports it may be a trade', 'conflict' as const, false],
     ['the fee-holding 409 comes before the venue claims the order: one the take cannot meet ends it, untake confirms it is off', 'feeHoldingOther' as const, true],
+    ['the same refusal told in prose only, with no error code', 'feeHoldingProse' as const, true],
     ['a 408 is not proof (a proxy answers it while the venue may still work on the accept): untake reports it may be a trade', 'timeout' as const, false],
   ])('%s', async (_, refusal, untaken) => {
-    const api = venue(refusal === 'notAllowed' ? { refuseAt: { accept: 'notAllowed' } } : refusal === 'feeHoldingOther' ? { refuseAt: { accept: 'feeHoldingOther' }, coded: true } : {});
+    const api = venue(
+      refusal === 'notAllowed' ? { refuseAt: { accept: 'notAllowed' } }
+        : refusal === 'feeHoldingOther' ? { refuseAt: { accept: 'feeHoldingOther' }, coded: true }
+          : refusal === 'feeHoldingProse' ? { refuseAt: { accept: 'feeHoldingOther' } } : {},
+    );
     let failed = false;
     const fetchImpl: typeof api.fetchImpl = async (url, init) => {
       const accept = init.method === 'POST' && new URL(url).pathname === '/orders/o1/accept';

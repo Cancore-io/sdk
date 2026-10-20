@@ -634,6 +634,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
           openOrders: s.openOrders.filter((o) => {
             if (!cancelled.includes(o.orderId)) return true;
             if (!o.taken || !e) return false;
+            // Another engine since (a lock and unlock while this pause cancelled): its loop may have taken the order again.
+            if (engine !== e) return true;
             // A take of it queued again since (a resume while this pause cancelled) is called off in the same step;
             // the order stays booked only if that take's accept is already out.
             e.untake(o.orderId);
@@ -770,14 +772,16 @@ export function createDispatcher(deps: Deps): Dispatcher {
         e.untake(orderId);
         const info = await e.order(orderId).catch(() => undefined);
         if (!info) throw new RpcFault(ERROR.INTERNAL, 'not released: the order could not be read; try again');
-        // And again in the same step as the decision: a take of the same order queued during the read is called off too.
-        e.untake(orderId);
+        // Open with no taker proves nothing about an accept already sent: the venue claims the order only at the end
+        // of a slow accept. Released only when this engine, still the running one, booked the take first and none of
+        // its accepts went out unrefused.
+        const vouched = info.status === 'open' && info.takenBySelf === undefined && engine === e && takenWith.get(orderId) === e;
+        // In the same step as the decision: a take of the same order queued during the read is called off too.
+        if (vouched) e.untake(orderId);
         // Taken by another account or ended: no accept of ours can claim it any more.
         if (info.takenBySelf === false) await endOrder(orderId, 'taken_by_other');
         else if (ENDED.has(info.status)) await endOrder(orderId, info.status);
-        // Open with no taker proves nothing about an accept already sent: the venue claims the order only at the end
-        // of a slow accept. Released only when this engine booked the take first and none of its accepts went out unrefused.
-        else if (info.status === 'open' && info.takenBySelf === undefined && takenWith.get(orderId) === e && !e.mayBeTrade(orderId)) await endOrder(orderId, 'released');
+        else if (vouched && !e.mayBeTrade(orderId)) await endOrder(orderId, 'released');
         else throw new RpcFault(ERROR.INVALID_PARAMS, 'not released: an accept for this order may have gone through or may still land; it stays booked until the venue refuses that accept or shows how the order ended', { reason: 'may_be_trade' } as never);
         return { orderId, released: true };
       }

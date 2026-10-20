@@ -73,7 +73,8 @@ function fakeApi() {
         if (step === 'lost-unapplied') throw new TypeError('fetch failed: the server was still in its handler');
         if (step === 'refused') return json({ statusCode: 400, message: 'Insufficient balance' }, 400);
         // Raised before the venue claims the order: the bot must hold its fee apart, and it cannot split USDCx.
-        if (step === 'fee-holding') return json({ statusCode: 409, message: 'refused', errorCode: 'DVP_FEE_HOLDING_REQUIRED', code: 'DVP_FEE_HOLDING_REQUIRED', payerPartyId: party, feeAmount: '0.01' }, 409);
+        // A fee within the default 1.5 % ceiling of a 0.15 order, so the take gets as far as the split.
+        if (step === 'fee-holding') return json({ statusCode: 409, message: 'refused', errorCode: 'DVP_FEE_HOLDING_REQUIRED', code: 'DVP_FEE_HOLDING_REQUIRED', payerPartyId: party, feeAmount: '0.002' }, 409);
         if (step === 'applied-then-400') {
           // The earlier attempt commits now; this one sees the order no longer open.
           Object.assign(orders.get(accepting[1]!)!, { status: 'accepted', opponentUserId: 'bot' });
