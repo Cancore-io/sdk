@@ -434,6 +434,14 @@ failure, three attempts in all. A prepare is never sent twice for one call. Prep
 `cantonPrepare` rate class (an hourly budget) and submits in `canton`, so a spent budget pauses new
 prepares only.
 
+**Pinned registries.** Every check that meets a registry contract — `transfer`, `delivery.fill`,
+the committed give (V-C4, V-C5) and `intent.settle` — holds it to `CantonOperations.registries`: by
+instrument admin, the package id and templates of the registry (`CantonTransferFactory`: factory,
+holding, pending transfer, V2 allocation, `openReceipt`). It is `CANTON_TRANSFER_FACTORIES`, the
+published registries, unless `CantonConfig.registries` (or `CantonClientConfig.registries`) names
+others — only for a network with its own registrar, such as a test stand; `registriesProblem`
+checks such a pin before it is used. filler-gateway never supplies it.
+
 `allocateParty()`, `acceptRegistry(fillerId)` and `transfer(params)` carry their checks built in.
 The party is recognised by its namespace, the fingerprint of the node key (its hint, the part before
 `::`, is not checked):

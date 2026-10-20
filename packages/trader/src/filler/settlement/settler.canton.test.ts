@@ -2,6 +2,7 @@ import { buildCantonSourceOrder, fillerIdHash, repayToFromParty, type CantonInte
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
 import { FillerChains } from '../chain';
+import { CANTON_TRANSFER_FACTORIES } from '../canton/factories';
 import { NODE_KEY, party } from '../canton/fixtures';
 import { CantonRefusal } from '../canton/legs';
 import type { CantonOperations } from '../canton/operations';
@@ -76,6 +77,7 @@ async function world(options: { canton?: boolean; refundAfterS?: number } = {}) 
   const runs: Array<{ op: string; params: unknown; check: (prepared: never, txs: never[]) => unknown }> = [];
   const canton = {
     publicKey: `0x${NODE_KEY}` as Hex,
+    registries: CANTON_TRANSFER_FACTORIES,
     intent: jest.fn(async () => structuredClone(intent)),
     party: jest.fn(async () => registered),
     run: jest.fn(async (op: string, params: unknown, check: (prepared: never, txs: never[]) => unknown) => {
@@ -95,7 +97,7 @@ async function world(options: { canton?: boolean; refundAfterS?: number } = {}) 
   } as unknown as FillerProtocolClient;
   const settler = new Settler({
     store, chains, executor, protocol, fillerId: FILLER, instanceId: 'r1', clock, logger, events,
-    ...(options.canton === false ? {} : { canton: canton as unknown as Pick<CantonOperations, 'run' | 'intent' | 'party' | 'publicKey'>, cantonParty: ME }),
+    ...(options.canton === false ? {} : { canton: canton as unknown as Pick<CantonOperations, 'run' | 'intent' | 'party' | 'publicKey' | 'registries'>, cantonParty: ME }),
   });
   settler.register();
   const push = async (d: Delivery) => {

@@ -1,5 +1,6 @@
 import type { Hex, QuoteReconfirm, QuoteRequest, StakeBindingRequest, TicketIssued, TicketOffer } from '@cancore/contracts';
 import {
+  CANTON_TRANSFER_FACTORIES,
   CantonOperations,
   cantonFingerprint,
   createFiller,
@@ -199,6 +200,12 @@ describe('the skeleton of sdk.md §3.6', () => {
       expect(createFiller(baseConfig()).canton).toBeUndefined();
     });
 
+    test('canton.registries replaces the published pins for a network with its own registrar (CAN-1863)', () => {
+      const stand = { [`stand-registrar::1220${'5'.repeat(64)}`]: Object.values(CANTON_TRANSFER_FACTORIES)[0]! };
+      expect(createFiller({ ...baseConfig(), canton: canton({ registries: stand }) }).canton?.registries).toBe(stand);
+      expect(createFiller({ ...baseConfig(), canton: canton() }).canton?.registries).toBe(CANTON_TRANSFER_FACTORIES);
+    });
+
     test.each([
       ['a party of another key', { party: `acme-1::${cantonFingerprint(`0x${'22'.repeat(32)}`)}` }, 'canton.party'],
       ['a key that is not 32 bytes', { partySigner: { publicKey: '0x11' as Hex, signHash: async () => '0x' as Hex } }, 'canton.partySigner.publicKey'],
@@ -206,6 +213,8 @@ describe('the skeleton of sdk.md §3.6', () => {
       ['no participant uid', { participantUid: 'cancore' }, 'canton.participantUid'],
       ['no destination policy', { destination: undefined as never }, 'canton.destination'],
       ['a negative sendGuard', { destination: { minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: -1 } }, 'canton.destination.sendGuardSec'],
+      ['registries that are a list (CAN-1863)', { registries: [] as never }, 'canton.registries'],
+      ['a registry under a non-party (CAN-1863)', { registries: { registrar: [] } as never }, 'canton.registries[registrar]'],
     ])('%s is refused', (_name, over, field) => {
       expect(configErrorField(() => createFiller({ ...baseConfig(), canton: canton(over as Partial<CantonConfig>) }))).toBe(field);
     });

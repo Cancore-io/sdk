@@ -32,6 +32,7 @@ import {
 } from './protocol/session';
 import { noopEventSink, type EventSink } from './events';
 import { isOwnParty } from './canton/checks';
+import { registriesProblem, type CantonTransferFactory } from './canton/factories';
 import { CantonOperations, type CantonPartySigner } from './canton/operations';
 import type { CantonLedger } from './ledger';
 import type { EvmRpcMap } from './rpc';
@@ -114,6 +115,13 @@ export interface CantonConfig {
   participantUid: string;
   /** The filler's policy for a Canton destination; no defaults (CAN-1720). */
   destination: CantonDestinationPolicy;
+  /**
+   * The registries the party's operations are held to, by instrument admin —
+   * transfers, deliveries, the committed give and the payout. Default
+   * `CANTON_TRANSFER_FACTORIES` (the published registries); set it only for a
+   * network with its own registrar, such as a test stand. Never from filler-gateway.
+   */
+  registries?: Readonly<Record<string, readonly CantonTransferFactory[]>>;
 }
 
 /** What `ChainConfig` holds for an EVM destination, for a Canton one. */
@@ -363,6 +371,10 @@ function validateCanton(canton: CantonConfig): void {
     const value = canton.destination[field];
     if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new FillerConfigError(`canton.destination.${field}`, 'expected a non-negative integer');
   }
+  if (canton.registries !== undefined) {
+    const problem = registriesProblem(canton.registries);
+    if (problem) throw new FillerConfigError(`canton.registries${problem.split(':')[0]}`, problem.slice(problem.indexOf(':') + 1).trim());
+  }
 }
 
 function validateDelivery(delivery: DeliveryOptions): void {
@@ -517,7 +529,10 @@ export function createFiller(config: FillerConfig): Filler {
   protocol.attach(session, rest);
   // The party's operations ride the same REST login and message key as the session.
   const canton = config.canton
-    ? new CantonOperations({ rest, seal, nextId, signer: config.canton.partySigner, participantUid: config.canton.participantUid, clock, logger })
+    ? new CantonOperations({
+        rest, seal, nextId, signer: config.canton.partySigner, participantUid: config.canton.participantUid, clock, logger,
+        ...(config.canton.registries ? { registries: config.canton.registries } : {}),
+      })
     : undefined;
   const cantonParty = config.canton?.party ?? config.ledger?.party;
 

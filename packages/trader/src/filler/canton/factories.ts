@@ -65,6 +65,35 @@ export const CANTON_TRANSFER_FACTORIES: Readonly<Record<string, readonly CantonT
   'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b': [CNRX_REGISTRY_0_2_3],
 };
 
+const PACKAGE_ID = /^[0-9a-f]{64}$/;
+const QUALIFIED = /^[A-Za-z0-9_.]+:[A-Za-z0-9_]+$/;
+
+/**
+ * Why `registries` is not a usable registry pin — `field: problem` — or
+ * undefined when it is one: each admin a party id, each entry a 64-hex package
+ * id with `<module>:<entity>` templates. For a stand with its own registrar
+ * (`CantonConfig.registries`); never taken from filler-gateway.
+ */
+export function registriesProblem(registries: unknown): string | undefined {
+  if (typeof registries !== 'object' || registries === null || Array.isArray(registries)) return ': expected an object by instrument admin';
+  for (const [admin, entries] of Object.entries(registries as Record<string, unknown>)) {
+    if (!/^[^\s:]+::1220[0-9a-f]{64}$/.test(admin)) return `[${admin}]: not a party id`;
+    if (!Array.isArray(entries) || entries.length === 0) return `[${admin}]: expected a non-empty list`;
+    for (const [i, e] of entries.entries()) {
+      const f = e as Partial<CantonTransferFactory> | null;
+      const at = `[${admin}][${i}]`;
+      if (typeof f !== 'object' || f === null) return `${at}: expected an object`;
+      if (typeof f.packageId !== 'string' || !PACKAGE_ID.test(f.packageId)) return `${at}.packageId: expected 64 lowercase hex`;
+      for (const k of ['factory', 'holding', 'offer'] as const) if (typeof f[k] !== 'string' || !QUALIFIED.test(f[k] as string)) return `${at}.${k}: expected <module>:<entity>`;
+      if (typeof f.holdingView !== 'string' || f.holdingView.length === 0) return `${at}.holdingView: expected a field name`;
+      if (!Array.isArray(f.serviceChoices) || !f.serviceChoices.every((c) => typeof c === 'string')) return `${at}.serviceChoices: expected a list of <module>:<entity>.<choice>`;
+      if (f.allocation !== undefined && (typeof f.allocation !== 'string' || !QUALIFIED.test(f.allocation))) return `${at}.allocation: expected <module>:<entity>`;
+      if (f.openReceipt !== undefined && typeof f.openReceipt !== 'boolean') return `${at}.openReceipt: expected a boolean`;
+    }
+  }
+  return undefined;
+}
+
 /**
  * The allocation templates a Canton-source give may be committed in (V-C4),
  * by instrument admin, as `<package id>:<module>:<entity>`: the V2 allocation

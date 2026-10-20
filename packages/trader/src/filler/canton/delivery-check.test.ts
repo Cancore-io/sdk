@@ -8,6 +8,7 @@
  */
 import { encodeCantonAmount, encodeCantonOutputAsset, encodeCantonRecipient, type Hex } from '@cancore/contracts';
 import { checkDeliveryFill, type DeliveryFillExpectation } from './delivery-check';
+import { CANTON_TRANSFER_FACTORIES, registriesProblem } from './factories';
 import { NODE_KEY, OTHER_KEY, party } from './fixtures';
 import { CantonRefusal } from './legs';
 import type { PreparedOf } from './operations';
@@ -162,6 +163,27 @@ const refused = (run: () => unknown, detail: RegExp) => {
 describe('delivery.fill: the honest delivery of the node’s own ticket (CAN-1867)', () => {
   test('TC-SDK-1867-01: DeliveryOrder_Fill of the ticket, 25 CNRX to the recipient, 5 back as change, one receipt: passes', () => {
     expect(() => check()(prepared(), [fill()])).not.toThrow();
+  });
+});
+
+describe('delivery.fill: the registries of a network with its own registrar (CAN-1863, stand)', () => {
+  const entry = CANTON_TRANSFER_FACTORIES[ADMIN]![0]!;
+  const STAND_ADMIN = `stand-registrar::1220${'5'.repeat(64)}`;
+
+  test('the admin passes only with an entry of its own: pinned under its party it passes, pinned under another it is refused', () => {
+    expect(() => check({ factories: { [ADMIN]: [entry] } })(prepared(), [fill()])).not.toThrow();
+    refused(() => check({ factories: { [STAND_ADMIN]: [entry] } })(prepared(), [fill()]), /not a pinned factory of the admin/);
+  });
+
+  test('a registry pin is checked before it is used', () => {
+    expect(registriesProblem(CANTON_TRANSFER_FACTORIES)).toBeUndefined();
+    expect(registriesProblem({ [STAND_ADMIN]: [entry] })).toBeUndefined();
+    expect(registriesProblem([])).toMatch(/expected an object/);
+    expect(registriesProblem({ 'not-a-party': [entry] })).toMatch(/not a party id/);
+    expect(registriesProblem({ [STAND_ADMIN]: [] })).toMatch(/non-empty/);
+    expect(registriesProblem({ [STAND_ADMIN]: [{ ...entry, packageId: 'XYZ' }] })).toMatch(/packageId/);
+    expect(registriesProblem({ [STAND_ADMIN]: [{ ...entry, holding: 'Holding' }] })).toMatch(/holding/);
+    expect(registriesProblem({ [STAND_ADMIN]: [{ ...entry, openReceipt: 'yes' }] })).toMatch(/openReceipt/);
   });
 });
 

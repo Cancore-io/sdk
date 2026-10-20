@@ -49,6 +49,8 @@ import { TicketRefusal, type TicketCheckId } from './refusal';
 
 /** What the Canton-source checks read through Cancore: `CantonOperations` is one. */
 export interface CantonSourceReader {
+  /** The pinned registries V-C4 and V-C5 hold the give to (`CantonOperations.registries`); `CANTON_TRANSFER_FACTORIES` when absent. */
+  readonly registries?: Readonly<Record<string, readonly CantonTransferFactory[]>>;
   /** `GET /v1/filler/canton/intents/{orderHash}`. */
   intent(orderHash: Hex): Promise<CantonIntent>;
   /** `GET /v1/filler/canton/party`. */
@@ -143,7 +145,7 @@ export async function checkCantonSource(input: CantonSourceCheckInput, pass: (ch
   pass('V-C3');
 
   // -- V-C4: the give is committed to this filler ------------------------------------------------------
-  const registry = checkAllocation(intent, intent.allocation, party, BigInt(built.order.feeBps as string), input.registries ?? CANTON_TRANSFER_FACTORIES);
+  const registry = checkAllocation(intent, intent.allocation, party, BigInt(built.order.feeBps as string), input.registries ?? input.reader.registries ?? CANTON_TRANSFER_FACTORIES);
   pass('V-C4');
 
   // -- V-C5: the filler can be paid -------------------------------------------------------------------
