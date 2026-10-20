@@ -274,7 +274,7 @@ describe('accept-counter: the counter HTLC is accepted only as the account expec
     await refused([await accept({}, { htlcParams: (p) => { p.amount = v.numeric('4000.0000000000'); } })], /the HTLC it creates differs from the proposal in amount/);
     await refused([await accept({}, { htlcs: 0 })], /the accept creates 0 HTLCs, not one/);
     await refused([await accept({}, { htlcs: 2 })], /the accept creates 2 HTLCs, not one/);
-    await refused([await accept({}, { htlcPackageId: UNTRUSTED_ID })], /the accept creates 0 HTLCs, not one/);
+    await refused([await accept({}, { htlcPackageId: UNTRUSTED_ID })], /node 1 runs on a HTLC that is neither the HTLC package's nor the instrument admin's/);
   });
 
   test('A14: an accept that spends the account\'s holding, makes it sign another contract, or has it act below the root is refused', async () => {
