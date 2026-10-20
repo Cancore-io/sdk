@@ -160,21 +160,24 @@ The socket defaults to `/run/cancore-bot/bot.sock`; override it with `--socket <
 
 ## Give the agent the skill
 
-The [`cancore-trading` skill](../../skills/cancore-trading/SKILL.md) is in the repository you
-installed from. Install it for the agent's user, from a clone that user can read (or one of its
-own):
+The skill is the agent's written instructions for these tools. The daemon enforces the limits
+whether the agent reads it or not. The file is in the clone, at
+[`skills/cancore-trading/SKILL.md`](../../skills/cancore-trading/SKILL.md). Give it to your agent,
+in the agent user's files:
 
-- **Claude Code:** as the agent's user, from the clone,
+- **Claude Code:** from the clone, as you,
 
   ```sh
-  mkdir -p ~/.claude/skills/cancore-trading && cp skills/cancore-trading/SKILL.md ~/.claude/skills/cancore-trading/
+  sudo -u cancore-agent mkdir -p ~cancore-agent/.claude/skills/cancore-trading
+  sudo install -o cancore-agent -g cancore-agent -m 644 skills/cancore-trading/SKILL.md \
+    ~cancore-agent/.claude/skills/cancore-trading/SKILL.md
   ```
 
-  A new skill under `~/.claude/skills/` is picked up in the running session.
-- **Claude Desktop / claude.ai:** upload the `skills/cancore-trading` folder as a ZIP in the Skills
-  settings.
-- **Codex:** put the text of `SKILL.md` into `~/.codex/AGENTS.md` (or a project's `AGENTS.md`).
-- **Any other agent:** put it in its instructions.
+- **Claude Desktop and claude.ai:** upload the `skills/cancore-trading` folder, as a ZIP, in
+  the Skills settings.
+- **Codex:** put the text of `SKILL.md` into the agent user's `~/.codex/AGENTS.md`, or a
+  project's `AGENTS.md`.
+- **Any other agent:** put it in the agent's instructions.
 
 ## Example session
 

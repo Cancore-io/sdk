@@ -67,18 +67,10 @@ Node.js 20 or newer. The packages are ESM only: use `"type": "module"`, and run 
 npm install @cancore/client @cancore/wallet
 ```
 
-**`@cancore/wallet` 0.3.0 and `@cancore/client` 0.9.0 are merged but not published to npm yet.**
-npm still serves wallet 0.2.0, which has no `providerFromSeed`, and client 0.8.0. Until both are on
-npm, build them from this repository and install the tarballs instead:
-
-```bash
-git clone https://github.com/Cancore-io/sdk && cd sdk
-npm install && npm pack -w @cancore/wallet -w @cancore/client    # builds, then writes both .tgz here
-cd ../my-bot && npm install ../sdk/cancore-client-0.9.0.tgz ../sdk/cancore-wallet-0.3.0.tgz
-```
-
-Client 0.9.0 needs wallet 0.3.0: it tells the wallet which operation it is signing for, and an
-older wallet would ignore that.
+This page needs `@cancore/client` 0.9.0 or later and `@cancore/wallet` 0.3.0 or later, and npm
+serves both. Wallet 0.2.0 has no `providerFromSeed`. The client tells the wallet which operation it
+is signing for, which an older wallet would ignore, so the client asks for `@cancore/wallet` 0.3.0
+or later as its peer.
 
 ## 4. Sign in
 

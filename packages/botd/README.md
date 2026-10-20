@@ -207,7 +207,8 @@ hides `/home`). In v1 you also need a bot made in the Cancore wallet, under My b
 ```sh
 git clone https://github.com/Cancore-io/sdk.git
 cd sdk
-npm ci
+git checkout <commit>   # the commit you reviewed (or a botd-v… tag once one exists); keep it for upgrades
+npm ci --ignore-scripts
 rm -rf packs && mkdir packs
 npm pack --silent --pack-destination packs \
   -w @cancore/contracts -w @cancore/wallet -w @cancore/client \
@@ -216,6 +217,10 @@ sudo npm install --ignore-scripts --prefix /opt/cancore-bot ./packs/*.tgz
 sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
 ```
 
+- **The pin.** `git checkout <commit>` builds exactly the commit you reviewed, not whatever `main`
+  holds the day you clone: this code will hold the bot's key. Until a release is tagged, `<commit>`
+  is a commit sha; once a `botd-v…` tag exists, check out the tag. `git rev-parse HEAD` in the
+  clone shows which commit you run, and the [upgrade](#upgrading) starts from it.
 - npm has no `@cancore/botd`, `@cancore/bot-mcp` or `@cancore/trader` yet. The recipe packs those
   and also `@cancore/client`, `@cancore/wallet` and `@cancore/contracts` from the same commit, so
   every `@cancore` package is the one that commit was built and tested with. `npm pack` builds each
@@ -223,9 +228,10 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
   `npm run build` is needed.
 - One `npm install` with all six resolves every `@cancore/*` dependency to the tarball beside it;
   the rest (zod, the MCP SDK, noble, …) comes from npm, within the semver ranges the packages
-  declare. `--ignore-scripts` keeps any dependency's install script from running as root (none of
-  them has one today). Install tarballs, not package folders (npm links a folder instead of copying
-  it).
+  declare. `--ignore-scripts` keeps the install scripts of dependencies from running: in `npm ci`,
+  which runs as you (the build needs none of them), and in `sudo npm install`, which runs as root
+  (none of the installed packages has one today). Install tarballs, not package folders (npm links
+  a folder instead of copying it).
 - `/opt/cancore-bot` is created by npm, root-owned `0755`; nothing in it is writable by group or
   others. The last line links `cancore-bot`, `cancore-botd` and `cancore-bot-mcp` into
   `/usr/local/bin`, which is on sudo's `secure_path` on Debian and Ubuntu.
@@ -743,8 +749,10 @@ new state starts empty: there is no 24 h history, so the daily caps count from z
 ### Upgrading
 
 ```sh
-cd sdk && git pull
-npm ci
+cd sdk && git fetch
+git log --oneline <old>..<new>   # review what changed between the commit you run and the one you upgrade to
+git checkout <new>
+npm ci --ignore-scripts
 rm -rf packs && mkdir packs
 npm pack --silent --pack-destination packs \
   -w @cancore/contracts -w @cancore/wallet -w @cancore/client \
@@ -756,8 +764,11 @@ sudo systemctl start cancore-botd
 sudo -u cancore-bot cancore-bot unlock
 ```
 
-The links and the unit keep pointing at the same paths; the state, limits, keystore and audit log in
-`/var/lib/cancore-bot` are untouched, and the old passphrase still unlocks. Run
+`<old>` is the commit you run (`git rev-parse HEAD`), `<new>` the commit or tag you reviewed and
+upgrade to. `git pull` does not work here: the pin leaves the clone on a detached HEAD
+(`You are not currently on a branch`). The links and the unit keep pointing at the same paths; the
+state, limits, keystore and audit log in `/var/lib/cancore-bot` are untouched, and the old
+passphrase still unlocks. Run
 `sudo cancore-bot install` again only if the node binary moved (the unit names its path).
 
 ### Removing it
