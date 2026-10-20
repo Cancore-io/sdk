@@ -69,19 +69,22 @@ you --sudo -u cancore-bot--> cancore-bot --owner.sock-------+
 
 | Action | Agent (`bot.sock`, through bot-mcp) | Owner (`owner.sock`, through `cancore-bot`) |
 | --- | --- | --- |
-| Read status, balances, orders, limits, the audit tail, a quote | yes | yes |
-| Cancel orders, stop a strategy, pause | yes | yes |
+| Read status, balances, orders, limits, the audit tail, a quote | yes | status, limits and the audit log; no CLI command for balances, orders or a quote |
+| Cancel orders, stop a strategy, pause | yes | `pause` (it stops every strategy and cancels the resting orders) |
 | Place or take an order, start a strategy | yes, inside the limits | no CLI command |
 | Resume, change limits, unlock, lock, register, release a booked take | no | yes |
 | Withdraw | no | yes, only to `ownerParty` from the config |
 | Get the key or the recovery phrase | no | no: no such method exists |
 
 **Status:** release candidates (`0.1.0-rc.0`), not on npm yet, so install from source. v1 runs on
-devnet only (`https://api-dev.cancore.app`), on Linux with systemd, and the agent must run on the
-same machine as the daemon.
+devnet only (`https://api-dev.cancore.app`), where it settles CC, CBTC, cETH and HTEST, on Linux
+with systemd; the agent must run on the same machine as the daemon, as a user of its own without
+sudo rights. The bot itself is made in the Cancore wallet (Settings → My bots), which gives it its
+party: v1 cannot create one for a new key.
 
-**Quick start:** [Install from source](packages/botd/README.md#install-from-source-until-it-is-on-npm),
-the daemon's [Install](packages/botd/README.md#install) steps, then
+**Quick start:** make the bot in My bots,
+[install from source](packages/botd/README.md#install-from-source-until-it-is-on-npm), follow the
+daemon's [Install](packages/botd/README.md#install) steps, then
 [connect the agent](packages/bot-mcp/README.md#setup-from-source) and
 [give it the skill](packages/bot-mcp/README.md#give-the-agent-the-skill):
 [`cancore-trading`](skills/cancore-trading/SKILL.md) teaches it the hard rules (no secrets, no

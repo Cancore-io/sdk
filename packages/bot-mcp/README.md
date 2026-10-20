@@ -13,9 +13,10 @@ It can read state, reduce risk and trade within limits. It has no tool to withdr
 
 Install and secure the daemon first: [`@cancore/botd`](../botd). For agents, the [`cancore-trading` skill](../../skills/cancore-trading/SKILL.md) explains how to use these tools.
 
-**v1:** devnet only, like the daemon; Linux with systemd. bot-mcp talks to a local unix socket, so
-the agent (the MCP client that starts `cancore-bot-mcp`) must run on the daemon's machine. Full
-documentation: <https://docs.cancore.io/sdk/bot-mcp>.
+**v1:** devnet only, like the daemon (where only CC, CBTC, cETH and HTEST settle); Linux with
+systemd. bot-mcp talks to a local unix socket, so the agent (the MCP client that starts
+`cancore-bot-mcp`) must run on the daemon's machine, as a user of its own in `cancore-bot-clients`.
+Full documentation: <https://docs.cancore.io/sdk/bot-mcp>.
 
 ```
 AI agent --MCP over stdio--> cancore-bot-mcp --bot.sock--> cancore-botd --HTTPS--> Cancore API
@@ -103,9 +104,10 @@ for `"amount": 100`. bot-mcp's own check, which answers
 [the daemon's limits](../botd/README.md#install), step 8.
 
 `verify_failed` and `unbooked_fill` are written by the daemon to the audit log. The agent sees
-`verify_failed` there (`trade_audit_tail`), not as a `denied` reply: a make whose signature the guard
-refused answers `unconfirmed` or `daemon_error`, and a take has already answered `filled: "0"`.
-`unbooked_fill` is not a deny code, so its entry reaches the agent without a reason.
+`verify_failed` there (`trade_audit_tail`), not in a command's reply: nothing is signed while a
+command runs. A make only places the order, and its DvP is signed in the settlement loop once the
+order is taken; a take answers `filled: "0"` as soon as it is queued. `unbooked_fill` is not a deny
+code, so its entry reaches the agent without a reason.
 
 ## Setup from source
 
@@ -113,11 +115,14 @@ refused answers `unconfirmed` or `daemon_error`, and a take has already answered
 [botd from-source recipe](../botd/README.md#install-from-source-until-it-is-on-npm) installs it to
 `/usr/local/bin/cancore-bot-mcp`. Set the daemon up first ([Install](../botd/README.md#install)).
 
-**The group, and logging in again.** The user the MCP client runs as must be in
-`cancore-bot-clients` in the session that starts the client. After
-`sudo cancore-bot install --human "$USER"`, log out and in (the whole desktop session, for Claude
-Desktop), check that `id` lists `cancore-bot-clients`, then start (or restart) the MCP client.
-bot-mcp reconnects by itself after a daemon restart; a group change needs a new client process.
+**The agent's user, and logging in again.** The MCP client runs as the agent's own user, without
+sudo rights: `cancore-agent` in the botd [Install](../botd/README.md#install), step 2
+(`sudo cancore-bot install --human cancore-agent`). That user must be in `cancore-bot-clients` in
+the session that starts the client: use a login that began after the install (for example
+`sudo -iu cancore-agent`; for Claude Desktop, a desktop session of that user), check that `id`
+lists `cancore-bot-clients`, then start (or restart) the MCP client. Everything below runs as that
+user. bot-mcp reconnects by itself after a daemon restart; a group change needs a new client
+process.
 
 **Claude Code:**
 
@@ -151,10 +156,11 @@ The socket defaults to `/run/cancore-bot/bot.sock`; override it with `--socket <
 
 ## Give the agent the skill
 
-The [`cancore-trading` skill](../../skills/cancore-trading/SKILL.md) is in the clone you installed
-from:
+The [`cancore-trading` skill](../../skills/cancore-trading/SKILL.md) is in the repository you
+installed from. Install it for the agent's user, from a clone that user can read (or one of its
+own):
 
-- **Claude Code:** from the clone,
+- **Claude Code:** as the agent's user, from the clone,
 
   ```sh
   mkdir -p ~/.claude/skills/cancore-trading && cp skills/cancore-trading/SKILL.md ~/.claude/skills/cancore-trading/
@@ -169,7 +175,9 @@ from:
 ## Example session
 
 Live replies from a test run of the release candidate (the API was unreachable on purpose, so there
-are no prices; ids and timestamps are throwaway). `->` is a tool call, `<-` its reply.
+are no prices; ids and timestamps are throwaway). That run's allowed pair was CC/USDCx; the calls
+below use CC/CBTC, a pair that settles on devnet, and no reply depends on the pair's name. `->` is
+a tool call, `<-` its reply.
 
 The daemon is running and locked:
 
@@ -177,10 +185,10 @@ The daemon is running and locked:
 -> trade_status {}
 <- { "locked": true, "paused": false, "version": "0.1.0-rc.0", "strategies": [] }
 
--> trade_order_make { "base": "CC", "quote": "USDCx", "side": "sell", "amount": "100", "price": "0.15" }
+-> trade_order_make { "base": "CC", "quote": "CBTC", "side": "sell", "amount": "100", "price": "0.0000015" }
 <- isError { "error": "locked", "instruction": "The keystore is locked. The owner must act via the cancore-bot CLI; no tool here can change this. (cancore-bot unlock)" }
 
--> trade_order_make { "base": "CC", "quote": "USDCx", "side": "sell", "amount": 100, "price": "0.15" }
+-> trade_order_make { "base": "CC", "quote": "CBTC", "side": "sell", "amount": 100, "price": "0.0000015" }
 <- isError MCP error -32602: Input validation error: Invalid arguments for tool trade_order_make: Expected string, received number at amount
 
 -> trade_audit_tail { "n": 3 }
@@ -198,21 +206,21 @@ The owner ran `sudo -u cancore-bot cancore-bot unlock`, and has set no limits ye
 -> trade_balances {}
 <- { "balances": [] }                          # only the instruments of allowedPairs, and there are none
 
--> trade_order_make { "base": "CC", "quote": "USDCx", "side": "sell", "amount": "100", "price": "0.15" }
+-> trade_order_make { "base": "CC", "quote": "CBTC", "side": "sell", "amount": "100", "price": "0.0000015" }
 <- isError { "denied": "rate_limited" }        # maxCommandsPerMinute 0 is checked first
 
--> trade_quote { "base": "CC", "quote": "USDCx", "side": "sell", "amount": "100" }
+-> trade_quote { "base": "CC", "quote": "CBTC", "side": "sell", "amount": "100" }
 <- isError { "error": "daemon_error", "code": -32603 }   # the API is unreachable
 
 -> trade_orders_list {}
 <- { "orders": [] }
 ```
 
-The owner set the limits from step 8 of the [botd Install](../botd/README.md#install) (`CC/USDCx`
+The owner set the limits from step 8 of the [botd Install](../botd/README.md#install) (`CC/CBTC`
 only):
 
 ```text
--> trade_order_make { "base": "CC", "quote": "USDCx", "side": "sell", "amount": "100", "price": "0.15" }
+-> trade_order_make { "base": "CC", "quote": "CBTC", "side": "sell", "amount": "100", "price": "0.0000015" }
 <- isError { "denied": "price_deviation_exceeded" }   # no reference price: the API is unreachable
 
 -> trade_order_make { "base": "BTC", "quote": "USDCx", "side": "sell", "amount": "1", "price": "1" }
@@ -244,10 +252,10 @@ The owner's `sudo -u cancore-bot cancore-bot status` shows the reason the agent 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `socket_unavailable`: `No cancore-botd socket at …` | the daemon is not running, or it listens elsewhere | the owner: `systemctl status cancore-botd`; `--socket` or `CANCORE_BOT_SOCKET` for another path |
-| `socket_unavailable`: `Permission denied on …` | the client's user is not in `cancore-bot-clients` in this session | `sudo cancore-bot install --human <user>` (or `usermod -aG`), log out and in, check `id`, restart the MCP client |
+| `socket_unavailable`: `Permission denied on …` | the client's user is not in `cancore-bot-clients` in this session | `sudo cancore-bot install --human <agent's user>` (or `usermod -aG`), a new login as that user, check `id`, restart the MCP client |
 | `locked` on most tools | the daemon starts locked, after every restart | the owner: `sudo -u cancore-bot cancore-bot unlock` |
 | `paused` on every trade tool | the agent or the owner paused, or the daemon paused itself (`unbooked_fill`, a broken audit log) | the owner reads `cancore-bot status` and resumes; strategies stopped by a pause must be started again |
-| every trade `denied: rate_limited` right after setup | no limits yet: `maxCommandsPerMinute` is 0 | the owner sets limits (`cancore-bot limits set`) |
+| right after setup every make is `denied: rate_limited` and every take `denied: no_rule` | no limits yet: `maxCommandsPerMinute` is 0 and there is no allowed pair | the owner sets limits (`cancore-bot limits set`) |
 | every trade `denied: price_deviation_exceeded` near the market | no reference price: the API or its price feed is down | wait; do not widen the corridor for it |
 | `MCP error -32602: Input validation error: …` | an amount or price sent as a number, or a malformed value | decimal strings: `"100"`, `"0.15"` |
 | `daemon_error` with `code: -32603` | the API is unreachable or failed | wait and read again; after a trade tool, check `trade_orders_list` before placing anything |
