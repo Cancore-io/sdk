@@ -67,5 +67,27 @@ describe('preapproval.create: the party’s own preapproval with a pinned regist
     ['TC-SDK-2904-12: an exercise instead of a create', () => check()(prepared(), [create({ kind: 'exercise' })]), /not a create/],
     ['TC-SDK-2904-13: a second node in the transaction', () => check()(prepared(), [create({ extra: [{ nodeId: '1', kind: 'create', contractId: '00y', packageName: 'x', templateId: `${CNRX}:Cnrx.Holding:CnrxHolding`, argument: v.record({}), signatories: [ME], stakeholders: [ME] }] })]), /more than one create/],
     ['TC-SDK-2904-14: an executeBefore already passed', () => check(ADMIN, (Number(BEFORE) + 1) * 1000)(prepared(), [create()]), /has passed/],
+    ['TC-SDK-2904-15: a second transaction beside the create', () => check()(prepared(), [create(), create()]), /expected one transaction, got 2/],
+    ['TC-SDK-2904-16: no transaction', () => check()(prepared(), []), /expected one transaction, got 0/],
+    ['TC-SDK-2904-17: another requestedAt in the contract than stated', () => check()(prepared(), [create({ arg: { requestedAt: v.time(String(Number(REQUESTED) - 1)) } })]), /requestedAt is not the stated one/],
+    ['TC-SDK-2904-18: the transaction reads contracts a create does not need', () => check()(prepared(), [{ ...create(), inputContracts: [{ contractId: '00in' } as never] }]), /reads contracts/],
   ])('%s: refused', (_name, run, detail) => refused(run, detail));
+
+  describe('TC-SDK-2904-19: the window at its edges', () => {
+    const at = (requestedAt: string, executeBefore: string, nowMs = NOW) =>
+      () => check(ADMIN, nowMs)(prepared({ requestedAt, executeBefore }), [create({ arg: { requestedAt: v.time(requestedAt), executeBefore: v.time(executeBefore) } })]);
+    const now = NOW / 1000;
+
+    test('executeBefore one second ahead passes; at the clock or behind it is refused', () => {
+      expect(at(REQUESTED, String(now + 1))).not.toThrow();
+      refused(at(REQUESTED, String(now)), /has passed/);
+      refused(at(REQUESTED, String(now - 1)), /has passed/);
+    });
+
+    test('requestedAt up to a minute ahead of the clock passes (the participant\'s clock is not the node\'s); beyond it is refused', () => {
+      expect(at(String(now + 59), BEFORE)).not.toThrow();
+      expect(at(String(now + 60), BEFORE)).not.toThrow();
+      refused(at(String(now + 61), BEFORE), /ahead of the clock/);
+    });
+  });
 });

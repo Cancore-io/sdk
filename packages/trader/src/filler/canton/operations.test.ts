@@ -152,6 +152,40 @@ describe('other operations', () => {
   });
 });
 
+describe('preapproval.create (CAN-2904)', () => {
+  const ADMIN = 'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b';
+  const preapproval = async (clock: FakeClock, legs: unknown[]) => ({
+    operationId: 'op-pa',
+    op: 'preapproval.create',
+    legs,
+    summary: {
+      party: party(), admin: ADMIN, instrumentAllowances: ['CNRX'],
+      requestedAt: String(Math.floor(clock.now() / 1000)), executeBefore: String(Math.floor(clock.now() / 1000) + 365 * 86_400),
+    },
+    expiresAt: clock.now() + 60_000,
+  });
+
+  test('createPreapproval asks for the admin and holds the prepared legs to the preapproval check: a second leg is refused, nothing signed', async () => {
+    const asked: Body[] = [];
+    const h = harness({
+      prepared: async (body) => {
+        asked.push(body);
+        return preapproval(h.clock, [await transactionLeg(), await transactionLeg({ legId: 'tx-1' })]);
+      },
+    });
+    await expect(h.ops.createPreapproval(ADMIN)).rejects.toThrow(/expected one transaction, got 2/);
+    expect(asked).toEqual([expect.objectContaining({ op: 'preapproval.create', params: { admin: ADMIN } })]);
+    expect(h.signer.signed).toEqual([]);
+    expect(h.submits).toEqual([]);
+  });
+
+  test('one leg that is not the create is refused by the same check, nothing signed', async () => {
+    const h = harness({ prepared: async () => preapproval(h.clock, [await transactionLeg()]) });
+    await expect(h.ops.createPreapproval(ADMIN)).rejects.toThrow(/does more than one create/);
+    expect(h.signer.signed).toEqual([]);
+  });
+});
+
 describe('submit', () => {
   test('a retryable refusal is submitted again with the same operationId; the third failure is thrown', async () => {
     const operationIds: unknown[] = [];

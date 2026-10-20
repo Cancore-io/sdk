@@ -4,7 +4,7 @@
  * own transfer preapproval with the asked registry — and nothing else.
  *
  * - One transaction, one root, and that root a create: nothing is exercised,
- *   nothing archived, nothing else created.
+ *   nothing archived, nothing else created, no contract read.
  * - The template is the preapproval of a registry pinned for the asked admin
  *   (`CantonTransferFactory.preapproval`, by package id): a look-alike of
  *   another package is refused.
@@ -54,6 +54,7 @@ export function checkPreapprovalCreate(expect: {
     if (transactions.length !== 1) refuse(`expected one transaction, got ${transactions.length}`);
     const tx = transactions[0] as CantonTransaction;
     if (tx.roots.length !== 1 || Object.keys(tx.nodes).length !== 1) refuse('the transaction does more than one create');
+    if (tx.inputContracts.length !== 0) refuse('the transaction reads contracts a create does not need');
     const root = tx.nodes[tx.roots[0] as string];
     if (root?.kind !== 'create') return refuse('the root is not a create');
     if (!templates.includes(root.templateId)) refuse(`${root.templateId} is not the preapproval of a pinned registry of ${admin}`);
