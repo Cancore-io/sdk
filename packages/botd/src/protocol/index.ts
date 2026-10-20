@@ -56,7 +56,11 @@ export const PARAMS = {
   'limits.set': z.object({ limits: z.record(z.unknown()) }).strict(),
   /** Only to the owner party pinned in the daemon's config; anything else is refused. */
   withdraw: z.object({ to: z.string().min(1), instrument, amount }).strict(),
-  /** Releases a booked take only once the venue shows its accept did not land (open with no taker, or another taker). */
+  /**
+   * Releases a booked take once no accept of it can land: the order is taken by another account or has ended, or it
+   * is still open with no taker, this unlock booked the take first and the venue refused every accept sent for it.
+   * Otherwise refused with `may_be_trade`: an open order proves nothing about an accept already sent.
+   */
   'order.release': z.object({ orderId: z.string().min(1) }).strict(),
 } as const;
 
