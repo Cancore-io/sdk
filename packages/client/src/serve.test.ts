@@ -172,12 +172,19 @@ test('orders serve does not drive are left alone: not DvP, an EVM leg, taken by 
   expect(events).toEqual([]);
 });
 
-test('finished orders are remembered up to a bound: past it the oldest is forgotten and read once more, the newest never', async () => {
-  const orders = Array.from({ length: DONE_LIMIT + 1 }, (_, i) => order(`o${i}`, { dvp: false }));
+const expiredLocked = Object.assign(new Error('expired'), { last: { status: 'dvp_expired' }, swapId: null, withdrawable: false });
+test.each<[string, Partial<Order>, (id: string) => Promise<Settled>]>([
+  ['not DvP', { dvp: false }, async (id) => settledOf(id)],
+  ['terminal', { status: 'cancelled' }, async (id) => settledOf(id)],
+  ['taken by another account', { initiatorUserId: 'x', opponentUserId: 'y' }, async (id) => settledOf(id)],
+  ['settled', {}, async (id) => settledOf(id)],
+  ['expired and not withdrawable', {}, async () => { throw expiredLocked; }],
+])('finished orders (%s) are remembered up to a bound: past it the oldest is forgotten and read once more, the newest never', async (_, over, settle) => {
+  const orders = Array.from({ length: DONE_LIMIT + 1 }, (_, i) => order(`o${i}`, over));
   const byId = new Map(orders.map((o) => [o.id, o]));
   const reads = new Map<string, number>();
   let polls = 0;
-  const { acct } = account([], async (id) => settledOf(id));
+  const { acct } = account([], settle);
   Object.assign(acct.swap, {
     get: async (id: string) => (reads.set(id, (reads.get(id) ?? 0) + 1), byId.get(id)!),
     listMine: async ({ statusFilter, page = 1, pageSize = 100 }: { statusFilter?: string; page?: number; pageSize?: number }) => {
