@@ -452,6 +452,7 @@ describe('Executor — replacement caps (F-3, R-14, CAN-2299)', () => {
     const w = await world({ chain: { openConfirmations: tag } });
     w.dst[tag] = 0n;
     const settled: Hex[] = [];
+    const settleOpen = async (hash: Hex) => (await w.store.nonces.listOpen(DST, ME)).some((r) => r.transactions.some((t) => t.hash === hash));
     const executor = w.executor();
     executor.onSettleIncluded(async (_chain, tx) => { settled.push(tx.hash); });
     await executor.start();
@@ -464,12 +465,12 @@ describe('Executor — replacement caps (F-3, R-14, CAN-2299)', () => {
     w.dst[tag] = mined!.blockNumber - 1n;
     await w.tick(1_000);
     expect(settled).toEqual([]);
-    expect(await openNonce(w)).toBeDefined();
+    expect(await settleOpen(sent.hash)).toBe(true);
 
     w.dst[tag] = mined!.blockNumber;
     await w.tick(1_000);
     expect(settled).toEqual([sent.hash]);
-    expect(await openNonce(w)).toBeUndefined();
+    expect(await settleOpen(sent.hash)).toBe(false);
     executor.stop();
   });
 
