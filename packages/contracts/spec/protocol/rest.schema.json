@@ -163,8 +163,8 @@
             "properties": {
               "admin": { "type": "string", "minLength": 1 },
               "contractId": { "type": "string", "minLength": 1 },
-              "instrumentAllowances": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-              "executeBefore": { "$ref": "messages.schema.json#/$defs/timeS" }
+              "instrumentAllowances": { "type": "array", "maxItems": 10, "items": { "type": "string", "minLength": 1 } },
+              "executeBefore": { "$ref": "messages.schema.json#/$defs/timeS", "description": "unix s: the Daml Time (microseconds) cut to whole seconds; the preapproval expires then" }
             }
           }
         }
