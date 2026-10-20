@@ -1,5 +1,36 @@
 # Changelog — `@cancore/client`
 
+## 0.11.0
+
+### Added
+
+- `preapproval()` on the self-custody account reads `GET /tokens/cc-preapproval`: whether the
+  account holds a CC TransferPreapproval, and whether the stand can set one up at all. It throws
+  when the ledger cannot be read.
+- `enablePreapproval()` creates the account's CC TransferPreapproval (venue-paid) on its own, read
+  before it is signed exactly as in `onboard()`; a no-op when it already exists. It needs the party,
+  so `onboard()` comes first. `onboard()` now calls it for its preapproval step.
+- `serve()` returns `untake(orderId)` and `mayBeTrade(orderId)`:
+  - `untake` drops a queued take before its accept is sent and is `false` once the accept has
+    started — it is a trade from then on;
+  - `mayBeTrade` is `true` once an accept went out and no refusal proved it did not happen (in
+    flight, answer lost, or through), or the order is already this account's.
+- `take` settle options `beforeAccept`, `onAccepted` and `onAcceptRefused`: asked right before the
+  accept request is sent (after every preflight read), told when the order is accepted by this
+  account, and told when the venue refused the accept (4xx). `beforeAccept` returning `false` calls
+  the take off with the new `TakeCancelledError`.
+
+### Changed
+
+- A take whose accept answer is lost stays in flight until the venue shows the order; a later
+  refusal cannot clear an earlier accept whose outcome was never learned (the venue refuses a
+  second accept on an order the first one already took).
+- A take queued during the order lookup is marked in flight too; a failed accept is no longer in
+  flight; a take reported in flight is not called off after its fee split.
+- A completed order counts as this account's fill only when the account is its taker; a 409 on
+  accept is treated as ambiguous, not as a refusal.
+- A fee-holding refusal frees the take.
+
 ## 0.10.0
 
 ### Changed
