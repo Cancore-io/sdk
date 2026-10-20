@@ -322,6 +322,7 @@ the Canton traffic. Two messages, on the WebSocket or as REST bodies:
 | `delivery.fill` | `orderHash`, `attempt` | `DeliveryOrder_Fill` of a Canton ticket issued to the filler |
 | `intent.settle` | `orderHash` | `SwapIntent_SettleWithProof` of a Canton-source order the filler delivered |
 | `holdings.transfer` | `asset`, `amount`, `toParty` | `TransferFactory_Transfer` of its own holdings to a party it names; what its open delivery orders need stays |
+| `preapproval.create` | `admin` | the party's transfer preapproval with the registry of the instrument admin `admin` (CNRX: `CnrxTransferPreapproval`, signed by the party), so a transfer to the party completes at once instead of waiting for it to accept |
 
 `canton.prepare` → `canton.prepared` (`operationId`, `legs`, `summary`, `expiresAt`);
 `canton.submit` (one Ed25519 signature per leg) → `canton.submitted`.
@@ -333,6 +334,8 @@ is only what Cancore says about it, so before signing a leg the node MUST:
   prepared-transaction hashing of `hashingSchemeVersion`, decode the transaction and check it
   against `summary` for the op: template and choice, acting and receiving parties, instrument,
   amount;
+  for `preapproval.create` the one created preapproval — of the pinned registry package, receiver
+  its own party, the asked admin, nothing else in the transaction;
 - `kind: 'topology'` (only in `party.allocate`; the schema refuses it in any other op) — recompute
   the multihash over `topologyTransactions` and check that they create `summary.partyId` with
   `summary.publicKey` as its only signing key, hosted on the Cancore participant.
@@ -345,7 +348,8 @@ never taken from `summary` alone: for `delivery.fill` the `TransferFactory_Trans
 other leg is the fee to the operator — against the intent it delivered for.
 
 On any difference it does not sign. The kind of a leg is closed: an unknown kind is refused. Submit is idempotent per `operationId`. REST: `POST /v1/filler/canton/prepare`,
-`POST /v1/filler/canton/submit`; reads of the own party: `GET /v1/filler/canton/party`,
+`POST /v1/filler/canton/submit`; reads of the own party: `GET /v1/filler/canton/party` (with
+`preapprovals`, the party's live transfer preapprovals),
 `/holdings`, `/delivery-orders`, and `/intents/{orderHash}` — the live Canton-source `SwapIntent`
 naming the party as its filler, with its committed allocation, which the node checks before
 `ticket.receipt` (V-C1…V-C6; 404 `UNKNOWN_TICKET` when none names it). Refusals: `CANTON_NOT_READY` (409), `CANTON_REFUSED` (422),
@@ -461,6 +465,12 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.17` — Canton op `preapproval.create` (CAN-2904): `params {admin}`, `summary {party,
+  admin, instrumentAllowances, requestedAt, executeBefore}`, `result {preapprovalCid}` — the filler's
+  external party signs its own transfer preapproval with a registry, the one way it can be credited
+  directly (a CNRX mint or a transfer to it otherwise needs its signature to accept). `CantonParty`
+  gains optional `preapprovals` (`CantonPreapproval {admin, contractId, instrumentAllowances,
+  executeBefore}`). Additive.
 - `0.2.0-rc.16` — the filler's own routes (CAN-2793, protocol §3.20): REST-only frames
   `routes.set` (F→S, the full list of routes the filler serves, sealed by its message key) and
   `routes.state` (S→F, every route approved for the filler with `active`); `GET` and

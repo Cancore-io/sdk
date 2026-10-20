@@ -125,6 +125,7 @@ export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHas
       { type: 'canton.prepare', ...F('cp-3', 1790000026000), op: 'delivery.fill', params: { ...t, attempt: 2 } },
       { type: 'canton.prepare', ...F('cp-4', 1790000700000), op: 'intent.settle', params: { orderHash } },
       { type: 'canton.prepare', ...F('cp-5', 1790001000000), op: 'holdings.transfer', params: { asset: CNRX, amount: '250.5', toParty: RECIPIENT_PARTY } },
+      { type: 'canton.prepare', ...F('cp-6', 1789990200000), op: 'preapproval.create', params: { admin: CNRX.admin } },
     ],
     'canton.prepared': [
       {
@@ -142,12 +143,19 @@ export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHas
         },
         expiresAt: 1790000326300,
       },
+      {
+        type: 'canton.prepared', id: 'g-25', ...S, sentAt: 1789990200200, re: 'cp-6', operationId: 'op-6', op: 'preapproval.create',
+        legs: [{ legId: 'preapproval-create-0', kind: 'transaction', hash: tx('cancore:test:prepared-preapproval-create'), preparedTransaction: 'CgMyLjESBTAuMC4x', hashingSchemeVersion: 'HASHING_SCHEME_VERSION_V2' }],
+        summary: { party: FILLER_PARTY, admin: CNRX.admin, instrumentAllowances: [], requestedAt: '1789990200', executeBefore: '1821526200' },
+        expiresAt: 1789990500200,
+      },
     ],
     'canton.submit': [{ type: 'canton.submit', ...F('cs-3', 1790000027000), operationId: 'op-3', signatures: [{ legId: 'delivery-fill-0', signature: PARTY_SIG }] }],
     'canton.submitted': [
       { type: 'canton.submitted', id: 'g-21', ...S, sentAt: 1790000029000, re: 'cs-3', operationId: 'op-3', op: 'delivery.fill', updateId: '1220ab0c', result: { receiptCid: '00c1d2' } },
       { type: 'canton.submitted', id: 'g-22', ...S, sentAt: 1789990002000, re: 'cs-1', operationId: 'op-1', op: 'party.allocate', result: { partyId: FILLER_PARTY } },
       { type: 'canton.submitted', id: 'g-23', ...S, sentAt: 1790001002000, re: 'cs-5', operationId: 'op-5', op: 'holdings.transfer', updateId: '1220ab0d', result: { outcome: 'PENDING', transferInstructionCid: '00ti' } },
+      { type: 'canton.submitted', id: 'g-26', ...S, sentAt: 1789990202000, re: 'cs-6', operationId: 'op-6', op: 'preapproval.create', updateId: '1220ab0e', result: { preapprovalCid: '00pa' } },
     ],
     'routes.set': [{ type: 'routes.set', ...F('rs-1', 1789995000000), routes: [{ src: 'eip155:56', dst: 'eip155:1' }, { src: 'eip155:1', dst: 'canton:devnet' }] }],
     'routes.state': [
