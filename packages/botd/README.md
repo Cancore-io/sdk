@@ -763,6 +763,7 @@ sudo rm -f /usr/local/bin/cancore-bot /usr/local/bin/cancore-botd /usr/local/bin
 sudo rm -rf /opt/cancore-bot
 sudo rm -rf /var/lib/cancore-bot /etc/cancore-bot      # the keystore and the audit log: keep copies if you want them
 sudo userdel cancore-bot && sudo groupdel cancore-bot-clients
+sudo userdel -r cancore-agent      # the agent's user and its home, if you no longer need them
 ```
 
 ## Troubleshooting
@@ -776,13 +777,13 @@ sudo userdel cancore-bot && sudo groupdel cancore-bot-clients
 | `sudo cancore-bot …` fails with `env: 'node': No such file or directory`, or `install` with `<path> is owned by uid …: install cancore-botd and node where only root can write` | no system-wide Node (nvm's is on your own `PATH` only), or node or the package lives where a non-root user can write | a system-wide Node.js 20+ (`sudo node --version` must work), then [Install from source](#install-from-source-until-it-is-on-npm) again |
 | `a TTY is required to enter secrets` | `init`, `unlock` or `register` from a pipe or a script | run it in a terminal |
 | `keystore: passphrase rejected (<code>): …` | a new keystore's passphrase fails the policy | a longer one: 12+ characters, letters with digits or symbols, no common word or repeated pattern |
-| `keystore: … already exists; refusing to overwrite` | `init` on an existing keystore | move the old one aside only if you hold its phrase |
+| `keystore: … already exists; refusing to overwrite` | `init` on an existing keystore | move the old one aside only if you can recreate it: the key from **Show key**, or the phrase |
 | `-32002 unlock failed` | a wrong passphrase, or `keystore.json` missing, corrupt, or with another owner or mode (any group or other bit): the daemon answers the same for all of them | retry; `sudo ls -l /var/lib/cancore-bot/keystore.json` must show `-rw-------` and `cancore-bot`; a lost passphrase: [Lost passphrase](#lost-passphrase) |
 | `-32002 keystore is locked` on `register`, `withdraw` or `release` | the daemon is locked | `unlock` first |
 | `<file> is readable by group/others …; chmod 600 it` / `<file> is not owned by the current user` | `init --import-key` with a key file `cancore-bot` does not own at mode `0600` | write it with `sudo install -o cancore-bot -g cancore-bot -m 600 /dev/stdin …` as in step 4 |
 | CLI `connect ENOENT` / `EACCES` | daemon not running, or CLI not run as `cancore-bot` | `systemctl status cancore-botd`; use `sudo -u cancore-bot` |
 | `limits set` fails: `EACCES: permission denied, open '/dev/stdin'` | `limits.json` is not readable by others (e.g. `600`), or it came through a pipe | `chmod 644 limits.json`, and pass it with `<`, never a pipe |
-| agent gets `socket_unavailable` | not in `cancore-bot-clients`, or no relogin | `id` should list the group |
+| agent gets `socket_unavailable` | the agent's user is not in `cancore-bot-clients`, or the MCP client started in a login from before the install | `id cancore-agent` must list `cancore-bot-clients`; start the MCP client in a new login of that user |
 | every make `rate_limited`, every take `no_rule` | no limits set yet (`maxCommandsPerMinute` `0`, no `allowedPairs`) | set the limits (step 8) |
 | `order.make` `rate_limited` with `maxCommandsPerMinute` set | the hourly `ordersPerHour` budget is spent | wait; it is the platform's limit |
 | `register` fails with `-32603 internal error` and the audit log has `verify_failed` | a key from `init` or `init --import`: v1 cannot create its party (the signer guard refuses the topology signature); retrying fails the same way | use a bot made in My bots, imported with `init --import-key` (step 4) |

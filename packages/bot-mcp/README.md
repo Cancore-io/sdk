@@ -119,9 +119,10 @@ code, so its entry reaches the agent without a reason.
 sudo rights: `cancore-agent` in the botd [Install](../botd/README.md#install), step 2
 (`sudo cancore-bot install --human cancore-agent`). That user must be in `cancore-bot-clients` in
 the session that starts the client: use a login that began after the install (for example
-`sudo -iu cancore-agent`; for Claude Desktop, a desktop session of that user), check that `id`
-lists `cancore-bot-clients`, then start (or restart) the MCP client. Everything below runs as that
-user. bot-mcp reconnects by itself after a daemon restart; a group change needs a new client
+`sudo -iu cancore-agent`; for Claude Desktop, a desktop session of that user, which first needs a
+password: `useradd` leaves the account locked for login, so run `sudo passwd cancore-agent`),
+check that `id` lists `cancore-bot-clients`, then start (or restart) the MCP client. Everything
+below runs as that user. bot-mcp reconnects by itself after a daemon restart; a group change needs a new client
 process.
 
 **Claude Code:**
