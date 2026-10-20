@@ -22,7 +22,7 @@
  */
 import { decodePreparedTransaction, hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
 import type { DamlTransaction_Node, PreparedTransaction, Value } from '@canton-network/core-ledger-proto';
-import { deepFreeze, instrumentKey } from './dvp-admins';
+import { deepFreeze, DEFAULT_HTLC_PACKAGES, instrumentKey } from './dvp-admins';
 
 export type DvpOperation = 'dvpCreateProposal' | 'dvpAcceptProposal' | 'dvpAllocateLeg' | 'dvpWithdrawAllocation';
 
@@ -78,10 +78,7 @@ export interface TrustedPackages {
    * same on every network, and a network may run any release.
    */
   wallet: Record<string, string[]>;
-  /**
-   * `htlc-contract-v9`, the self-custody HTLC's templates (`HTLCInitRequest`, `HTLCProposal`, `HTLC`). A create
-   * and a choice on them act with the account's authority, so they are trusted by name AND id, as `swap` is.
-   */
+  /** `htlc-contract-v9` (`HTLCInitRequest`, `HTLCProposal`, `HTLC`): trusted by name AND id, as `swap` is. */
   htlc: Record<string, string[]>;
 }
 
@@ -128,20 +125,7 @@ export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = deepFreeze({
       '916f16ea9413ba72d9ae660c9d0741f1078fc27b82b61e4b9db6a991dc47a848', // 0.1.25
     ],
   },
-  htlc: {
-    // Every htlc-contract-v9 build staged in canton-contracts `deploy-contracts/dars` (git history,
-    // 2026-10-20). Read from the DARs, not from the stands: a stand on another build is refused until
-    // its id is added here or with `trustedPackages.htlc`.
-    'htlc-contract-v9': [
-      'd00931c65627626b2f446449d1b852c9c26491f1a03cbfdd898c1286ee68aeca', // 1.3.0
-      'af380114f70b127a15d995311d3d22a8b9d171ecf45ec0f48215dc04c8fd065d', // 1.3.1
-      '74d0c5a4235f9367fa27e2d8c7c26882df00321fa44cd3e523bdf6be87db2fa5', // 1.4.0
-      '9bdfd2a63360311c1352a1c32d84c03bc317500ac16f5970d5362e5785fd931e', // 1.4.0, rebuilt
-      '05f20da11cdab9da8da2b28e3474753b0902fd0edb46a8f2cb2a4ee7a4c7127d', // 1.4.1
-      '3b35dac71990bc5def8d5fa7e175e8ec1b51e1c966b12566db491d6c02279b0d', // 1.5.0
-      '9a856cb69897733d488558a052f2c4b870b33498eff1dd7553c51b4a38dffd3e', // 1.4.1, the build canton-contracts dev stages (2026-09-24)
-    ],
-  },
+  htlc: DEFAULT_HTLC_PACKAGES as Record<string, string[]>,
 });
 
 /**
@@ -167,9 +151,7 @@ export interface PreparedToSign {
 }
 
 /** The wallet operations outside a trade whose transactions are read before the key signs them. */
-export type TokenOperation =
-  | 'tokens.send' | 'tokens.send-fee' | 'tokens.consolidate' | 'tokens.accept' | 'tokens.preapproval'
-  | 'htlc.flow-b-create' | 'htlc.accept-counter';
+export type TokenOperation = 'tokens.send' | 'tokens.send-fee' | 'tokens.consolidate' | 'tokens.accept' | 'tokens.preapproval' | 'htlc.flow-b-create' | 'htlc.accept-counter';
 
 /** A prepared transaction the account refuses to sign, with the reason. */
 export class UnverifiedTransactionError extends Error {
@@ -1055,9 +1037,7 @@ export type Refuse = (reason: string) => never;
 type Exercise = Extract<NonNullable<ReturnType<typeof nodeType>>, { oneofKind: 'exercise' }>['exercise'];
 export type Opened = Awaited<ReturnType<typeof openLeg>>;
 
-export const refuser = (operation: TokenOperation): Refuse => (reason) => {
-  throw new UnverifiedTransactionError(operation, reason);
-};
+export const refuser = (operation: TokenOperation): Refuse => (reason) => { throw new UnverifiedTransactionError(operation, reason); };
 
 const AMULET = instrumentKey('Amulet');
 const isAmulet = (instrument: string) => instrumentKey(instrument) === AMULET;
@@ -1300,10 +1280,8 @@ const sameTransfer = (a: Partial<TransferLeg> | undefined, b: Partial<TransferLe
 
 /** Exact 1e-10 units back to a decimal string, without trailing zeros. */
 export function decimalOf(value: bigint): string {
-  const sign = value < 0n ? '-' : '';
-  const abs = value < 0n ? -value : value;
+  const [sign, abs] = [value < 0n ? '-' : '', value < 0n ? -value : value];
   const fraction = (abs % ONE).toString().padStart(10, '0').replace(/0+$/, '');
   return `${sign}${abs / ONE}${fraction ? `.${fraction}` : ''}`;
 }
-
 export const partyOf = (value: Value | undefined) => (value?.sum.oneofKind === 'party' ? value.sum.party : undefined);

@@ -27,8 +27,9 @@ import { isPartyOfKey } from '@cancore/wallet';
 export { UnexpectedLegError } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
-import { DEFAULT_ESCROWS, DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
-import { verifyHtlcAcceptCounterPrepared, verifyHtlcFlowBPrepared, type HtlcPins } from './htlc-verify';
+import { DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
+import { createHtlcActions, postClaimCounter, randomHex, sha256Hex, type CounterExpectation, type OpenedHtlc, type OpenHtlcInput } from './selfcustody-htlc';
+export { newPreimage, postClaimCounter, sha256Hex, type CounterExpectation, type OpenedHtlc, type OpenHtlcInput } from './selfcustody-htlc';
 import {
   acceptCost, DEFAULT_TRUSTED_PACKAGES, feeCost, selfSendCost, sendCost, units, UnverifiedTransactionError, verifyConsolidatePrepared, verifyDvpPrepared,
   verifyPreapprovalSetupPrepared, verifySelfSendPrepared,
@@ -394,36 +395,6 @@ export interface TokenCallOptions {
 
 /** This SDK's default ceiling on the platform fee rate (1.5%): a policy of the SDK, not of the platform. */
 export const DEFAULT_MAX_FEE_RATE = '0.015';
-
-/** What `openHtlc` opens. */
-export interface OpenHtlcInput extends TokenCallOptions {
-  /** The API's token id (`CC` for Canton Coin). */
-  tokenId: string;
-  /** What the HTLC locks, as a decimal of at most ten places. */
-  amount: string;
-  receiver: string;
-  /** Lowercase hex SHA-256 of the caller's preimage (`newPreimage()`). */
-  hashLock: string;
-  timeoutHours: number;
-  orderId?: string;
-  description?: string;
-}
-
-export interface OpenedHtlc {
-  /** The swap the request opened. */
-  swapId: string;
-  result: unknown;
-}
-
-/** What the account expects of a counter leg before it accepts it. */
-export interface CounterExpectation extends TokenCallOptions {
-  amount: string;
-  tokenId: string;
-  /** The account's own hash lock: the counter must be locked to the same secret. */
-  hashLock: string;
-  /** Epoch ms: the counter must not time out before this. */
-  minTimeout: number;
-}
 const DEFAULT_SETTLEMENT_WINDOW_MS = 3 * 60 * 60_000;
 /** What `GET /htlc/fee-config` answers; its `maxFeeRate` is not read: the ceiling is this account's `maxFeeRate`. */
 export type FeeConfig = { feeRate?: string; feeRecipient?: string; venue?: string; maxFeeRate?: string };
@@ -1489,40 +1460,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   const alreadyGone = (err: unknown) =>
     err instanceof CeremonyError && err.stage === 'prepare' && /nothing left to withdraw|no locked allocation/i.test(err.message);
 
-  /** The parties and packages a self-custody HTLC may name on this account's network. */
-  function htlcPins(): HtlcPins {
-    const venue = options.venuePartyId ?? (network ? DEFAULT_VENUES[network] : undefined);
-    const executors = venue ? [venue] : [];
-    return {
-      escrows: [...(network ? DEFAULT_ESCROWS[network] : []), ...[options.escrowPartyId ?? []].flat()],
-      executors,
-      feeParties: feeRecipients,
-      providers: executors,
-      packages: trustedPackages.htlc,
-    };
-  }
-
-  async function openHtlc(input: OpenHtlcInput): Promise<OpenedHtlc> {
-    const { tokenId, amount, receiver, hashLock, timeoutHours, orderId, description } = input;
-    const instrument = instrumentOf(tokenId);
-    const maxFee = feeCeiling('htlc.flow-b-create', input);
-    const params = { tokenId, amount: Number(amount), receiver, hashLock, timeoutHours, ...(orderId ? { orderId } : {}), ...(description ? { description } : {}) };
-    const { meta, result } = await run<{ swapId?: string }>('htlc.flow-b-create', params, false,
-      reading('htlc.flow-b-create', input, (legs, pins, party) => verifyHtlcFlowBPrepared(legs, {
-        ...htlcPins(), party, receiver, amount, instrument, admins: tokenAdmins(instrument), hashLock, timeoutHours,
-        maxFeeRate: options.maxFeeRate ?? DEFAULT_MAX_FEE_RATE, now: now(), maxFee, feeRecipients: pins.feeRecipients, dso: pins.dso,
-      })));
-    return { swapId: String(meta?.swapId ?? ''), result };
-  }
-
-  const acceptCounter = (swapId: string, expect: CounterExpectation): Promise<Executed> => {
-    const instrument = instrumentOf(expect.tokenId);
-    return run('htlc.accept-counter', { swapId }, false, reading('htlc.accept-counter', expect, (legs, _pins, party) => verifyHtlcAcceptCounterPrepared(legs, {
-      ...htlcPins(), party, amount: expect.amount, instrument, admins: tokenAdmins(instrument), hashLock: expect.hashLock, minTimeout: expect.minTimeout, now: now(),
-    })));
-  };
-
-  const refund = (swapId: string) => http.post<HtlcSwap>(`/htlc/${encodeURIComponent(swapId)}/refund`);
+  const { openHtlc, acceptCounter, refund } = createHtlcActions({
+    http, options, network, feeRecipients, trustedHtlc: trustedPackages.htlc, maxFeeRate: options.maxFeeRate ?? DEFAULT_MAX_FEE_RATE, now, instrumentOf, tokenAdmins, feeCeiling, run, reading,
+  });
 
   async function withdrawAllocation(swapId: string): Promise<Withdrawal> {
     const info = await swapInfo(swapId);
@@ -1753,35 +1693,4 @@ function utf8ToBinaryString(text: string): string {
   let out = '';
   for (const byte of new TextEncoder().encode(text)) out += String.fromCharCode(byte);
   return out;
-}
-
-function randomHex(bytes: number): string {
-  return Array.from(globalThis.crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-/** The hash lock of a preimage: SHA-256 over its UTF-8 text, as the ledger computes it. */
-export async function sha256Hex(text: string): Promise<string> {
-  const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
-  return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-/**
- * A fresh HTLC preimage: 32 random bytes as hex text, and its hash lock, the SHA-256 of that text. The SDK
- * keeps no copy of the preimage, so the caller must store it before the swap is made: a lost preimage means
- * the counter leg can never be claimed, and the swap ends in a refund.
- */
-export async function newPreimage(): Promise<{ preimage: string; hashLock: string }> {
-  const preimage = randomHex(32);
-  return { preimage, hashLock: await sha256Hex(preimage) };
-}
-
-/**
- * Claim the counter HTLC of a swap with its preimage (`POST /htlc/:id/claim-counter`). The venue executes
- * the claim, so this call signs nothing, and it never logs or stores the preimage. The venue receives the
- * preimage, so this call trusts the venue not to use it on the other HTLC of the swap and not to leak it.
- * An empty preimage is refused before any request is made.
- */
-export function postClaimCounter(http: Pick<Http, 'post'>, swapId: string, preimage: string): Promise<HtlcSwap> {
-  if (preimage.length === 0) return Promise.reject(new Error('preimage must not be empty'));
-  return http.post<HtlcSwap>(`/htlc/${encodeURIComponent(swapId)}/claim-counter`, { preimage });
 }

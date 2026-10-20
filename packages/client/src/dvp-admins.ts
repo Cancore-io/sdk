@@ -127,3 +127,20 @@ export const DEFAULT_VENUES: Readonly<Record<DvpNetwork, string>> = Object.freez
   testnet: 'cancore::12207fca8abfbcb8b8d936539ef9272f0f86c7e4e39dd4a3ece8c0f9aa59ebcf5fc2',
   mainnet: 'cancore::1220076a94e0a7f0256a32ffab227db7788d8075677d8afcdaa8386df8f2fa659906',
 });
+
+/**
+ * Every htlc-contract-v9 build staged in canton-contracts `deploy-contracts/dars` (git history,
+ * 2026-10-20). Read from the DARs, not from the stands: a stand on another build is refused until
+ * its id is added here or with `trustedPackages.htlc`.
+ */
+export const DEFAULT_HTLC_PACKAGES: Readonly<Record<string, readonly string[]>> = deepFreeze({
+  'htlc-contract-v9': [
+    'd00931c65627626b2f446449d1b852c9c26491f1a03cbfdd898c1286ee68aeca', // 1.3.0
+    'af380114f70b127a15d995311d3d22a8b9d171ecf45ec0f48215dc04c8fd065d', // 1.3.1
+    '74d0c5a4235f9367fa27e2d8c7c26882df00321fa44cd3e523bdf6be87db2fa5', // 1.4.0
+    '9bdfd2a63360311c1352a1c32d84c03bc317500ac16f5970d5362e5785fd931e', // 1.4.0, rebuilt
+    '05f20da11cdab9da8da2b28e3474753b0902fd0edb46a8f2cb2a4ee7a4c7127d', // 1.4.1
+    '3b35dac71990bc5def8d5fa7e175e8ec1b51e1c966b12566db491d6c02279b0d', // 1.5.0
+    '9a856cb69897733d488558a052f2c4b870b33498eff1dd7553c51b4a38dffd3e', // 1.4.1, the build canton-contracts dev stages (2026-09-24)
+  ],
+});

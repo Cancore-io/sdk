@@ -118,6 +118,7 @@ describe('Flow B: the escrow request and its deposit are signed only as the acco
   test('F9: another instrument, or the right one under an admin this SDK does not pin, is refused', async () => {
     await refused([await escrow({ instrument: CBTC }), await deposit()], /the escrow request locks CBTC of cbtc-network::.*, not Amulet of a pinned admin/);
     await refused([await escrow({ instrument: { id: 'Amulet', admin: MALLORY } }), await deposit()], /the escrow request locks Amulet of mallory::1220ff, not Amulet of a pinned admin/);
+    await refused([await escrow({ instrument: { id: 'Other', admin: DEV.dso } }), await deposit()], /the escrow request locks Other of .*, not Amulet of a pinned admin/);
   });
 
   test('F10: an escrow party that is not a pinned Cancore escrow is refused', async () => {
@@ -254,6 +255,7 @@ describe('accept-counter: the counter HTLC is accepted only as the account expec
   test('A7: another instrument, or an admin this SDK does not pin, is refused', async () => {
     await refused([await accept({ instrument: CBTC })], /the proposal locks CBTC of cbtc-network::.*, not Amulet of a pinned admin/);
     await refused([await accept({ instrument: { id: 'Amulet', admin: MALLORY } })], /the proposal locks Amulet of mallory::1220ff, not Amulet of a pinned admin/);
+    await refused([await accept({ instrument: { id: 'Other', admin: DEV.dso } })], /the proposal locks Other of .*, not Amulet of a pinned admin/);
   });
 
   test('A8: a counter that times out before the claim margin is refused; at the margin it passes', async () => {

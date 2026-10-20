@@ -20,10 +20,7 @@
  */
 import type { Value } from '@canton-network/core-ledger-proto';
 import { instrumentKey } from './dvp-admins';
-import {
-  CLOCK_SKEW_MS, decimalOf, fieldsOf, holdingOf, nodeType, numericOf, openLeg, partyOf, refuser, sameTemplate, sendCost, signerBounds,
-  textOf, trusted, units, type Create, type Leg, type Opened, type Refuse,
-} from './dvp-verify';
+import { CLOCK_SKEW_MS, decimalOf, fieldsOf, holdingOf, nodeType, numericOf, openLeg, partyOf, refuser, sameTemplate, sendCost, signerBounds, textOf, trusted, units, type Create, type Leg, type Opened, type Refuse } from './dvp-verify';
 
 /** The parties and packages a self-custody HTLC may name, pinned per network (see `dvp-admins.ts`). */
 export interface HtlcPins {
@@ -39,40 +36,27 @@ export interface HtlcPins {
 
 export interface FlowBTerms extends HtlcPins {
   /** The account: the request's sender and the deposit's payer. */
-  party: string;
-  receiver: string;
-  amount: string;
+  party: string; receiver: string; amount: string;
   /** The instrument id as the ledger names it (`Amulet` for CC). */
   instrument: string;
   /** The instrument's pinned admins. */
   admins: string[];
   /** The account's own hash lock: lowercase hex SHA-256 of its preimage. */
-  hashLock: string;
-  timeoutHours: number;
+  hashLock: string; timeoutHours: number;
   /** The highest fee rate the account lets the request allow. */
-  maxFeeRate: string;
-  now?: number;
+  maxFeeRate: string; now?: number;
   /** The deposit's CC fee ceiling, fee recipients and CC admins (the `sendCost` rules). */
-  maxFee: string;
-  feeRecipients: string[];
-  dso: string[];
+  maxFee: string; feeRecipients: string[]; dso: string[];
 }
 
 export interface AcceptCounterTerms extends HtlcPins {
   /** The account: the counter proposal's receiver. */
-  party: string;
-  amount: string;
-  instrument: string;
-  admins: string[];
-  hashLock: string;
+  party: string; amount: string; instrument: string; admins: string[]; hashLock: string;
   /** Epoch ms: a counter that times out before this leaves no time to claim it. */
-  minTimeout: number;
-  now?: number;
+  minTimeout: number; now?: number;
 }
 
-const INIT_REQUEST_FIELDS = [
-  'escrowParty', 'executorParty', 'feeParty', 'sender', 'receiver', 'hashLock', 'amount', 'instrumentId', 'timeout', 'description', 'maxFeeRate', 'provider',
-];
+const INIT_REQUEST_FIELDS = ['escrowParty', 'executorParty', 'feeParty', 'sender', 'receiver', 'hashLock', 'amount', 'instrumentId', 'timeout', 'description', 'maxFeeRate', 'provider'];
 const HTLC_PARAMS_FIELDS = [
   'escrowParty', 'executorParty', 'feeParty', 'hashLock', 'amount', 'instrumentId', 'allocationCid', 'receiver', 'sender', 'timeout', 'description',
   'feeAmount', 'feeAllocationCid', 'provider',
@@ -85,6 +69,26 @@ const REESCROWED = new Set(['allocationCid', 'feeAllocationCid']);
 /** Verify the Flow B ceremony — the escrow request and, unless the instrument has none, its deposit. */
 export async function verifyHtlcFlowBPrepared(legs: Leg[], terms: FlowBTerms): Promise<void> {
   const refuse = refuser('htlc.flow-b-create');
+  const { request, deposits } = splitFlowBLegs(legs, refuse);
+  const what = 'the escrow request';
+  const opened = await openLeg(request, what, terms.party, refuse);
+  if (opened.root?.oneofKind !== 'create') return refuse(`${what} is not a create`);
+  const fields = checkInitRequestCreate(opened.root.create, what, terms, refuse);
+  checkLock(fields, what, terms, refuse);
+  checkParties(fields, what, terms, refuse);
+  checkFlowBWindowAndRate(fields, what, terms, refuse);
+
+  if (deposits.length === 1) {
+    // The escrow the request names is the only party the deposit may pay, and exactly its amount.
+    const escrow = partyOf(fields.get('escrowParty'))!;
+    await sendCost(deposits, {
+      party: terms.party, admins: terms.admins, dso: terms.dso, instrument: terms.instrument, receiver: escrow, amount: terms.amount,
+      maxFee: terms.maxFee, feeRecipients: terms.feeRecipients,
+    }, 'htlc.flow-b-create');
+  }
+}
+
+function splitFlowBLegs(legs: Leg[], refuse: Refuse): { request: Leg; deposits: Leg[] } {
   legs.forEach((leg, i) => {
     if (leg.kind !== 'escrow' && leg.kind !== 'transfer') refuse(`leg ${i} is a ${leg.kind}, not the escrow request or its deposit`);
   });
@@ -92,11 +96,10 @@ export async function verifyHtlcFlowBPrepared(legs: Leg[], terms: FlowBTerms): P
   const deposits = legs.filter((l) => l.kind === 'transfer');
   if (requests.length !== 1) refuse(`expected one escrow request, got ${requests.length}`);
   if (deposits.length > 1) refuse(`expected at most one deposit, got ${deposits.length}`);
+  return { request: requests[0]!, deposits };
+}
 
-  const what = 'the escrow request';
-  const opened = await openLeg(requests[0]!, what, terms.party, refuse);
-  if (opened.root?.oneofKind !== 'create') return refuse(`${what} is not a create`);
-  const create = opened.root.create;
+function checkInitRequestCreate(create: Create, what: string, terms: FlowBTerms, refuse: Refuse): Map<string, Value> {
   const id = create.templateId;
   if (!trusted(terms.packages as Record<string, string[]>, create.packageName, id?.packageId) || id?.moduleName !== 'HTLC.InitRequest' || id.entityName !== 'HTLCInitRequest') {
     refuse(`${what} is not an HTLCInitRequest of a trusted htlc package`);
@@ -109,26 +112,19 @@ export async function verifyHtlcFlowBPrepared(legs: Leg[], terms: FlowBTerms): P
   if (sender !== terms.party) refuse(`${what} sends from ${String(sender)}, not from this account`);
   const receiver = partyOf(fields.get('receiver'));
   if (receiver !== terms.receiver) refuse(`${what} pays ${String(receiver)}, not ${terms.receiver}`);
-  checkLock(fields, what, terms, refuse);
+  return fields;
+}
+
+function checkFlowBWindowAndRate(fields: Map<string, Value>, what: string, terms: FlowBTerms, refuse: Refuse): void {
   const now = terms.now ?? Date.now();
   const timeout = timeOf(fields.get('timeout'));
   const due = now + terms.timeoutHours * 3_600_000;
   if (timeout === undefined || Math.abs(timeout - due) > CLOCK_SKEW_MS) {
     refuse(`${what} times out at ${timeout === undefined ? 'an unreadable time' : new Date(timeout).toISOString()}, not ${terms.timeoutHours} hours from now`);
   }
-  checkParties(fields, what, terms, refuse);
   const rate = units(numericOf(fields.get('maxFeeRate')));
   if (rate < 0n || rate > units(terms.maxFeeRate)) {
     refuse(`${what} allows a fee rate of ${rate < 0n ? 'an unreadable value' : decimalOf(rate)}, above this account's ${terms.maxFeeRate}`);
-  }
-
-  if (deposits.length === 1) {
-    // The escrow the request names is the only party the deposit may pay, and exactly its amount.
-    const escrow = partyOf(fields.get('escrowParty'))!;
-    await sendCost(deposits, {
-      party: terms.party, admins: terms.admins, dso: terms.dso, instrument: terms.instrument, receiver: escrow, amount: terms.amount,
-      maxFee: terms.maxFee, feeRecipients: terms.feeRecipients,
-    }, 'htlc.flow-b-create');
   }
 }
 
@@ -138,6 +134,22 @@ export async function verifyHtlcAcceptCounterPrepared(legs: Leg[], terms: Accept
   if (legs.length !== 1) refuse(`expected one transaction, got ${legs.length}`);
   const what = 'the accept';
   const opened = await openLeg(legs[0]!, what, terms.party, refuse);
+  const { command, proposal } = openAcceptExercise(opened, what, terms, refuse);
+  const params = proposalParams(proposal, refuse);
+  const receiver = partyOf(params.get('receiver'));
+  if (receiver !== terms.party) refuse(`the proposal is to ${String(receiver)}, not to this account`);
+  checkLock(params, 'the proposal', terms, refuse);
+  const timeout = timeOf(params.get('timeout'));
+  if (timeout === undefined || timeout < terms.minTimeout) {
+    refuse(`the proposal times out at ${timeout === undefined ? 'an unreadable time' : new Date(timeout).toISOString()}, ` +
+      `before ${new Date(terms.minTimeout).toISOString()}, the claim margin this account needs`);
+  }
+  checkParties(params, 'the proposal', terms, refuse);
+  checkAcceptExpectedAdmin(command.chosenValue, what, terms, refuse);
+  checkAcceptTree(opened, command.contractId, params, what, terms, refuse);
+}
+
+function openAcceptExercise(opened: Opened, what: string, terms: AcceptCounterTerms, refuse: Refuse) {
   if (opened.root?.oneofKind !== 'exercise') return refuse(`${what} is not Proposal_Accept on an HTLCProposal of a trusted htlc package`);
   const command = opened.root.exercise;
   if (command.choiceId !== 'Proposal_Accept' || !isHtlcTemplate(command, 'HTLCProposal', terms)) {
@@ -150,26 +162,16 @@ export async function verifyHtlcAcceptCounterPrepared(legs: Leg[], terms: Accept
   const proposal = opened.inputs.get(command.contractId);
   if (!proposal) return refuse(`${what} does not disclose the proposal it accepts`);
   if (!sameTemplate(proposal, command)) refuse(`${what} runs on another template than the proposal it names`);
+  return { command, proposal };
+}
 
-  const params = proposalParams(proposal, refuse);
-  const receiver = partyOf(params.get('receiver'));
-  if (receiver !== terms.party) refuse(`the proposal is to ${String(receiver)}, not to this account`);
-  checkLock(params, 'the proposal', terms, refuse);
-  const timeout = timeOf(params.get('timeout'));
-  if (timeout === undefined || timeout < terms.minTimeout) {
-    refuse(`the proposal times out at ${timeout === undefined ? 'an unreadable time' : new Date(timeout).toISOString()}, ` +
-      `before ${new Date(terms.minTimeout).toISOString()}, the claim margin this account needs`);
-  }
-  checkParties(params, 'the proposal', terms, refuse);
-
-  const argument = exactFields(command.chosenValue, ACCEPT_ARGUMENTS, what, refuse, 'arguments');
+function checkAcceptExpectedAdmin(chosenValue: Value | undefined, what: string, terms: AcceptCounterTerms, refuse: Refuse): void {
+  const argument = exactFields(chosenValue, ACCEPT_ARGUMENTS, what, refuse, 'arguments');
   const expected = argument.get('acceptExpectedAdmin');
   const admin = expected?.sum.oneofKind === 'optional' ? partyOf(expected.sum.optional.value) : undefined;
   if (expected?.sum.oneofKind !== 'optional' || (expected.sum.optional.value && (!admin || !terms.admins.includes(admin)))) {
     refuse(`${what} expects ${String(admin)} as the instrument admin, which is not a pinned one`);
   }
-
-  checkAcceptTree(opened, command.contractId, params, what, terms, refuse);
 }
 
 /** A record holding exactly `labels`: one this SDK does not read is refused, and so is one that is missing. */
@@ -222,34 +224,14 @@ function checkParties(fields: Map<string, Value>, what: string, pins: HtlcPins, 
  * proposal's but for the allocations the accept re-escrows.
  */
 function checkAcceptTree(
-  { nodes, root, inputs, created }: Opened, proposalCid: string, params: Map<string, Value>, what: string, terms: AcceptCounterTerms, refuse: Refuse,
+  opened: Opened, proposalCid: string, params: Map<string, Value>, what: string, terms: AcceptCounterTerms, refuse: Refuse,
 ): void {
-  for (const node of nodes.values()) {
-    const type = nodeType(node)!;
-    if (type === root) continue;
-    const on = type.oneofKind === 'create' ? type.create : inputs.get(contractOf(type)) ?? created.get(contractOf(type));
-    const fromHtlc = !!on && trusted(terms.packages as Record<string, string[]>, on.packageName, on.templateId?.packageId) && on.templateId?.moduleName === 'HTLC.HTLC';
-    if (!fromHtlc && !on?.signatories.some((p) => terms.admins.includes(p))) {
-      refuse(`node ${node.nodeId} runs on a ${on?.templateId?.entityName ?? 'contract'} that is neither the HTLC package's nor the instrument admin's`);
-    }
-    if (type.oneofKind === 'exercise' && type.exercise.actingParties.includes(terms.party)) refuse(`this account acts below the accept, in node ${node.nodeId}`);
-  }
+  const { nodes, inputs, created } = opened;
+  for (const node of nodes.values()) checkAcceptNodeOrigin(node, opened, terms, refuse);
   // The accept may spend the escrow's allocations, never a holding of the account's own. Every target is
   // disclosed: the origin check above refuses a node on a contract it cannot read.
-  for (const node of nodes.values()) {
-    const type = nodeType(node)!;
-    if (type.oneofKind !== 'exercise' || !type.exercise.consuming || type === root) continue;
-    const target = inputs.get(type.exercise.contractId) ?? created.get(type.exercise.contractId);
-    const holding = target && holdingOf(target);
-    if (holding && holding.owner === terms.party) refuse(`${what} spends ${decimalOf(holding.amount)} of this account's ${holding.instrument}`);
-  }
-
-  const htlcs = [...created.values()].filter((c) => isHtlcTemplate(c, 'HTLC', terms));
-  if (htlcs.length !== 1) refuse(`${what} creates ${htlcs.length} HTLCs, not one`);
-  const htlc = htlcs[0]!;
-  const made = exactFields(fieldsOf(htlc.argument)?.get('params'), HTLC_PARAMS_FIELDS, 'the HTLC it creates', refuse, 'fields');
-  const differs = HTLC_PARAMS_FIELDS.find((label) => !REESCROWED.has(label) && JSON.stringify(made.get(label)) !== JSON.stringify(params.get(label)));
-  if (differs) refuse(`the HTLC it creates differs from the proposal in ${differs}`);
+  for (const node of nodes.values()) checkAcceptNoAccountSpend(node, opened, what, terms, refuse);
+  const htlc = checkCreatedHtlcContract(created, params, what, terms, refuse);
 
   // The parties of the proposal, and those of the admin's own contracts the accept re-escrows through.
   const adminContracts = [...inputs.values(), ...created.values()].filter((c) => c.signatories.some((p) => terms.admins.includes(p)));
@@ -259,6 +241,35 @@ function checkAcceptTree(
   ]);
   const bounds = signerBounds(nodes, inputs, created, terms.party, terms.admins, proposalCid, allowed, 'accept', (contract) => contract === htlc);
   if (bounds) refuse(`${what}: ${bounds}`);
+}
+
+function checkAcceptNodeOrigin(node: { nodeId: string } & Parameters<typeof nodeType>[0], { root, inputs, created }: Opened, terms: AcceptCounterTerms, refuse: Refuse): void {
+  const type = nodeType(node)!;
+  if (type === root) return;
+  const on = type.oneofKind === 'create' ? type.create : inputs.get(contractOf(type)) ?? created.get(contractOf(type));
+  const fromHtlc = !!on && trusted(terms.packages as Record<string, string[]>, on.packageName, on.templateId?.packageId) && on.templateId?.moduleName === 'HTLC.HTLC';
+  if (!fromHtlc && !on?.signatories.some((p) => terms.admins.includes(p))) {
+    refuse(`node ${node.nodeId} runs on a ${on?.templateId?.entityName ?? 'contract'} that is neither the HTLC package's nor the instrument admin's`);
+  }
+  if (type.oneofKind === 'exercise' && type.exercise.actingParties.includes(terms.party)) refuse(`this account acts below the accept, in node ${node.nodeId}`);
+}
+
+function checkAcceptNoAccountSpend(node: Parameters<typeof nodeType>[0], { root, inputs, created }: Opened, what: string, terms: AcceptCounterTerms, refuse: Refuse): void {
+  const type = nodeType(node)!;
+  if (type.oneofKind !== 'exercise' || !type.exercise.consuming || type === root) return;
+  const target = inputs.get(type.exercise.contractId) ?? created.get(type.exercise.contractId);
+  const holding = target && holdingOf(target);
+  if (holding && holding.owner === terms.party) refuse(`${what} spends ${decimalOf(holding.amount)} of this account's ${holding.instrument}`);
+}
+
+function checkCreatedHtlcContract(created: Map<string, Create>, params: Map<string, Value>, what: string, terms: AcceptCounterTerms, refuse: Refuse): Create {
+  const htlcs = [...created.values()].filter((c) => isHtlcTemplate(c, 'HTLC', terms));
+  if (htlcs.length !== 1) refuse(`${what} creates ${htlcs.length} HTLCs, not one`);
+  const htlc = htlcs[0]!;
+  const made = exactFields(fieldsOf(htlc.argument)?.get('params'), HTLC_PARAMS_FIELDS, 'the HTLC it creates', refuse, 'fields');
+  const differs = HTLC_PARAMS_FIELDS.find((label) => !REESCROWED.has(label) && JSON.stringify(made.get(label)) !== JSON.stringify(params.get(label)));
+  if (differs) refuse(`the HTLC it creates differs from the proposal in ${differs}`);
+  return htlc;
 }
 
 const contractOf = (type: NonNullable<ReturnType<typeof nodeType>>) =>

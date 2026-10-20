@@ -459,22 +459,19 @@ export async function factoryTransferLeg(input: {
   offer?: Partial<FixtureLeg> | null;
   command?: Partial<FixtureLeg>; expectedAdmin?: string; factory?: (honest: Create) => Create;
   commandOn?: Pick<Create, 'packageName' | 'templateId'>; commandSignatories?: string[]; interfaceEntity?: string;
-  inputOwner?: string; actAs?: string;
   /** The offer contract in place of the utility registry's TransferOffer (CC's own instruction, say). */
-  offerContract?: (honest: Create) => Create;
+  inputOwner?: string; actAs?: string; offerContract?: (honest: Create) => Create;
 }) {
   const leg: FixtureLeg = { sender: input.party, receiver: input.receiver, amount: input.amount, instrumentId: input.instrument, ...input.command };
   const honest = factoryContract(input.instrument.admin, { instrument: input.instrument.id });
-  const factory = input.factory?.(honest) ?? honest;
-  const on = input.commandOn ?? factory;
+  const [factory, honestOffer] = [input.factory?.(honest) ?? honest, transferOffer(OFFER_CID, { ...leg, ...input.offer }, [input.instrument.admin, input.party])];
   const owned = holding('a0'.repeat(34), input.inputOwner ?? input.party, input.instrument, input.input);
   const outputs = input.outputs.map((o, i) => createNode(String(i + 2), holding(`a${i + 1}`.repeat(34), o.owner, o.instrument ?? input.instrument, o.amount, { lockedTo: o.lockedTo })));
-  const honestOffer = transferOffer(OFFER_CID, { ...leg, ...input.offer }, [input.instrument.admin, input.party]);
   const offer = input.offer === null ? [] : [createNode(String(outputs.length + 2), input.offerContract?.(honestOffer) ?? honestOffer)];
   const root = node('0', {
     oneofKind: 'exercise',
     exercise: {
-      lfVersion: '2.1', contractId: factory.contractId, packageName: on.packageName, templateId: on.templateId,
+      lfVersion: '2.1', contractId: factory.contractId, packageName: (input.commandOn ?? factory).packageName, templateId: (input.commandOn ?? factory).templateId,
       interfaceId: template('Splice.Api.Token.TransferInstructionV1', input.interfaceEntity ?? 'TransferFactory', TRANSFER_API),
       signatories: input.commandSignatories ?? factory.signatories, stakeholders: factory.stakeholders, actingParties: [input.party],
       choiceId: 'TransferFactory_Transfer',
