@@ -448,6 +448,31 @@ describe('Executor — replacement caps (F-3, R-14, CAN-2299)', () => {
     executor.stop();
   });
 
+  test.each(['safe', 'finalized'] as const)('CAN-2808: openConfirmations "%s" and no fillConfirmations: a settle is done once that block reaches it, not one block earlier', async (tag) => {
+    const w = await world({ chain: { openConfirmations: tag } });
+    w.dst[tag] = 0n;
+    const settled: Hex[] = [];
+    const executor = w.executor();
+    executor.onSettleIncluded(async (_chain, tx) => { settled.push(tx.hash); });
+    await executor.start();
+    const sent = await trackedSettle(w, executor);
+    await w.tick(10_000);
+    const mined = w.dst.minedTransactions.get(sent.hash);
+    expect(mined).toBeDefined();
+    expect(w.dst.head - mined!.blockNumber + 1n).toBeGreaterThanOrEqual(10n);
+
+    w.dst[tag] = mined!.blockNumber - 1n;
+    await w.tick(1_000);
+    expect(settled).toEqual([]);
+    expect(await openNonce(w)).toBeDefined();
+
+    w.dst[tag] = mined!.blockNumber;
+    await w.tick(1_000);
+    expect(settled).toEqual([sent.hash]);
+    expect(await openNonce(w)).toBeUndefined();
+    executor.stop();
+  });
+
   test('the same rise caps a fill at 3×: the policy differs by kind', async () => {
     const w = await world({ chain: { maxFeePerGasWei: 50_000_000_000n } });
     const executor = w.executor();

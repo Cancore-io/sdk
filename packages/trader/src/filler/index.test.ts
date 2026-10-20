@@ -188,6 +188,17 @@ describe('the skeleton of sdk.md §3.6', () => {
     }
   });
 
+  test("CAN-2808: start() refuses a finality tag the chain's RPC does not serve", async () => {
+    const rpc = new FakeEvmRpc('a').on('eth_chainId', '0x1').fail('eth_getBlockByNumber', new Error('invalid block tag: finalized'));
+    const config: FillerConfig = { ...baseConfig(), rpc: { 'eip155:1': [rpc] }, chains: { 'eip155:1': { ...baseConfig().chains['eip155:1']!, openConfirmations: 'finalized' } } };
+    const filler = createFiller(config);
+    filler.onQuoteRequest(async () => null);
+    filler.onReconfirm(async () => true);
+    filler.onTicketOffer(async () => 'decline');
+    await expect(filler.start()).rejects.toMatchObject({ name: 'FillerConfigError', field: 'chains.eip155:1.openConfirmations' });
+    expect(rpc.calls.filter((c) => c.method === 'eth_getBlockByNumber').map((c) => c.params?.[0])).toContain('finalized');
+  });
+
   test('a malformed transport option is refused up front', () => {
     expect(configErrorField(() => createFiller({ ...baseConfig(), transport: { heartbeatMisses: 0 } }))).toBe('transport.heartbeatMisses');
     expect(configErrorField(() => createFiller({ ...baseConfig(), transport: { reconnect: { maxDelayMs: -1 } } }))).toBe('transport.reconnect.maxDelayMs');

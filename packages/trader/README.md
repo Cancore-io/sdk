@@ -158,6 +158,15 @@ message.
   an endpoint on another fork fails the call rather than answering from its own block at that height, and
   `pin(at)` hands the same hash to every call of one check. The endpoints must support EIP-1898 for
   `eth_call` and `eth_getBalance` (geth, erigon, reth, anvil and the large providers do).
+- **Finality tags per network.** A tag in `openConfirmations` means what the chain's own node serves:
+  Ethereum `safe` is the justified checkpoint (about one epoch behind the head) and `finalized` the
+  finalized one (about two epochs); BNB Chain `finalized` is fast finality (a few blocks); on Arbitrum
+  Orbit chains (Arbitrum One, Robinhood Chain) `safe` / `finalized` are the newest blocks whose batch is in
+  a `safe` / `finalized` parent-chain block, minutes behind the head. Cancore's mainnet depths per network
+  are in the intent-rail spec (meta `docs/intents/evm-finality.md`). `start()` asks every endpoint set for
+  each configured tag once and refuses with `FillerConfigError` (`chains.<caip2>.openConfirmations`) when
+  the chain's RPC does not serve it. The tag's lag counts against `requiredProofWindowSec` and
+  `refundAfter`: a fill waits for it before it is done and before its settle is.
 - **`RouterReader`** — `intents`, `filled`, `ticketSigners`, `proofWindow`, `attestationSetFor`,
   `getAttestorSet`, `revokedAttestors`, `currentSetId`, `isMember`, `sourceOrderHash`, `hashOrder`,
   `hashTicket`, `hashFillProof`, `minInput`. Calls and results are encoded from `CANCORE_ROUTER_ABI` of
@@ -242,8 +251,9 @@ receipted ──► pending ──► sent ──► included ──► confirme
   `settlement.alertBeforeRefundMs` of `refundAfter` it is replaced at that ceiling at once, so set the ceiling
   on every chain the filler settles on. A capped transaction stays as it is and is resent, same bytes, if a
   node drops it; stage `tx.capped` (`reason`: `relative-cap` or `ceiling`) reports it once.
-- **Reorgs.** A fill is done `chains.<caip2>.fillConfirmations` deep (default `openConfirmations`; a
-  `'safe'` / `'finalized'` there means done once that tag's block reaches the fill's block). An
+- **Reorgs.** A fill or settle is done `chains.<caip2>.fillConfirmations` deep (a number; default
+  `openConfirmations`, where a `'safe'` / `'finalized'` means done once that tag's block reaches the
+  transaction's block). An
   inclusion that disappears is resent — the same bytes on the same nonce — while the ticket is live (T-30);
   the block header and receipt of the last inclusion seen stay on the fill record as evidence (R-3).
 - **One writer per nonce** (N-9, N-34). Transactions go out only on nonces leased from the store
