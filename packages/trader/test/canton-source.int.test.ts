@@ -20,8 +20,10 @@
  *
  *   CANCORE_INTENT_STAND_ENV=<out>/intent-stand.env npx jest --selectProjects int --runInBand packages/trader/test/canton-source.int.test.ts
  *
- * Skipped, with the cause named, without the stand's env file. Every key in it
- * is a stand-only test value.
+ * Skipped, with the cause named, only when no stand env file is named at all
+ * (this repository's CI). Once one is named — the intent-stand job — a missing
+ * key or runtime fails the suite: on the stand a skip is never a pass
+ * (CONTRIBUTING §2). Every key in it is a stand-only test value.
  */
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
@@ -50,7 +52,7 @@ const KEYS = [
 ] as const;
 type StandKey = (typeof KEYS)[number];
 
-function readStand(): { env: Record<StandKey, string> } | { skip: string } {
+function readStand(): { env: Record<StandKey, string> } | { skip: string } | { broken: string } {
   if (!ENV_FILE) return { skip: 'CANCORE_INTENT_STAND_ENV is not set: no intent stand (decision Н-1, the intent-stand job)' };
   const file: Record<string, string> = Object.fromEntries(
     readFileSync(ENV_FILE, 'utf8')
@@ -61,13 +63,19 @@ function readStand(): { env: Record<StandKey, string> } | { skip: string } {
   );
   const value = (k: string) => process.env[k] ?? file[k];
   const missing = KEYS.filter((k) => !value(k));
-  if (missing.length > 0) return { skip: `${ENV_FILE} lacks ${missing.join(', ')}` };
-  if (typeof (globalThis as { WebSocket?: unknown }).WebSocket !== 'function') return { skip: 'no global WebSocket (Node ≥ 22)' };
+  if (missing.length > 0) return { broken: `${ENV_FILE} lacks ${missing.join(', ')}` };
+  if (typeof (globalThis as { WebSocket?: unknown }).WebSocket !== 'function') return { broken: 'no global WebSocket (Node ≥ 22)' };
   return { env: Object.fromEntries(KEYS.map((k) => [k, value(k) as string])) as Record<StandKey, string> };
 }
 
 const stand = readStand();
 if ('skip' in stand) console.warn(`canton-source.int.test.ts skipped: ${stand.skip}`);
+// A stand that was asked for and is not usable fails, it never skips.
+if ('broken' in stand) {
+  test('the intent stand env is complete (CAN-1863)', () => {
+    throw new Error(`the intent stand is not usable: ${stand.broken}`);
+  });
+}
 const live = 'env' in stand ? describe : describe.skip;
 const E = ('env' in stand ? stand.env : {}) as Record<StandKey, string>;
 
