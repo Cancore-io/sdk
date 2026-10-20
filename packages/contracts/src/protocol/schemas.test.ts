@@ -451,6 +451,71 @@ describe('Canton operations of the filler party (§3.19)', () => {
     expect(rest('cantonDeliveryOrderList', { items: [{ ...order, validUntil: 1790000400 }], nextCursor: null })).toBe(false);
   });
 
+  describe('preapproval.create (CAN-2904): every field the node checks before it signs is required and typed', () => {
+    const ofOp = (type: string) => examples[type]!.findIndex((e) => e.op === 'preapproval.create');
+    const without = (frame: Frame, part: string, field: string): Frame => {
+      const { [field]: _, ...rest } = frame[part] as Frame;
+      return { ...frame, [part]: rest };
+    };
+    const withField = (frame: Frame, part: string, field: string, value: unknown): Frame => ({ ...frame, [part]: { ...(frame[part] as Frame), [field]: value } });
+
+    test('the vectors carry a prepare, a prepared and a submitted of the op', () => {
+      for (const type of ['canton.prepare', 'canton.prepared', 'canton.submitted']) {
+        expect(ofOp(type)).toBeGreaterThanOrEqual(0);
+        expect(errorsOf(type, example(type, ofOp(type)))).toEqual([]);
+      }
+    });
+
+    test.each([
+      ['canton.prepare', 'params', 'admin'],
+      ['canton.prepared', 'summary', 'party'],
+      ['canton.prepared', 'summary', 'admin'],
+      ['canton.prepared', 'summary', 'instrumentAllowances'],
+      ['canton.prepared', 'summary', 'requestedAt'],
+      ['canton.prepared', 'summary', 'executeBefore'],
+      ['canton.submitted', 'result', 'preapprovalCid'],
+    ])('%s without %s.%s is refused', (type, part, field) => {
+      expect(errorsOf(type, without(example(type, ofOp(type)), part, field))).not.toEqual([]);
+    });
+
+    test.each([
+      ['canton.prepare', 'params', 'admin', ''],
+      ['canton.prepare', 'params', 'admin', 'a'.repeat(256)],
+      ['canton.prepared', 'summary', 'party', ''],
+      ['canton.prepared', 'summary', 'admin', ''],
+      ['canton.prepared', 'summary', 'instrumentAllowances', ['']],
+      ['canton.prepared', 'summary', 'instrumentAllowances', 'CNRX'],
+      ['canton.prepared', 'summary', 'instrumentAllowances', Array.from({ length: 11 }, (_, i) => `I${i}`)],
+      ['canton.prepared', 'summary', 'requestedAt', 1789990200],
+      ['canton.prepared', 'summary', 'executeBefore', '2027-10-20T00:00:00Z'],
+      ['canton.prepared', 'summary', 'executeBefore', 1821526200],
+      ['canton.submitted', 'result', 'preapprovalCid', ''],
+    ])('%s with %s.%s = %j is refused', (type, part, field, bad) => {
+      expect(errorsOf(type, withField(example(type, ofOp(type)), part, field, bad))).not.toEqual([]);
+    });
+
+    test('an allow-list of ten, or an empty one (every instrument of the admin), passes', () => {
+      const prepared = example('canton.prepared', ofOp('canton.prepared'));
+      expect(errorsOf('canton.prepared', withField(prepared, 'summary', 'instrumentAllowances', Array.from({ length: 10 }, (_, i) => `I${i}`)))).toEqual([]);
+      expect(errorsOf('canton.prepared', withField(prepared, 'summary', 'instrumentAllowances', []))).toEqual([]);
+    });
+
+    test('reads: the party lists its live preapprovals, each one checked', () => {
+      const party = { party: 'acme::1220ab', publicKey: null, registry: { state: 'ACTIVE', proposalCid: null, entryCid: '00ef' } };
+      const pa = { admin: 'cancore-registry::1220aa', contractId: '00pa', instrumentAllowances: ['CNRX'], executeBefore: '1821526200' };
+      expect(rest('cantonParty', { ...party, preapprovals: [pa] })).toBe(true);
+      expect(rest('cantonParty', { ...party, preapprovals: [] })).toBe(true);
+      for (const field of ['admin', 'contractId', 'instrumentAllowances', 'executeBefore']) {
+        const { [field as keyof typeof pa]: _, ...rest_ } = pa;
+        expect(rest('cantonParty', { ...party, preapprovals: [rest_] })).toBe(false);
+      }
+      expect(rest('cantonParty', { ...party, preapprovals: [{ ...pa, executeBefore: 1821526200 }] })).toBe(false);
+      expect(rest('cantonParty', { ...party, preapprovals: [{ ...pa, contractId: '' }] })).toBe(false);
+      expect(rest('cantonParty', { ...party, preapprovals: [{ ...pa, instrumentAllowances: Array.from({ length: 11 }, (_, i) => `I${i}`) }] })).toBe(false);
+      expect(rest('cantonParty', { ...party, preapprovals: pa })).toBe(false);
+    });
+  });
+
   test('reads: the Canton-source intent naming the party, with its committed allocation (CAN-1863)', () => {
     const cnrx = { admin: 'cancore-registry::1220aa', id: 'CNRX' };
     const allocation = {

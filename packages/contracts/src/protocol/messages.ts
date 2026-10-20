@@ -364,9 +364,9 @@ export interface StakeBindingRequest extends F2SEnvelope { partnerId: string; st
 export interface FillerStats { won: number; delivered: number; noShow: number; reliability: number; capacityUsd: string; inFlightUsd: string }
 export interface PenaltyRecord { violationId: string; code: string; step: PenaltyStep; orderHash?: Hex; attempt?: number; at: TimeMs; details: Record<string, unknown> }
 export type PenaltyList = Page<PenaltyRecord>;
-/** `GET /v1/filler/canton/party`: the party registered for the fillerId and its `FillerRegistryEntry`. */
-/** A live transfer preapproval of the party with one registry (`preapproval.create`). */
+/** A live transfer preapproval of the party with one registry (`preapproval.create`); `executeBefore` in unix s (the Daml Time cut to seconds). */
 export interface CantonPreapproval { admin: string; contractId: string; instrumentAllowances: string[]; executeBefore: DecString }
+/** `GET /v1/filler/canton/party`: the party registered for the fillerId and its `FillerRegistryEntry`. */
 export interface CantonParty {
   party: string | null;
   publicKey: Hex | null;

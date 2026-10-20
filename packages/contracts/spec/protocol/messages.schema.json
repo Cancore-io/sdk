@@ -840,8 +840,8 @@
                   "party": { "type": "string", "minLength": 1, "description": "the receiver: the filler's own party" },
                   "admin": { "type": "string", "minLength": 1, "description": "the registry's instrument admin, as asked" },
                   "instrumentAllowances": { "type": "array", "maxItems": 10, "items": { "type": "string", "minLength": 1 }, "description": "instrument ids it is limited to; empty: every instrument of the admin" },
-                  "requestedAt": { "$ref": "#/$defs/timeS" },
-                  "executeBefore": { "$ref": "#/$defs/timeS", "description": "unix s: the preapproval expires then" }
+                  "requestedAt": { "$ref": "#/$defs/timeS", "description": "unix s: the Daml Time (microseconds) cut to whole seconds" },
+                  "executeBefore": { "$ref": "#/$defs/timeS", "description": "unix s, cut likewise: the preapproval expires then" }
                 }
               }
             }
