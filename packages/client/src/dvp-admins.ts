@@ -65,6 +65,18 @@ export const DEFAULT_FEE_RECIPIENTS: Readonly<Record<DvpNetwork, readonly string
 );
 
 /**
+ * The split-party escrow parties (`cancore-escrow-<pool>`), pinned per network: a self-custody HTLC's
+ * funds are held by one of them, so a request naming any other escrow is refused. Names from the
+ * split-party naming contract (meta `docs/plans/split-party-naming-contract-2026-06-17.md`), on the
+ * same Cancore namespace as the fee parties.
+ */
+export const DEFAULT_ESCROWS: Readonly<Record<DvpNetwork, readonly string[]>> = deepFreeze(
+  Object.fromEntries(
+    Object.entries(CANCORE_NS).map(([network, ns]) => [network, ['retail', 'partner', 'auto'].map((pool) => `cancore-escrow-${pool}::${ns}`)]),
+  ) as Record<DvpNetwork, string[]>,
+);
+
+/**
  * The party a self-custody CC send pays its network fee to (the backend's `PARTICIPANT_PARTY`),
  * pinned per network so a send's fee leg can be held to it rather than to what the API says.
  * Testnet is not pinned yet: pass it with `networkFeeRecipients`.

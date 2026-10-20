@@ -78,6 +78,11 @@ export interface TrustedPackages {
    * same on every network, and a network may run any release.
    */
   wallet: Record<string, string[]>;
+  /**
+   * `htlc-contract-v9`, the self-custody HTLC's templates (`HTLCInitRequest`, `HTLCProposal`, `HTLC`). A create
+   * and a choice on them act with the account's authority, so they are trusted by name AND id, as `swap` is.
+   */
+  htlc: Record<string, string[]>;
 }
 
 export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = deepFreeze({
@@ -123,6 +128,20 @@ export const DEFAULT_TRUSTED_PACKAGES: TrustedPackages = deepFreeze({
       '916f16ea9413ba72d9ae660c9d0741f1078fc27b82b61e4b9db6a991dc47a848', // 0.1.25
     ],
   },
+  htlc: {
+    // Every htlc-contract-v9 build staged in canton-contracts `deploy-contracts/dars` (git history,
+    // 2026-10-20). Read from the DARs, not from the stands: a stand on another build is refused until
+    // its id is added here or with `trustedPackages.htlc`.
+    'htlc-contract-v9': [
+      'd00931c65627626b2f446449d1b852c9c26491f1a03cbfdd898c1286ee68aeca', // 1.3.0
+      'af380114f70b127a15d995311d3d22a8b9d171ecf45ec0f48215dc04c8fd065d', // 1.3.1
+      '74d0c5a4235f9367fa27e2d8c7c26882df00321fa44cd3e523bdf6be87db2fa5', // 1.4.0
+      '9bdfd2a63360311c1352a1c32d84c03bc317500ac16f5970d5362e5785fd931e', // 1.4.0, rebuilt
+      '05f20da11cdab9da8da2b28e3474753b0902fd0edb46a8f2cb2a4ee7a4c7127d', // 1.4.1
+      '3b35dac71990bc5def8d5fa7e175e8ec1b51e1c966b12566db491d6c02279b0d', // 1.5.0
+      '9a856cb69897733d488558a052f2c4b870b33498eff1dd7553c51b4a38dffd3e', // 1.4.1, the build canton-contracts dev stages (2026-09-24)
+    ],
+  },
 });
 
 /**
@@ -148,7 +167,9 @@ export interface PreparedToSign {
 }
 
 /** The wallet operations outside a trade whose transactions are read before the key signs them. */
-export type TokenOperation = 'tokens.send' | 'tokens.send-fee' | 'tokens.consolidate' | 'tokens.accept' | 'tokens.preapproval';
+export type TokenOperation =
+  | 'tokens.send' | 'tokens.send-fee' | 'tokens.consolidate' | 'tokens.accept' | 'tokens.preapproval'
+  | 'htlc.flow-b-create' | 'htlc.accept-counter';
 
 /** A prepared transaction the account refuses to sign, with the reason. */
 export class UnverifiedTransactionError extends Error {
@@ -282,7 +303,7 @@ function createdIn(nodes: Nodes): Map<string, Create> {
  * stranger), a choice it acts in only by `signerActs`, and a contract it signs only when it is
  * its own holding or one `mayCreate` accepts.
  */
-function signerBounds(
+export function signerBounds(
   nodes: Nodes, inputs: Map<string, Create>, created: Map<string, Create>, party: string, admins: string[], entryCid: string,
   allowed: Set<string>, what: string, mayCreate: (contract: Create) => boolean,
 ): string | null {
@@ -304,7 +325,7 @@ function signerBounds(
 }
 
 /** What the tree spends, per instrument: every holding it consumes must be the signer's, and one the transaction discloses or creates. */
-function spentHoldings(nodes: Nodes, inputs: Map<string, Create>, created: Map<string, Create>, party: string): Map<string, bigint> | string {
+export function spentHoldings(nodes: Nodes, inputs: Map<string, Create>, created: Map<string, Create>, party: string): Map<string, bigint> | string {
   const spent = new Map<string, bigint>();
   for (const node of nodes.values()) {
     const type = nodeType(node)!;
@@ -326,7 +347,7 @@ interface TransferLeg {
   instrumentId: { admin: string; id: string };
 }
 
-type Nodes = Map<string, DamlTransaction_Node>;
+export type Nodes = Map<string, DamlTransaction_Node>;
 
 function checkTransaction(operation: DvpOperation, decoded: PreparedTransaction, terms: DvpTerms, funded: TransferLeg[]): string | null {
   const transaction = decoded.transaction;
@@ -574,7 +595,7 @@ function checkHoldings(decoded: PreparedTransaction, nodes: Nodes, terms: DvpTer
   return null;
 }
 
-type Create = Extract<NonNullable<ReturnType<typeof nodeType>>, { oneofKind: 'create' }>['create'];
+export type Create = Extract<NonNullable<ReturnType<typeof nodeType>>, { oneofKind: 'create' }>['create'];
 
 /** Why the signer may not act in a choice on this contract, or null when it may. */
 function signerActs(cid: string, inputs: Map<string, Create>, created: Map<string, Create>, party: string, admins: string[], entryCid: string): string | null {
@@ -610,13 +631,13 @@ function inputContracts(decoded: PreparedTransaction): Map<string, Create> {
 }
 
 /** A record's fields by label, or null when the value is not a record. */
-function fieldsOf(value: Value | undefined): Map<string, Value> | null {
+export function fieldsOf(value: Value | undefined): Map<string, Value> | null {
   if (value?.sum.oneofKind !== 'record') return null;
   return new Map(value.sum.record.fields.flatMap((f) => (f.value ? [[f.label, f.value] as const] : [])));
 }
 
-const textOf = (value: Value | undefined) => (value?.sum.oneofKind === 'text' ? value.sum.text : undefined);
-const numericOf = (value: Value | undefined) => (value?.sum.oneofKind === 'numeric' ? value.sum.numeric : undefined);
+export const textOf = (value: Value | undefined) => (value?.sum.oneofKind === 'text' ? value.sum.text : undefined);
+export const numericOf = (value: Value | undefined) => (value?.sum.oneofKind === 'numeric' ? value.sum.numeric : undefined);
 
 /** The holding a contract is, if it is one: owner, instrument and amount in 1e-10 units. Read from typed values: `owner` must be a Party. */
 function holdingOf(contract: Create): { owner: string; instrument: string; amount: bigint; locked: boolean } | null {
@@ -639,7 +660,7 @@ function holdingOf(contract: Create): { owner: string; instrument: string; amoun
 
 
 /** Same template across Daml upgrades: package name, module and entity; the package id may be a newer version. */
-const sameTemplate = (contract: Create, exercise: { packageName: string; templateId?: { moduleName: string; entityName: string } }) =>
+export const sameTemplate = (contract: Create, exercise: { packageName: string; templateId?: { moduleName: string; entityName: string } }) =>
   contract.packageName === exercise.packageName && !!contract.templateId && !!exercise.templateId &&
   contract.templateId.moduleName === exercise.templateId.moduleName && contract.templateId.entityName === exercise.templateId.entityName;
 
@@ -647,7 +668,7 @@ const sameId = (a: { packageId: string; moduleName: string; entityName: string }
   !!a && !!b && a.packageId === b.packageId && a.moduleName === b.moduleName && a.entityName === b.entityName;
 
 /** A node's package is trusted only by name AND id. */
-const trusted = (allowed: Record<string, string[]>, packageName: string, packageId: string | undefined) =>
+export const trusted = (allowed: Record<string, string[]>, packageName: string, packageId: string | undefined) =>
   !!packageId && pinnedFor(allowed, packageName).includes(packageId);
 
 /** What is pinned under a name the TRANSACTION supplied: an own entry of the map, never `constructor` or `__proto__`. */
@@ -669,7 +690,7 @@ function partiesIn(value: Value | undefined, found = new Set<string>()): Set<str
 }
 
 /** Clock skew tolerated between this process and the ledger. */
-const CLOCK_SKEW_MS = 5 * 60_000;
+export const CLOCK_SKEW_MS = 5 * 60_000;
 
 /**
  * An instant outside its bounds, or one that is not there. A deadline lies between now (less the
@@ -737,7 +758,7 @@ function checkLeg(leg: TransferLeg | undefined, terms: DvpTerms): string | null 
 const isProposal = (id: { moduleName: string; entityName: string } | undefined) => id?.moduleName === 'Swap.Trade' && id.entityName === 'SwapProposal';
 // The package a proposal node comes from is pinned by checkTree for every node of the swap steps.
 
-function nodeType(node: DamlTransaction_Node | undefined) {
+export function nodeType(node: DamlTransaction_Node | undefined) {
   return node?.versionedNode.oneofKind === 'v1' ? node.versionedNode.v1.nodeType : undefined;
 }
 
@@ -879,8 +900,8 @@ export async function verifySendPrepared(legs: Leg[], terms: SendTerms): Promise
 }
 
 /** {@link verifySendPrepared}, resolving to the CC the ceremony costs the account beyond `amount`, in 1e-10 units. */
-export async function sendCost(legs: Leg[], terms: SendTerms): Promise<bigint> {
-  const refuse = refuser('tokens.send');
+export async function sendCost(legs: Leg[], terms: SendTerms, operation: TokenOperation = 'tokens.send'): Promise<bigint> {
+  const refuse = refuser(operation);
   const [amount, maxFee] = [units(terms.amount), units(terms.maxFee)];
   if (amount <= 0n || maxFee < 0n) refuse('the amount or the fee bound is not a decimal of at most ten places');
   // To oneself nothing is paid: that is a split, and it has its own rule (one holding of exactly the amount).
@@ -1029,12 +1050,12 @@ export async function verifyPreapprovalSetupPrepared(legs: Leg[], terms: Preappr
   if (!terms.dso.includes(proposal.expectedDso as string)) refuse(`the proposal expects ${String(proposal.expectedDso)} as the DSO, which is not a pinned CC admin`);
 }
 
-type Leg = PreparedToSign & { kind: string };
-type Refuse = (reason: string) => never;
-type Exercise = Extract<NonNullable<ReturnType<typeof nodeType>>, { oneofKind: 'exercise' }>['exercise'];
-type Opened = Awaited<ReturnType<typeof openLeg>>;
+export type Leg = PreparedToSign & { kind: string };
+export type Refuse = (reason: string) => never;
+export type Exercise = Extract<NonNullable<ReturnType<typeof nodeType>>, { oneofKind: 'exercise' }>['exercise'];
+export type Opened = Awaited<ReturnType<typeof openLeg>>;
 
-const refuser = (operation: TokenOperation): Refuse => (reason) => {
+export const refuser = (operation: TokenOperation): Refuse => (reason) => {
   throw new UnverifiedTransactionError(operation, reason);
 };
 
@@ -1046,7 +1067,7 @@ const TRANSFER_FACTORY_INTERFACE = { moduleName: 'Splice.Api.Token.TransferInstr
 const TRANSFER_INSTRUCTION_INTERFACE = { moduleName: 'Splice.Api.Token.TransferInstructionV1', entityName: 'TransferInstruction' };
 
 /** A Daml value as plain JSON, or null when it holds a kind this SDK does not read. */
-function readPlain(value: Value | undefined): unknown {
+export function readPlain(value: Value | undefined): unknown {
   try {
     return plain(value);
   } catch {
@@ -1055,7 +1076,7 @@ function readPlain(value: Value | undefined): unknown {
 }
 
 /** A leg read as far as every leg is: its bytes against its hash, its one command, its whole tree. */
-async function openLeg(leg: Leg, what: string, party: string, refuse: Refuse) {
+export async function openLeg(leg: Leg, what: string, party: string, refuse: Refuse) {
   const decoded = await readPrepared(leg, what, party, refuse);
   if (!decoded.transaction || decoded.transaction.roots.length !== 1) refuse(`${what}: expected a transaction with exactly one command`);
   const nodes: Nodes = new Map(decoded.transaction!.nodes.map((n) => [n.nodeId, n]));
@@ -1269,7 +1290,7 @@ function acceptLeg({ nodes, root, inputs, created }: Opened, what: string, refus
 }
 
 /** Signed by one of `admins` — as the contract disclosed says and as the command exercising it says. */
-const signedBy = (contract: Create, command: Exercise, admins: string[]) =>
+export const signedBy = (contract: Create, command: Exercise, admins: string[]) =>
   [contract.signatories, command.signatories].every((signed) => signed.some((p) => admins.includes(p)));
 
 /** The same transfer: sender, receiver, amount, instrument and admin. */
@@ -1278,11 +1299,11 @@ const sameTransfer = (a: Partial<TransferLeg> | undefined, b: Partial<TransferLe
   a.instrumentId?.id === b.instrumentId?.id && a.instrumentId?.admin === b.instrumentId?.admin;
 
 /** Exact 1e-10 units back to a decimal string, without trailing zeros. */
-function decimalOf(value: bigint): string {
+export function decimalOf(value: bigint): string {
   const sign = value < 0n ? '-' : '';
   const abs = value < 0n ? -value : value;
   const fraction = (abs % ONE).toString().padStart(10, '0').replace(/0+$/, '');
   return `${sign}${abs / ONE}${fraction ? `.${fraction}` : ''}`;
 }
 
-const partyOf = (value: Value | undefined) => (value?.sum.oneofKind === 'party' ? value.sum.party : undefined);
+export const partyOf = (value: Value | undefined) => (value?.sum.oneofKind === 'party' ? value.sum.party : undefined);
