@@ -110,6 +110,7 @@ describe('Flow B: the escrow request and its deposit are signed only as the acco
     await refused([await escrow({ timeout: iso(NOW + 3 * HOUR) }), await deposit()], /the escrow request times out at .*, not 2 hours from now/);
     await refused([await escrow({ timeout: iso(NOW + 1 * HOUR) }), await deposit()], /the escrow request times out at .*, not 2 hours from now/);
     await refused([await escrow({ timeout: iso(NOW - HOUR) }), await deposit()], /the escrow request times out at .*, not 2 hours from now/);
+    await refused([await escrow({}, field('timeout', v.text(iso(NOW + 2 * HOUR)))), await deposit()], /the escrow request times out at an unreadable time, not 2 hours from now/);
     // Inside the five minutes of skew it is the same request.
     await expect(verifyHtlcFlowBPrepared([await escrow({ timeout: iso(NOW + 2 * HOUR + 4 * 60_000) }), await deposit()], terms)).resolves.toBeUndefined();
   });
@@ -257,6 +258,7 @@ describe('accept-counter: the counter HTLC is accepted only as the account expec
 
   test('A8: a counter that times out before the claim margin is refused; at the margin it passes', async () => {
     await refused([await accept({ timeout: iso(NOW + 30 * 60_000) })], /the proposal times out at .*, before .*, the claim margin this account needs/);
+    await refused([await accept({}, param('timeout', v.text(iso(NOW + 2 * HOUR))))], /the proposal times out at an unreadable time, before .*, the claim margin this account needs/);
     await expect(verifyHtlcAcceptCounterPrepared([await accept({ timeout: iso(NOW + HOUR) })], terms)).resolves.toBeUndefined();
   });
 
