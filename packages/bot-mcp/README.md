@@ -122,7 +122,10 @@ the session that starts the client: use a login that began after the install (fo
 `sudo -iu cancore-agent`; for Claude Desktop, a desktop session of that user, which first needs a
 password: `useradd` leaves the account locked for login, so run `sudo passwd cancore-agent`),
 check that `id` lists `cancore-bot-clients`, then start (or restart) the MCP client. Everything
-below runs as that user. bot-mcp reconnects by itself after a daemon restart; a group change needs a new client
+below runs as that user. `sudo -iu cancore-agent` keeps the agent off your own terminal only where
+sudo gives the session a pseudo-terminal of its own (`Defaults use_pty`, the default in Debian and
+Ubuntu, and in sudo 1.9.14 and later); otherwise log in as `cancore-agent` separately (a new login,
+or a desktop session). bot-mcp reconnects by itself after a daemon restart; a group change needs a new client
 process.
 
 **Claude Code:**

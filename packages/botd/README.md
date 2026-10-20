@@ -136,8 +136,12 @@ fee one withdraw may pay); without it the SDK refuses every send.
 **Signer guard.** Every signature goes through one wrapper (`verify.ts`): the daemon recomputes the
 hash (V2 hashing, `@cancore/trader`'s port) of every prepared transaction the API returns, and signs
 a hash only if it saw bytes with exactly that hash, each once. A mismatch or an unseen hash is
-refused and logged as `verify_failed`. The SDK's own checks of what each DvP or transfer does run
-underneath. The API cannot move the pinned trust boundary either: the venue is `venuePartyId` from
+refused and logged as `verify_failed`. Messages are held to their kind too: the daemon signs a text
+message (a terms text, for example) only if it is printable ASCII with newlines, and a login
+challenge only in the challenge's own format (the wallet signer's `signChallenge`); anything else
+is refused. That is why a new key's party topology, a binary hash, cannot be signed
+([Install](#install), step 6).
+The SDK's own checks of what each DvP or transfer does run underneath. The API cannot move the pinned trust boundary either: the venue is `venuePartyId` from
 the config or the SDK's pin for devnet, never what the API says. The platform-fee receiver is named
 by the API for each order and must be one of the SDK's Cancore fee pools for devnet or a
 `feeRecipientPartyId` from the config (added to the pools, never replacing them). The SDK refuses a
@@ -274,7 +278,7 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    | `network` | unset: taken from `baseUrl` (devnet) | v1 refuses anything but `devnet` |
    | `ownerParty` | unset: every withdraw refused | the only party `withdraw` sends to |
    | `maxFee` | unset: every withdraw refused | the most CC of network fee one withdraw may pay |
-   | `ordersPerHour` | `5` | new orders an hour, agent and strategies together (the platform's per-user limit) |
+   | `ordersPerHour` | `5` | new orders an hour, agent and strategies together: the daemon's own count of the platform's hourly limit, which you and your bots share ([Rate limit](#strategies)) |
    | `venuePartyId`, `maxFeeRate` | the SDK's venue for devnet; `0.015` | trust boundary: the API cannot move them |
    | `feeRecipientPartyId` | unset: only the SDK's fee pools for devnet | more fee receivers to trust, added to the SDK's pools, never replacing them |
    | `daemonUser` | `cancore-bot` | the daemon refuses to run as anyone else (`--dev` skips this; development only) |
@@ -569,11 +573,15 @@ the daemon is unlocked (locked, the orders stay on the venue). A
 strategy order cancelled by hand (`order.cancel`, `orders.cancelAll`, or in the web app) is not
 placed again: its slot is listed in the strategy's `cancelledByUser` in `status`.
 
-**Rate limit.** The platform accepts 5 new orders an hour per user. The daemon keeps one budget,
+**Rate limit.** The platform accepts 5 new orders an hour per user, and it counts an owner and
+their bots as one user: you and your bots share that allowance. The daemon keeps one budget,
 `ordersPerHour` in the config (default 5), for the agent and every strategy together, over a
 sliding hour: 5 orders at once, then up to 5 more as each hour-old one drops out. A strategy that
 finds it spent waits with `status: "rate_limited"`; an agent's `order.make` past it is refused with
-`rate_limited`.
+`rate_limited`. The daemon counts only its own orders. Orders you or your other bots place elsewhere
+spend the shared allowance too, and the API then refuses the daemon's make with a 429, which the
+daemon cannot tell from a lost answer: the make answers `unconfirmed`, and its intent is dropped
+once two lookups find no order. Lower `ordersPerHour` to leave room for orders placed elsewhere.
 
 ## Examples
 
@@ -786,6 +794,7 @@ sudo userdel -r cancore-agent      # the agent's user and its home, if you no lo
 | agent gets `socket_unavailable` | the agent's user is not in `cancore-bot-clients`, or the MCP client started in a login from before the install | `id cancore-agent` must list `cancore-bot-clients`; start the MCP client in a new login of that user |
 | every make `rate_limited`, every take `no_rule` | no limits set yet (`maxCommandsPerMinute` `0`, no `allowedPairs`) | set the limits (step 8) |
 | `order.make` `rate_limited` with `maxCommandsPerMinute` set | the hourly `ordersPerHour` budget is spent | wait; it is the platform's limit |
+| makes answer `unconfirmed` and never show up in `trade_orders_list`, with the API up | orders you or your other bots placed elsewhere spent the hourly allowance you share; the API answers 429, which the daemon treats as a lost answer | wait for the hour to pass; lower `ordersPerHour` to leave room |
 | `register` fails with `-32603 internal error` and the audit log has `verify_failed` | a key from `init` or `init --import`: v1 cannot create its party (the signer guard refuses the topology signature); retrying fails the same way | use a bot made in My bots, imported with `init --import-key` (step 4) |
 | after the first unlock, `status` shows no `partyId` and the audit log has `not registered: run cancore-bot register` | the account has no party (a key from `init` or `init --import`), or onboarding failed, for example with the API unreachable | a bot from My bots; to retry, `lock` and `unlock` again |
 | a token other than CC sent to the bot does not show in `trade_balances` | it waits as an offer the bot has to accept, and the daemon never accepts one | **Accept incoming** on the bot's row in My bots, or trade CC into that token |
