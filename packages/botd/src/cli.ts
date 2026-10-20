@@ -20,7 +20,7 @@ const USAGE = `usage: cancore-bot [--config <path>] <command>
   status
   limits show | limits set <file.json>
   pause [reason] | resume
-  release <orderId>        drop a booked take whose accept answer was lost, once the venue shows it did not land
+  release <orderId>        drop a booked take no accept of which can still land (none went out unrefused, or the order ended)
   withdraw --to <party> --instrument <id> --amount <n>
                            only to the owner party pinned in config
   audit verify

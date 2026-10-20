@@ -166,8 +166,8 @@ export function createEngine(options: EngineOptions): Engine {
       const l = loop ?? last;
       return l ? l.untake(orderId) : true;
     },
-    busy(orderId) {
-      return (loop ?? last)?.busy(orderId) ?? false;
+    mayBeTrade(orderId) {
+      return (loop ?? last)?.mayBeTrade(orderId) ?? false;
     },
     async cancel(orderId) {
       await acct.swap.cancel(orderId);

@@ -59,7 +59,7 @@ export function fakeEngine(): FakeEngine {
       return { orderId };
     },
     untake: (orderId: string) => (e.untaken.push(orderId), true),
-    busy: () => false,
+    mayBeTrade: () => false,
     async take(p) {
       e.onTakeStart?.();
       await e.takeHold;

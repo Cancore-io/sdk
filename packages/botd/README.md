@@ -259,14 +259,16 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
    **Deliberate:** a take whose accept answer was lost stays booked, holding its open-order slot and
    its reservation, for as long as the maker's order stays open — the daemon cannot tell whether that
    accept landed, and releasing it early could let a real trade escape the limits. The owner releases
-   such a booking with `cancore-bot release <orderId>` (`order.release`): the daemon calls the queued
-   take off, reads the order on the venue, and releases it only if the order is still open with no
-   taker, or was taken by another account or ended. Any other state (this account as taker, a taker
-   not reported yet, completed by this account) is refused with `may_be_trade` and stays booked, and
-   so is any release while the settlement loop still works on the order: an accept it already sent
-   could land after the read. An
-   accept that lands after a release settles an order the book no longer knows, which pauses trading
-   (`unbooked_fill`).
+   a booking with `cancore-bot release <orderId>` (`order.release`): the daemon calls the queued take
+   off and reads the order on the venue. Taken by another account or ended → released, no fill. Still
+   open with no taker → released only if this unlock booked the take first and none of its accepts went
+   out without a refusal from the venue: the venue claims an order only at the end of a slow accept, so
+   an open order proves nothing about an accept already sent. Anything else (an accept in flight, one
+   whose answer was lost, a booking from before this unlock, this account as taker, a taker not
+   reported yet, completed by this account) is refused with `may_be_trade` and stays booked until the
+   venue shows how the order ended, at the latest when the maker's order expires. `pause` likewise
+   keeps a take booked under an earlier unlock. A fill on an order the book no longer knows still
+   pauses trading (`unbooked_fill`).
 
 **Crash safety.** Every `order.make` (agent or strategy) is written to the state file as an intent,
 with a client key, before the API is called; the key rides on the order as its description. An

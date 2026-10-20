@@ -185,8 +185,8 @@ export interface Engine {
   take(params: Params<'order.take'>): Promise<{ orderId: string; filled: string }>;
   /** Drops a queued take whose accept has not been sent; false once it has (the take is then a trade). */
   untake(orderId: string): boolean;
-  /** True while the settlement loop still works on the order: an accept it already sent may yet land. */
-  busy(orderId: string): boolean;
+  /** True once an accept of the settlement loop for the order went out unrefused, or the order is this account's: it may be a trade. */
+  mayBeTrade(orderId: string): boolean;
   cancel(orderId: string): Promise<void>;
   /** Any order by id: one to take, or one of ours to reconcile. */
   order(orderId: string): Promise<OrderInfo>;

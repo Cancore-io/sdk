@@ -400,6 +400,11 @@ export function createDispatcher(deps: Deps): Dispatcher {
 
   /** Per-order lookup schedule for the book, in memory: every BOOK_POLL_MS, a failed lookup backs off. */
   const bookLookups = new Map<string, { failures: number; next: number }>();
+  /**
+   * The engine a take was booked with, when no earlier booking of that order existed: only then does that
+   * engine's loop know every accept sent for it. In memory: a restart or a lock leaves a booking nobody can vouch for.
+   */
+  const takenWith = new Map<string, Engine>();
 
   /** Run on unlock and on every tick: intents, then every order on the book that is due a lookup. */
   async function reconcile(e: Engine) {
@@ -519,6 +524,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
     // Lookup schedules are per session: the next unlock reconciles everything at once, whatever happened while locked.
     lookups.clear();
     bookLookups.clear();
+    takenWith.clear();
     stopTicks = undefined;
     const running = engine;
     // The key goes first: a hung network call in a tick must never keep it in memory.
@@ -617,7 +623,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
         // Captured once: a lock mid-pause must not turn the rest into a TypeError and skip the book cleanup.
         const e = engine;
         if (e) {
-          for (const o of book.filter((x) => x.taken)) if (e.untake(o.orderId)) cancelled.push(o.orderId);
+          // Only a take this engine booked first: an earlier booking's accept went out through a loop that is gone.
+          for (const o of book.filter((x) => x.taken)) if (e.untake(o.orderId) && takenWith.get(o.orderId) === e) cancelled.push(o.orderId);
           for (const o of book.filter((x) => !x.taken)) {
             if ((await cancelResting(e, o.orderId, true).catch(() => 'failed' as const)) === 'cancelled') cancelled.push(o.orderId);
           }
@@ -677,6 +684,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
         let dropped = false;
         await mutate((s) => {
           if ((s.paused || engine !== e) && e.untake(params.orderId)) return (dropped = true), s;
+          if (!s.openOrders.some((o) => o.orderId === params.orderId)) takenWith.set(params.orderId, e);
           return { ...s, openOrders: [...s.openOrders, { orderId: params.orderId, pair: `${view.base}/${view.quote}`, side: view.side, amount: view.amount, price: view.price, taken: true }] };
         });
         if (dropped) throw engine === e ? new RpcFault(ERROR.PAUSED, 'paused: the take was called off') : new RpcFault(ERROR.LOCKED, 'locked: the take was called off');
@@ -750,18 +758,15 @@ export function createDispatcher(deps: Deps): Dispatcher {
         }
         // Dequeued before the venue is read: no retry of the accept can start after the read.
         e.untake(orderId);
-        // An accept already sent can land after the read: no release while the loop still works on the order.
-        if (e.busy(orderId)) {
-          throw new RpcFault(ERROR.INVALID_PARAMS, 'not released: an accept for this order may still be in flight; try again once it has an answer', { reason: 'may_be_trade' } as never);
-        }
         const info = await e.order(orderId).catch(() => undefined);
         if (!info) throw new RpcFault(ERROR.INTERNAL, 'not released: the order could not be read; try again');
-        // Only the venue's word that this account is not the taker releases it. An accept that lands later anyway
-        // settles an order the book no longer knows, and that pauses trading (unbooked_fill).
-        if (info.status === 'open' && info.takenBySelf === undefined) await endOrder(orderId, 'released');
-        else if (info.takenBySelf === false) await endOrder(orderId, 'taken_by_other');
+        // Taken by another account or ended: no accept of ours can claim it any more.
+        if (info.takenBySelf === false) await endOrder(orderId, 'taken_by_other');
         else if (ENDED.has(info.status)) await endOrder(orderId, info.status);
-        else throw new RpcFault(ERROR.INVALID_PARAMS, 'not released: the accept may have gone through; it stays booked until the venue shows how it ended', { reason: 'may_be_trade' } as never);
+        // Open with no taker proves nothing about an accept already sent: the venue claims the order only at the end
+        // of a slow accept. Released only when this engine booked the take first and none of its accepts went out unrefused.
+        else if (info.status === 'open' && info.takenBySelf === undefined && takenWith.get(orderId) === e && !e.mayBeTrade(orderId)) await endOrder(orderId, 'released');
+        else throw new RpcFault(ERROR.INVALID_PARAMS, 'not released: an accept for this order may have gone through or still land; it stays booked until the venue shows how it ended', { reason: 'may_be_trade' } as never);
         return { orderId, released: true };
       }
       case 'resume': {
@@ -811,8 +816,12 @@ export function createDispatcher(deps: Deps): Dispatcher {
       }
       return { jsonrpc: JSONRPC_VERSION, id: request.id, result: { locked: true } };
     }
-    await append({ ...entry, decision: 'allow' });
-    return executed(request, entry);
+    const allowed = async () => {
+      await append({ ...entry, decision: 'allow' });
+      return executed(request, entry);
+    };
+    // In the trade queue: no take of the same order gets queued and booked while a release decides.
+    return request.method === 'order.release' ? exclusive(allowed) : allowed();
   }
 
   async function gated(request: RpcRequest, entry: Entry, deny: (code: RpcFault['code'], reason: string) => Promise<never>, tag?: Tag): Promise<RpcResponse> {

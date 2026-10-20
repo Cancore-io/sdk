@@ -83,8 +83,12 @@ export interface ServeHandle {
   take(orderId: string): void;
   /** Drops a queued take before its accept is sent; false once the accept has started (it is then a trade). */
   untake(orderId: string): boolean;
-  /** True while a handler runs for the order: an accept it already sent may still land. */
-  busy(orderId: string): boolean;
+  /**
+   * True once an accept for the order went out and no refusal proved it did not happen (in flight, its answer
+   * lost, or through), or the order is already this account's: the venue claims an order only at the end of a
+   * slow accept, so one that still reads open with no taker can be claimed by an accept sent long ago.
+   */
+  mayBeTrade(orderId: string): boolean;
   /**
    * Stop: nothing new is started or signed from here on; resolves once the handlers in flight are done — a
    * step already being signed is finished, a wait ends within one poll interval (`pollMs`, 5 s by default).
@@ -335,8 +339,8 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
       if (!toTake.delete(orderId)) return false;
       return !accepting.has(orderId) && !accepted.has(orderId);
     },
-    busy(orderId) {
-      return active.has(orderId);
+    mayBeTrade(orderId) {
+      return accepting.has(orderId) || accepted.has(orderId);
     },
     stop,
   };

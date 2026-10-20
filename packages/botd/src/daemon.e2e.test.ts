@@ -36,7 +36,7 @@ function fakeApi() {
     /** Whether the venue applied that accept before the answer was lost. */
     applyAccept: true,
     /** When set, decides each POST accept by attempt number (1-based) instead of dropAccept/applyAccept. */
-    acceptScript: undefined as undefined | ((attempt: number) => 'lost-unapplied' | 'applied-then-400'),
+    acceptScript: undefined as undefined | ((attempt: number) => 'lost-unapplied' | 'applied-then-400' | 'refused'),
     accepts: 0,
     /** When set, a POST accept reports itself and waits here before the venue answers. */
     acceptHold: undefined as Promise<void> | undefined,
@@ -71,6 +71,7 @@ function fakeApi() {
         await api.acceptHold;
         const step = api.acceptScript?.(api.accepts);
         if (step === 'lost-unapplied') throw new TypeError('fetch failed: the server was still in its handler');
+        if (step === 'refused') return json({ statusCode: 400, message: 'Insufficient balance' }, 400);
         if (step === 'applied-then-400') {
           // The earlier attempt commits now; this one sees the order no longer open.
           Object.assign(orders.get(accepting[1]!)!, { status: 'accepted', opponentUserId: 'bot' });
@@ -672,7 +673,7 @@ describe('cancore-botd end to end: a lock between a take and its booking (N-1)',
   });
 });
 
-describe('cancore-botd end to end: an owner release while the take is in flight (CAN-2836)', () => {
+describe('cancore-botd end to end: owner release of a booked take (CAN-2836, F128-RELEASE-AMBIGUOUS-1)', () => {
   let dir: string;
   let config: BotConfig;
   const api = fakeApi();
@@ -693,8 +694,15 @@ describe('cancore-botd end to end: an owner release while the take is in flight 
     for (let i = 0; i < 250 && !check(); i++) await new Promise((r) => setTimeout(r, 20));
     expect(check()).toBe(true);
   };
-  const audit = () => readFileSync(paths(config).audit, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { params?: { orderId?: string; event?: string } });
+  const audit = () => readFileSync(paths(config).audit, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { reason?: string; params?: { orderId?: string; event?: string } });
   const event = (orderId: string, name: string) => audit().some((e) => e.params?.event === name && e.params.orderId === orderId);
+  const order = (id: string) => ({
+    id, status: 'open', sourceNetwork: 'canton', targetNetwork: 'canton', dvp: true,
+    initiatorUserId: 'someone', opponentUserId: null, swapId: null,
+    sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: '1', targetTokenAddress: 'USDCx', targetTokenName: 'USDCx', targetAmount: '0.15',
+    expiresAt: '', createdAt: '', updatedAt: '',
+  });
+  const mayBeTrade = { code: ERROR.INVALID_PARAMS, data: { reason: 'may_be_trade' } };
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'botd-e2e-release-'));
@@ -704,36 +712,59 @@ describe('cancore-botd end to end: an owner release while the take is in flight 
     };
     delete (config as Partial<BotConfig>).clientsGroup;
     await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
-    writeFileSync(paths(config).limits, JSON.stringify(LIMITS), { mode: 0o600 });
-    api.orders.set('x1', {
-      id: 'x1', status: 'open', sourceNetwork: 'canton', targetNetwork: 'canton', dvp: true,
-      initiatorUserId: 'someone', opponentUserId: null, swapId: null,
-      sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: '1', targetTokenAddress: 'USDCx', targetTokenName: 'USDCx', targetAmount: '0.15',
-      expiresAt: '', createdAt: '', updatedAt: '',
-    });
+    // Each order is 0.15 USD: one booked take leaves no room for a second in the 0.2 USD day.
+    writeFileSync(paths(config).limits, JSON.stringify({ ...LIMITS, perOrderUsd: '100', perDayUsd: '0.2' }), { mode: 0o600 });
+    for (const id of ['x1', 'x2', 'x3']) api.orders.set(id, order(id));
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('is refused while the accept is out, though the venue reads open with no taker; once that accept is over, the venue decides', async () => {
+  it('a take whose accept the venue refused is released: no accept of ours is left that could land', async () => {
+    const stop = await boot();
+    api.acceptScript = () => 'refused';
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      expect(await agent('order.take', { orderId: 'x3', amount: '1' })).toMatchObject({ orderId: 'x3' });
+      await until(() => event('x3', 'take_failed'));
+      expect(await owner('order.release', { orderId: 'x3' })).toMatchObject({ orderId: 'x3', released: true });
+      expect(state().openOrders).toEqual([]);
+      expect(event('x3', 'released')).toBe(true);
+    } finally {
+      api.acceptScript = undefined;
+      await stop();
+    }
+  });
+
+  it('an accept whose answer was lost and that the venue applies only later: refused before and after its handler ends, and the reservation stops the next take', async () => {
     const stop = await boot();
     let answer!: () => void;
     api.acceptHold = new Promise<void>((r) => (answer = r));
     const sent = new Promise<void>((r) => (api.atAccept = r));
-    // The answer is then lost, and the venue never applies that accept.
+    // The answer is lost while the venue is still in its handler: the client sees an error, the venue has not claimed the order yet.
     api.acceptScript = () => 'lost-unapplied';
+    const accepts = api.accepts;
     try {
       await owner('unlock', { passphrase: 'bot-pass-2026' });
       expect(await agent('order.take', { orderId: 'x1', amount: '1' })).toMatchObject({ orderId: 'x1' });
       await sent;
-      expect(await refusal(owner('order.release', { orderId: 'x1' }))).toMatchObject({ code: ERROR.INVALID_PARAMS, data: { reason: 'may_be_trade' } });
-      expect(state().openOrders.map((o) => o.orderId)).toEqual(['x1']);
+      expect(await refusal(owner('order.release', { orderId: 'x1' }))).toMatchObject(mayBeTrade);
       answer();
       await until(() => event('x1', 'take_failed'));
-      // Nothing of ours can still land on it: the order reads open with no taker, so it is released.
-      expect(await owner('order.release', { orderId: 'x1' })).toMatchObject({ orderId: 'x1', released: true });
-      expect(state().openOrders).toEqual([]);
-      expect(event('x1', 'released')).toBe(true);
-      expect(api.accepts).toBe(1);
+      // The handler is over and the order still reads open with no taker: that accept can still claim it.
+      expect(api.orders.get('x1')).toMatchObject({ status: 'open', opponentUserId: null });
+      expect(await refusal(owner('order.release', { orderId: 'x1' }))).toMatchObject(mayBeTrade);
+      expect(state().openOrders.map((o) => o.orderId)).toEqual(['x1']);
+      // Still reserved: a second 0.15 USD take does not fit the 0.2 USD day.
+      expect(await refusal(agent('order.take', { orderId: 'x2', amount: '1' }))).toMatchObject({ code: ERROR.DENIED, data: { reason: 'usd_daily_exceeded' } });
+
+      // The venue claims the order for that first accept now, and the trade completes.
+      Object.assign(api.orders.get('x1')!, { status: 'completed', opponentUserId: 'bot' });
+      await owner('lock');
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      await until(() => state().openOrders.length === 0 && (state().fills ?? []).length === 1);
+      expect(state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '1', usdValue: '0.15' })]);
+      expect(state().paused).toBe(false);
+      expect(audit().some((e) => e.reason === 'unbooked_fill')).toBe(false);
+      expect(api.accepts - accepts).toBe(1);
     } finally {
       api.acceptHold = undefined;
       api.atAccept = undefined;

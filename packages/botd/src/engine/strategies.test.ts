@@ -46,6 +46,10 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
     takeHold: undefined as Promise<void> | undefined, atTake: undefined as undefined | (() => void), untaken: [] as string[],
     cancelHold: undefined as Promise<void> | undefined, atCancel: undefined as undefined | (() => void), cancelThrows: false,
     atOrder: undefined as undefined | ((id: string) => void),
+    // A read of this order waits here.
+    orderHold: undefined as undefined | { id: string; gate: Promise<void> },
+    // Orders the loop sent an accept for that no refusal answered: they may be trades.
+    sent: [] as string[],
     // One-shot: the next state read waits here, and so does the write it belongs to.
     loadHold: undefined as Promise<void> | undefined };
   const deps = (): Deps => ({
@@ -91,7 +95,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
           return { orderId: p.orderId, filled: '0' };
         },
         untake: (id: string) => (untaken.push(id), crash.untaken.push(id), true),
-        busy: () => false,
+        mayBeTrade: (id: string) => crash.sent.includes(id),
         // The venue applies a cancel: the order then reads cancelled, unless the test already set it otherwise.
         cancel: (id) => {
           // Not even a promise: a cancel that blows up in the caller's hands.
@@ -109,6 +113,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         order: async (id) => {
           crash.orderLookups.push(id);
           crash.atOrder?.(id);
+          if (crash.orderHold?.id === id) await crash.orderHold.gate;
           if (crash.orderDown) throw new Error('ECONNRESET');
           if (crash.orderFailOnce === id) {
             crash.orderFailOnce = undefined;
@@ -1197,6 +1202,63 @@ describe('owner release of a booked take (CAN-2836)', () => {
     const w = await tookA();
     await expect(release(w, 'A', false)).rejects.toMatchObject({ code: ERROR.FORBIDDEN });
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+  });
+
+  it('an accept of the loop that went out with no refusal: refused, though the order reads open with no taker (F128-RELEASE-AMBIGUOUS-1)', async () => {
+    const w = await tookA();
+    // In flight, or its answer lost: the venue claims the order only at the end of that accept.
+    w.crash.sent = ['A'];
+    await expect(release(w)).rejects.toMatchObject({ code: ERROR.INVALID_PARAMS, data: { reason: 'may_be_trade' } });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+    // The order ends: no accept can claim it any more.
+    w.statuses.A = 'cancelled';
+    await expect(release(w)).resolves.toMatchObject({ result: { released: true } });
+    expect(w.state().openOrders).toEqual([]);
+  });
+
+  it('a booking from before this unlock is not released while the order reads open: the loop its accept went out through is gone', async () => {
+    const w = await tookA();
+    await w.call('lock', {}, true);
+    await w.unlock();
+    await expect(release(w)).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+    w.takers.A = false;
+    await expect(release(w)).resolves.toMatchObject({ result: { released: true } });
+  });
+
+  it('a booking from before a restart is not released while the order reads open', async () => {
+    const w = await tookA();
+    await w.restart();
+    await w.unlock();
+    await expect(release(w)).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+  });
+
+  it('taking the order again after an unlock does not vouch for the earlier booking: release and pause keep both', async () => {
+    const w = await tookA();
+    await w.call('lock', {}, true);
+    await w.unlock();
+    await w.call('order.take', { orderId: 'A', amount: '1' }, false);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
+    await expect(release(w)).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
+    await w.call('pause', { reason: 'owner stop' }, false);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
+  });
+
+  it('decides inside the trade queue: a take sent while it reads the venue waits for it', async () => {
+    const w = await tookA();
+    w.infos.B = someoneElses;
+    let read!: () => void;
+    w.crash.orderHold = { id: 'A', gate: new Promise<void>((r) => (read = r)) };
+    const releasing = release(w);
+    await new Promise((r) => setTimeout(r, 0));
+    const taking = w.call('order.take', { orderId: 'B', amount: '1' }, false);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+    read();
+    await expect(releasing).resolves.toMatchObject({ result: { released: true } });
+    await expect(taking).resolves.toMatchObject({ result: { orderId: 'B' } });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['B']);
   });
 });
 

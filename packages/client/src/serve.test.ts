@@ -314,6 +314,7 @@ test('untake before the accept is sent drops the take; after it has started it c
   await until(() => lookups > 0);
   // The lookup is held: the accept has not been sent, so the untake wins (look re-reads the queue).
   expect(handle.untake('theirs')).toBe(true);
+  expect(handle.mayBeTrade('theirs')).toBe(false);
   release();
   await new Promise((r) => setImmediate(r));
   expect(calls).toEqual([]);
@@ -322,6 +323,8 @@ test('untake before the accept is sent drops the take; after it has started it c
   await started;
   expect(calls).toEqual(['theirs']);
   expect(handle.untake('theirs')).toBe(false);
+  // In flight: the venue may yet claim the order for it.
+  expect(handle.mayBeTrade('theirs')).toBe(true);
   void handle.stop();
 });
 
@@ -341,6 +344,7 @@ test('a take whose accept the venue refused is not retried after untake', async 
   await new Promise((r) => setImmediate(r));
   // Not in flight any more: untake stops the retry the next poll would start.
   expect(handle.untake('flaky')).toBe(true);
+  expect(handle.mayBeTrade('flaky')).toBe(false);
   const before = calls.length;
   await new Promise((r) => setTimeout(r, 30));
   expect(calls.length).toBe(before);
@@ -365,6 +369,7 @@ test('a take accepted on an earlier run stays a trade: a failed later step does 
   await until(() => runs >= 1);
   await new Promise((r) => setImmediate(r));
   expect(handle.untake('mine')).toBe(false);
+  expect(handle.mayBeTrade('mine')).toBe(true);
   await handle.stop();
 });
 
@@ -388,6 +393,7 @@ test('a take accepted in this run stays a trade after a later accept is refused:
     await until(() => runs >= 1);
     await new Promise((r) => setImmediate(r));
     expect(handle.untake('ours')).toBe(false);
+    expect(handle.mayBeTrade('ours')).toBe(true);
   } finally {
     await handle.stop();
   }
@@ -397,6 +403,8 @@ test('untake of a take this loop never queued reports it may be a trade', () => 
   const { acct } = account([], async () => { throw new Error('unused'); });
   const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
   expect(handle.untake('unknown')).toBe(false);
+  // It speaks for this loop's accepts only: it sent none.
+  expect(handle.mayBeTrade('unknown')).toBe(false);
   void handle.stop();
 });
 
@@ -412,6 +420,8 @@ test('a take whose accept answer was lost stays in flight: untake reports it may
   await until(() => attempts >= 1);
   await new Promise((r) => setImmediate(r));
   expect(handle.untake('lost')).toBe(false);
+  // The handler is over, yet the lost accept may still be claimed by the venue.
+  expect(handle.mayBeTrade('lost')).toBe(true);
   await handle.stop();
 });
 
@@ -433,5 +443,6 @@ test('a refusal after an earlier accept with an unknown outcome keeps the take i
   await until(() => runs >= 2);
   await new Promise((r) => setImmediate(r));
   expect(handle.untake('twice')).toBe(false);
+  expect(handle.mayBeTrade('twice')).toBe(true);
   await handle.stop();
 });

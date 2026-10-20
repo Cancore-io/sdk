@@ -46,7 +46,7 @@ function fakeDeps(log: string[]) {
       make: async () => (log.push('engine:make'), { orderId: 'o1' }),
       take: jest.fn(),
       untake: jest.fn(() => true),
-      busy: () => false,
+      mayBeTrade: () => false,
       cancel: jest.fn(async (id: string) => void (log.push('engine:cancel'), gone.add(id))),
       // Our resting orders read open, so a pause or cancel takes them off the book.
       order: jest.fn(async (id: string) => ({ orderId: id, status: gone.has(id) ? 'cancelled' : 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' })),
