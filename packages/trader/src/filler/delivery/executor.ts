@@ -48,7 +48,7 @@ import {
 import { decodeEventLog, decodeParams, encodeFunctionCall, entryOf, topicOf, type AbiEntry } from '../chain/abi';
 import { ChainReadError, toQuantity } from '../chain/client';
 import { erc20Allowance } from '../chain/erc20';
-import type { ChainReaders, FillerChains } from '../chain';
+import { fillDepth, type ChainReaders, type FillerChains } from '../chain';
 import type { EvmChainId } from '../chains';
 import type { EventSink, FillerEvent, FillerStage } from '../events';
 import type { Cancel, Clock, Logger } from '../runtime';
@@ -739,9 +739,17 @@ export class Executor {
     return this.pending(t, txs);
   }
 
-  private confirmations(chain: EvmChainId): bigint {
+  private requiredFillDepth(chain: EvmChainId): bigint | 'safe' | 'finalized' {
     const config = this.options.chains.get(chain)?.config;
-    return BigInt(Math.max(1, config?.fillConfirmations ?? config?.openConfirmations ?? 1));
+    const depth = config ? fillDepth(config) : 1;
+    return typeof depth === 'number' ? BigInt(depth) : depth;
+  }
+
+  /** Whether a canonical inclusion `depth` deep (`head − block + 1`) is as final as the chain's `fillConfirmations` asks. */
+  private async deepEnough(t: Tracker, receipt: TransactionReceipt, depth: bigint): Promise<boolean> {
+    const required = this.requiredFillDepth(t.driver.chain);
+    if (typeof required === 'bigint') return depth >= required;
+    return receipt.blockNumber <= (await t.driver.client.block(required)).number;
   }
 
   /** A transaction of the nonce is in a block, `depth` deep. */
@@ -749,7 +757,7 @@ export class Executor {
     const { store } = this.options;
     const chain = t.driver.chain;
     if (tx.kind === 'settle') {
-      if (depth < this.confirmations(chain)) return false;
+      if (!(await this.deepEnough(t, receipt, depth))) return false;
       await this.settleListener?.(chain, tx, receipt);
       await store.nonces.complete(t.lease, tx.hash);
       return true;
@@ -781,7 +789,7 @@ export class Executor {
       });
       this.stage('fill.included', orderHash, attempt, { chain, txHash: tx.hash, block: receipt.blockNumber.toString(), status: receipt.status });
     }
-    if (depth < this.confirmations(chain)) return false;
+    if (!(await this.deepEnough(t, receipt, depth))) return false;
 
     if (receipt.status === 0) {
       await this.fail(orderHash, attempt, `reverted in block ${receipt.blockNumber}`);

@@ -61,6 +61,18 @@ export type ReadAt =
   /** One exact block, as `pin()` returns it. */
   | { blockHash: Hex };
 
+/** How deep an escrow must already be open (`ChainConfig.openConfirmations`): N confirmations, or a finality tag of the chain. */
+export type OpenDepth = number | 'safe' | 'finalized';
+
+/** Where a V-E2 read at `depth` reads: a tag stays the tag, a number is `{ confirmations }`. */
+export function readAtDepth(depth: OpenDepth): ReadAt {
+  return typeof depth === 'number' ? { confirmations: depth } : depth;
+}
+
+export function describeDepth(depth: OpenDepth): string {
+  return typeof depth === 'number' ? `${depth} confirmations` : `the ${depth} block`;
+}
+
 export type ChainReadFailure =
   /** `eth_chainId` of every endpoint that answered names another chain. */
   | 'wrong-chain'

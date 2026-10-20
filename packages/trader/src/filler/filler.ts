@@ -399,6 +399,23 @@ function validateDelivery(delivery: DeliveryOptions): void {
   }
 }
 
+/**
+ * A tag the chain's RPC does not serve would fail every V-E2 and leave every own fill and settle
+ * short of done until `refundAfter`: refuse to start instead (fail closed).
+ */
+async function probeFinalityTags(chains: FillerChains): Promise<void> {
+  for (const chain of chains.chains) {
+    const readers = chains.get(chain)!;
+    const depth = readers.config.openConfirmations;
+    if (typeof depth === 'number') continue;
+    try {
+      await readers.client.block(depth);
+    } catch (error) {
+      throw new FillerConfigError(`chains.${chain}.openConfirmations`, `the chain's RPC does not serve the '${depth}' block: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
 function validateChains(config: FillerConfig): void {
   if (!isObject(config.chains) || Object.keys(config.chains).length === 0) throw new FillerConfigError('chains', 'expected at least one EVM chain');
   const count = (field: string, value: unknown) => {
@@ -408,7 +425,11 @@ function validateChains(config: FillerConfig): void {
     if (!isEvmChainId(chain)) throw new FillerConfigError(`chains.${chain}`, 'key must be an eip155 CAIP-2 chain id');
     if (!isObject(entry)) throw new FillerConfigError(`chains.${chain}`, 'expected an object');
     requireAddress(`chains.${chain}.router`, entry.router);
-    count(`chains.${chain}.openConfirmations`, entry.openConfirmations);
+    const open: unknown = entry.openConfirmations;
+    const openIsTag = open === 'safe' || open === 'finalized';
+    if (!openIsTag && (typeof open !== 'number' || !Number.isSafeInteger(open) || open < 0)) {
+      throw new FillerConfigError(`chains.${chain}.openConfirmations`, "expected a non-negative integer, 'safe' or 'finalized'");
+    }
     count(`chains.${chain}.maxHeadLagBlocks`, entry.maxHeadLagBlocks);
     count(`chains.${chain}.minTicketTtlSec`, entry.minTicketTtlSec);
     count(`chains.${chain}.requiredProofWindowSec`, entry.requiredProofWindowSec);
@@ -656,6 +677,7 @@ export function createFiller(config: FillerConfig): Filler {
       if (!reconfirmHook) throw new FillerConfigError('onReconfirm', 'register the hook before start()');
       if (!ticketHook) throw new FillerConfigError('onTicketOffer', 'register the hook before start()');
       if (!context.fetch) throw new FillerConfigError('fetch', 'no global fetch; pass an HttpFetch for the REST fallback');
+      await probeFinalityTags(chains);
       // Delivery does not wait for filler-gateway: receipted attempts and in-flight nonces resume from the store at once.
       void delivery.start().catch((error: unknown) => logger.error('delivery: resume failed', { error: String(error) }));
       settler.start();
