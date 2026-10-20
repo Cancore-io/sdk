@@ -29,7 +29,12 @@ function account(orders: Order[], make: (orderId: string, opts: SettleOptions) =
     },
     listSwaps: async () => [],
     make: (orderId: string, opts: SettleOptions) => (calls.push(orderId), make(orderId, opts)),
-    take: (orderId: string, opts: SettleOptions) => (calls.push(orderId), make(orderId, opts)),
+    // Like the real account: the accept goes out only if the caller still wants it.
+    take: async (orderId: string, opts: SettleRun) => {
+      if (opts.beforeAccept && !opts.beforeAccept()) throw Object.assign(new Error('called off'), { name: 'TakeCancelledError' });
+      calls.push(orderId);
+      return make(orderId, opts);
+    },
   } as unknown as SelfCustodyAccount;
   return { acct, calls };
 }
@@ -292,4 +297,152 @@ test('serve reads me() once per poll, not per look, and a changed party is seen 
   expect(meCalls).toBeLessThanOrEqual(polls);
   // Each swap is looked at with the party read on the poll that first listed it.
   expect(seen).toEqual(['s0:p1', 's1:p2', 's2:p3', 's3:p4']);
+});
+
+test('untake before the accept is sent drops the take; after it has started it cannot', async () => {
+  const theirs = order('theirs', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let accepted!: () => void;
+  const started = new Promise<void>((r) => (accepted = r));
+  const { acct, calls } = account([theirs], async (id) => (accepted(), new Promise<Settled>(() => undefined)));
+  const get = acct.swap.get;
+  let lookups = 0;
+  (acct.swap as { get: (id: string) => Promise<Order> }).get = async (id) => (lookups++, await held, get(id));
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
+  handle.take('theirs');
+  await until(() => lookups > 0);
+  // The lookup is held: the accept has not been sent, so the untake wins (look re-reads the queue).
+  expect(handle.untake('theirs')).toBe(true);
+  expect(handle.mayBeTrade('theirs')).toBe(false);
+  release();
+  await new Promise((r) => setImmediate(r));
+  expect(calls).toEqual([]);
+
+  handle.take('theirs');
+  await started;
+  expect(calls).toEqual(['theirs']);
+  expect(handle.untake('theirs')).toBe(false);
+  // In flight: the venue may yet claim the order for it.
+  expect(handle.mayBeTrade('theirs')).toBe(true);
+  void handle.stop();
+});
+
+test('a take whose accept the venue refused is not retried after untake', async () => {
+  const theirs = order('flaky', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let attempts = 0;
+  const events: ServeEvent[] = [];
+  const { acct, calls } = account([theirs], async (_id, opts) => {
+    attempts++;
+    // A 4xx: the venue's word that the accept did not happen.
+    (opts as SettleRun).onAcceptRefused?.();
+    throw new Error('409');
+  });
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 5, onEvent: (e) => events.push(e) }, noneLocked);
+  handle.take('flaky');
+  await until(() => attempts >= 1);
+  await new Promise((r) => setImmediate(r));
+  // Not in flight any more: untake stops the retry the next poll would start.
+  expect(handle.untake('flaky')).toBe(true);
+  expect(handle.mayBeTrade('flaky')).toBe(false);
+  const before = calls.length;
+  await new Promise((r) => setTimeout(r, 30));
+  expect(calls.length).toBe(before);
+  await handle.stop();
+});
+
+test('a take accepted on an earlier run stays a trade: a failed later step does not make it untakeable', async () => {
+  const theirs = order('mine', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let runs = 0;
+  const { acct } = account([theirs], async () => {
+    throw new Error('unused');
+  });
+  (acct as unknown as { take: (id: string, o: SettleRun) => Promise<Settled> }).take = async (_id, o) => {
+    runs++;
+    if (o.beforeAccept && !o.beforeAccept()) throw Object.assign(new Error('called off'), { name: 'TakeCancelledError' });
+    o.onAccepted?.();
+    // The accept went through; a later DvP step fails.
+    throw new Error('allocate failed');
+  };
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
+  handle.take('mine');
+  await until(() => runs >= 1);
+  await new Promise((r) => setImmediate(r));
+  expect(handle.untake('mine')).toBe(false);
+  expect(handle.mayBeTrade('mine')).toBe(true);
+  await handle.stop();
+});
+
+test('a take accepted in this run stays a trade after a later accept is refused: untake cannot drop it (V3, CAN-2833)', async () => {
+  const theirs = order('ours', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let runs = 0;
+  const { acct } = account([theirs], async () => {
+    throw new Error('unused');
+  });
+  (acct as unknown as { take: (id: string, o: SettleRun) => Promise<Settled> }).take = async (_id, o) => {
+    runs++;
+    if (o.beforeAccept && !o.beforeAccept()) throw Object.assign(new Error('called off'), { name: 'TakeCancelledError' });
+    o.onAccepted?.();
+    // A retried accept is refused because the first one already took the order: no longer in flight, but a trade.
+    o.onAcceptRefused?.();
+    throw new Error('409');
+  };
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
+  try {
+    handle.take('ours');
+    await until(() => runs >= 1);
+    await new Promise((r) => setImmediate(r));
+    expect(handle.untake('ours')).toBe(false);
+    expect(handle.mayBeTrade('ours')).toBe(true);
+  } finally {
+    await handle.stop();
+  }
+});
+
+test('untake of a take this loop never queued reports it may be a trade', () => {
+  const { acct } = account([], async () => { throw new Error('unused'); });
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
+  expect(handle.untake('unknown')).toBe(false);
+  // It speaks for this loop's accepts only: it sent none.
+  expect(handle.mayBeTrade('unknown')).toBe(false);
+  void handle.stop();
+});
+
+test('a take whose accept answer was lost stays in flight: untake reports it may be a trade', async () => {
+  const theirs = order('lost', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let attempts = 0;
+  const { acct } = account([theirs], async () => {
+    attempts++;
+    throw new TypeError('fetch failed');
+  });
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 3_600_000 }, noneLocked);
+  handle.take('lost');
+  await until(() => attempts >= 1);
+  await new Promise((r) => setImmediate(r));
+  expect(handle.untake('lost')).toBe(false);
+  // The handler is over, yet the lost accept may still be claimed by the venue.
+  expect(handle.mayBeTrade('lost')).toBe(true);
+  await handle.stop();
+});
+
+test('a refusal after an earlier accept with an unknown outcome keeps the take in flight', async () => {
+  const theirs = order('twice', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let runs = 0;
+  const { acct } = account([theirs], async () => {
+    throw new Error('unused');
+  });
+  (acct as unknown as { take: (id: string, o: SettleRun) => Promise<Settled> }).take = async (_id, o) => {
+    runs++;
+    if (o.beforeAccept && !o.beforeAccept()) throw Object.assign(new Error('called off'), { name: 'TakeCancelledError' });
+    // First attempt: the answer is lost. Second: the venue says 400, because the first one already took the order.
+    if (runs > 1) o.onAcceptRefused?.();
+    throw runs === 1 ? new TypeError('fetch failed') : new Error('400 order is not open');
+  };
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 5 }, noneLocked);
+  handle.take('twice');
+  await until(() => runs >= 2);
+  await new Promise((r) => setImmediate(r));
+  expect(handle.untake('twice')).toBe(false);
+  expect(handle.mayBeTrade('twice')).toBe(true);
+  await handle.stop();
 });

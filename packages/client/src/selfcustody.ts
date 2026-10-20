@@ -35,7 +35,7 @@ import {
 } from './dvp-verify';
 
 export { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, type TokenOperation, type TrustedPackages } from './dvp-verify';
-export { API_NETWORKS, DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, type DvpNetwork } from './dvp-admins';
+export { API_NETWORKS, DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, networkOf, type DvpNetwork } from './dvp-admins';
 import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
@@ -390,6 +390,14 @@ export interface Withdrawal {
   gone: string[];
   /** Legs that could not be withdrawn, with why; the rest were still attempted. */
   failed: Array<{ leg: string; error: unknown }>;
+}
+
+/** The take was called off (serve `untake`) before its accept request was sent: nothing was accepted or signed. */
+export class TakeCancelledError extends Error {
+  constructor(readonly orderId: string) {
+    super(`take of order ${orderId} was called off before the accept was sent`);
+    this.name = 'TakeCancelledError';
+  }
 }
 
 /** A settle that cannot finish: the swap went somewhere it cannot come back from, or time ran out. */
@@ -1262,30 +1270,45 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
    * Take the order. Refused for want of a fee holding of this account's own, it splits one off
    * and takes once more — once: a second refusal ends the take.
    */
-  async function acceptOrder(order: Order, self: string | undefined, opts: SettleOptions): Promise<Order> {
+  async function acceptOrder(order: Order, self: string | undefined, opts: SettleRun): Promise<Order> {
     const what = `taking order ${order.id}`;
     const autoSplit = opts.autoSplitForFee ?? true;
     let split: string | null = null;
     for (;;) {
+      // Last synchronous step before the first request: a caller that called the take off is honoured here.
+      // Not again after a fee split: the caller was already told this take is in flight, so it must go through.
+      if (split === null && opts.beforeAccept && !opts.beforeAccept()) throw new TakeCancelledError(order.id);
       try {
         return await swap.accept(order.id);
       } catch (err) {
+        // Only a 4xx is the venue's word that this accept did not happen. Anything else (a lost response, a timeout,
+        // a 5xx) may have been applied: the caller keeps treating the take as in flight.
+        // Told only when the take ends here; a split and retry keeps it in flight.
+        // 408 is not proof: a proxy answers it while the venue may still be working on the accept.
+        // 409 is not proof: "already accepted" may be our own accept seen through a lagging read. The fee-holding
+        // 409 is: the venue raises it before it claims the order.
+        const definite = err instanceof CancoreApiError && err.status >= 400 && err.status < 500 && err.status !== 408
+          && (err.status !== 409 || refusalOf(err) === 'feeHoldingRequired');
+        const fail = (e: unknown): never => {
+          if (definite) opts.onAcceptRefused?.();
+          throw e;
+        };
         const refused = dvpRefusal(err, what, order, self);
         const body = (err as CancoreApiError).body as { payerPartyId?: string; feeAmount?: string } | undefined;
         const mine = refusalOf(err) === 'feeHoldingRequired' && self !== undefined && body?.payerPartyId === self && body.feeAmount;
-        if (split !== null && refused) throw new SettleError(`${what}: refused again after splitting ${split} into a holding of its own — ${refused.message}`, null, order);
-        if (!autoSplit || !mine) throw refused ?? err;
+        if (split !== null && refused) fail(new SettleError(`${what}: refused again after splitting ${split} into a holding of its own — ${refused.message}`, null, order));
+        if (!autoSplit || !mine) fail(refused ?? err);
         split = body!.feeAmount!;
         // The fee is the venue's word: held to the order and this account's own fee ceiling before anything is signed.
         const [fee, target] = [units(split), units(order.targetAmount)];
         const ceiling = options.maxFeeRate ?? DEFAULT_MAX_FEE_RATE;
         if (fee <= 0n || target < 0n || fee * 10n ** 10n > target * units(ceiling)) {
-          throw new SettleError(`${what}: the venue asks for a fee holding of ${split}, more than ${order.targetAmount} × this account's ceiling ${ceiling} (maxFeeRate); nothing was split`, null, order);
+          fail(new SettleError(`${what}: the venue asks for a fee holding of ${split}, more than ${order.targetAmount} × this account's ceiling ${ceiling} (maxFeeRate); nothing was split`, null, order));
         }
         try {
           await splitFee(order.targetTokenAddress, split, target - fee, opts.allowUnverifiedSplit ?? false);
         } catch (cause) {
-          throw new SettleError(`${what}: the platform fee needs a holding of its own, and splitting ${split} off failed: ${(cause as Error).message}`, null, order);
+          fail(new SettleError(`${what}: the platform fee needs a holding of its own, and splitting ${split} off failed: ${(cause as Error).message}`, null, order));
         }
       }
     }
@@ -1303,6 +1326,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     if (order.opponentUserId && order.opponentUserId !== self.id) {
       throw new SettleError(`order ${orderId} was taken by another account`, null, order);
     }
+    // Accepted by this account (now, or on an earlier run): from here it is a trade, never called off.
+    opts.onAccepted?.();
     if (!self.partyId) throw new Error('the account has no party yet — run onboard()');
     const party = self.partyId;
     order = await waitFor(

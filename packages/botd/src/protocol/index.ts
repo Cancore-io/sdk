@@ -56,6 +56,12 @@ export const PARAMS = {
   'limits.set': z.object({ limits: z.record(z.unknown()) }).strict(),
   /** Only to the owner party pinned in the daemon's config; anything else is refused. */
   withdraw: z.object({ to: z.string().min(1), instrument, amount }).strict(),
+  /**
+   * Releases a booked take once no accept of it can land: the order is taken by another account or has ended, or it
+   * is still open with no taker, this unlock booked the take first and the venue refused every accept sent for it.
+   * Otherwise refused with `may_be_trade`: an open order proves nothing about an accept already sent.
+   */
+  'order.release': z.object({ orderId: z.string().min(1) }).strict(),
 } as const;
 
 export type Method = keyof typeof PARAMS;
@@ -81,6 +87,7 @@ export const RISK_CLASS: Record<Method, RiskClass> = {
   resume: 'owner',
   'limits.set': 'owner',
   withdraw: 'owner',
+  'order.release': 'owner',
 };
 
 export const METHODS = Object.keys(PARAMS) as Method[];
@@ -129,6 +136,7 @@ export interface Results {
   resume: { paused: false };
   'limits.set': { limits: Record<string, unknown> };
   withdraw: { to: string; instrument: string; amount: string };
+  'order.release': { orderId: string; released: true };
 }
 
 export type Result<M extends Method> = Results[M];

@@ -8,3 +8,6 @@ export { check, checkTake, gridConfig, dcaConfig } from './riskgate';
 export { dec, fmt } from './decimal';
 export { openAuditLog } from './audit';
 export { createStateStore, fillUsdValue } from './state';
+export { createEngine } from './engine/index';
+export { listen } from './ipc/server';
+export { connect } from './ipc/client';

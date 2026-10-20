@@ -1,0 +1,1017 @@
+#!/usr/bin/env node
+import { statSync, writeFileSync, renameSync } from 'fs';
+import { randomUUID } from 'crypto';
+import { userInfo } from 'os';
+import { createKeystore } from './keystore';
+import { openAuditLog } from './audit';
+import { applyFill, auditIntact, createStateStore, rollDaily, type StateStore } from './state';
+import { emptyLimits, loadLimits, parseLimits } from './limits';
+import { check, checkTake, dcaConfig, DEFAULT_ORDERS_PER_HOUR, gridConfig, ordersLastHour } from './riskgate';
+import { dcaNext } from './engine/dca';
+import { gridNext, gridRefill, gridSlots } from './engine/grid';
+import { networkOf } from '@cancore/client/selfcustody';
+import { createEngine, pinnedVenue, type EngineOptions } from './engine/index';
+import { dec, fmt, SCALE } from './decimal';
+import { listen, RpcFault, type IpcServer } from './ipc/server';
+import { flag, loadConfig, paths, type BotConfig } from './config';
+import { ERROR, INTENT_ORDER_PREFIX, JSONRPC_VERSION, RISK_CLASS, type Method, type RiskClass, type Params, type Result, type RpcRequest, type RpcResponse } from './protocol/index';
+import type { AuditEntry, AuditLog, BotSigner, BotState, Decision, Engine, EngineHooks, Keystore, Limits, OrderInfo, OrderIntent, RiskGate, StrategyOrder, StrategyRecord } from './types';
+
+const VERSION = '0.1.0-rc.0';
+
+/** Everything the dispatcher talks to; injected so tests run on fakes. */
+export interface Deps {
+  keystore: Keystore;
+  audit: AuditLog;
+  state: StateStore;
+  limits: { load(): Promise<Limits>; save(limits: Limits): Promise<void> };
+  riskgate: RiskGate;
+  /** Called on unlock with the freshly decrypted signer; the engine wraps it in the verifying signer. */
+  createEngine(signer: BotSigner, hooks: EngineHooks): Engine;
+  now(): number;
+  /** The only party `withdraw` may send to (config `ownerParty`); unset disables withdraw. */
+  ownerParty?: string;
+  /** New orders an hour, agent and strategies together (config `ordersPerHour`); default 5, the platform's limit. */
+  ordersPerHour?: number;
+  /** Runs `fn` periodically until the returned stop is called; drives the strategy loop. Default: every 5s. */
+  every?(fn: () => void): () => void;
+}
+
+export interface Dispatcher {
+  /** `owner` is true only for requests that arrived on the owner socket. */
+  handle(request: RpcRequest, from: { owner: boolean }): Promise<RpcResponse>;
+  /** Stops strategies and wipes the key. */
+  lock(): Promise<void>;
+}
+
+/** Params as they may be written to the audit log: secrets dropped. */
+const auditable = (request: RpcRequest) => (request.method === 'unlock' || request.method === 'register' ? undefined : request.params);
+
+/** Order statuses after which an order of ours will never fill. */
+const ENDED = new Set(['cancelled', 'refunded', 'delivery_failed']);
+
+/** `list` without one occurrence of `value`: two orders in the same millisecond keep the other's slot. */
+const withoutOne = (list: number[], value: number) => {
+  const i = list.indexOf(value);
+  return i < 0 ? list : [...list.slice(0, i), ...list.slice(i + 1)];
+};
+
+/** How long a lock waits for background work after the key is wiped. */
+const LOCK_DRAIN_MS = 5_000;
+
+/** An intent younger than this may still be in flight: no lookup can tell it was never made. */
+const INTENT_SETTLE_MS = 60_000;
+/** How long a booked fill's order id is kept, so a repeated settle books nothing. */
+const KEEP_MS = 86_400_000;
+/** How often an order on the book is looked up while it lasts; a failed lookup backs off up to LOOKUP_BACKOFF_MAX_MS. */
+const BOOK_POLL_MS = 30_000;
+/** A held settle for an order not on the book is judged after this long whatever the intents say: fail-safe. */
+const UNKNOWN_SETTLE_MAX_MS = 60 * 60_000;
+
+/** Drops settled ids older than KEEP_MS. */
+function withoutStale(s: BotState, now: number): BotState {
+  const fresh = (m: Record<string, number> | undefined) => Object.fromEntries(Object.entries(m ?? {}).filter(([, at]) => now - at < KEEP_MS));
+  return { ...s, settledOrders: fresh(s.settledOrders), daemonCancels: fresh(s.daemonCancels) };
+}
+/** Ceiling of the backoff between lookups of one intent while the API keeps failing. */
+const LOOKUP_BACKOFF_MAX_MS = 15 * 60_000;
+
+/** A 4xx answer (not timeout/throttle) is the API's refusal: it made no order. Anything else may have made one. */
+const refused = (err: unknown) => {
+  const status = (err as { status?: unknown } | null)?.status;
+  return typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 429;
+};
+
+const active = (s: StrategyRecord) => s.status === 'running' || s.status === 'rate_limited';
+const everyFiveSeconds = (fn: () => void) => {
+  const t = setInterval(fn, 5000);
+  t.unref();
+  return () => clearInterval(t);
+};
+
+/** A strategy's order filled: grid moves the slot to the opposite side one level away. */
+function strategyFilled(strategies: StrategyRecord[] | undefined, tag: { id: string; slot: string }) {
+  return strategies?.map((s) => {
+    if (s.strategyId !== tag.id) return s;
+    if (s.kind !== 'grid') return { ...s, fills: s.fills + 1 };
+    const refill = gridRefill(gridConfig.parse(s.config), tag.slot);
+    const want = s.want.filter((w) => w !== tag.slot);
+    return { ...s, fills: s.fills + 1, want: refill === undefined || want.includes(refill) ? want : [...want, refill] };
+  });
+}
+
+/** Orders the user cancelled by hand: a grid never places their slot again. */
+function userCancelled(s: BotState, orderIds: string[]): BotState {
+  const tags = s.openOrders.flatMap((o) => (o.strategy && orderIds.includes(o.orderId) ? [o.strategy] : []));
+  if (tags.length === 0) return s;
+  return {
+    ...s,
+    strategies: s.strategies?.map((r) => {
+      const slots = tags.filter((t) => t.id === r.strategyId).map((t) => t.slot);
+      if (slots.length === 0) return r;
+      return { ...r, want: r.want.filter((w) => !slots.includes(w)), cancelled: [...new Set([...(r.cancelled ?? []), ...slots])] };
+    }),
+  };
+}
+
+/** An intent the API never saw: off the books, and its strategy's placement undone. */
+function dropIntent(s: BotState, intent: OrderIntent): BotState {
+  // Resolved already (by a tick or by the make itself): resolving it twice would double the book.
+  if (!(s.intents ?? []).some((i) => i.key === intent.key)) return s;
+  return {
+    ...s,
+    intents: (s.intents ?? []).filter((i) => i.key !== intent.key),
+    strategies: intent.strategy
+      ? s.strategies?.map((r) => (r.strategyId === intent.strategy!.id ? { ...r, placed: r.placed.filter((t) => t !== intent.at) } : r))
+      : s.strategies,
+  };
+}
+
+/** An intent whose order exists: on the book under its id. */
+function adoptIntent(s: BotState, intent: OrderIntent, orderId: string): BotState {
+  if (!(s.intents ?? []).some((i) => i.key === intent.key)) return s;
+  const { key: _k, at: _a, ...order } = intent;
+  return { ...s, intents: (s.intents ?? []).filter((i) => i.key !== intent.key), openOrders: [...s.openOrders, { orderId, ...order }] };
+}
+
+/** `a / b` in 1e-10 units, as a decimal string. */
+const ratio = (a: string, b: string) => fmt((dec(a) * SCALE) / dec(b));
+
+type Entry = { method: Method; riskClass: RiskClass; params: unknown };
+
+type Tag = { id: string; slot: string };
+
+type Taken = { base: string; quote: string; side: 'buy' | 'sell'; amount: string; price: string };
+
+/**
+ * Someone else's order as a trade of ours on an allowed pair: the taker receives the order's source
+ * and gives its target. Undefined when neither orientation is an allowed pair.
+ */
+export function takeView(order: OrderInfo, allowedPairs: string[]): Taken | undefined {
+  if (allowedPairs.includes(`${order.source}/${order.target}`)) {
+    return { base: order.source, quote: order.target, side: 'buy', amount: order.sourceAmount, price: ratio(order.targetAmount, order.sourceAmount) };
+  }
+  if (allowedPairs.includes(`${order.target}/${order.source}`)) {
+    return { base: order.target, quote: order.source, side: 'sell', amount: order.targetAmount, price: ratio(order.sourceAmount, order.targetAmount) };
+  }
+  return undefined;
+}
+
+export function createDispatcher(deps: Deps): Dispatcher {
+  let signer: BotSigner | undefined;
+  let engine: Engine | undefined;
+  let stopTicks: (() => void) | undefined;
+
+  // Every state write is a read-modify-write on the latest state, one at a time: a write computed from a
+  // state loaded before an await (an engine call) would undo a concurrent pause, fill or new order.
+  let stateQueue: Promise<unknown> = Promise.resolve();
+  const mutate = (fn: (s: BotState) => BotState): Promise<void> => {
+    const p = stateQueue.then(async () => deps.state.save(fn(await deps.state.load())));
+    stateQueue = p.catch(() => undefined);
+    return p;
+  };
+  /**
+   * The one pause check every risk-opening action goes through, inside the state queue: a pause that already
+   * returned is on disk, so the action sees it and refuses. `fn` is the action's own write, applied only if not paused.
+   */
+  const unlessPaused = async (fn: (s: BotState) => BotState = (s) => s): Promise<void> => {
+    let paused = false;
+    await mutate((s) => (s.paused ? ((paused = true), s) : fn(s)));
+    if (paused) throw new RpcFault(ERROR.PAUSED, 'paused');
+  };
+  // Trade commands run one at a time from gate to book: two that each fit the limits alone must not both pass.
+  let tradeQueue: Promise<unknown> = Promise.resolve();
+  const exclusive = <T>(fn: () => Promise<T>): Promise<T> => {
+    const p = tradeQueue.then(fn);
+    tradeQueue = p.catch(() => undefined);
+    return p;
+  };
+
+  // Every audit append moves the state's audit pointer, so a truncated log is caught on the next start.
+  const append = async (entry: Parameters<AuditLog['append']>[0]): Promise<AuditEntry> => {
+    const written = await deps.audit.append(entry);
+    await deps.state.recordAudit(written);
+    return written;
+  };
+  /** Background work from the engine's hooks, chained so it is ordered and can be awaited on lock. */
+  let background: Promise<unknown> = Promise.resolve();
+  const later = (work: () => Promise<unknown>) => {
+    background = background.then(work).catch(() => undefined);
+  };
+  const settleEntry = { method: 'settle' as const, riskClass: 'trade' as const };
+  /**
+   * Cancels one of our resting orders. Read open → cancelled and unbooked. Read taken/settling/ended → kept:
+   * the venue may accept a cancel while an HTLC still executes. Status unreadable (twice) → the cancel is
+   * still sent to stop the exposure, but the order stays booked until reconcile sees how it ended.
+   */
+  async function cancelResting(e: Engine, orderId: string, byDaemon: boolean): Promise<'cancelled' | 'kept' | 'sent' | 'failed'> {
+    const read = () => e.order(orderId).then((o) => o, () => undefined);
+    const info = (await read()) ?? (await read());
+    if (info && info.status !== 'open') return 'kept';
+    // Recorded before the request: however it ends, reconcile then knows the daemon cancelled it, not the user.
+    let marked = false;
+    if (byDaemon) await mutate((s) => ((marked = !s.daemonCancels?.[orderId]), { ...s, daemonCancels: { ...s.daemonCancels, [orderId]: deps.now() } }));
+    const sent = await e.cancel(orderId).then(() => true, () => false);
+    if (!sent) {
+      // Not sent: the mark must not hide a later manual cancel of this order.
+      // Only a mark this call set: an earlier daemon cancel of this order may still be in flight.
+      if (marked) await mutate((s) => ({ ...s, daemonCancels: Object.fromEntries(Object.entries(s.daemonCancels ?? {}).filter(([id]) => id !== orderId)) }));
+      return 'failed';
+    }
+    if (!info) return 'sent';
+    // Read again: a taker who accepted between the read and the cancel makes it a trade, even if the cancel was taken.
+    const after = await read();
+    if (after && ENDED.has(after.status)) return 'cancelled';
+    return after && after.status !== 'open' ? 'kept' : 'sent';
+  }
+
+  /**
+   * Books a confirmed order. One that lands after a pause (its make or its intent was in flight) is cancelled
+   * at once. True only when it was actually cancelled and unbooked; otherwise it stays booked as a trade.
+   */
+  async function adoptOrCancel(e: Engine, intent: OrderIntent, orderId: string): Promise<boolean> {
+    let paused = false;
+    await mutate((s) => ((paused = s.paused), adoptIntent(s, intent, orderId)));
+    // A lock since the make started counts as a pause: nothing serves this order until the next unlock.
+    const late = paused || engine !== e;
+    if (!late || (await cancelResting(e, orderId, true)) !== 'cancelled') return false;
+    await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) }));
+    return true;
+  }
+  /** The one place a fill is booked: serve's settle event and reconcile both come here, once per order id. */
+  async function settleOrder(orderId: string) {
+    // The fill's USD value is fixed now, at a fresh API price: the daily USD budget never reprices it later.
+    const e = engine;
+    const usdPrices: Record<string, string> = (await e?.usdPrices().catch(() => ({}))) ?? {};
+    let usdValue: string | undefined;
+    let unbooked = false;
+    let repeated = false;
+    let pending = false;
+    let deferred = false;
+    const now = deps.now();
+    // The one place a fill is booked (serve's settle event and reconcile both come here): once per order id.
+    await mutate((s0) => {
+      const s = withoutStale(s0, now);
+      // Booked already: nothing more, but it must not linger on the book (an adoption may have put it back).
+      if (s.settledOrders?.[orderId] !== undefined) return (repeated = true), { ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) };
+      const filled = s.openOrders.find((o) => o.orderId === orderId);
+      if (!filled) {
+        // It may be the order of an intent not adopted yet (a make whose answer was lost): judged once intents drain.
+        if ((s.intents ?? []).length > 0) return (pending = true), { ...s, unknownSettles: { [orderId]: now, ...s.unknownSettles } };
+        // A trade on this account the book never knew: limits cannot have seen it, so trading stops for the owner.
+        unbooked = true;
+        return { ...s, paused: true, pauseReason: 'unbooked_fill' };
+      }
+      // Locked: no price to fix it at. It stays booked with its full reservation; the unlock's reconcile books it priced.
+      if (!e) return (deferred = true), s0;
+      const tag = filled.strategy;
+      const base = filled.pair.split('/')[0];
+      const next = applyFill(s, orderId, now, base !== undefined && Object.hasOwn(usdPrices, base) ? usdPrices[base] : undefined);
+      usdValue = next.fills?.at(-1)?.usdValue;
+      const done = { ...next, settledOrders: { ...next.settledOrders, [orderId]: now } };
+      return tag ? { ...done, strategies: strategyFilled(done.strategies, tag) } : done;
+    });
+    // Already booked (serve and reconcile both saw it): nothing more to record.
+    if (repeated) return;
+    if (deferred) {
+      await append({ ...settleEntry, decision: 'allow', params: { orderId, event: 'settle_deferred' } });
+      return;
+    }
+    if (pending) {
+      await append({ ...settleEntry, decision: 'allow', params: { orderId, event: 'settle_pending' } });
+      return;
+    }
+    if (unbooked) {
+      await append({ ...settleEntry, decision: 'deny', reason: 'unbooked_fill', params: { orderId, event: 'settled' } });
+      return;
+    }
+    // No price at fill time: the fill counts as the whole day spent until it ages out; say so in the log.
+    await append({ ...settleEntry, decision: 'allow', params: { orderId, event: 'settled', ...(usdValue ? { usdValue } : { usdValue: 'unpriced' }) } });
+  }
+  /** An order on the book ended with no fill of ours: off the book, audited once. */
+  async function endOrder(orderId: string, reason: string) {
+    let known = false;
+    await mutate((s) => {
+      known = s.openOrders.some((o) => o.orderId === orderId);
+      if (!known) return s;
+      // Cancelled outside the daemon (the web app) is by hand, so a grid does not place it again; the daemon's own cancel is not.
+      const byUser = reason === 'cancelled' && s.daemonCancels?.[orderId] === undefined;
+      const next = byUser ? userCancelled(s, [orderId]) : s;
+      const { [orderId]: _, ...daemonCancels } = next.daemonCancels ?? {};
+      return { ...next, daemonCancels, openOrders: next.openOrders.filter((o) => o.orderId !== orderId) };
+    });
+    // Ended once: a second report (serve and reconcile both saw it) is not audited again.
+    if (known) await append({ ...settleEntry, decision: 'allow', params: { orderId, event: reason } });
+  }
+  const hooks: EngineHooks = {
+    onSettled: (orderId) => later(() => settleOrder(orderId)),
+    onEnded: (orderId, reason) => later(() => endOrder(orderId, reason)),
+    onVerifyFailed: (detail) => later(() => append({ ...settleEntry, decision: 'deny', reason: 'verify_failed', params: { detail } })),
+    onTakeFailed: (orderId, errorName) =>
+      later(() => append({ ...settleEntry, decision: 'error', reason: /^\w{1,64}$/.test(errorName) ? errorName : 'Error', params: { orderId, event: 'take_failed' } })),
+  };
+
+  /** Per-intent lookup state, in memory: failed lookups back off, an empty one is confirmed once more. */
+  const lookups = new Map<string, { failures: number; misses: number; next: number }>();
+
+  /**
+   * The one rule for an order on the book, taken or ours: it stays booked, with its full risk reservation,
+   * until the venue shows how it ended. Completed by us → the fill (once); taken by another account or ended
+   * → off the book with no fill; anything else (open, in progress, taker not known yet) → still booked.
+   * False when the lookup failed.
+   */
+  async function settleIfDone(e: Engine, orderId: string): Promise<boolean> {
+    const info = await e.order(orderId).catch(() => undefined);
+    if (!info) return false;
+    const taken = (await deps.state.load()).openOrders.find((o) => o.orderId === orderId)?.taken;
+    // Awaited, not queued: whoever reconciles (a tick) sees the book these leave before it acts on it.
+    if (taken && info.takenBySelf === false) await endOrder(orderId, 'taken_by_other');
+    else if (info.status === 'completed' && (!taken || info.takenBySelf === true)) await settleOrder(orderId);
+    else if (ENDED.has(info.status)) await endOrder(orderId, info.status);
+    return true;
+  }
+
+  /**
+   * Adopts the order an intent made, or drops an intent the API never saw. An intent possibly still in
+   * flight waits; one is dropped only after two empty lookups INTENT_SETTLE_MS apart.
+   */
+  async function reconcileIntents(e: Engine) {
+    const now = deps.now();
+    for (const intent of (await deps.state.load()).intents ?? []) {
+      const seen = lookups.get(intent.key) ?? { failures: 0, misses: 0, next: 0 };
+      if (now - intent.at < INTENT_SETTLE_MS || now < seen.next) continue;
+      // Orders already booked or already settled are never another intent's: adopting one would book its fill twice.
+      const now0 = await deps.state.load();
+      const known = [...now0.openOrders.map((o) => o.orderId), ...Object.keys(now0.settledOrders ?? {})];
+      const found = await e.findIntent(intent, known).then((id) => ({ id }), () => undefined);
+      if (!found) {
+        const failures = seen.failures + 1;
+        lookups.set(intent.key, { ...seen, failures, next: now + Math.min(INTENT_SETTLE_MS * 2 ** failures, LOOKUP_BACKOFF_MAX_MS) });
+        continue;
+      }
+      if (!found.id && seen.misses === 0) {
+        lookups.set(intent.key, { ...seen, misses: 1, next: now + INTENT_SETTLE_MS });
+        continue;
+      }
+      lookups.delete(intent.key);
+      // The order may already be over: one that ended with no fill is a placement that did not happen (dropped,
+      // so a strategy places it again); one that filled is booked once below; an open or unknown one is adopted.
+      const ended = found.id ? await e.order(found.id).then((o) => ENDED.has(o.status), () => false) : false;
+      const adopt = found.id !== undefined && !ended;
+      if (adopt) await adoptOrCancel(e, intent, found.id!);
+      else await mutate((s) => dropIntent(s, intent));
+      await append({ ...settleEntry, decision: 'allow', params: { event: adopt ? 'intent_adopted' : 'intent_dropped', key: intent.key, ...(found.id && { orderId: found.id }) } });
+      // It may have filled while it was an intent: its settle event found nothing on the book then.
+      if (adopt) await settleIfDone(e, found.id!);
+    }
+    // After the adoptions above have settled (awaited), so it judges the book they leave.
+    await resolveUnknownSettles();
+  }
+
+  /**
+   * Settles that found no booking while intents were unresolved. Only an intent recorded before the settle
+   * arrived can own its order, and an intent leaves the state only on an actual answer (adopted or dropped):
+   * so it is judged once those have all gone, or after the fail-safe ceiling. Booked by then → the normal
+   * path; already settled → dropped; still unknown → trading pauses like any unbooked fill.
+   */
+  async function resolveUnknownSettles() {
+    const s = await deps.state.load();
+    const now = deps.now();
+    const due = Object.entries(s.unknownSettles ?? {}).filter(
+      ([id, at]) =>
+        s.settledOrders?.[id] !== undefined ||
+        s.openOrders.some((o) => o.orderId === id) ||
+        !(s.intents ?? []).some((i) => i.at <= at) ||
+        now - at >= UNKNOWN_SETTLE_MAX_MS,
+    );
+    if (due.length === 0) return;
+    const ids = due.map(([id]) => id);
+    await mutate((x) => ({ ...x, unknownSettles: Object.fromEntries(Object.entries(x.unknownSettles ?? {}).filter(([id]) => !ids.includes(id))) }));
+    for (const id of ids) {
+      if (s.settledOrders?.[id] !== undefined) continue;
+      if (s.openOrders.some((o) => o.orderId === id)) {
+        await settleOrder(id);
+        continue;
+      }
+      await mutate((x) => ({ ...x, paused: true, pauseReason: 'unbooked_fill' }));
+      await append({ ...settleEntry, decision: 'deny', reason: 'unbooked_fill', params: { orderId: id, event: 'settled' } });
+    }
+  }
+
+  /** Per-order lookup schedule for the book, in memory: every BOOK_POLL_MS, a failed lookup backs off. */
+  const bookLookups = new Map<string, { failures: number; next: number }>();
+  /**
+   * The engine a take was booked with, when no earlier booking of that order existed: only then does that
+   * engine's loop know every accept sent for it. In memory: a restart or a lock leaves a booking nobody can vouch for.
+   */
+  const takenWith = new Map<string, Engine>();
+  /** Unlocks so far: each one starts a new engine with its own settlement loop. */
+  let unlocks = 0;
+
+  /** Run on unlock and on every tick: intents, then every order on the book that is due a lookup. */
+  async function reconcile(e: Engine) {
+    await reconcileIntents(e);
+    const now = deps.now();
+    const state = await deps.state.load();
+    // Pruned only when something aged out: a tick must not rewrite the state file for nothing.
+    if ([...Object.values(state.settledOrders ?? {}), ...Object.values(state.daemonCancels ?? {})].some((at) => now - at >= KEEP_MS)) await mutate((s) => withoutStale(s, now));
+    const book = state.openOrders.map((o) => o.orderId);
+    for (const id of bookLookups.keys()) if (!book.includes(id)) bookLookups.delete(id);
+    for (const orderId of book) {
+      const seen = bookLookups.get(orderId) ?? { failures: 0, next: 0 };
+      if (now < seen.next) continue;
+      const failures = (await settleIfDone(e, orderId)) ? 0 : seen.failures + 1;
+      bookLookups.set(orderId, { failures, next: now + (failures ? Math.min(BOOK_POLL_MS * 2 ** failures, LOOKUP_BACKOFF_MAX_MS) : BOOK_POLL_MS) });
+    }
+  }
+
+  const needEngine = () => {
+    if (!engine) throw new RpcFault(ERROR.LOCKED, 'keystore is locked');
+    return engine;
+  };
+
+  const setStrategy = async (id: string, patch: Partial<StrategyRecord>) => {
+    await mutate((state) => ({ ...state, strategies: state.strategies?.map((s) => (s.strategyId === id ? { ...s, ...patch } : s)) }));
+  };
+
+  /** One step of one strategy: at most one order, through the same gate, audit and engine path as an agent's. */
+  async function step(rec: StrategyRecord, limits: Limits) {
+    // Locked while the tick ran: the strategy stays as it is and resumes on unlock.
+    const e = engine;
+    if (!e) return;
+    const now = deps.now();
+    const state = await deps.state.load();
+    // Done only once every placement is a real order: an intent still unresolved may yet be dropped and need placing again.
+    const unresolved = (state.intents ?? []).some((i) => i.strategy?.id === rec.strategyId);
+    if (rec.kind === 'dca' && rec.placed.length >= dcaConfig.parse(rec.config).maxOrders) return unresolved ? undefined : setStrategy(rec.strategyId, { status: 'done' });
+    // The platform's order limit is per user, one budget for every source: waiting here beats a refused order.
+    if (ordersLastHour(state, now) >= (deps.ordersPerHour ?? DEFAULT_ORDERS_PER_HOUR)) {
+      if (rec.status !== 'rate_limited') await setStrategy(rec.strategyId, { status: 'rate_limited', reason: 'rate_limited' });
+      return;
+    }
+    const book = [...state.openOrders, ...(state.intents ?? [])];
+    if (book.length >= limits.maxOpenOrders) return;
+    let next: StrategyOrder | undefined;
+    if (rec.kind === 'grid') {
+      const open = book.flatMap((o) => (o.strategy?.id === rec.strategyId ? [o.strategy.slot] : []));
+      next = gridNext(gridConfig.parse(rec.config), rec.want, open);
+    } else {
+      const ref = (await e.referencePrices().catch(() => ({}) as Record<string, string>))[`${rec.base}/${rec.quote}`];
+      next = ref === undefined ? undefined : dcaNext(dcaConfig.parse(rec.config), rec.placed, now, ref);
+    }
+    if (!next) {
+      if (rec.status === 'rate_limited') await setStrategy(rec.strategyId, { status: 'running', reason: undefined });
+      return;
+    }
+    const request = { jsonrpc: JSONRPC_VERSION, id: `${rec.strategyId}:${next.slot}`, method: 'order.make' as const, params: { base: rec.base, quote: rec.quote, side: next.side, amount: next.amount, price: next.price } };
+    try {
+      await run(request, { owner: false }, { id: rec.strategyId, slot: next.slot });
+      if (rec.status === 'rate_limited') await setStrategy(rec.strategyId, { status: 'running', reason: undefined });
+    } catch (err) {
+      const reason = err instanceof RpcFault ? (err.data?.reason ?? err.message) : 'internal error';
+      // The gate's per-minute limit passes; any other refusal stops the strategy, and the daemon carries on.
+      if (reason === 'rate_limited') await setStrategy(rec.strategyId, { status: 'rate_limited', reason });
+      // A lost answer is not a failure: the intent holds the slot until a tick confirms or drops it.
+      else if (err instanceof RpcFault && err.code === ERROR.UNCONFIRMED) return;
+      // A lock mid-tick is not the strategy's fault: it keeps its status and resumes on unlock.
+      else if (err instanceof RpcFault && err.code === ERROR.LOCKED) return;
+      else await setStrategy(rec.strategyId, { status: err instanceof RpcFault && err.code === ERROR.DENIED ? 'denied' : 'failed', reason });
+    }
+  }
+
+  async function tick() {
+    if (!engine) return;
+    // Reconcile first and in full (its settles and pauses are awaited), then act on the state it leaves.
+    await reconcile(engine);
+    const [state, limits] = await Promise.all([deps.state.load(), deps.limits.load()]);
+    if (state.paused) return;
+    for (const { strategyId } of (state.strategies ?? []).filter(active)) {
+      // Each strategy from the latest state: an earlier step's write, or a pause, is not undone by a stale record.
+      const now = await deps.state.load();
+      if (now.paused || !engine) return;
+      const rec = now.strategies?.find((r) => r.strategyId === strategyId);
+      if (rec && active(rec)) await step(rec, limits);
+    }
+  }
+
+  /** Marks the strategy ended and cancels its resting orders; one that will not cancel stays on the book. */
+  async function endStrategy(id: string, status: StrategyRecord['status'], reason?: string) {
+    const state = await deps.state.load();
+    const cancelled: string[] = [];
+    // The engine as the stop began: a lock mid-loop must not turn the rest into a TypeError and skip the status write.
+    const e = engine;
+    if (e) {
+      for (const o of state.openOrders.filter((x) => x.strategy?.id === id && !x.taken)) {
+        if ((await cancelResting(e, o.orderId, true).catch(() => 'failed' as const)) === 'cancelled') cancelled.push(o.orderId);
+      }
+    }
+    await mutate((now) => ({
+      ...now,
+      openOrders: now.openOrders.filter((o) => !cancelled.includes(o.orderId)),
+      strategies: now.strategies?.map((s) => (s.strategyId === id ? { ...s, status, ...(reason !== undefined && { reason }) } : s)),
+    }));
+  }
+
+  // unlock and lock one at a time: a lock that lands during an unlock's passphrase check must not be undone by it.
+  let keyQueue: Promise<unknown> = Promise.resolve();
+  const keyExclusive = <T>(fn: () => Promise<T>): Promise<T> => {
+    const p = keyQueue.then(fn);
+    keyQueue = p.catch(() => undefined);
+    return p;
+  };
+  const lock = () => keyExclusive(lockNow);
+  async function lockNow() {
+    // Strategies stay `running` on disk: the next unlock resumes them.
+    stopTicks?.();
+    // Lookup schedules are per session: the next unlock reconciles everything at once, whatever happened while locked.
+    lookups.clear();
+    bookLookups.clear();
+    takenWith.clear();
+    stopTicks = undefined;
+    const running = engine;
+    // The key goes first: a hung network call in a tick must never keep it in memory.
+    signer?.destroy();
+    signer = engine = undefined;
+    deps.keystore.lock();
+    await running?.stop().catch(() => undefined);
+    // Bounded: hooks still in flight finish or are left behind, the lock does not wait on the network.
+    // The trade queue too: a make or take already past its gate finishes (and is cancelled as late) before locked lands.
+    await Promise.race([Promise.all([background, tradeQueue]), new Promise((r) => setTimeout(r, LOCK_DRAIN_MS).unref())]);
+    await mutate((s) => ({ ...s, locked: true }));
+  }
+
+  async function execute(method: Method, p: unknown, taken?: Taken, tag?: { id: string; slot: string }): Promise<Result<Method>> {
+    const state = await deps.state.load();
+    switch (method) {
+      case 'status':
+        return {
+          locked: deps.keystore.isLocked(),
+          paused: state.paused,
+          ...(state.pauseReason && { pauseReason: state.pauseReason }),
+          ...(state.partyId && { partyId: state.partyId }),
+          strategies: (state.strategies ?? []).map((s) => ({
+            strategyId: s.strategyId, kind: s.kind, running: active(s), status: s.status, ...(s.reason && { reason: s.reason }), placed: s.placed.length, fills: s.fills,
+            cancelledByUser: s.cancelled ?? [],
+          })),
+          version: VERSION,
+        };
+      case 'limits.get':
+        return { limits: { ...(await deps.limits.load()) } };
+      case 'audit.tail':
+        return { entries: (await deps.audit.tail((p as Params<'audit.tail'>).n)) as unknown as Record<string, unknown>[] };
+      case 'orders.list': {
+        const { status } = p as Params<'orders.list'>;
+        // shortcut: only the daemon's own open-order book is known here; filled/cancelled history needs an engine query.
+        const orders = status === 'open' || status === 'all' ? state.openOrders : [];
+        return {
+          orders: orders.map((o) => {
+            const [base = '', quote = ''] = o.pair.split('/');
+            return { orderId: o.orderId, base, quote, side: o.side, amount: o.amount, price: o.price, filled: '0', status: 'open' as const, createdAt: '' };
+          }),
+        };
+      }
+      case 'quote':
+        return needEngine().quote(p as Params<'quote'>);
+      case 'balances': {
+        const instruments = [...new Set((await deps.limits.load()).allowedPairs.flatMap((pair) => pair.split('/')))];
+        return { balances: await needEngine().balances(instruments) };
+      }
+      case 'order.cancel': {
+        const { orderId } = p as Params<'order.cancel'>;
+        // The caller's own cancel (owner or agent): by hand, so a grid does not place that slot again.
+        const outcome = await cancelResting(needEngine(), orderId, false);
+        // A fixed code, so a client tells it from bad parameters: the order is taken, settling or ended.
+        if (outcome === 'kept') throw new RpcFault(ERROR.INVALID_PARAMS, 'not cancelled: the order is no longer open', { reason: 'not_open' } as never);
+        // Sent without a readable status: it stays booked until reconcile sees it ended.
+        if (outcome === 'sent') return { orderId, cancelled: true };
+        if (outcome === 'failed') throw new RpcFault(ERROR.INTERNAL, 'cancel failed; try again');
+        await mutate((s) => {
+          const next = userCancelled(s, [orderId]);
+          return { ...next, openOrders: next.openOrders.filter((o) => o.orderId !== orderId) };
+        });
+        return { orderId, cancelled: true };
+      }
+      case 'orders.cancelAll': {
+        const e = needEngine();
+        const cancelled: string[] = [];
+        // One that will not cancel stays on the book; the rest still come off it.
+        for (const o of state.openOrders) {
+          // A command from the owner or the agent, like order.cancel: by hand, or a running grid would re-place every slot at once.
+          if ((await cancelResting(e, o.orderId, false)) === 'cancelled') cancelled.push(o.orderId);
+        }
+        await mutate((s) => {
+          const next = userCancelled(s, cancelled);
+          return { ...next, openOrders: next.openOrders.filter((o) => !cancelled.includes(o.orderId)) };
+        });
+        return { cancelled };
+      }
+      case 'pause': {
+        const { reason } = p as Params<'pause'>;
+        // Paused first, so nothing new passes the gate while the book is being cancelled.
+        // The book to cancel is read inside the pause write: an order adopted before it is in it, one after sees paused.
+        let book: BotState['openOrders'] = [];
+        await mutate((s) => {
+          book = s.openOrders;
+          return {
+            ...s,
+            paused: true,
+            ...(reason !== undefined && { pauseReason: reason }),
+            strategies: s.strategies?.map((x) => (active(x) ? { ...x, status: 'stopped' as const, reason: 'paused' } : x)),
+          };
+        });
+        // Our own resting orders are cancelled. A take whose accept has not been sent is dropped;
+        // one already accepted is a trade and settles.
+        const cancelled: string[] = [];
+        // Captured once: a lock mid-pause must not turn the rest into a TypeError and skip the book cleanup.
+        const e = engine;
+        const unlocksBefore = unlocks;
+        if (e) {
+          // Only a take this engine booked first: an earlier booking's accept went out through a loop that is gone.
+          for (const o of book.filter((x) => x.taken)) if (e.untake(o.orderId) && takenWith.get(o.orderId) === e) cancelled.push(o.orderId);
+          for (const o of book.filter((x) => !x.taken)) {
+            if ((await cancelResting(e, o.orderId, true).catch(() => 'failed' as const)) === 'cancelled') cancelled.push(o.orderId);
+          }
+        }
+        await mutate((s) => ({
+          ...s,
+          openOrders: s.openOrders.filter((o) => {
+            if (!cancelled.includes(o.orderId)) return true;
+            if (!o.taken || !e) return false;
+            // An unlock since (while this pause cancelled): the new engine's loop may have taken the order again.
+            if (unlocks !== unlocksBefore) return true;
+            // A take of it queued again since (a resume while this pause cancelled) is called off in the same step;
+            // the order stays booked only if that take's accept is already out.
+            e.untake(o.orderId);
+            return e.mayBeTrade(o.orderId);
+          }),
+        }));
+        return { paused: true };
+      }
+      case 'strategy.stop': {
+        const { strategyId } = p as Params<'strategy.stop'>;
+        if (state.strategies?.some((s) => s.strategyId === strategyId)) await endStrategy(strategyId, 'stopped');
+        return { strategyId, stopped: true };
+      }
+      case 'order.make': {
+        const params = p as Params<'order.make'>;
+        const e = needEngine();
+        const at = deps.now();
+        const intent: OrderIntent = { key: randomUUID(), pair: `${params.base}/${params.quote}`, side: params.side, amount: params.amount, price: params.price, at, ...(tag && { strategy: tag }) };
+        // The intent, the hourly budget and a strategy's seq land before the API call: a crash after it leaves the
+        // intent to reconcile, never an order the daemon does not know about.
+        // Re-checked on the latest state: a pause that returned while this make awaited prices wins.
+        await unlessPaused((s) => ({
+          ...s,
+          intents: [...(s.intents ?? []), intent],
+          orderTimes: [...(s.orderTimes ?? []).filter((t) => t > at - 3_600_000), at],
+          ...(tag && { strategies: s.strategies?.map((x) => (x.strategyId === tag.id ? { ...x, placed: [...x.placed, at] } : x)) }),
+        }));
+        // A lock while that write waited: the key is gone, so nothing goes to the API; undone like a refusal.
+        if (engine !== e) {
+          await mutate((s) => ({ ...dropIntent(s, intent), orderTimes: withoutOne(s.orderTimes ?? [], at) }));
+          throw new RpcFault(ERROR.LOCKED, 'locked');
+        }
+        let orderId: string;
+        try {
+          ({ orderId } = await e.make({ ...params, clientKey: intent.key }));
+        } catch (err) {
+          if (refused(err)) {
+            // The API answered no: nothing to reconcile, and the hourly slot is given back.
+            await mutate((s) => ({ ...dropIntent(s, intent), orderTimes: withoutOne(s.orderTimes ?? [], at) }));
+            throw err;
+          }
+          // No answer (network, timeout, 5xx): the order may exist. The intent stays; a tick resolves it.
+          throw new RpcFault(ERROR.UNCONFIRMED, 'unconfirmed', { intent: intent.key });
+        }
+        if (await adoptOrCancel(e, intent, orderId)) {
+          throw engine === e ? new RpcFault(ERROR.PAUSED, 'paused: the order was cancelled') : new RpcFault(ERROR.LOCKED, 'locked: the order was cancelled');
+        }
+        return { order: { orderId, base: params.base, quote: params.quote, side: params.side, amount: params.amount, price: params.price, filled: '0', status: 'open', createdAt: new Date(deps.now()).toISOString() } };
+      }
+      case 'order.take': {
+        const params = p as Params<'order.take'>;
+        const e = needEngine();
+        const result = await e.take(params);
+        // On the book until it settles: it counts against open orders and the worst-case position.
+        // Booked in the same write that re-checks pause: a pause that landed since the gate drops the
+        // queued take (as make's adoptOrCancel does); one already in flight is a trade and is booked.
+        const view = taken!;
+        let dropped = false;
+        await mutate((s) => {
+          if ((s.paused || engine !== e) && e.untake(params.orderId)) return (dropped = true), s;
+          if (!s.openOrders.some((o) => o.orderId === params.orderId)) takenWith.set(params.orderId, e);
+          return { ...s, openOrders: [...s.openOrders, { orderId: params.orderId, pair: `${view.base}/${view.quote}`, side: view.side, amount: view.amount, price: view.price, taken: true }] };
+        });
+        if (dropped) throw engine === e ? new RpcFault(ERROR.PAUSED, 'paused: the take was called off') : new RpcFault(ERROR.LOCKED, 'locked: the take was called off');
+        return result;
+      }
+      case 'strategy.start': {
+        const { kind, base, quote, config } = p as Params<'strategy.start'>;
+        needEngine();
+        // The gate has already parsed the config; parsing again fills its defaults.
+        const parsed = kind === 'grid' ? gridConfig.parse(config) : dcaConfig.parse(config);
+        const rec: StrategyRecord = {
+          strategyId: randomUUID(), kind, base, quote, config: parsed, status: 'running',
+          want: kind === 'grid' ? gridSlots(gridConfig.parse(config)) : [], placed: [], fills: 0,
+        };
+        await unlessPaused((s) => ({ ...s, strategies: [...(s.strategies ?? []), rec] }));
+        return { strategyId: rec.strategyId };
+      }
+      case 'register': {
+        const partyId = await needEngine().register((p as Params<'register'>).inviteCode);
+        await mutate((s) => ({ ...s, partyId }));
+        return { partyId };
+      }
+      case 'unlock': {
+        // Runs inside the key queue (see run): a concurrent unlock sees the engine, a lock waits and then wins.
+        // Already unlocked: a second engine would run beside the first with a destroyed signer.
+        if (engine) return { locked: false };
+        signer = await deps.keystore.unlock((p as Params<'unlock'>).passphrase).catch(() => {
+          throw new RpcFault(ERROR.LOCKED, 'unlock failed');
+        });
+        engine = deps.createEngine(signer, hooks);
+        unlocks++;
+        await mutate((s) => ({ ...s, locked: false }));
+        engine.start();
+        // In the background: a slow API must not time the unlock out after the key is already loaded.
+        const unlocked = engine;
+        lookups.clear();
+        bookLookups.clear();
+        later(() => reconcile(unlocked));
+        // First unlock of an account registered elsewhere (the web app): onboard it and learn its party.
+        // A new account needs `register` (owner) first; until then this fails quietly and is logged.
+        if (!(await deps.state.load()).partyId) {
+          const e = engine;
+          later(async () => {
+            const partyId = await e.onboard().catch(() => undefined);
+            if (partyId) await mutate((s) => ({ ...s, partyId }));
+            await append({ ...settleEntry, decision: partyId ? 'allow' : 'error', params: { event: 'onboard' }, ...(!partyId && { reason: 'not registered: run cancore-bot register' }) });
+          });
+        }
+        stopTicks?.();
+        let ticking = false;
+        // One tick at a time: a slow API must not pile ticks up in the queue ahead of settlements.
+        stopTicks = (deps.every ?? everyFiveSeconds)(() => {
+          if (ticking) return;
+          ticking = true;
+          later(() => tick().finally(() => (ticking = false)));
+        });
+        return { locked: false };
+      }
+      case 'lock':
+        await lock();
+        return { locked: true };
+      case 'withdraw': {
+        const { to, instrument, amount } = p as Params<'withdraw'>;
+        await needEngine().withdraw(to, instrument, amount);
+        return { to, instrument, amount };
+      }
+      case 'order.release': {
+        const { orderId } = p as Params<'order.release'>;
+        const e = needEngine();
+        if (!state.openOrders.some((o) => o.orderId === orderId && o.taken)) {
+          throw new RpcFault(ERROR.INVALID_PARAMS, 'not released: no booked take with this id', { reason: 'not_a_take' } as never);
+        }
+        // Dequeued before the venue is read: no retry of the accept can start after the read.
+        e.untake(orderId);
+        const info = await e.order(orderId).catch(() => undefined);
+        if (!info) throw new RpcFault(ERROR.INTERNAL, 'not released: the order could not be read; try again');
+        // Open with no taker proves nothing about an accept already sent: the venue claims the order only at the end
+        // of a slow accept. Released only when this engine, still the running one, booked the take first and none of
+        // its accepts went out unrefused.
+        const vouched = info.status === 'open' && info.takenBySelf === undefined && engine === e && takenWith.get(orderId) === e;
+        // Taken by another account or ended: no accept of ours can claim it any more.
+        if (info.takenBySelf === false) await endOrder(orderId, 'taken_by_other');
+        else if (ENDED.has(info.status)) await endOrder(orderId, info.status);
+        else if (vouched && !e.mayBeTrade(orderId)) {
+          // In the same step as that check: a take of the same order queued during the read is called off too.
+          e.untake(orderId);
+          await endOrder(orderId, 'released');
+        } else throw new RpcFault(ERROR.INVALID_PARAMS, 'not released: an accept for this order may have gone through or may still land; it stays booked until the venue refuses that accept or shows how the order ended', { reason: 'may_be_trade' } as never);
+        return { orderId, released: true };
+      }
+      case 'resume': {
+        await mutate(({ pauseReason: _, ...rest }) => ({ ...rest, paused: false }));
+        return { paused: false };
+      }
+      case 'limits.set': {
+        let limits: Limits;
+        try {
+          limits = parseLimits((p as Params<'limits.set'>).limits);
+        } catch (err) {
+          throw new RpcFault(ERROR.INVALID_PARAMS, `invalid limits: ${(err as Error).message}`);
+        }
+        await deps.limits.save(limits);
+        return { limits: { ...limits } };
+      }
+    }
+  }
+
+  async function run(request: RpcRequest, from: { owner: boolean }, tag?: { id: string; slot: string }): Promise<RpcResponse> {
+    const riskClass = RISK_CLASS[request.method];
+    const entry = { method: request.method, riskClass, params: auditable(request) };
+    const deny = async (code: RpcFault['code'], reason: string): Promise<never> => {
+      await append({ ...entry, decision: 'deny', reason });
+      throw new RpcFault(code, reason, code === ERROR.DENIED ? { reason: reason as never } : undefined);
+    };
+
+    if (riskClass === 'owner' && !from.owner) await deny(ERROR.FORBIDDEN, 'forbidden');
+    if (request.method === 'withdraw' && (!deps.ownerParty || (request.params as Params<'withdraw'>).to !== deps.ownerParty)) {
+      await deny(ERROR.FORBIDDEN, 'withdraw goes only to the owner party pinned in the config');
+    }
+    if (riskClass === 'trade') return exclusive(() => gated(request, entry, deny, tag));
+    // unlock takes its key-queue slot before its audit write, so a lock sent after it always runs after it.
+    if (request.method === 'unlock') {
+      return keyExclusive(async () => {
+        await append({ ...entry, decision: 'allow' });
+        return executed(request, entry);
+      });
+    }
+    if (request.method === 'lock') {
+      // The key goes before the audit write: a full disk must not leave it in memory with the engine running.
+      await lock();
+      try {
+        await append({ ...entry, decision: 'allow' });
+      } catch (err) {
+        throw new RpcFault(ERROR.INTERNAL, `locked, but the audit write failed: ${(err as NodeJS.ErrnoException).code ?? (err as Error).message}`);
+      }
+      return { jsonrpc: JSONRPC_VERSION, id: request.id, result: { locked: true } };
+    }
+    await append({ ...entry, decision: 'allow' });
+    return executed(request, entry);
+  }
+
+  async function gated(request: RpcRequest, entry: Entry, deny: (code: RpcFault['code'], reason: string) => Promise<never>, tag?: Tag): Promise<RpcResponse> {
+    let taken: Taken | undefined;
+    // The engine this decision started with: a lock in any await below replaces it, and the gate then answers LOCKED.
+    const e = engine;
+    if (!e) await deny(ERROR.LOCKED, 'locked');
+    const relocked = async () => {
+      if (engine !== e) await deny(ERROR.LOCKED, 'locked');
+    };
+    const now = deps.now();
+    const [loaded, stored] = await Promise.all([deps.state.load(), deps.limits.load()]);
+    const limits: Limits = { ...stored, ordersPerHour: deps.ordersPerHour ?? DEFAULT_ORDERS_PER_HOUR };
+    await relocked();
+    if (loaded.paused) await deny(ERROR.PAUSED, 'paused');
+    // Fresh prices for every decision: an unreachable price feed leaves none, and the gate then refuses.
+    const [referencePrices, usdPrices] = await Promise.all([
+      e!.referencePrices().catch(() => ({})),
+      // Never from disk: a stale or edited state file must not value an order.
+      e!.usdPrices().catch(() => ({})),
+    ]);
+    await relocked();
+    // An unconfirmed intent may be an order on the book: it counts as one.
+    const intents = (loaded.intents ?? []).map(({ key, at: _at, ...o }) => ({ ...o, orderId: `${INTENT_ORDER_PREFIX}${key}` }));
+    const state: BotState = { ...rollDaily(loaded, now), referencePrices, usdPrices, openOrders: [...loaded.openOrders, ...intents] };
+    let decision: Decision;
+    if (request.method === 'order.take') {
+      const params = request.params as Params<'order.take'>;
+      const info = await e!.order(params.orderId).catch(() => undefined);
+      await relocked();
+      // The order's amounts are the API's: one that does not parse is a refusal, never an unaudited throw.
+      let whole = false;
+      try {
+        taken = info?.status === 'open' ? takeView(info, limits.allowedPairs) : undefined;
+        // Partial takes do not exist: the amount asked must be the whole order, or the agent would get more than it asked for.
+        whole = !!taken && dec(taken.amount) === dec(params.amount);
+      } catch {
+        taken = undefined;
+      }
+      decision = whole ? checkTake(params, taken!, state, limits, now) : { allow: false, reason: 'no_rule' };
+    } else {
+      decision = deps.riskgate({ method: request.method, params: request.params as never }, state, limits, now);
+    }
+    if (!decision.allow) await deny(ERROR.DENIED, decision.reason);
+    await relocked();
+    await mutate((s) => ({ ...rollDaily(s, now), recentCommands: [...s.recentCommands.filter((t) => t > now - 60_000), now] }));
+    // The decision is on disk before anything touches the engine or the key.
+    await append({ ...entry, decision: 'allow' });
+    return executed(request, entry, taken, tag);
+  }
+
+  async function executed(request: RpcRequest, entry: Entry, taken?: Taken, tag?: Tag): Promise<RpcResponse> {
+    try {
+      // Every trade-class method, present and future: the pause is re-read after the gate's awaits, right before
+      // it acts. make and strategy.start also re-check inside their own write (the same unlessPaused).
+      if (entry.riskClass === 'trade') await unlessPaused();
+      return { jsonrpc: JSONRPC_VERSION, id: request.id, result: await execute(request.method, request.params, taken, tag) };
+    } catch (err) {
+      await append({ ...entry, decision: 'error', reason: err instanceof RpcFault ? err.message : 'internal error' });
+      throw err;
+    }
+  }
+
+  return { handle: (request, from) => run(request, from), lock };
+}
+
+function fileLimits(path: string): Deps['limits'] {
+  return {
+    async load() {
+      try {
+        // Ownership and mode checked on every read: a limits file someone else can write is refused.
+        return await loadLimits(path);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return emptyLimits();
+        throw err;
+      }
+    },
+    async save(limits) {
+      writeFileSync(`${path}.tmp`, JSON.stringify(limits, null, 2), { mode: 0o600 });
+      renameSync(`${path}.tmp`, path);
+    },
+  };
+}
+
+/** The real modules. `engine` carries test-only overrides (a fake API's fetch, short poll intervals). */
+export async function defaultDeps(config: BotConfig, engine: Partial<Pick<EngineOptions, 'fetchImpl' | 'pollMs' | 'reconcileMs'>> = {}): Promise<Deps> {
+  // v1 is dev only: testnet and mainnet are refused before any engine or API call exists.
+  // The URL decides, whatever `network` says: a devnet label must not carry a mainnet baseUrl through.
+  const byUrl = networkOf(config.baseUrl);
+  // TLS too: the API answers carry the prices the USD caps and the price corridor trust.
+  const tls = (() => { try { return new URL(config.baseUrl).protocol === 'https:'; } catch { return false; } })();
+  if (!tls) throw new Error(`cancore-botd: ${config.baseUrl} must be an https URL`);
+  if (byUrl !== 'devnet' || (config.network !== undefined && config.network !== 'devnet')) {
+    throw new Error(`cancore-botd v1 runs on devnet only; ${config.baseUrl} is ${byUrl ?? 'an unknown network'}${config.network ? `, network ${config.network}` : ''}`);
+  }
+  const p = paths(config);
+  // Keystore, state, limits and audit are trusted only inside a directory nobody else can enter or swap files in.
+  const dir = statSync(config.stateDir);
+  if (!dir.isDirectory() || dir.uid !== process.getuid?.() || dir.mode & 0o077) {
+    throw new Error(`${config.stateDir}: must be a directory owned by this user with mode 0700 (mode ${(dir.mode & 0o777).toString(8)})`);
+  }
+  // The venue settles every trade: one the API could name is refused here, before anything listens.
+  if (!pinnedVenue(config)) throw new Error(`no venue is pinned for ${config.baseUrl}: set venuePartyId (or network) in the config`);
+  return {
+    keystore: createKeystore(p.keystore),
+    audit: await openAuditLog(p.audit),
+    state: createStateStore(p.state),
+    limits: fileLimits(p.limits),
+    riskgate: check,
+    createEngine: (signer, hooks) =>
+      createEngine({
+        ...engine,
+        signer,
+        hooks,
+        baseUrl: config.baseUrl,
+        ...(config.venuePartyId && { venuePartyId: config.venuePartyId }),
+        ...(config.maxFeeRate && { maxFeeRate: config.maxFeeRate }),
+        ...(config.feeRecipientPartyId && { feeRecipientPartyId: config.feeRecipientPartyId }),
+        ...(config.network && { network: config.network }),
+        ...(config.maxFee && { maxFee: config.maxFee }),
+      }),
+    now: Date.now,
+    ...(config.ordersPerHour !== undefined && { ordersPerHour: config.ordersPerHour }),
+    ...(config.ownerParty && { ownerParty: config.ownerParty }),
+  };
+}
+
+/** Opens both sockets; resolves with a stop function that locks and closes them. */
+export async function start(config: BotConfig, deps: Deps): Promise<() => Promise<void>> {
+  const dispatcher = createDispatcher(deps);
+  await deps.limits.load();
+  // The key is never in memory at start. A log that lost entries the state saw: paused until the owner resumes.
+  const state = await deps.state.load();
+  const intact = await auditIntact(state, deps.audit);
+  if (!intact) process.stderr.write('cancore-botd: the audit log is truncated or its chain is broken; starting locked and paused\n');
+  const { lastAuditSeq: _seq, lastAuditHash: _hash, ...rest } = state;
+  await deps.state.save(intact ? { ...state, locked: true } : { ...rest, locked: true, paused: true, pauseReason: 'audit log truncated or broken' });
+  const servers: IpcServer[] = [
+    await listen(config.ownerSocket, (r) => dispatcher.handle(r, { owner: true }), { mode: 0o600 }),
+    await listen(config.agentSocket, (r) => dispatcher.handle(r, { owner: false }), { mode: 0o660, group: config.clientsGroup, maxConnections: 32 }),
+  ];
+  return async () => {
+    await dispatcher.lock().catch(() => undefined);
+    await Promise.all(servers.map((s) => s.close()));
+    await deps.audit.close();
+  };
+}
+
+/** cancore-botd [--config <path>] [--dev]. Resolves with the exit code once SIGTERM/SIGINT has shut it down. */
+export async function main(argv: string[]): Promise<number> {
+  const config = loadConfig(flag(argv, 'config'));
+  const dev = argv.includes('--dev');
+  if (dev) Object.assign(config, { clientsGroup: undefined });
+  if (!dev && userInfo().username !== config.daemonUser) {
+    process.stderr.write(`cancore-botd must run as ${config.daemonUser} (use --dev to override)\n`);
+    return 1;
+  }
+  const stop = await start(config, await defaultDeps(config));
+  process.stderr.write(`cancore-botd listening on ${config.ownerSocket} and ${config.agentSocket}\n`);
+  return new Promise((resolve) => {
+    const shutdown = () => void stop().then(() => resolve(0), () => resolve(1));
+    process.once('SIGTERM', shutdown);
+    process.once('SIGINT', shutdown);
+  });
+}
+
+// shortcut: argv-based entry detection because jest runs this as CJS (no import.meta); breaks if the bin is renamed.
+if (/(?:cancore-botd|daemon\.js)$/.test(process.argv[1] ?? '')) {
+  main(process.argv.slice(2)).then(
+    (code) => process.exit(code),
+    (err: Error) => {
+      process.stderr.write(`cancore-botd: ${err.message}\n`);
+      process.exit(1);
+    },
+  );
+}

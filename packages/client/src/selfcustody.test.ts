@@ -2757,6 +2757,191 @@ async function until(check: () => boolean, budgetMs = 10_000): Promise<void> {
   }
 }
 
+describe('serve(): an untake during the fee split matches what is sent', () => {
+  test('the first accept is refused for a fee holding; an untake during the split reports in flight, and the second accept goes out', async () => {
+    const api = venue({ refuseAt: { accept: 'feeHoldingUntilSplit' }, coded: true, sendBytes: 'honest' });
+    let refused = false;
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let atSplit!: () => void;
+    const reachedSplit = new Promise<void>((r) => (atSplit = r));
+    const fetchImpl: typeof api.fetchImpl = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (init.method === 'POST' && path === '/wallet/operations/prepare' && refused) {
+        atSplit();
+        await held;
+      }
+      const res = await api.fetchImpl(url, init);
+      if (init.method === 'POST' && path === '/orders/o1/accept' && !res.ok) refused = true;
+      return res;
+    };
+    const { maker, taker } = await tradingPair(api, [78, 79], {}, { fetchImpl });
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    const handle = taker.serve({ reconcileMs: 3_600_000 });
+    handle.take('o1');
+    await reachedSplit;
+    // The first accept went out: the take is in flight, and so the untake must say so.
+    expect(handle.untake('o1')).toBe(false);
+    release();
+    await until(() => api.takes() === 2);
+    expect(api.order.status).not.toBe('open');
+    await handle.stop();
+  });
+});
+
+describe('serve(): which accept failures prove nothing was accepted', () => {
+  test.each([
+    ['a 403 refusal ends the take: untake confirms it is off', 'notAllowed' as const, true],
+    ['a 409 is not proof (it may be our own accept, read late): untake reports it may be a trade', 'conflict' as const, false],
+    ['the fee-holding 409 comes before the venue claims the order: one the take cannot meet ends it, untake confirms it is off', 'feeHoldingOther' as const, true],
+    ['the same refusal told in prose only, with no error code', 'feeHoldingProse' as const, true],
+    ['a 408 is not proof (a proxy answers it while the venue may still work on the accept): untake reports it may be a trade', 'timeout' as const, false],
+  ])('%s', async (_, refusal, untaken) => {
+    const api = venue(
+      refusal === 'notAllowed' ? { refuseAt: { accept: 'notAllowed' } }
+        : refusal === 'feeHoldingOther' ? { refuseAt: { accept: 'feeHoldingOther' }, coded: true }
+          : refusal === 'feeHoldingProse' ? { refuseAt: { accept: 'feeHoldingOther' } } : {},
+    );
+    let failed = false;
+    const fetchImpl: typeof api.fetchImpl = async (url, init) => {
+      const accept = init.method === 'POST' && new URL(url).pathname === '/orders/o1/accept';
+      const res = refusal === 'conflict' && accept
+        ? json({ message: 'Order already accepted' }, 409)
+        : refusal === 'timeout' && accept ? json({ message: 'stream timeout' }, 408) : await api.fetchImpl(url, init);
+      if (accept) failed = true;
+      return res;
+    };
+    const { maker, taker } = await tradingPair(api, [80, 81], {}, { fetchImpl });
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    const events: ServeEvent[] = [];
+    const handle = taker.serve({ reconcileMs: 3_600_000, onEvent: (e) => events.push(e) });
+    handle.take('o1');
+    await until(() => failed && events.some((e) => e.type === 'error'));
+    expect(handle.untake('o1')).toBe(untaken);
+    expect(handle.mayBeTrade('o1')).toBe(!untaken);
+    await handle.stop();
+  });
+});
+
+describe('serve(): a 400 after a lost accept answer does not drop the take (F128-ACCEPT-400-1)', () => {
+  test('first accept times out unapplied-looking, the order still reads open, the second accept lands but answers 400; untake reports a trade, and the trade settles', async () => {
+    const api = venue();
+    let posts = 0;
+    const fetchImpl: typeof api.fetchImpl = async (url, init) => {
+      if (init.method === 'POST' && new URL(url).pathname === '/orders/o1/accept') {
+        posts++;
+        // First attempt: the server is still in its handler when the client gives up; nothing visible yet.
+        if (posts === 1) throw new TypeError('fetch failed');
+        // Second attempt: the first one commits now (we become the taker), and this one is refused as not open.
+        if (posts === 2) {
+          await api.fetchImpl(url, init);
+          return new Response(JSON.stringify({ statusCode: 400, message: 'Order is not open' }), { status: 400 });
+        }
+      }
+      return api.fetchImpl(url, init);
+    };
+    const { maker, taker } = await tradingPair(api, [80, 81], {}, { fetchImpl });
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    const events: ServeEvent[] = [];
+    const handle = taker.serve({ reconcileMs: 5, onEvent: (e) => events.push(e) });
+    handle.take('o1');
+    await until(() => posts >= 2 && events.filter((e) => e.type === 'error').length >= 2);
+    // What a pause does now: the take must still be reported as a possible trade.
+    expect(handle.untake('o1')).toBe(false);
+    expect(api.order.opponentUserId).toBeTruthy();
+    await handle.stop();
+  });
+});
+
+describe('take: onAccepted marks the trade', () => {
+  test('called once this account holds the order', async () => {
+    const api = venue();
+    const { maker, taker } = await tradingPair(api, [72, 73]);
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    const mine = jest.fn();
+    // The take runs past the accept; only the hook matters here, so the rest is left to fail or hang.
+    void taker.take('o1', { deadlineMs: 50, onAccepted: mine } as never).catch(() => undefined);
+    await until(() => mine.mock.calls.length > 0);
+    expect(mine).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('serve(): an untake is honoured up to the accept request itself', () => {
+  test('the take preflight GET is held past serve.look, untake lands, and no POST accept is ever sent', async () => {
+    const api = venue();
+    // The taker's reads of the order: the first is serve.look, the second takeOnce's own preflight, held here.
+    let reads = 0;
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let atPreflight!: () => void;
+    const reachedPreflight = new Promise<void>((r) => (atPreflight = r));
+    const fetchImpl: typeof api.fetchImpl = async (url, init) => {
+      if (init.method === 'GET' && new URL(url).pathname === '/orders/o1' && ++reads === 2) {
+        atPreflight();
+        await held;
+      }
+      return api.fetchImpl(url, init);
+    };
+    const { maker, taker } = await tradingPair(api, [70, 71], {}, { fetchImpl });
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    const events: ServeEvent[] = [];
+    const handle = taker.serve({ reconcileMs: 3_600_000, onEvent: (e) => events.push(e) });
+    handle.take('o1');
+    await reachedPreflight;
+    // What the daemon's pause does: the accept has not been sent yet, so the take is called off.
+    expect(handle.untake('o1')).toBe(true);
+    release();
+    await until(() => reads >= 2);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(api.takes()).toBe(0);
+    expect(api.order.status).toBe('open');
+    expect(events.filter((e) => e.type === 'error')).toEqual([]);
+    await handle.stop();
+  });
+});
+
+describe('serve(): untake of a take this account has already accepted (V3)', () => {
+  test('the order was accepted by this account outside serve before the queued take ran: untake reports a trade', async () => {
+    const api = venue();
+    let reads = 0;
+    const fetchImpl: typeof api.fetchImpl = async (url, init) => {
+      if (init.method === 'GET' && new URL(url).pathname === '/orders/o1') reads++;
+      return api.fetchImpl(url, init);
+    };
+    const { maker, taker } = await tradingPair(api, [84, 85], {}, { fetchImpl });
+    await maker.swap.create({
+      sourceNetwork: 'canton', sourceTokenAddress: 'CBTC', sourceTokenName: 'CBTC', sourceAmount: '0.01',
+      targetNetwork: 'canton', targetTokenAddress: 'CC', targetTokenName: 'CC', targetAmount: '5000',
+    });
+    // Accepted by this same account elsewhere (the web app) after the daemon's gate read the order open.
+    await taker.swap.accept('o1');
+    const handle = taker.serve({ reconcileMs: 3_600_000 });
+    reads = 0;
+    handle.take('o1');
+    // serve's look, the take's own read, then its wait for the maker: the accept was never this loop's to send,
+    // but the trade is this account's and in progress.
+    await until(() => reads >= 3);
+    expect(handle.untake('o1')).toBe(false);
+    expect(api.takes()).toBe(1);
+    await handle.stop();
+  });
+});
+
 describe('serve(): the maker runs nothing but serve()', () => {
   test('an order taken while serve runs is settled on the maker side, triggered by the realtime event alone', async () => {
     const api = venue();

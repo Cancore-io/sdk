@@ -185,12 +185,16 @@ export interface Engine {
   take(params: Params<'order.take'>): Promise<{ orderId: string; filled: string }>;
   /** Drops a queued take whose accept has not been sent; false once it has (the take is then a trade). */
   untake(orderId: string): boolean;
+  /** True once an accept of the settlement loop for the order went out unrefused, or the order is this account's: it may be a trade. */
+  mayBeTrade(orderId: string): boolean;
   cancel(orderId: string): Promise<void>;
   /** Any order by id: one to take, or one of ours to reconcile. */
   order(orderId: string): Promise<OrderInfo>;
   balances(instruments: string[]): Promise<{ instrument: string; amount: string }[]>;
   /** Market rate per `BASE/QUOTE`, both directions of every listed pair. */
   referencePrices(): Promise<Record<string, string>>;
+  /** USD price per instrument from the Cancore API; an instrument without one is absent. */
+  usdPrices(): Promise<Record<string, string>>;
   /** Sends `amount` of `instrument` to `to`; the daemon has already held `to` to the pinned owner party. */
   withdraw(to: string, instrument: string, amount: string): Promise<void>;
   /** Starts the background DvP settlement loop (make and take sides, autoWithdraw of expired allocations). */

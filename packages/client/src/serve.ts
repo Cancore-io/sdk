@@ -23,6 +23,15 @@ import { TERMINAL_ORDER_STATUSES, type Order, type OrderStatus } from './swap';
 /** `make` / `take` options as serve passes them: `gate` holds each new step, never a wait, to its `concurrency`. Internal to serve. */
 export interface SettleRun extends SettleOptions {
   gate?: <T>(run: () => Promise<T>) => Promise<T>;
+  /**
+   * `take` only: asked synchronously right before the accept request is sent, after every preflight
+   * read. False calls the take off (`TakeCancelledError`); true means the accept is now in flight.
+   */
+  beforeAccept?: () => boolean;
+  /** `take` only: the order is accepted by this account (this run or an earlier one); it is a trade from here. */
+  onAccepted?: () => void;
+  /** `take` only: the venue refused this accept (4xx), so it did not happen. Not called for a lost or unclear answer. */
+  onAcceptRefused?: () => void;
 }
 
 export interface ServeOptions extends Omit<SettleOptions, 'signal'> {
@@ -72,6 +81,14 @@ export type ServeEvent =
 export interface ServeHandle {
   /** Queue an open order of someone else's to take; the loop accepts it (`autoSplitForFee` applies) and settles the taker side. */
   take(orderId: string): void;
+  /** Drops a queued take before its accept is sent; false once the accept has started (it is then a trade). */
+  untake(orderId: string): boolean;
+  /**
+   * True once an accept for the order went out and no refusal proved it did not happen (in flight, its answer
+   * lost, or through), or the order is already this account's: the venue claims an order only at the end of a
+   * slow accept, so one that still reads open with no taker can be claimed by an accept sent long ago.
+   */
+  mayBeTrade(orderId: string): boolean;
   /**
    * Stop: nothing new is started or signed from here on; resolves once the handlers in flight are done — a
    * step already being signed is finished, a wait ends within one poll interval (`pollMs`, 5 s by default).
@@ -124,6 +141,13 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   /** Orders with nothing left to do. ponytail: grows with the account's history; prune if a loop runs for months. */
   const done = new Set<string>();
   const toTake = new Set<string>();
+  // Takes whose accept request is in flight: untake cannot stop them.
+  const accepting = new Set<string>();
+  // Takes accepted by this account: trades, whatever later steps or retries do.
+  const accepted = new Set<string>();
+  // Takes with an accept whose outcome was never learned: a later refusal cannot prove the earlier one did not land
+  // (the venue refuses a second accept on an order the first one already took), so they stay in flight.
+  const ambiguous = new Set<string>();
   const again = new Set<string>();
   /** Swaps an `expired` event was sent for. */
   const reported = new Set<string>();
@@ -176,14 +200,35 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   }
 
   async function work(orderId: string, expired: boolean): Promise<void> {
+    // Queued by take(): only such an accept can still be called off. One accepted elsewhere (the web app) just settles.
+    const queued = toTake.has(orderId);
     const maker = await slot(() => look(orderId), expired);
     if (maker === undefined || stopper.signal.aborted) return;
+    if (!maker && queued && !toTake.has(orderId)) return;
+    // The take is in flight only once its accept request is about to go out (after the account's own
+    // preflight reads): an untake up to that synchronous step calls it off, none can slip between.
+    const beforeAccept = () => {
+      if (!toTake.has(orderId)) return false;
+      accepting.add(orderId);
+      return true;
+    };
     try {
-      const settled = await (maker ? acct.make : acct.take)(orderId, settle);
+      const takeRun: SettleRun = {
+        ...settle,
+        beforeAccept,
+        onAccepted: () => void accepted.add(orderId),
+        // Only a proven refusal leaves the in-flight state; a lost answer stays in flight until the venue shows the order.
+        onAcceptRefused: () => {
+          if (!ambiguous.has(orderId)) accepting.delete(orderId);
+        },
+      };
+      const settled = await (maker ? acct.make(orderId, settle) : acct.take(orderId, takeRun));
       done.add(orderId);
       emit({ type: 'settled', orderId, swapId: settled.swap.id, settled });
     } catch (error) {
-      if (stopper.signal.aborted) return;
+      // Still in flight after the failure: no refusal proved this accept did not happen.
+      if (accepting.has(orderId)) ambiguous.add(orderId);
+      if (stopper.signal.aborted || (error as Error)?.name === 'TakeCancelledError') return;
       const last = (error as { last?: HtlcSwap | Order }).last;
       if (last && 'status' in last && last.status === 'dvp_expired') {
         const { swapId, withdrawable, withdrawal } = error as { swapId: string | null; withdrawable?: boolean; withdrawal?: Withdrawal };
@@ -287,6 +332,15 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
     take(orderId) {
       toTake.add(orderId);
       kick(orderId);
+    },
+    untake(orderId) {
+      // Always dequeued, so no retry starts later; false only while an accept is actually in flight.
+      // Not queued here (a restart, or an accept that failed on our side but landed): it may be a trade already, keep it.
+      if (!toTake.delete(orderId)) return false;
+      return !accepting.has(orderId) && !accepted.has(orderId);
+    },
+    mayBeTrade(orderId) {
+      return accepting.has(orderId) || accepted.has(orderId);
     },
     stop,
   };
