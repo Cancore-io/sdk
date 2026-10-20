@@ -35,6 +35,12 @@ export interface ChainConfig {
   maxFeePerGasWei?: bigint;
 }
 
+/** How deep an own `fill` or `settle`, and a settlement read, must be to count as done: `fillConfirmations`, else `openConfirmations`; at least one confirmation. */
+export function fillDepth(config: Readonly<ChainConfig>): OpenDepth {
+  const depth = config.fillConfirmations ?? config.openConfirmations;
+  return typeof depth === 'number' ? Math.max(1, depth) : depth;
+}
+
 export interface ChainReaders {
   readonly chain: EvmChainId;
   readonly config: Readonly<ChainConfig>;

@@ -25,7 +25,7 @@
  *   (filler-node `settle.alertBeforeRefundSec`); a refund that won the race;
  *   an escrow gone from the source after the delivery (`escrow-gone`).
  * - **Reorgs** (CAN-2810). A refund or a settlement closes the record only once
- *   it reads `fillConfirmations` deep; seen at the head alone it stays pending.
+ *   it reads `fillConfirmations` deep (or at the `openConfirmations` tag); seen at the head alone it stays pending.
  *   An escrow the source no longer has (its open reorged out) is re-read every
  *   sweep: a reorg may bring it back, and then it settles as before.
  * - **Canton source** (T-35…T-37, CAN-2321): the same two channels and the
@@ -57,8 +57,8 @@ import { checkIntentSettle } from '../canton/settle-check';
 import { GatewayError } from '../errors';
 import { intentOrder } from '../tickets/canton-source';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../chain/abi';
-import { ChainReadError } from '../chain/client';
-import { INTENT_STATUS, type ChainConfig, type ChainReaders, type FillerChains } from '../chain';
+import { ChainReadError, readAtDepth } from '../chain/client';
+import { fillDepth, INTENT_STATUS, type ChainConfig, type ChainReaders, type FillerChains } from '../chain';
 import { evmChainNumber, type EvmChainId } from '../chains';
 import type { Executor } from '../delivery/executor';
 import { FeeCeilingError, LeaseLostError, type TransactionCall, type TransactionReceipt } from '../delivery/transactions';
@@ -142,7 +142,6 @@ const SETTLE = entryOf(ROUTER_ABI, 'function', 'settle');
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
 const REFUNDED = 'refunded: the maker refunded before settle (R-5)';
 /** The depth an outcome must read at before it is final: the same as the filler's own transactions (executor). */
-const finalityDepth = (config: Readonly<ChainConfig>): number => Math.max(1, config.fillConfirmations ?? config.openConfirmations ?? 1);
 /**
  * Nothing more to do for the settlement: confirmed, settled, or lost to a refund.
  * A `failed` settle for any other reason, and a `sent` one whose nonce was lost,
@@ -753,7 +752,7 @@ export class Settler {
 
   /** Reads the intent `fillConfirmations` deep and closes the settlement when it is settled or refunded there. Returns that status. */
   private async closeIfFinal(orderHash: Hex, attempt: number, readers: ChainReaders, settledReason: string): Promise<number> {
-    const { status } = await readers.router.intents(orderHash, { confirmations: finalityDepth(readers.config) });
+    const { status } = await readers.router.intents(orderHash, readAtDepth(fillDepth(readers.config)));
     if (status === INTENT_STATUS.Settled) await this.close(orderHash, attempt, 'settled', settledReason);
     if (status === INTENT_STATUS.Refunded) {
       await this.close(orderHash, attempt, 'failed', REFUNDED);

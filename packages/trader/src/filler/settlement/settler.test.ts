@@ -2,7 +2,7 @@ import { fillerIdHash, repayToFromEvm, type AttestationEvm, type FillProofJson, 
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
-import { FillerChains, hashFillProof, hashOrder, type ChainConfig } from '../chain';
+import { FillerChains, hashFillProof, hashOrder, type ChainConfig, type OpenDepth } from '../chain';
 import { Executor } from '../delivery/executor';
 import type { StageEvent } from '../events';
 import type { Delivery, FillerProtocolClient, FrameHandler } from '../protocol/client';
@@ -39,7 +39,7 @@ const sign = (key: Hex, digest: Hex): AttestationEvm => {
 const ascending = (entries: AttestationEvm[]) => [...entries].sort((a, b) => (a.signer < b.signer ? -1 : 1));
 
 /** A BSC → Ethereum order this filler delivered (fill confirmed), its escrow open on the fake BSC router, attestor set 1 of 2-of-3. */
-async function world(options: { refundAfterS?: number; proofWindowS?: bigint; fillConfirmations?: number } = {}) {
+async function world(options: { refundAfterS?: number; proofWindowS?: bigint; fillConfirmations?: number; openConfirmations?: OpenDepth } = {}) {
   const clock = new FakeClock();
   const nowS = BigInt(Math.floor(clock.now() / 1000));
   const src = new FakeChain(56n, 'bsc');
@@ -135,7 +135,7 @@ async function world(options: { refundAfterS?: number; proofWindowS?: bigint; fi
 
   const events = createRecordingEventSink();
   const logger = createRecordingLogger();
-  const chains = new FillerChains({ [SRC]: [src] }, { [SRC]: { ...POLICY, ...(options.fillConfirmations !== undefined ? { fillConfirmations: options.fillConfirmations } : {}) } }, logger);
+  const chains = new FillerChains({ [SRC]: [src] }, { [SRC]: { ...POLICY, ...(options.fillConfirmations !== undefined ? { fillConfirmations: options.fillConfirmations } : {}), ...(options.openConfirmations !== undefined ? { openConfirmations: options.openConfirmations } : {}) } }, logger);
   const signer = { ...fillSigner, signTransaction: jest.fn(fillSigner.signTransaction.bind(fillSigner)) };
   const executor = new Executor({ store, chains, fillSigners: { [SRC]: signer }, fillerId: FILLER, receipted: async () => undefined, instanceId: 'r1', clock, logger, events, delivery: { pollIntervalMs: 1_000 } });
   const handlers = new Map<string, FrameHandler>();
@@ -409,6 +409,22 @@ describe('CAN-2810: reorgs on the source after the delivery', () => {
     expect(w.stages('settle.alert')).toHaveLength(0);
     w.src.mine(2n);
     await w.settler.sweep();
+    await w.settler.sweep();
+    expect(await w.settlement()).toMatchObject({ state: 'failed', reason: expect.stringContaining('refunded') });
+    expect(alertKinds(w)).toEqual(['refunded']);
+  });
+
+  test('CAN-2808: openConfirmations "finalized" and no fillConfirmations: a refund closes the settlement only once the finalized block reaches it', async () => {
+    const w = await world({ openConfirmations: 'finalized', refundAfterS: 10_000 });
+    const escrow = w.router.intents.get(w.orderHash.toLowerCase())!;
+    w.src.mine(5n);
+    escrow.status = 3;
+    escrow.statusAtBlock = w.src.head;
+    w.src.finalized = w.src.head - 1n;
+    await w.settler.sweep();
+    expect(await w.settlement()).toBeUndefined();
+    expect(w.stages('settle.alert')).toHaveLength(0);
+    w.src.finalized = w.src.head;
     await w.settler.sweep();
     expect(await w.settlement()).toMatchObject({ state: 'failed', reason: expect.stringContaining('refunded') });
     expect(alertKinds(w)).toEqual(['refunded']);

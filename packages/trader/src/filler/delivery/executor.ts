@@ -48,7 +48,7 @@ import {
 import { decodeEventLog, decodeParams, encodeFunctionCall, entryOf, topicOf, type AbiEntry } from '../chain/abi';
 import { ChainReadError, toQuantity } from '../chain/client';
 import { erc20Allowance } from '../chain/erc20';
-import type { ChainReaders, FillerChains } from '../chain';
+import { fillDepth, type ChainReaders, type FillerChains } from '../chain';
 import type { EvmChainId } from '../chains';
 import type { EventSink, FillerEvent, FillerStage } from '../events';
 import type { Cancel, Clock, Logger } from '../runtime';
@@ -741,8 +741,8 @@ export class Executor {
 
   private requiredFillDepth(chain: EvmChainId): bigint | 'safe' | 'finalized' {
     const config = this.options.chains.get(chain)?.config;
-    const depth = config?.fillConfirmations ?? config?.openConfirmations ?? 1;
-    return typeof depth === 'number' ? BigInt(Math.max(1, depth)) : depth;
+    const depth = config ? fillDepth(config) : 1;
+    return typeof depth === 'number' ? BigInt(depth) : depth;
   }
 
   /** Whether a canonical inclusion `depth` deep (`head − block + 1`) is as final as the chain's `fillConfirmations` asks. */
