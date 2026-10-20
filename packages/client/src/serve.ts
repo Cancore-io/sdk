@@ -99,6 +99,8 @@ export interface ServeHandle {
 /** Orders that are still somewhere between taken and settled. */
 const IN_FLIGHT: OrderStatus[] = ['accepted', 'swap_created'];
 const PAGE = 100;
+/** How many finished orders the loop remembers; one forgotten costs a re-read, which finds it finished again. */
+export const DONE_LIMIT = 10_000;
 /** Every AGING-th released slot goes to the expired backlog first. */
 const AGING = 4;
 

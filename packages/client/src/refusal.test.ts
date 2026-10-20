@@ -4,18 +4,22 @@ import { SDK_ERROR_CODES, type SdkErrorCode } from './sdk-error-codes';
 
 const refused = (status: number, body: unknown) => new CancoreApiError(status, 'POST', '/wallet/operations/submit', body);
 
+/** The codes the account acts on; every other code in the registry is `other` (surfaced). */
+const ACTED_ON: Array<[SdkErrorCode, Refusal]> = [
+  ['SUBMISSION_TIMEOUT_RETRYABLE', 'retrySameSignatures'],
+  ['PREPARED_SUBMISSION_EXPIRED', 'rerunCeremony'],
+  ['WALLET_TOO_FRAGMENTED', 'mergeThenRetry'],
+  ['COUNTER_PROPOSAL_NOT_READY', 'counterNotReady'],
+  ['COUNTER_PROPOSAL_ALREADY_ACCEPTED', 'counterAlreadyAccepted'],
+  ['SWAP_ALREADY_SETTLED', 'alreadySettled'],
+  ['ACCOUNT_NOT_FOUND', 'retrySignIn'],
+  ['DVP_NOT_ALLOWED', 'dvpNotAllowed'],
+  ['DVP_FEE_HOLDING_REQUIRED', 'feeHoldingRequired'],
+  ['ACCOUNT_STOPPED', 'accountStopped'],
+];
+
 describe('refusalOf, by code', () => {
-  test.each<[SdkErrorCode, Refusal]>([
-    ['SUBMISSION_TIMEOUT_RETRYABLE', 'retrySameSignatures'],
-    ['PREPARED_SUBMISSION_EXPIRED', 'rerunCeremony'],
-    ['WALLET_TOO_FRAGMENTED', 'mergeThenRetry'],
-    ['COUNTER_PROPOSAL_NOT_READY', 'counterNotReady'],
-    ['COUNTER_PROPOSAL_ALREADY_ACCEPTED', 'counterAlreadyAccepted'],
-    ['SWAP_ALREADY_SETTLED', 'alreadySettled'],
-    ['ACCOUNT_NOT_FOUND', 'retrySignIn'],
-    ['DVP_NOT_ALLOWED', 'dvpNotAllowed'],
-    ['DVP_FEE_HOLDING_REQUIRED', 'feeHoldingRequired'],
-  ])('%s is %s, whatever the text says', (code, expected) => {
+  test.each(ACTED_ON)('%s is %s, whatever the text says', (code, expected) => {
     expect(refusalOf(refused(400, { errorCode: code, code, message: 'wording the API may change tomorrow' }))).toBe(expected);
   });
 
@@ -35,6 +39,16 @@ describe('refusalOf, by code', () => {
 
   test('every code in the generated list has a branch', () => {
     for (const code of SDK_ERROR_CODES) expect(() => refusalForCode(code)).not.toThrow();
+  });
+
+  const acted = new Map(ACTED_ON);
+  test.each([...SDK_ERROR_CODES])('%s is decided: the action above, or other', (code) => {
+    expect(refusalForCode(code)).toBe(acted.get(code) ?? 'other');
+  });
+
+  test('a fee balance too low even for a split is surfaced, never split again: another split would not help', () => {
+    const body = { errorCode: 'DVP_FEE_BALANCE_INSUFFICIENT', message: 'The platform fee needs a holding of its own', payerPartyId: 'p', feeAmount: '1' };
+    expect(refusalOf(refused(409, body))).toBe('other');
   });
 });
 
