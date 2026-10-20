@@ -288,6 +288,13 @@ The filler settles its own fills; Cancore does not (fillers.md §4.7, T-33, T-34
   `settle.reverted`, `settle.refused`; `settled` from `order.settled`.
 - **For a relayer**: `verifyAttestations` and `collectAttestations` are pure functions over a proof, its
   signatures and the set read from the router — no session, no store.
+- **Canton source** (T-35…T-37, CAN-2321), with `canton` configured: the same two channels and the same
+  own-proof check (`sourceChainId` a `canton:` network, `pubKey` signature entries), then `intent.settle` —
+  `SwapIntent_SettleWithProof` prepared by Cancore with the signatures filler-gateway holds — checked by
+  `checkIntentSettle` against the intent read afresh (it must still build the order delivered for) and the
+  party's `ACTIVE` registry entry, signed with the party key, submitted. Only strictly before `refundAfter`
+  (`deadline-passed` from then on). The k-of-n check against the `AttestorRegistry` is Daml's. The settlement
+  is `confirmed` with the `updateId`; `order.settled` closes it.
 
 ## Checks before the receipt
 
@@ -443,7 +450,14 @@ The party is recognised by its namespace, the fingerprint of the node key (its h
     to the sender under one offer of exactly this transfer;
   - the change to the sender is at most the stated inputs minus the amount.
 
-`party()`, `holdings()` and `deliveryOrders()` read the party's own state. `createCantonOperations` gives a node command a client with its own REST
+`intent.settle` is run by the settlement (`checkIntentSettle`): one root, `SwapIntent_SettleWithProof` on
+the intent the node read (same template), acting as the party alone, consuming it; the proof in the choice
+is the node's own delivery, its `fillerEntryCid` the party's `ACTIVE` entry; nothing the party already signs
+is consumed; one `SettlementFactory_SettleBatch` of a pinned registry whose legs are exactly `payout` from the
+owner to the party and `fee` from the owner to the operator, split as the ledger splits; the party is
+credited exactly the payout in unlocked holdings of the instrument.
+
+`party()`, `holdings()`, `deliveryOrders()` and `intent(orderHash)` read the party's own state. `createCantonOperations` gives a node command a client with its own REST
 login.
 
 ### The filler's own routes — `createFillerRoutes`

@@ -23,6 +23,11 @@
  * - **Alerts** (R-4): a confirmed fill not settled by half its proof window,
  *   and one still unsettled `alertBeforeRefundMs` before `refundAfter`
  *   (filler-node `settle.alertBeforeRefundSec`); a refund that won the race.
+ * - **Canton source** (T-35…T-37, CAN-2321): the same two channels and the
+ *   same own-proof check, then `intent.settle` — `SwapIntent_SettleWithProof`
+ *   prepared by Cancore with the signatures filler-gateway holds, checked
+ *   (`checkIntentSettle`) and signed with the party key — strictly before
+ *   `refundAfter`. The k-of-n check against the `AttestorRegistry` is Daml's.
  */
 import {
   CANCORE_ROUTER_ABI,
@@ -39,7 +44,13 @@ import {
   type OrderSettled,
   type SettleAttestationsPayload,
   type TicketIssued,
+  isCantonSource,
 } from '@cancore/contracts';
+import { CantonRefusal } from '../canton/legs';
+import type { CantonOperations } from '../canton/operations';
+import { checkIntentSettle } from '../canton/settle-check';
+import { GatewayError } from '../errors';
+import { intentOrder } from '../tickets/canton-source';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../chain/abi';
 import { ChainReadError } from '../chain/client';
 import { INTENT_STATUS, type FillerChains } from '../chain';
@@ -51,7 +62,7 @@ import type { Delivery, FillerProtocolClient } from '../protocol/client';
 import type { Cancel, Clock, Logger } from '../runtime';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, SettlementRecord, TicketRecord } from '../store';
 import { cantonFillRef } from '../delivery/canton';
-import { chainsOf, orderOf } from '../tickets/terms';
+import { CANTON_ORIGIN_FLOOR, chainsOf, orderOf } from '../tickets/terms';
 import { collectAttestations, fillProofOf } from './attestations';
 
 export interface SettlementOptions {
@@ -90,7 +101,9 @@ export type SettleRefusal =
   /** Priced above `maxFeePerGasWei`. */
   | 'fee-ceiling'
   /** A source chain read failed; try again. */
-  | 'unavailable';
+  | 'unavailable'
+  /** Canton source: `refundAfter` has come; `SwapIntent_SettleWithProof` is refused from then on (T-37). */
+  | 'deadline-passed';
 
 export class SettleError extends Error {
   override readonly name = 'SettleError';
@@ -113,6 +126,10 @@ export interface SettlerOptions {
   logger: Logger;
   events: EventSink;
   settlement?: SettlementOptions;
+  /** The Canton operations of the filler's party: a Canton source settles through them. */
+  canton?: Pick<CantonOperations, 'run' | 'intent' | 'party' | 'publicKey'>;
+  /** The filler's Canton party: the payee of a Canton source. */
+  cantonParty?: string;
 }
 
 const ROUTER_ABI = CANCORE_ROUTER_ABI as unknown as readonly AbiEntry[];
@@ -268,7 +285,13 @@ export class Settler {
         const s = await this.load(orderHash);
         if (!s || isTerminal(s.settlement)) continue;
         const source = chainsOf(s.order)?.source;
-        if (!source) continue;
+        if (!source) {
+          if (!this.isCantonOrigin(s.order)) continue;
+          if (s.payload && BigInt(Math.floor(this.options.clock.now() / 1000)) >= BigInt(s.payload.refundAfter)) continue;
+          if (s.payload) await this.settle(orderHash).catch((error: unknown) => this.quiet(orderHash, error));
+          else await this.pull(orderHash);
+          continue;
+        }
         // The alerts run for a settle in flight or one that failed, too.
         const { status, refundAfter } = await this.checkWindow(s, source);
         if (status !== INTENT_STATUS.Opened || s.settlement?.state === 'sent') continue;
@@ -350,7 +373,8 @@ export class Settler {
     if (settled?.state === 'failed' && settled.reason?.startsWith('refunded')) throw new SettleError('refunded', settled.reason);
 
     const chains = chainsOf(s.order);
-    if (!chains?.source) throw new SettleError('canton-source', 'the source is not an EVM chain: SwapIntent_SettleWithProof');
+    if (!chains?.source && this.isCantonOrigin(s.order) && this.options.canton && this.options.cantonParty) return this.runCanton(s);
+    if (!chains?.source) throw new SettleError('canton-source', 'the source is not an EVM chain, and this node has no Canton party: SwapIntent_SettleWithProof');
     const source = chains.source;
     const readers = this.options.chains.get(source);
     const driver = executor.driver(source);
@@ -444,6 +468,101 @@ export class Settler {
     this.stage('settle.sent', orderHash, attempt, { chain: source, txHash: sent.hash, signers: sigs.map((x) => x.signer).join(','), maxFeePerGas: sent.maxFeePerGas.toString() });
     this.options.logger.info('settle: sent', { orderHash, attempt, chain: source, txHash: sent.hash });
     return sent.hash;
+  }
+
+  private isCantonOrigin(order: OrderJson): boolean {
+    const origin = chainsOf(order)?.origin;
+    return origin !== undefined && origin >= CANTON_ORIGIN_FLOOR;
+  }
+
+  /**
+   * Canton source: the payload is held to the filler's own fill and ticket,
+   * then `intent.settle` is prepared, checked against the intent read afresh
+   * and the node's own proof, signed and submitted. Resolves the update id as
+   * the settlement's reference.
+   */
+  private async runCanton(s: Settleable): Promise<Hex> {
+    const { store, instanceId } = this.options;
+    const canton = this.options.canton!;
+    const party = this.options.cantonParty!;
+    const { orderHash } = s;
+    const attempt = s.fill.attempt;
+    if (!s.payload) {
+      const [reason, ...detail] = (s.rejected ?? '').split(': ');
+      if (s.rejected) throw new SettleError(reason as SettleRefusal, detail.join(': '));
+      throw new SettleError('not-ready', 'filler-gateway holds no attestation set for the fill yet');
+    }
+    const payload = s.payload;
+    const fail = async (reason: SettleRefusal, detail: string): Promise<never> => {
+      await store.withOrder(orderHash, async (tx) => {
+        const record = await tx.getAttestations(attempt);
+        if (record) await tx.putAttestations({ ...record, verified: false, reason: `${reason}: ${detail}` });
+      });
+      this.stage('settle.refused', orderHash, attempt, { reason, detail: detail.slice(0, 256) });
+      if (reason === 'divergent' || reason === 'mismatch') this.alert(orderHash, attempt, reason, { detail: detail.slice(0, 256) });
+      throw new SettleError(reason, detail);
+    };
+    const errors = settleAttestationsErrors(payload);
+    if (errors.length > 0) return fail('mismatch', errors.join('; '));
+    if (!isCantonSource(payload.sourceChainId)) return fail('mismatch', `sourceChainId ${payload.sourceChainId} is not a Canton network`);
+    if (payload.signatures.some((x) => !('pubKey' in x))) return fail('mismatch', 'not Canton signature entries');
+    const own = this.ownMismatch(s, payload.proof);
+    if (own) return fail('divergent', own);
+    if (BigInt(Math.floor(this.options.clock.now() / 1000)) >= BigInt(payload.refundAfter)) throw new SettleError('deadline-passed', `refundAfter ${payload.refundAfter} has come`);
+    const expected = this.expectedProof(s, payload.proof.setId);
+
+    // Claim the settlement: one submitter across replicas while the claim lasts.
+    const claimed = await store.withOrder(orderHash, async (tx) => {
+      const current = await tx.getSettlement();
+      const now = await store.now();
+      if (current && isTerminal(current)) return false;
+      if (current?.state === 'pending' && current.owner !== instanceId && (current.leaseUntilMs ?? 0) > now) return false;
+      await tx.putSettlement({ orderHash, attempt, state: 'pending', chain: payload.sourceChainId as SettlementRecord['chain'], owner: instanceId, leaseUntilMs: now + 120_000, updatedAtMs: now });
+      return true;
+    });
+    if (!claimed) {
+      const current = await store.withOrder(orderHash, (tx) => tx.getSettlement());
+      if (current?.state === 'settled') throw new SettleError('already-settled', 'the intent is settled');
+      if (current?.state === 'confirmed' && current.updateId) return current.updateId as Hex;
+      throw new SettleError('unavailable', 'another replica is settling the order');
+    }
+
+    let updateId: string;
+    try {
+      const [intent, registered] = await Promise.all([canton.intent(orderHash), canton.party()]);
+      const built = intentOrder(intent, s.order.originChainId);
+      if (built.orderHash.toLowerCase() !== orderHash) throw new CantonRefusal('-', 'the intent read does not hash to the order delivered for');
+      if (registered.party !== party || registered.registry.state !== 'ACTIVE' || !registered.registry.entryCid) {
+        throw new SettleError('not-ready', `the registry entry of the party is ${registered.registry.state}`);
+      }
+      const submitted = await canton.run(
+        'intent.settle',
+        { orderHash },
+        checkIntentSettle({ publicKey: canton.publicKey, party, intent, feeBps: BigInt(built.order.feeBps as string), proof: expected, entryCid: registered.registry.entryCid }),
+      );
+      updateId = submitted.updateId ?? submitted.operationId;
+    } catch (error) {
+      await this.release(orderHash);
+      if (error instanceof SettleError) throw error;
+      if (error instanceof CantonRefusal) return fail('mismatch', error.message);
+      if (error instanceof GatewayError && error.code === 'TICKET_CLOSED') throw new SettleError('deadline-passed', error.message);
+      if (error instanceof GatewayError && error.code === 'UNKNOWN_TICKET') throw new SettleError('unavailable', `the intent is no longer live (settled, withdrawn or cancelled): ${error.message}`);
+      if (error instanceof GatewayError && error.code === 'CANTON_NOT_READY') throw new SettleError('not-ready', error.message);
+      throw new SettleError('unavailable', reasonOf(error));
+    }
+    await store.withOrder(orderHash, async (tx) => {
+      const current = await tx.getSettlement();
+      if (current?.state === 'settled') return;
+      await tx.putSettlement({ orderHash, attempt, state: 'confirmed', chain: payload.sourceChainId as SettlementRecord['chain'], updateId, updatedAtMs: await store.now(), ...(current?.orderSettled ? { orderSettled: current.orderSettled } : {}) });
+    });
+    const k = `${orderHash}:${attempt}`;
+    if (!this.attested.has(k)) {
+      this.attested.add(k);
+      this.emit({ type: 'attested', orderHash, attempt, setId: payload.setId, threshold: payload.threshold, signers: payload.signatures.map((x) => x.signer), refundAfter: payload.refundAfter });
+    }
+    this.stage('settle.confirmed', orderHash, attempt, { chain: payload.sourceChainId, updateId });
+    this.options.logger.info('settle: SwapIntent_SettleWithProof submitted', { orderHash, attempt, updateId });
+    return updateId as Hex;
   }
 
   /**

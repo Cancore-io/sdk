@@ -174,6 +174,8 @@ export type { TransferExpectation } from './canton/checks';
 export { checkDeliveryFill, INTENT_PACKAGE_NAME } from './canton/delivery-check';
 export type { DeliveryFillExpectation } from './canton/delivery-check';
 export { cantonFillRef } from './delivery/canton';
+export { checkIntentSettle, intentSplit } from './canton/settle-check';
+export type { IntentSettleExpectation } from './canton/settle-check';
 export { CANTON_ALLOCATION_TEMPLATES, CANTON_TRANSFER_FACTORIES } from './canton/factories';
 export type { CantonTransferFactory } from './canton/factories';
 // The filler's own routes within those Cancore approved (§3.20).

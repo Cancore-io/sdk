@@ -526,6 +526,8 @@ export function createFiller(config: FillerConfig): Filler {
     fillSigners: config.fillSigners,
     fillerId: config.fillerId,
     ...(cantonParty ? { cantonParty } : {}),
+    // V-C1…V-C6 read the Canton-source intent through Cancore (T-1).
+    ...(canton ? { cantonSource: canton } : {}),
     ticketSigners: config.ticketSigners,
     deltaIssueMs: config.tickets.deltaIssueMs,
     clock,
@@ -618,6 +620,8 @@ export function createFiller(config: FillerConfig): Filler {
     logger,
     events,
     ...(config.settlement ? { settlement: config.settlement } : {}),
+    // A Canton source settles with SwapIntent_SettleWithProof, signed by the party (CAN-2321).
+    ...(canton && config.canton ? { canton, cantonParty: config.canton.party } : {}),
   });
   settler.register();
 
