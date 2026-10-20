@@ -165,18 +165,22 @@ whether the agent reads it or not. The file is in the clone, at
 [`skills/cancore-trading/SKILL.md`](../../skills/cancore-trading/SKILL.md). Give it to your agent,
 in the agent user's files:
 
-- **Claude Code:** from the clone, as you,
+- **Claude Code:** run these as you, from your clone. Your shell reads the file; every write into
+  the agent's home is done by the agent's own user:
 
   ```sh
   sudo -u cancore-agent mkdir -p ~cancore-agent/.claude/skills/cancore-trading
-  sudo install -o cancore-agent -g cancore-agent -m 644 skills/cancore-trading/SKILL.md \
-    ~cancore-agent/.claude/skills/cancore-trading/SKILL.md
+  sudo -u cancore-agent tee ~cancore-agent/.claude/skills/cancore-trading/SKILL.md < skills/cancore-trading/SKILL.md > /dev/null
   ```
+
+  Never write into that home as root (`sudo install`, `sudo cp`): the agent owns those
+  directories, and a symlink it puts there would turn a root write into a write into your own
+  files.
 
 - **Claude Desktop and claude.ai:** upload the `skills/cancore-trading` folder, as a ZIP, in
   the Skills settings.
-- **Codex:** put the text of `SKILL.md` into the agent user's `~/.codex/AGENTS.md`, or a
-  project's `AGENTS.md`.
+- **Codex:** put the text of `SKILL.md` into the agent user's `~/.codex/AGENTS.md`, written by
+  that user the same way, or into a project's `AGENTS.md`.
 - **Any other agent:** put it in the agent's instructions.
 
 ## Example session
