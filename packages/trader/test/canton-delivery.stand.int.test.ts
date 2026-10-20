@@ -40,7 +40,7 @@ import {
 import { ed25519 } from '@noble/curves/ed25519';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
-import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../src/filler/canton/factories';
+import type { CantonTransferFactory } from '../src/filler/canton/factories';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { ChainClient } from '../src/filler/chain/client';
 import { hashOrder } from '../src/filler/chain/hashes';
@@ -52,7 +52,14 @@ import type { WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
 
 const STAND = process.env.INTENT_STAND_ENV;
-const live = STAND ? describe : describe.skip;
+/** Every key this spec reads (Cancore-io/meta docs/runbooks/intent-stand.md); TRADING_URL or GATEWAY_URL besides. */
+const REQUIRED = [
+  'CANTON_CHAIN', 'CANTON_PARTICIPANT_UID', 'CANTON_PROOF_WINDOW_S', 'CANTON_TRANSFER_FACTORIES_JSON', 'CNRX_ADMIN_PARTY',
+  'EVM_CHAIN_ID', 'EVM_RPC_URL', 'FILLER_GATEWAY_SIGNER', 'FILLER_GATEWAY_WS_URL', 'INPUT_TOKEN_ADDRESS', 'INTENT_ROUTER_ADDRESS',
+  'MAKER_EVM_KEY', 'STAND_CANTON_RECIPIENT_PARTY', 'STAND_FILLER_CANTON_PARTY', 'STAND_FILLER_CANTON_PARTY_KEY', 'STAND_FILLER_EVM_KEY',
+  'STAND_FILLER_ID', 'STAND_FILLER_MESSAGE_KEY', 'STAND_FILLER_REPAY_TO', 'STAND_USER_CLIENT_ID', 'STAND_USER_CLIENT_SECRET',
+  'STAND_USER_NAME', 'STAND_USER_PASSWORD', 'STAND_USER_TOKEN_URL', 'TICKET_SIGNERS',
+] as const;
 const env = (name: string): string => {
   const value = process.env[name];
   if (!value) throw new Error(`intent-stand env: ${name} is not set (Cancore-io/meta docs/runbooks/intent-stand.md)`);
@@ -117,10 +124,18 @@ async function waitFor<T>(what: string, read: () => Promise<T | undefined>, time
   }
 }
 
-live('CAN-1867: EVM → Canton on the full intent stand', () => {
-  // describe.skip still runs this body: without the stand nothing below may read the env.
+describe('CAN-1867: EVM → Canton on the full intent stand', () => {
+  // Without the stand the test is skipped, never passed; with the stand named but its env incomplete it fails,
+  // naming every missing key. Nothing below reads the env before these two gates.
   if (!STAND) {
-    test('TC-CAN-1867-STAND-01: needs the intent stand (INTENT_STAND_ENV)', () => undefined);
+    test.skip('TC-CAN-1867-STAND-01: needs the intent stand (INTENT_STAND_ENV)', () => undefined);
+    return;
+  }
+  const missing = [...REQUIRED.filter((k) => !process.env[k]), ...(process.env.TRADING_URL || process.env.GATEWAY_URL ? [] : ['TRADING_URL or GATEWAY_URL'])];
+  if (missing.length > 0) {
+    test('TC-CAN-1867-STAND-01: the intent-stand env is complete', () => {
+      throw new Error(`INTENT_STAND_ENV is set but the stand env lacks: ${missing.join(', ')}`);
+    });
     return;
   }
   const chain = `eip155:${env('EVM_CHAIN_ID')}` as EvmChainId;
@@ -145,10 +160,9 @@ live('CAN-1867: EVM → Canton on the full intent stand', () => {
     ].join('\n');
 
   beforeAll(async () => {
-    // The stand's CNRX admin differs from dev's: its registry is pinned for this run from the stand ledger's
-    // package id (CANTON_TRANSFER_FACTORIES_JSON). The delivery check runs unchanged against that pin.
-    const stand = JSON.parse(env('CANTON_TRANSFER_FACTORIES_JSON')) as Record<string, CantonTransferFactory[]>;
-    Object.assign(CANTON_TRANSFER_FACTORIES as Record<string, readonly CantonTransferFactory[]>, stand);
+    // The stand's CNRX admin differs from dev's: its registry, read from the stand ledger, is the filler's
+    // FillerConfig.canton.registries; the delivery check holds the transfer to it.
+    const registries = JSON.parse(env('CANTON_TRANSFER_FACTORIES_JSON')) as Record<string, CantonTransferFactory[]>;
 
     const seed = hexToBytes(env('STAND_FILLER_CANTON_PARTY_KEY').replace(/^0x/, ''));
     filler = createFiller({
@@ -166,6 +180,7 @@ live('CAN-1867: EVM → Canton on the full intent stand', () => {
         partySigner: { publicKey: `0x${bytesToHex(ed25519.getPublicKey(seed))}` as Hex, signHash: async (hash) => `0x${bytesToHex(ed25519.sign(hash, seed))}` as Hex },
         participantUid: env('CANTON_PARTICIPANT_UID'),
         destination: { minTicketTtlSec: 60, requiredProofWindowSec: proofWindowSec, sendGuardSec: 20 },
+        registries,
       },
       store,
       webSocket: nativeWebSocket,
@@ -236,11 +251,7 @@ live('CAN-1867: EVM → Canton on the full intent stand', () => {
     // The Permit2 witness is a nested struct: the package's own digest, signed with the maker's key.
     const permitSig = signDigest(env('MAKER_EVM_KEY') as Hex, hashPermitWitness({ ...permit, spender: router, witness: order }, toSign.chainId, permit2));
     const data = encodeFunctionCall(entryOf(abi(CANCORE_ROUTER_ABI), 'function', 'openFor'), [order, permit, permitSig, BigInt(toSign.quoteDeadline), toSign.quoteSig]);
-    const nonce = BigInt(await rpc.request<string>({ method: 'eth_getTransactionCount', params: [maker.address, 'pending'] }));
-    const raw = await maker.signTransaction({ chainId: BigInt(toSign.chainId), nonce, to: router, data, value: 0n, gasLimit: 1_500_000n, maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n });
-    await rpc.request({ method: 'eth_sendRawTransaction', params: [raw] });
-    await waitFor('the intent opened', async () => ((await reader.intents(orderHash)).status === INTENT_STATUS.Opened ? true : undefined), 60_000, diagnostics);
-
+    // Both balances are read before the open reaches the chain: from then on the filler may deliver at any moment.
     // The payee: the filler's EVM key on the source, padded into repayTo (the stand gives either form).
     const payee = fillSigner.address.toLowerCase() as Hex;
     const standRepayTo = env('STAND_FILLER_REPAY_TO').toLowerCase();
@@ -249,6 +260,11 @@ live('CAN-1867: EVM → Canton on the full intent stand', () => {
     const payeeBefore = await balanceOf(payee);
     const free = async () => (await filler.canton!.holdings()).filter((h) => !h.locked && h.asset.admin === asset.admin && h.asset.id === asset.id).reduce((sum, h) => sum + encodeCantonAmount(h.amount), 0n);
     const cnrxBefore = await free();
+
+    const nonce = BigInt(await rpc.request<string>({ method: 'eth_getTransactionCount', params: [maker.address, 'pending'] }));
+    const raw = await maker.signTransaction({ chainId: BigInt(toSign.chainId), nonce, to: router, data, value: 0n, gasLimit: 1_500_000n, maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n });
+    await rpc.request({ method: 'eth_sendRawTransaction', params: [raw] });
+    await waitFor('the intent opened', async () => ((await reader.intents(orderHash)).status === INTENT_STATUS.Opened ? true : undefined), 60_000, diagnostics);
 
     // -- ticket, receipt, delivery on Canton ----------------------------------------------------
     const fill = await waitFor(
