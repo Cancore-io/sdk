@@ -85,7 +85,6 @@ const REESCROWED = new Set(['allocationCid', 'feeAllocationCid']);
 /** Verify the Flow B ceremony — the escrow request and, unless the instrument has none, its deposit. */
 export async function verifyHtlcFlowBPrepared(legs: Leg[], terms: FlowBTerms): Promise<void> {
   const refuse = refuser('htlc.flow-b-create');
-  if (legs.length === 0) refuse('the API prepared nothing to sign');
   legs.forEach((leg, i) => {
     if (leg.kind !== 'escrow' && leg.kind !== 'transfer') refuse(`leg ${i} is a ${leg.kind}, not the escrow request or its deposit`);
   });

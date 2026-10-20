@@ -86,6 +86,7 @@ describe('Flow B: the escrow request and its deposit are signed only as the acco
 
   test('F3: another signatory beside the account is refused', async () => {
     await refused([await escrow({}, { signatories: [ME, MALLORY] }), await deposit()], /the escrow request is signed by party-me::1220aa, mallory::1220ff, not by this account alone/);
+    await refused([await escrow({}, { signatories: [MALLORY] }), await deposit()], /the escrow request is signed by mallory::1220ff, not by this account alone/);
   });
 
   test('F4: a request from another sender is refused', async () => {
@@ -132,11 +133,13 @@ describe('Flow B: the escrow request and its deposit are signed only as the acco
 
   test('F13: a fee rate cap above the account\'s is refused; at the cap it passes', async () => {
     await refused([await escrow({ maxFeeRate: '0.05' }), await deposit()], /the escrow request allows a fee rate of 0.05, above this account's 0.015/);
+    await refused([await escrow({}, field('maxFeeRate', v.text('0.01'))), await deposit()], /the escrow request allows a fee rate of an unreadable value/);
     await expect(verifyHtlcFlowBPrepared([await escrow({ maxFeeRate: '0.015' }), await deposit()], terms)).resolves.toBeUndefined();
   });
 
   test('F14: a provider that is not pinned is refused', async () => {
     await refused([await escrow({ provider: MALLORY }), await deposit()], /the escrow request names mallory::1220ff as provider, which is not a pinned one/);
+    await refused([await escrow({}, field('provider', v.party(EXECUTOR))), await deposit()], /the escrow request names .* as provider, which is not a pinned one/);
   });
 
   test('F15: a field this SDK does not read, or one missing, is refused', async () => {
@@ -177,7 +180,7 @@ describe('Flow B: the escrow request and its deposit are signed only as the acco
     await refused([request1!, request1!, deposit1!], /expected one escrow request, got 2/);
     await refused([request1!, deposit1!, deposit1!], /expected at most one deposit, got 2/);
     await refused([deposit1!], /expected one escrow request, got 0/);
-    await refused([], /the API prepared nothing to sign/);
+    await refused([], /expected one escrow request, got 0/);
   });
 
   test('a request the account must not sign is refused whatever its bytes say about the hash', async () => {
@@ -214,6 +217,9 @@ describe('accept-counter: the counter HTLC is accepted only as the account expec
     await refused([await accept({}, { command: (c) => { c.choiceId = 'Proposal_Reject'; } })], /the accept is not Proposal_Accept on an HTLCProposal of a trusted htlc package/);
     await refused([await accept({}, { proposalPackageId: UNTRUSTED_ID })], /not Proposal_Accept on an HTLCProposal of a trusted htlc package/);
     await refused([await accept({}, { command: (c) => { c.templateId = { ...c.templateId!, entityName: 'HTLC' }; } })], /not Proposal_Accept on an HTLCProposal of a trusted htlc package/);
+    const elsewhere = <T extends { moduleName: string }>(t: T): T => ({ ...t, moduleName: 'Mallory.HTLC' });
+    await refused([await accept({}, { command: (c) => { c.templateId = elsewhere(c.templateId!); }, disclose: (h) => ({ ...h, templateId: elsewhere(h.templateId!) }) })],
+      /not Proposal_Accept on an HTLCProposal of a trusted htlc package/);
     await refused([await accept({}, { command: (c) => { c.consuming = false; } })], /the accept does not consume the proposal/);
     const create = await initRequestLeg({
       party: ME, receiver: TAKER, amount: '5000', instrument: CC, hashLock: HASH_LOCK, timeout: iso(NOW + 2 * HOUR),
@@ -224,6 +230,7 @@ describe('accept-counter: the counter HTLC is accepted only as the account expec
 
   test('A2: acting with another party beside the account is refused', async () => {
     await refused([await accept({}, { command: (c) => { c.actingParties = [ME, MALLORY]; } })], /the accept acts as party-me::1220aa, mallory::1220ff, not as this account alone/);
+    await refused([await accept({}, { command: (c) => { c.actingParties = [MALLORY]; } })], /the accept acts as mallory::1220ff, not as this account alone/);
   });
 
   test('A3: a proposal the transaction does not disclose, or another contract under its id, is refused', async () => {
@@ -272,6 +279,7 @@ describe('accept-counter: the counter HTLC is accepted only as the account expec
 
   test('A12: an expected admin this SDK does not pin is refused', async () => {
     await refused([await accept({}, { argument: (a) => { a.acceptExpectedAdmin = some(v.party(MALLORY)); } })], /the accept expects mallory::1220ff as the instrument admin, which is not a pinned one/);
+    await refused([await accept({}, { argument: (a) => { a.acceptExpectedAdmin = v.party(DEV.dso); } })], /the accept expects .* as the instrument admin, which is not a pinned one/);
   });
 
   test('A13: an HTLC that is not the proposal\'s, none, or two, is refused', async () => {
