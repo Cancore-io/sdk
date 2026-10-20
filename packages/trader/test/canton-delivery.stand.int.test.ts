@@ -43,6 +43,7 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import type { CantonTransferFactory } from '../src/filler/canton/factories';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { ChainClient } from '../src/filler/chain/client';
+import { RouterEventWatcher, type RouterEventUpdate } from '../src/filler/chain/events';
 import { hashOrder } from '../src/filler/chain/hashes';
 import { INTENT_STATUS, RouterReader } from '../src/filler/chain/router';
 import type { EvmChainId } from '../src/filler/chains';
@@ -58,7 +59,8 @@ const REQUIRED = [
   'EVM_CHAIN_ID', 'EVM_RPC_URL', 'FILLER_GATEWAY_SIGNER', 'FILLER_GATEWAY_WS_URL', 'INPUT_TOKEN_ADDRESS', 'INTENT_ROUTER_ADDRESS',
   'MAKER_EVM_KEY', 'STAND_CANTON_RECIPIENT_PARTY', 'STAND_FILLER_CANTON_PARTY', 'STAND_FILLER_CANTON_PARTY_KEY', 'STAND_FILLER_EVM_KEY',
   'STAND_FILLER_ID', 'STAND_FILLER_MESSAGE_KEY', 'STAND_FILLER_REPAY_TO', 'STAND_USER_CLIENT_ID', 'STAND_USER_CLIENT_SECRET',
-  'STAND_USER_NAME', 'STAND_USER_PASSWORD', 'STAND_USER_TOKEN_URL', 'TICKET_SIGNERS',
+  'STAND_USER_NAME', 'STAND_USER_PASSWORD', 'STAND_USER_TOKEN_URL', 'TICKET_SIGNERS', 'PERMIT2_ADDRESS',
+  'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET',
 ] as const;
 const env = (name: string): string => {
   const value = process.env[name];
@@ -114,6 +116,45 @@ async function userToken(): Promise<string> {
   return ((await response.json()) as { access_token: string }).access_token;
 }
 
+/** A bearer token of the stand's Canton JSON API (client credentials). */
+async function cantonToken(): Promise<string> {
+  const form = new URLSearchParams({ grant_type: 'client_credentials', client_id: env('CANTON_CLIENT_ID'), client_secret: env('CANTON_CLIENT_SECRET'), scope: 'daml_ledger_api' });
+  const response = await fetch(env('CANTON_TOKEN_URL'), { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form });
+  if (!response.ok) throw new Error(`Canton JSON API login: ${response.status} ${(await response.text()).slice(0, 300)}`);
+  return ((await response.json()) as { access_token: string }).access_token;
+}
+
+/**
+ * The unlocked holdings of `party` in `asset` on the ledger itself (JSON Ledger API v2, the active contracts of
+ * the registry's holding template), Numeric 10 × 10¹⁰ — read independently of the SDK and of filler-gateway.
+ */
+async function ledgerHoldings(party: string, asset: { admin: string; id: string }, registry: CantonTransferFactory): Promise<bigint> {
+  const base = env('CANTON_JSON_API_URL').replace(/\/$/, '');
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${await cantonToken()}` };
+  const end = (await (await fetch(`${base}/v2/state/ledger-end`, { headers })).json()) as { offset: number };
+  const templateId = `${registry.packageId}:${registry.holding}`;
+  const response = await fetch(`${base}/v2/state/active-contracts`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      activeAtOffset: end.offset,
+      verbose: true,
+      eventFormat: { verbose: true, filtersByParty: { [party]: { cumulative: [{ identifierFilter: { TemplateFilter: { value: { templateId, includeCreatedEventBlob: false } } } }] } } },
+    }),
+  });
+  if (!response.ok) throw new Error(`active contracts of ${party}: ${response.status} ${(await response.text()).slice(0, 300)}`);
+  type View = { account?: { owner?: string | null }; instrumentId?: { admin?: string; id?: string }; amount?: string; lock?: unknown };
+  const rows = (await response.json()) as Array<{ contractEntry?: { JsActiveContract?: { createdEvent?: { createArgument?: Record<string, View> } } } }>;
+  let total = 0n;
+  for (const row of rows) {
+    const view = row.contractEntry?.JsActiveContract?.createdEvent?.createArgument?.[registry.holdingView];
+    if (!view || view.account?.owner !== party || view.lock) continue;
+    if (view.instrumentId?.admin !== asset.admin || view.instrumentId?.id !== asset.id || typeof view.amount !== 'string') continue;
+    total += encodeCantonAmount(view.amount);
+  }
+  return total;
+}
+
 async function waitFor<T>(what: string, read: () => Promise<T | undefined>, timeoutMs: number, diagnostics: () => string): Promise<T> {
   const until = Date.now() + timeoutMs;
   for (;;) {
@@ -151,6 +192,7 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
   const client = new ChainClient({ chain, endpoints: [rpc], maxHeadLagBlocks: 5, logger });
   const reader = new RouterReader(chain, router, client);
   let filler: Filler;
+  let registries: Record<string, CantonTransferFactory[]> = {};
 
   /** What happened, for a red run: the SDK's stages and its warnings. */
   const diagnostics = () =>
@@ -162,7 +204,7 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
   beforeAll(async () => {
     // The stand's CNRX admin differs from dev's: its registry, read from the stand ledger, is the filler's
     // FillerConfig.canton.registries; the delivery check holds the transfer to it.
-    const registries = JSON.parse(env('CANTON_TRANSFER_FACTORIES_JSON')) as Record<string, CantonTransferFactory[]>;
+    registries = JSON.parse(env('CANTON_TRANSFER_FACTORIES_JSON')) as Record<string, CantonTransferFactory[]>;
 
     const seed = hexToBytes(env('STAND_FILLER_CANTON_PARTY_KEY').replace(/^0x/, ''));
     filler = createFiller({
@@ -228,7 +270,10 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
       outputAsset: asset,
       recipient: env('STAND_CANTON_RECIPIENT_PARTY'),
     });
-    if (!quote.offers.some((o) => o.fillerId === env('STAND_FILLER_ID'))) throw new Error(`the quote has no offer of ${env('STAND_FILLER_ID')}: ${JSON.stringify(quote.offers)}\n${diagnostics()}`);
+    const offer = quote.offers.find((o) => o.fillerId === env('STAND_FILLER_ID'));
+    if (!offer) throw new Error(`the quote has no offer of ${env('STAND_FILLER_ID')}: ${JSON.stringify(quote.offers)}\n${diagnostics()}`);
+    // The filler's own quote (5 CNRX) is what the user is offered and what the order guarantees.
+    expect(offer.amountOut).toBe(encodeCantonAmount('5').toString());
     const pick = await api<{ orderHash: Hex; toSign: { chainId: number; router: Hex; order: OrderJson; permit: { message: { permitted: { token: Hex; amount: string }; nonce: string; deadline: string } }; quoteDeadline: number; quoteSig: Hex } | null }>(
       `/v1/intents/quote/${quote.quoteId}/pick`,
       { fillerId: env('STAND_FILLER_ID') },
@@ -243,6 +288,7 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     expect(order.outputAsset.toLowerCase()).toBe(encodeCantonOutputAsset(asset));
     expect(order.destination.toLowerCase()).toBe(encodeCantonDestination('devnet'));
     expect(order.fillerId.toLowerCase()).toBe(fillerIdHash(env('STAND_FILLER_ID')));
+    expect(order.minReceived).toBe(offer.amountOut);
 
     const maker = createTestFillSigner(env('MAKER_EVM_KEY') as Hex);
     const permit2 = env('PERMIT2_ADDRESS') as Hex;
@@ -260,10 +306,19 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     const payeeBefore = await balanceOf(payee);
     const free = async () => (await filler.canton!.holdings()).filter((h) => !h.locked && h.asset.admin === asset.admin && h.asset.id === asset.id).reduce((sum, h) => sum + encodeCantonAmount(h.amount), 0n);
     const cnrxBefore = await free();
+    const recipient = env('STAND_CANTON_RECIPIENT_PARTY');
+    const registry = (registries[asset.admin] ?? [])[0];
+    if (!registry) throw new Error(`CANTON_TRANSFER_FACTORIES_JSON has no registry of ${asset.admin}`);
+    const recipientBefore = await ledgerHoldings(recipient, asset, registry);
 
     const nonce = BigInt(await rpc.request<string>({ method: 'eth_getTransactionCount', params: [maker.address, 'pending'] }));
     const raw = await maker.signTransaction({ chainId: BigInt(toSign.chainId), nonce, to: router, data, value: 0n, gasLimit: 1_500_000n, maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n });
-    await rpc.request({ method: 'eth_sendRawTransaction', params: [raw] });
+    const openTx = await rpc.request<Hex>({ method: 'eth_sendRawTransaction', params: [raw] });
+    const openBlock = await waitFor('the open mined', async () => {
+      const receipt = await rpc.request<{ status: string; blockNumber: string } | null>({ method: 'eth_getTransactionReceipt', params: [openTx] });
+      if (receipt && receipt.status !== '0x1') throw new Error(`openFor reverted\n${diagnostics()}`);
+      return receipt ? BigInt(receipt.blockNumber) : undefined;
+    }, 60_000, diagnostics);
     await waitFor('the intent opened', async () => ((await reader.intents(orderHash)).status === INTENT_STATUS.Opened ? true : undefined), 60_000, diagnostics);
 
     // -- ticket, receipt, delivery on Canton ----------------------------------------------------
@@ -284,14 +339,39 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     );
     expect(fill).toMatchObject({ chain: env('CANTON_CHAIN'), state: 'confirmed' });
     expect(fill.txRef).not.toBe('');
-    expect(BigInt(fill.amount)).toBeGreaterThanOrEqual(BigInt(order.minReceived));
-    expect(events.events).toContainEqual(expect.objectContaining({ type: 'filled', orderHash }));
-    // The party paid the delivery out of its own free CNRX.
+    // Exactly the quoted amount: the order's minReceived, the filler's offer.
+    expect(fill.amount).toBe(order.minReceived);
+    // The party paid it out of its own free CNRX, and the recipient's ledger holdings grew by exactly it — once.
     expect(cnrxBefore - (await free())).toBe(BigInt(fill.amount));
+    expect((await ledgerHoldings(recipient, asset, registry)) - recipientBefore).toBe(BigInt(fill.amount));
+
+    // One delivery: one fill recorded over every attempt, one `filled`; and it came after the escrow was open at depth.
+    const fills = await store.withOrder(orderHash, async (tx) => (await Promise.all((await tx.listTickets()).map((t) => tx.getFill(t.attempt)))).filter((f) => f && f.state !== 'failed'));
+    expect(fills).toHaveLength(1);
+    const ofOrder = events.events.filter((e) => 'orderHash' in e && e.orderHash === orderHash);
+    expect(ofOrder.filter((e) => e.type === 'filled')).toHaveLength(1);
+    const at = (stage: string, detail?: Record<string, unknown>) =>
+      ofOrder.findIndex((e) => e.type === 'stage' && e.stage === stage && (!detail || Object.entries(detail).every(([k, v]) => (e.detail as Record<string, unknown>)[k] === v)));
+    const escrowOpen = at('ticket.checked', { check: 'V-E2', status: 'passed' });
+    const delivered = at('fill.sent');
+    expect(escrowOpen).toBeGreaterThanOrEqual(0);
+    expect(delivered).toBeGreaterThan(escrowOpen);
 
     // -- attested and settled on the router -----------------------------------------------------
     await waitFor('the intent settled on the router (attestations → selfSettle)', async () => ((await reader.intents(orderHash)).status === INTENT_STATUS.Settled ? true : undefined), 10 * 60_000, diagnostics);
     const payout = (BigInt(order.inputAmount) * 10_000n) / (10_000n + BigInt(order.feeBps));
     expect((await balanceOf(payee)) - payeeBefore).toBe(payout);
+
+    // One settle: the router logged this order opened once, settled once, never filled on this chain (it was
+    // delivered on Canton); and the open preceded the settle.
+    const logs: RouterEventUpdate[] = [];
+    const watcher = new RouterEventWatcher({ client, router, confirmations: 0, fromBlock: openBlock, onUpdate: (u) => void logs.push(u), logger });
+    await watcher.poll();
+    await watcher.poll();
+    const named = (name: string) => logs.filter((u) => u.kind === 'added' && u.log.orderHash === orderHash && u.log.name === name);
+    expect(named('IntentOpened')).toHaveLength(1);
+    expect(named('Settled')).toHaveLength(1);
+    expect(named('Filled')).toHaveLength(0);
+    expect(named('Settled')[0]!.log.blockNumber).toBeGreaterThan(openBlock);
   }, 20 * 60_000);
 });
