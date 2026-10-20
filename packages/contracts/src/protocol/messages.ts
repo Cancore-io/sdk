@@ -35,6 +35,7 @@ export const ERROR_CODES = [
   'STALE_MESSAGE', 'REPLAYED_MESSAGE', 'TICKET_REFUSED',
   'UNKNOWN_REQUEST', 'UNKNOWN_TICKET', 'TICKET_CLOSED', 'NOT_ELIGIBLE', 'RATE_LIMITED', 'INTERNAL',
   'ATTESTATIONS_NOT_READY', 'CANTON_NOT_READY', 'CANTON_REFUSED', 'CANTON_UNAVAILABLE', 'OPERATION_EXPIRED',
+  'ROUTE_NOT_APPROVED',
 ] as const;
 /** HTTP status of each error code on the REST fallback. */
 export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
@@ -42,6 +43,7 @@ export const ERROR_HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   STALE_MESSAGE: 400, REPLAYED_MESSAGE: 409, TICKET_REFUSED: 409,
   UNKNOWN_REQUEST: 404, UNKNOWN_TICKET: 404, TICKET_CLOSED: 409, NOT_ELIGIBLE: 403, RATE_LIMITED: 429, INTERNAL: 500,
   ATTESTATIONS_NOT_READY: 404, CANTON_NOT_READY: 409, CANTON_REFUSED: 422, CANTON_UNAVAILABLE: 503, OPERATION_EXPIRED: 410,
+  ROUTE_NOT_APPROVED: 403,
 };
 /** `error.reason` with `TICKET_REFUSED`: the pre-ticket check that failed (S-21). */
 export const TICKET_REFUSED_REASONS = [
@@ -316,13 +318,20 @@ export type CantonSubmitted = {
   [K in CantonOp]: S2FBase & { type: 'canton.submitted'; fillerId: string; re: string; operationId: string; op: K; updateId?: string; result: CantonOpResult[K] };
 }[CantonOp];
 
+/** A route of the catalogue: CAIP-2 source and destination. */
+export interface RouteRef { src: string; dst: string }
+/** The full list of routes the filler serves from now on (§3.20); each must be approved for it, else ROUTE_NOT_APPROVED and nothing changes. */
+export interface RoutesSet extends F2SBase { type: 'routes.set'; routes: RouteRef[] }
+/** Every route approved for the filler; it is asked for quotes on a route only while `active`. */
+export interface RoutesState extends S2FBase { type: 'routes.state'; fillerId: string; routes: (RouteRef & { active: boolean })[] }
+
 export type S2FMessage =
   | AuthChallenge | AuthOk | PingS2F | PongS2F | ErrorMessage | EpochWeights | QuoteRequest | QuoteAck | QuoteReconfirm
   | TicketOffer | TicketIntentAck | TicketIssued | TicketExpired | OrderSettled | PenaltyApplied | SettleAttestations
-  | CantonPrepared | CantonSubmitted;
+  | CantonPrepared | CantonSubmitted | RoutesState;
 export type F2SMessage =
   | AuthResponse | PingF2S | PongF2S | ErrorF2S | QuoteMessage | QuoteReconfirmReply | TicketIntentMessage | TicketDecline | TicketReceiptMessage | FillReported
-  | CantonPrepare | CantonSubmit;
+  | CantonPrepare | CantonSubmit | RoutesSet;
 
 // --- REST (protocol §3.6); an error body is the `error` message itself.
 

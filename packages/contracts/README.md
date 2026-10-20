@@ -352,6 +352,13 @@ naming the party as its filler, with its committed allocation, which the node ch
 `CANTON_UNAVAILABLE` (503, retry), `OPERATION_EXPIRED` (410, prepare again), plus
 `UNKNOWN_TICKET`, `TICKET_CLOSED` and `NOT_ELIGIBLE` for an operation on someone else's ticket or party.
 
+The filler's own routes (§3.20): Cancore staff approve the routes a filler may serve; the
+filler switches each approved route on or off itself. `GET /v1/filler/routes` answers
+`routes.state` — every approved route with `active`; `POST /v1/filler/routes` takes `routes.set`
+— the full list the filler serves from now on, sealed by its message key — applies it at once and
+answers the new `routes.state`. A listed route that is not approved refuses the whole request
+`ROUTE_NOT_APPROVED` (403) and nothing changes. Both are REST only, rate class `service`.
+
 `FILLER_GATEWAYS` is where the gateway key and the ticket signers of each environment are
 published. It is empty in the RC: no gateway key exists yet.
 
@@ -454,6 +461,11 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.16` — the filler's own routes (CAN-2793, protocol §3.20): REST-only frames
+  `routes.set` (F→S, the full list of routes the filler serves, sealed by its message key) and
+  `routes.state` (S→F, every route approved for the filler with `active`); `GET` and
+  `POST /v1/filler/routes`; error code `ROUTE_NOT_APPROVED` (403); types `RouteRef`, `RoutesSet`,
+  `RoutesState`. Additive.
 - `0.2.0-rc.15` — REST read `GET /v1/filler/canton/intents/{orderHash}` (CAN-1863): the live
   Canton-source `SwapIntent` naming the filler's party, with its committed allocation by its
   AllocationV2 view (`CantonIntent`, `CantonAllocation`, `CantonAllocationLeg`; `$defs`

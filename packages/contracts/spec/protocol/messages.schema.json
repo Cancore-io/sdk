@@ -72,7 +72,7 @@
     },
     "errorCode": {
       "anyOf": [
-        { "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "STALE_MESSAGE", "REPLAYED_MESSAGE", "TICKET_REFUSED", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL", "ATTESTATIONS_NOT_READY", "CANTON_NOT_READY", "CANTON_REFUSED", "CANTON_UNAVAILABLE", "OPERATION_EXPIRED"] },
+        { "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "STALE_MESSAGE", "REPLAYED_MESSAGE", "TICKET_REFUSED", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL", "ATTESTATIONS_NOT_READY", "CANTON_NOT_READY", "CANTON_REFUSED", "CANTON_UNAVAILABLE", "OPERATION_EXPIRED", "ROUTE_NOT_APPROVED"] },
         { "$ref": "#/$defs/futureEnumValue" }
       ]
     },
@@ -900,6 +900,44 @@
         "op": { "$ref": "#/$defs/cantonOp" },
         "updateId": { "type": "string", "minLength": 1 },
         "result": { "type": "object" }
+      }
+    },
+    "routeRef": {
+      "type": "object",
+      "description": "A route of the catalogue (GET /v1/intents/routes): CAIP-2 source and destination",
+      "required": ["src", "dst"],
+      "properties": { "src": { "$ref": "#/$defs/caip2" }, "dst": { "$ref": "#/$defs/caip2" } }
+    },
+    "routes.set": {
+      "x-direction": "F2S",
+      "x-rest-only": true,
+      "type": "object",
+      "description": "The routes the filler serves from now on (protocol §3.20): the body of POST /v1/filler/routes. The full list: a route Cancore approved for the filler and not listed here is switched off, a listed one switched on. Every listed route must be approved for the filler (filler_routes enabled by staff), else the whole request is refused ROUTE_NOT_APPROVED and nothing changes. An empty list switches every route off",
+      "allOf": [{ "$ref": "#/$defs/f2sBase" }],
+      "required": ["type", "routes"],
+      "properties": {
+        "type": { "const": "routes.set" },
+        "routes": { "type": "array", "maxItems": 50, "uniqueItems": true, "items": { "$ref": "#/$defs/routeRef" } }
+      }
+    },
+    "routes.state": {
+      "x-direction": "S2F",
+      "x-rest-only": true,
+      "type": "object",
+      "description": "Every route Cancore approved for the filler and whether the filler serves it now (active): the 200 body of GET and POST /v1/filler/routes. The filler is asked for quotes on a route only while it is approved and active",
+      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
+      "required": ["type", "routes"],
+      "properties": {
+        "type": { "const": "routes.state" },
+        "routes": {
+          "type": "array",
+          "items": {
+            "allOf": [{ "$ref": "#/$defs/routeRef" }],
+            "type": "object",
+            "required": ["active"],
+            "properties": { "active": { "type": "boolean" } }
+          }
+        }
       }
     }
   }

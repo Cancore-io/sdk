@@ -149,5 +149,12 @@ export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHas
       { type: 'canton.submitted', id: 'g-22', ...S, sentAt: 1789990002000, re: 'cs-1', operationId: 'op-1', op: 'party.allocate', result: { partyId: FILLER_PARTY } },
       { type: 'canton.submitted', id: 'g-23', ...S, sentAt: 1790001002000, re: 'cs-5', operationId: 'op-5', op: 'holdings.transfer', updateId: '1220ab0d', result: { outcome: 'PENDING', transferInstructionCid: '00ti' } },
     ],
+    'routes.set': [{ type: 'routes.set', ...F('rs-1', 1789995000000), routes: [{ src: 'eip155:56', dst: 'eip155:1' }, { src: 'eip155:1', dst: 'canton:devnet' }] }],
+    'routes.state': [
+      {
+        type: 'routes.state', id: 'g-24', ...S, sentAt: 1789995000200, re: 'rs-1',
+        routes: [{ src: 'eip155:56', dst: 'eip155:1', active: true }, { src: 'eip155:1', dst: 'canton:devnet', active: true }, { src: 'canton:devnet', dst: 'eip155:1', active: false }],
+      },
+    ],
   };
 }
