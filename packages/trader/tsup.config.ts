@@ -10,6 +10,8 @@ export default defineConfig({
   entry: {
     'filler/index': 'src/filler/index.ts',
     'filler/testing/index': 'src/filler/testing/index.ts',
+    // Canton's prepared-transaction hash, for a signer that recomputes before it signs (@cancore/botd).
+    'filler/canton/hashing': 'src/filler/canton/hashing.ts',
   },
   format: ['esm'],
   dts: true,
