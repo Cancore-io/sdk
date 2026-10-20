@@ -1249,18 +1249,21 @@ describe('owner release of a booked take (CAN-2836)', () => {
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
   });
 
-  it('taking the order again after an unlock does not vouch for the earlier booking: release and pause keep both', async () => {
+  it('taking the order again after an unlock does not vouch for the earlier booking: pause and release keep both', async () => {
     const w = await tookA();
     await w.call('lock', {}, true);
     await w.unlock();
     await w.call('order.take', { orderId: 'A', amount: '1' }, false);
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
-    await expect(release(w)).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
     const before = w.untaken.length;
+    // The take queued again calls off cleanly, yet the earlier booking's accept went out through a loop that is gone.
     await w.call('pause', { reason: 'owner stop' }, false);
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
-    // Kept on the book, yet the take queued again is still called off: no accept retries while paused.
+    // Kept on the book, yet called off: no accept retries while paused.
     expect(w.untaken.slice(before)).toEqual(['A', 'A']);
+    expect(w.crash.queued?.has('A')).toBe(false);
+    await expect(release(w)).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
   });
 
   it('calls a take of the same order queued during its venue read off too, before it decides', async () => {
