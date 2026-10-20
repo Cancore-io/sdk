@@ -173,6 +173,7 @@ export type { CantonClientConfig, CantonOperationsOptions, CantonOpCheck, Canton
 export { canonicalDecimal, checkHoldingsTransfer, checkRegistryAccept, checkTransferExercise, isOwnParty } from './canton/checks';
 export type { TransferExpectation } from './canton/checks';
 export { checkDeliveryFill, INTENT_PACKAGE_NAME } from './canton/delivery-check';
+export { checkPreapprovalCreate } from './canton/preapproval-check';
 export type { DeliveryFillExpectation } from './canton/delivery-check';
 export { cantonFillRef } from './delivery/canton';
 export { checkIntentSettle, intentSplit } from './canton/settle-check';

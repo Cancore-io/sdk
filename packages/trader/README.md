@@ -454,10 +454,14 @@ published registries, unless `CantonConfig.registries` (or `CantonClientConfig.r
 others — only for a network with its own registrar, such as a test stand; `registriesProblem`
 checks such a pin before it is used. filler-gateway never supplies it.
 
-`allocateParty()`, `acceptRegistry(fillerId)` and `transfer(params)` carry their checks built in.
+`allocateParty()`, `acceptRegistry(fillerId)`, `transfer(params)` and `createPreapproval(admin)` carry their checks built in.
 The party is recognised by its namespace, the fingerprint of the node key (its hint, the part before
 `::`, is not checked):
 
+- `createPreapproval` (CAN-2904): one transaction, one create and nothing else — the preapproval
+  template of a registry pinned for the asked admin (`CantonTransferFactory.preapproval`, by package
+  id), `receiver` the party, `admin` the asked one, the stated allowances and window (live), signed
+  by the party alone. It lets transfers TO the party complete at once; nothing of the party's moves.
 - `acceptRegistry`: one root, `FillerRegistryEntryProposal_Accept` on the stated proposal, acting as
   the party alone, creating exactly the `FillerRegistryEntry` of this fillerId and party, signed by
   the operator and the party;

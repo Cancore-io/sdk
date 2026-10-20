@@ -42,6 +42,12 @@ export interface CantonTransferFactory {
    * own code; a registry without it is not paid out to on a Canton source.
    */
   openReceipt?: boolean;
+  /**
+   * The registry's transfer preapproval template, signed by its receiver: what
+   * `preapproval.create` may create for the party (CAN-2904). A registry
+   * without it gets no preapproval from the node.
+   */
+  preapproval?: string;
 }
 
 const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
@@ -57,6 +63,8 @@ const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
   // Cnrx.Allocation cnrx_allocateImplV2: a receipt-only allocation (no debit) takes no input holdings and
   // checks only that its actor owns the authorizer account — nothing of the receiver must exist beforehand.
   openReceipt: true,
+  // Cnrx.Transfer: signatory receiver, observer admin; transfers to the receiver complete at once.
+  preapproval: 'Cnrx.Transfer:CnrxTransferPreapproval',
 };
 
 /** By instrument admin party. */
@@ -89,6 +97,7 @@ export function registriesProblem(registries: unknown): string | undefined {
       if (!Array.isArray(f.serviceChoices) || !f.serviceChoices.every((c) => typeof c === 'string')) return `${at}.serviceChoices: expected a list of <module>:<entity>.<choice>`;
       if (f.allocation !== undefined && (typeof f.allocation !== 'string' || !QUALIFIED.test(f.allocation))) return `${at}.allocation: expected <module>:<entity>`;
       if (f.openReceipt !== undefined && typeof f.openReceipt !== 'boolean') return `${at}.openReceipt: expected a boolean`;
+      if (f.preapproval !== undefined && (typeof f.preapproval !== 'string' || !QUALIFIED.test(f.preapproval))) return `${at}.preapproval: expected <module>:<entity>`;
     }
   }
   return undefined;
