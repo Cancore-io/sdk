@@ -167,6 +167,17 @@ export interface IncomingTransfer {
   swapContext?: { swapId: string; orderId: string | null; swapStatus: string; leg: 'main' | 'counter' | 'fee' } | null;
 }
 
+/** `GET /tokens/cc-preapproval` — whether this account can receive CC. */
+export interface CcPreapprovalStatus {
+  hasPreapproval: boolean;
+  partyId: string;
+  /** The stand has the DSO, the amulet package and a venue configured; false means no preapproval can be set up here. */
+  configured: boolean;
+  eligibleToSetup: boolean;
+  requiredBalance: string;
+  currentBalance: string;
+}
+
 /** One document accepted, pinned to the version read. */
 export interface ConsentedDocument {
   key: string;
@@ -473,6 +484,13 @@ export interface SelfCustodyAccount {
    * signed: one proposal, for this account, to the venue or itself, under the pinned DSO.
    */
   onboard(options?: Pick<TokenCallOptions, 'allowUnverified'>): Promise<AccountUser>;
+  /** Whether the account holds a CC TransferPreapproval (`GET /tokens/cc-preapproval`). Throws when the ledger cannot be read. */
+  preapproval(): Promise<CcPreapprovalStatus>;
+  /**
+   * Create the account's CC TransferPreapproval (venue-paid), read before it is signed like in `onboard`.
+   * A no-op when it already exists. Needs the party: run `onboard()` first.
+   */
+  enablePreapproval(options?: Pick<TokenCallOptions, 'allowUnverified'>): Promise<void>;
   legalStatus(): Promise<LegalStatus>;
   /**
    * Accept the platform documents, signed with the account key. Orders are
@@ -1474,11 +1492,17 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     // Held to the key on every call — a party made just now, earlier, or by another client — and
     // before the preapproval: nothing is set up for a party that is not this key's.
     if (!isPartyOfKey(session.publicKey, user.partyId)) throw new ForeignPartyError(user.partyId, 'records');
+    await enablePreapproval(call);
+    return user;
+  }
+
+  const preapproval = () => http.get<CcPreapprovalStatus>('/tokens/cc-preapproval');
+
+  async function enablePreapproval(call?: Pick<TokenCallOptions, 'allowUnverified'>): Promise<void> {
     const venue = options.venuePartyId ?? (network ? DEFAULT_VENUES[network] : undefined);
     await run('tokens.preapproval', undefined, false, reading('tokens.preapproval', call, (legs, pins, party) => verifyPreapprovalSetupPrepared(legs, {
       party, dso: pins.dso, providers: [...(venue ? [venue] : []), party], packages: trustedPackages.wallet,
     })));
-    return user;
   }
 
   const legalStatus = () => http.get<LegalStatus>('/legal/consent');
@@ -1546,6 +1570,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     swap,
     me,
     onboard,
+    preapproval,
+    enablePreapproval,
     legalStatus,
     acceptTerms,
     execute,

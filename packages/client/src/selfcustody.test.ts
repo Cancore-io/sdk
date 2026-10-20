@@ -585,6 +585,10 @@ function venue({
     }
     const selfSent = (party: string | null) => log.some((e) => e.type === 'tokens.send' && e.params.receiverPartyId === party);
     if (route === 'GET /tokens/transfer/estimate-fee') return json({ networkFee, networkFeeToken: 'CC' });
+    if (route === 'GET /tokens/cc-preapproval') {
+      const has = caller.roles.includes('has-preapproval');
+      return json({ hasPreapproval: has, partyId: caller.partyId, configured: true, eligibleToSetup: !has, requiredBalance: '1', currentBalance: '0' });
+    }
     if (route === 'GET /tokens/fee-debt') return json({ outstandingCc: feeDebt, entries: [] });
     if (route === `GET /tokens/balance/${encodeURIComponent(caller.partyId ?? '')}/CC`) {
       return json({ partyId: caller.partyId, instrumentId: 'CC', balance, holdingsCount: selfSent(caller.partyId) ? 2 : 1 });
@@ -2029,6 +2033,40 @@ describe('what the key signs outside a trade is read first (CAN-2249)', () => {
 
     await acct.onboard({ allowUnverified: true });
     expect(api.log.map((e) => e.type)).toEqual(['wallet.topology', 'tokens.preapproval']);
+  });
+
+  describe('preapproval() and enablePreapproval() on their own', () => {
+    const withParty = async (options: VenueOptions, n: number) => {
+      const made = await account(options, n);
+      await made.acct.execute('wallet.topology', { publicKey: made.acct.session.publicKey });
+      return made;
+    };
+
+    test('preapproval() reports none, enablePreapproval() creates one, and preapproval() then reports it', async () => {
+      const { api, acct } = await withParty({}, 76);
+      const party = (await acct.me()).partyId;
+
+      expect(await acct.preapproval()).toMatchObject({ hasPreapproval: false, partyId: party, eligibleToSetup: true });
+      await acct.enablePreapproval();
+      expect(api.log.map((e) => e.type)).toEqual(['wallet.topology', 'tokens.preapproval']);
+      expect(await acct.preapproval()).toMatchObject({ hasPreapproval: true, partyId: party, eligibleToSetup: false });
+    });
+
+    test('enablePreapproval() on an account that already has one signs nothing', async () => {
+      const { api, acct } = await onboarded({}, 77);
+      await acct.enablePreapproval();
+      // Asked again, prepared with no legs, so nothing new is signed.
+      expect(api.asked.filter((t) => t === 'tokens.preapproval')).toHaveLength(2);
+      expect(api.log.filter((e) => e.type === 'tokens.preapproval')).toHaveLength(1);
+    });
+
+    test('enablePreapproval() reads what it signs: a proposal to an unpinned provider is not signed', async () => {
+      const { api, acct } = await withParty({ preapprovalProvider: MALLORY }, 78);
+
+      await unread(acct.enablePreapproval(), 'tokens.preapproval', /names mallory::1220ff as provider/);
+      expect(api.log.map((e) => e.type)).toEqual(['wallet.topology']);
+      expect(await acct.preapproval()).toMatchObject({ hasPreapproval: false });
+    });
   });
 
   test('an account of a network the SDK has no pins for refuses rather than signs unread', async () => {
