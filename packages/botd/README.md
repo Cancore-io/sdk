@@ -98,7 +98,7 @@ An agent in the `cancore-bot-clients` group can reach `bot.sock` and nothing els
 | Action | Agent (`bot.sock`, through bot-mcp) | Owner (`owner.sock`, through `cancore-bot`) |
 | --- | --- | --- |
 | Read status, balances, orders, limits, the audit tail, a quote | yes | `status` and `limits show`; the audit log with `audit verify` and the file itself; no CLI command for balances, orders or a quote (the socket would answer them) |
-| Cancel orders, stop a strategy, pause | yes | `pause`, which stops every strategy and cancels the bot's resting orders; no CLI command for one order or one strategy |
+| Cancel orders, stop a strategy, pause | yes | `pause`, which stops every strategy and cancels the bot's resting orders (only while the daemon is unlocked); no CLI command for one order or one strategy |
 | Place or take an order, start a strategy | yes, inside the limits | no CLI command (the socket would apply the same risk gate) |
 | Resume after a pause | no | yes |
 | Change limits | no | yes |

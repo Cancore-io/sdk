@@ -179,8 +179,14 @@ in the agent user's files:
 
 - **Claude Desktop and claude.ai:** upload the `skills/cancore-trading` folder, as a ZIP, in
   the Skills settings.
-- **Codex:** put the text of `SKILL.md` into the agent user's `~/.codex/AGENTS.md`, written by
-  that user the same way, or into a project's `AGENTS.md`.
+- **Codex:** append the text of `SKILL.md` to the agent user's `~/.codex/AGENTS.md`, or put it in
+  a project's `AGENTS.md`. From the clone, as you, once (`-a` appends):
+
+  ```sh
+  sudo -u cancore-agent mkdir -p ~cancore-agent/.codex
+  sudo -u cancore-agent tee -a ~cancore-agent/.codex/AGENTS.md < skills/cancore-trading/SKILL.md > /dev/null
+  ```
+
 - **Any other agent:** put it in the agent's instructions.
 
 ## Example session

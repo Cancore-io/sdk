@@ -70,7 +70,7 @@ you --sudo -u cancore-bot--> cancore-bot --owner.sock-------+
 | Action | Agent (`bot.sock`, through bot-mcp) | Owner (`owner.sock`, through `cancore-bot`) |
 | --- | --- | --- |
 | Read status, balances, orders, limits, the audit tail, a quote | yes | status, limits and the audit log; no CLI command for balances, orders or a quote |
-| Cancel orders, stop a strategy, pause | yes | `pause` (it stops every strategy and cancels the resting orders) |
+| Cancel orders, stop a strategy, pause | yes | `pause` (it stops every strategy and, while the daemon is unlocked, cancels the resting orders) |
 | Place or take an order, start a strategy | yes, inside the limits | no CLI command |
 | Resume, change limits, unlock, lock, register, release a booked take | no | yes |
 | Withdraw | no | yes, only to `ownerParty` from the config |
