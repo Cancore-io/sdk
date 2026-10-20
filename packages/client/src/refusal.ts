@@ -13,6 +13,7 @@ export type Refusal =
   | 'retrySignIn'
   | 'dvpNotAllowed'
   | 'feeHoldingRequired'
+  | 'accountStopped'
   | 'other';
 
 function assertNever(value: never): never {
@@ -48,6 +49,11 @@ export function refusalForCode(code: SdkErrorCode): Refusal {
     /** The DvP fee leg needs a holding of its own on the paying (taker) side: that side splits its balance, then the trade is retried. */
     case 'DVP_FEE_HOLDING_REQUIRED':
       return 'feeHoldingRequired';
+    /** The owner stopped this bot account: no order is made or taken until the owner resumes it, so a retry before that cannot succeed. */
+    case 'ACCOUNT_STOPPED':
+      return 'accountStopped';
+    // Too little balance even with a fee holding of its own: another split would not help, so never feeHoldingRequired.
+    case 'DVP_FEE_BALANCE_INSUFFICIENT':
     case 'REQUIRES_INTERACTIVE_SUBMISSION':
     case 'SWAP_FEE_PENDING':
     case 'SWAP_FEE_ALREADY_PAID':
@@ -80,6 +86,80 @@ export function refusalForCode(code: SdkErrorCode): Refusal {
     case 'MANDATE_AMBIGUOUS':
     case 'IDEMPOTENCY_KEY_REUSED':
     case 'MANDATE_NOT_YET_VISIBLE':
+    case 'GEO_RESTRICTED':
+    // The partner Temple desk, the intent routes and quotes, and filler registration: no flow of this
+    // client runs them, so it only surfaces them.
+    case 'TEMPLE_FORBIDDEN':
+    case 'TEMPLE_NOT_ENABLED':
+    case 'TEMPLE_NO_PARTY':
+    case 'TEMPLE_LIMITS_NOT_SET':
+    case 'TEMPLE_PAIR_NOT_ALLOWED':
+    case 'TEMPLE_BELOW_MINIMUM':
+    case 'TEMPLE_PER_TRADE_LIMIT':
+    case 'TEMPLE_DAILY_LIMIT':
+    case 'TEMPLE_DESK_BUSY':
+    case 'TEMPLE_DESK_NOT_CONFIGURED':
+    case 'TEMPLE_PRICE_UNAVAILABLE':
+    case 'TEMPLE_QUOTE_UNAVAILABLE':
+    case 'ROUTE_CATALOG_INVALID':
+    case 'ROUTE_VERSION_CONFLICT':
+    case 'ROUTE_CHECK_FAILED':
+    case 'ROUTE_CHANGE_NOT_PENDING':
+    case 'ROUTE_CHANGE_SUPERSEDED':
+    case 'ROUTE_CHANGE_OWN':
+    case 'ROUTE_NOT_SUPPORTED':
+    case 'RECIPIENT_NOT_READY':
+    case 'PRICE_UNAVAILABLE':
+    case 'OFFER_EXPIRED':
+    case 'FILLER_UNAVAILABLE':
+    case 'INVALID_QUOTE_REQUEST':
+    case 'FORBIDDEN':
+    case 'WALLET_NOT_LINKED':
+    case 'BELOW_MIN_INPUT':
+    case 'OPEN_PAUSED':
+    case 'ROUTE_PAUSED':
+    case 'DESTINATION_NOT_REGISTERED':
+    case 'INSUFFICIENT_BALANCE':
+    case 'NOT_OWNER':
+    // An intent's, not a swap's: never alreadySettled, which is about an HTLC swap both sides claimed.
+    case 'ALREADY_SETTLED':
+    case 'REFUND_NOT_YET':
+    case 'CANCEL_NOT_ALLOWED':
+    case 'APPLICATION_EXISTS':
+    case 'ALREADY_FILLER':
+    case 'PARTNER_EXISTS':
+    case 'NO_APPLICATION':
+    case 'NOT_EDITABLE':
+    case 'BAD_IMAGE':
+    case 'FILLER_ID_TAKEN':
+    case 'FILLER_ID_INVALID':
+    case 'DISPLAY_NAME_TAKEN':
+    case 'BAD_KEY_REGISTRATION':
+    case 'KEY_CHANGE_PENDING':
+    case 'BAD_TEXT':
+    case 'ROUTE_CHANGE_PENDING':
+    case 'REQUEST_CLOSED':
+    case 'CANTON_PARTY_REQUIRED':
+    case 'CANTON_PARTY_INVALID':
+    case 'CANTON_PARTY_TAKEN':
+    case 'ROUTE_INVALID':
+    case 'LIMITS_INVALID':
+    case 'BAD_CURSOR':
+    case 'NOT_A_FILLER':
+    case 'NOT_REVIEWABLE':
+    case 'ALREADY_IN_STATE':
+    case 'NOT_READY':
+    case 'KEY_CHECK_UNAVAILABLE':
+    case 'PARTY_CHECK_UNAVAILABLE':
+    case 'REGISTRY_UNCONFIGURED':
+    case 'REGISTRY_CONFLICT':
+    case 'REGISTRY_STATE':
+    case 'REGISTRY_IN_USE':
+    case 'FILLER_ACTIVE':
+    case 'ATTESTOR_KEY':
+    case 'ATTESTOR_LIST_MISSING':
+    case 'REGISTRATION_LINK_INVALID':
+    case 'REGISTRATION_LINKS_BUSY':
       return 'other';
     default:
       return assertNever(code);

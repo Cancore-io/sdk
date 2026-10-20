@@ -140,8 +140,15 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
     }
   };
 
-  /** Orders with nothing left to do. ponytail: grows with the account's history; prune if a loop runs for months. */
+  /**
+   * Orders with nothing left to do. ponytail: forgets the oldest past DONE_LIMIT (insertion order); a forgotten
+   * one costs a re-read that finds it finished again. An LRU if a history that long re-reads too often.
+   */
   const done = new Set<string>();
+  const finish = (orderId: string) => {
+    done.add(orderId);
+    if (done.size > DONE_LIMIT) done.delete(done.values().next().value!);
+  };
   const toTake = new Set<string>();
   // Takes whose accept request is in flight: untake cannot stop them.
   const accepting = new Set<string>();
@@ -184,18 +191,18 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
     const [{ id: selfId }, order] = await Promise.all([me(), acct.swap.get(orderId)]);
     const maker = order.initiatorUserId === selfId;
     if (order.sourceNetwork !== 'canton' || order.targetNetwork !== 'canton' || order.dvp !== true) {
-      done.add(orderId); // serve drives DvP orders only
+      finish(orderId); // serve drives DvP orders only
       return undefined;
     }
     if (TERMINAL_ORDER_STATUSES.has(order.status)) {
       if (order.swapId) await expiredLocked(orderId, order.swapId);
-      done.add(orderId);
+      finish(orderId);
       return undefined;
     }
     // An open order is the maker's to wait on — the next event or poll brings it back once taken.
     if (order.status === 'open' && (maker || !toTake.has(orderId))) return undefined;
     if (!maker && order.status !== 'open' && order.opponentUserId !== selfId) {
-      done.add(orderId); // taken by somebody else
+      finish(orderId); // taken by somebody else
       return undefined;
     }
     return maker;
@@ -225,7 +232,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
         },
       };
       const settled = await (maker ? acct.make(orderId, settle) : acct.take(orderId, takeRun));
-      done.add(orderId);
+      finish(orderId);
       emit({ type: 'settled', orderId, swapId: settled.swap.id, settled });
     } catch (error) {
       // Still in flight after the failure: no refusal proved this accept did not happen.
@@ -238,7 +245,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
         emit({ type: 'expired', orderId, swapId, error: error as Error, ...(withdrawal ? { withdrawal } : {}) });
         if (swapId && withdrawal && withdrawal.withdrawn.length > 0) emit({ type: 'withdrawn', orderId, swapId, withdrawal });
         // Still locked (a leg failed, or autoWithdraw is off): the next poll lists the swap and tries again.
-        if (!withdrawable) done.add(orderId);
+        if (!withdrawable) finish(orderId);
         return;
       }
       throw error;

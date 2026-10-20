@@ -501,6 +501,8 @@ retries are the ones the API says are safe. Every decision is taken on the refus
 | `PREPARED_SUBMISSION_EXPIRED` | prepares and signs again, once — only where that is safe (the DvP steps of `make` / `take`) |
 | `DVP_NOT_ALLOWED` | a `SettleError` wherever it comes (placing, taking, recording the trade): DvP is not open to this account on this stand |
 | `DVP_FEE_HOLDING_REQUIRED` | a `SettleError` saying who must split its balance: at `take`, this account (`splitForFee`, then `take()` again); at `make`, the taker (then `make()` again). With `autoSplitForFee: true`, `take` splits the fee off itself (CC, the send verified from its bytes, or blind with `allowUnverifiedSplit`) and takes once more |
+| `DVP_FEE_BALANCE_INSUFFICIENT` | surfaces it, and never splits again: the balance cannot cover the leg and the fee even with a fee holding of its own — top up |
+| `ACCOUNT_STOPPED` | surfaces it: the owner stopped this bot account, and no order is made or taken until the owner resumes it |
 | `ACCOUNT_NOT_FOUND` (at sign-in) | asks for a new challenge up to twice more, 1 s then 2 s apart. The gateway answers an existing key with this 404 when its challenge is slow (a known gateway issue), most often right after sign-up; three in a row surfaces it |
 | anything else | surfaces it |
 
