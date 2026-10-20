@@ -22,10 +22,14 @@ export type {
   OrderUser,
   Page,
   Pair,
+  Price,
   Quote,
   SwapClient,
   SwapStatus,
   TrackOptions,
+  TradingPair,
+  TradingPairsQuery,
+  TradingPairToken,
 } from './swap';
 export { createBridgeClient, bridge } from './bridge';
 export type {

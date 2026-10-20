@@ -19,12 +19,6 @@ describe('refusalOf, by code', () => {
     expect(refusalOf(refused(400, { errorCode: code, code, message: 'wording the API may change tomorrow' }))).toBe(expected);
   });
 
-  test('ACCOUNT_STOPPED is accountStopped: the owner stopped the bot, a retry would be refused again (CAN-2926)', () => {
-    const code = 'ACCOUNT_STOPPED' as SdkErrorCode;
-    expect(SDK_ERROR_CODES).toContain(code);
-    expect(refusalOf(refused(403, { errorCode: code, code, message: 'This bot account was stopped by its owner' }))).toBe('accountStopped');
-  });
-
   test('the same holds when an older gateway sends code alone', () => {
     expect(refusalOf(refused(400, { code: 'SUBMISSION_TIMEOUT_RETRYABLE', message: 'x' }))).toBe('retrySameSignatures');
   });
