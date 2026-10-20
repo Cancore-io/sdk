@@ -283,7 +283,11 @@ The filler settles its own fills; Cancore does not (fillers.md §4.7, T-33, T-34
   won the race (R-5) is an alert.
 - **Alerts** (stage `settle.alert`, `detail.kind`): `half-window` — unsettled at half the proof window since the
   fill (R-4); `refund-near` — unsettled `settlement.alertBeforeRefundMs` (1 h) before `refundAfter`; `refunded`,
-  `divergent`, `insufficient-signatures`, `set-not-active`, `mismatch`.
+  `settle-reverted`, `divergent`, `insufficient-signatures`, `set-not-active`, `mismatch`; `escrow-gone` — the source
+  router no longer has the escrow of a delivered order (its open reorged out): the filler's advance is at risk. The
+  order is read again every sweep and settles as before if a reorg brings the escrow back.
+- **Reorgs.** A refund or a settlement read at the head alone leaves the settlement pending; it closes once it
+  reads `fillConfirmations` deep on the source chain.
 - **Events.** `attested` once a set passes; stages `attestations.received`, `settle.sent`, `settle.confirmed`,
   `settle.reverted`, `settle.refused`; `settled` from `order.settled`.
 - **For a relayer**: `verifyAttestations` and `collectAttestations` are pure functions over a proof, its

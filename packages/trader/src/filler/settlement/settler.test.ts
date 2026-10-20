@@ -39,7 +39,7 @@ const sign = (key: Hex, digest: Hex): AttestationEvm => {
 const ascending = (entries: AttestationEvm[]) => [...entries].sort((a, b) => (a.signer < b.signer ? -1 : 1));
 
 /** A BSC → Ethereum order this filler delivered (fill confirmed), its escrow open on the fake BSC router, attestor set 1 of 2-of-3. */
-async function world(options: { refundAfterS?: number; proofWindowS?: bigint } = {}) {
+async function world(options: { refundAfterS?: number; proofWindowS?: bigint; fillConfirmations?: number } = {}) {
   const clock = new FakeClock();
   const nowS = BigInt(Math.floor(clock.now() / 1000));
   const src = new FakeChain(56n, 'bsc');
@@ -135,7 +135,7 @@ async function world(options: { refundAfterS?: number; proofWindowS?: bigint } =
 
   const events = createRecordingEventSink();
   const logger = createRecordingLogger();
-  const chains = new FillerChains({ [SRC]: [src] }, { [SRC]: POLICY }, logger);
+  const chains = new FillerChains({ [SRC]: [src] }, { [SRC]: { ...POLICY, ...(options.fillConfirmations !== undefined ? { fillConfirmations: options.fillConfirmations } : {}) } }, logger);
   const signer = { ...fillSigner, signTransaction: jest.fn(fillSigner.signTransaction.bind(fillSigner)) };
   const executor = new Executor({ store, chains, fillSigners: { [SRC]: signer }, fillerId: FILLER, receipted: async () => undefined, instanceId: 'r1', clock, logger, events, delivery: { pollIntervalMs: 1_000 } });
   const handlers = new Map<string, FrameHandler>();
@@ -365,6 +365,91 @@ describe('alerts (R-4)', () => {
     const w = await world({ proofWindowS: 10_000n, refundAfterS: 20_000 });
     await w.settler.sweep();
     expect(w.stages('settle.alert')).toHaveLength(0);
+  });
+});
+
+describe('CAN-2810: reorgs on the source after the delivery', () => {
+  const alertKinds = (w: Awaited<ReturnType<typeof world>>) => w.stages('settle.alert').map((s) => s.detail!.kind);
+
+  test('CAN-2810: an escrow gone after the delivery alerts escrow-gone, never refund-near; it is read every sweep and settles once a reorg brings it back', async () => {
+    const w = await world({ refundAfterS: 10_000 });
+    const key = w.orderHash.toLowerCase();
+    const escrow = w.router.intents.get(key)!;
+    w.router.intents.delete(key);
+    await w.settler.sweep();
+    await w.settler.sweep();
+    expect(alertKinds(w)).toEqual(['escrow-gone']);
+    expect(w.stages('settle.alert')[0]!.detail).toMatchObject({ chain: SRC, fillTx: `0x${'cc'.repeat(32)}` });
+    expect(await w.settlement()).toBeUndefined();
+    expect(w.pulls).toHaveLength(0);
+
+    w.router.intents.set(key, escrow);
+    await w.settler.sweep();
+    expect(w.pulls).toHaveLength(1);
+    w.router.intents.delete(key);
+    await w.settler.sweep();
+    expect(alertKinds(w)).toEqual(['escrow-gone', 'escrow-gone']);
+
+    w.router.intents.set(key, escrow);
+    w.ready.next = w.delivery();
+    await w.settler.sweep();
+    await flush();
+    expect(w.settles()).toHaveLength(1);
+    expect(await w.settlement()).toMatchObject({ state: 'sent' });
+    expect(alertKinds(w)).not.toContain('refund-near');
+  });
+
+  test('CAN-2810: a refund read at the head alone leaves the settlement pending; fillConfirmations deep it closes with one refunded alert', async () => {
+    const w = await world({ fillConfirmations: 3, refundAfterS: 10_000 });
+    const escrow = w.router.intents.get(w.orderHash.toLowerCase())!;
+    escrow.status = 3;
+    escrow.statusAtBlock = w.src.head;
+    await w.settler.sweep();
+    expect(await w.settlement()).toBeUndefined();
+    expect(w.stages('settle.alert')).toHaveLength(0);
+    w.src.mine(2n);
+    await w.settler.sweep();
+    await w.settler.sweep();
+    expect(await w.settlement()).toMatchObject({ state: 'failed', reason: expect.stringContaining('refunded') });
+    expect(alertKinds(w)).toEqual(['refunded']);
+  });
+
+  test('CAN-2810: a settlement read at the head alone is not closed; reorged away, the sweep settles the order itself', async () => {
+    const w = await world({ fillConfirmations: 3, refundAfterS: 10_000 });
+    const escrow = w.router.intents.get(w.orderHash.toLowerCase())!;
+    escrow.status = 2;
+    escrow.statusAtBlock = w.src.head;
+    w.ready.next = w.delivery();
+    await w.settler.sweep();
+    expect(await w.settlement()).toBeUndefined();
+    expect(w.settles()).toHaveLength(0);
+    w.src.mine(2n);
+    await w.settler.sweep();
+    expect(await w.settlement()).toMatchObject({ state: 'settled' });
+
+    const v = await world({ fillConfirmations: 3, refundAfterS: 10_000 });
+    const reorged = v.router.intents.get(v.orderHash.toLowerCase())!;
+    reorged.status = 2;
+    reorged.statusAtBlock = v.src.head;
+    v.ready.next = v.delivery();
+    await v.settler.sweep();
+    reorged.status = 1;
+    delete reorged.statusAtBlock;
+    await v.settler.sweep();
+    await flush();
+    expect(v.settles()).toHaveLength(1);
+    expect(await v.settlement()).toMatchObject({ state: 'sent' });
+  });
+
+  test('CAN-2810: IntentNotOpen on eth_call while the settlement reads at the head alone: refused as reverted, the record left open', async () => {
+    const w = await world({ fillConfirmations: 3 });
+    const escrow = w.router.intents.get(w.orderHash.toLowerCase())!;
+    escrow.status = 2;
+    escrow.statusAtBlock = w.src.head;
+    await w.push(w.delivery());
+    expect(w.settles()).toHaveLength(0);
+    expect(w.stages('settle.refused')[0]!.detail).toMatchObject({ reason: 'reverted', error: expect.stringContaining('IntentNotOpen') });
+    expect(await w.settlement()).toBeUndefined();
   });
 });
 

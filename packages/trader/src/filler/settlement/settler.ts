@@ -22,7 +22,12 @@
  *   intent someone else settled is a success, not an error (L7).
  * - **Alerts** (R-4): a confirmed fill not settled by half its proof window,
  *   and one still unsettled `alertBeforeRefundMs` before `refundAfter`
- *   (filler-node `settle.alertBeforeRefundSec`); a refund that won the race.
+ *   (filler-node `settle.alertBeforeRefundSec`); a refund that won the race;
+ *   an escrow gone from the source after the delivery (`escrow-gone`).
+ * - **Reorgs** (CAN-2810). A refund or a settlement closes the record only once
+ *   it reads `fillConfirmations` deep; seen at the head alone it stays pending.
+ *   An escrow the source no longer has (its open reorged out) is re-read every
+ *   sweep: a reorg may bring it back, and then it settles as before.
  * - **Canton source** (T-35…T-37, CAN-2321): the same two channels and the
  *   same own-proof check, then `intent.settle` — `SwapIntent_SettleWithProof`
  *   prepared by Cancore with the signatures filler-gateway holds, checked
@@ -53,7 +58,7 @@ import { GatewayError } from '../errors';
 import { intentOrder } from '../tickets/canton-source';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../chain/abi';
 import { ChainReadError } from '../chain/client';
-import { INTENT_STATUS, type FillerChains } from '../chain';
+import { INTENT_STATUS, type ChainConfig, type ChainReaders, type FillerChains } from '../chain';
 import { evmChainNumber, type EvmChainId } from '../chains';
 import type { Executor } from '../delivery/executor';
 import { FeeCeilingError, LeaseLostError, type TransactionCall, type TransactionReceipt } from '../delivery/transactions';
@@ -135,6 +140,9 @@ export interface SettlerOptions {
 const ROUTER_ABI = CANCORE_ROUTER_ABI as unknown as readonly AbiEntry[];
 const SETTLE = entryOf(ROUTER_ABI, 'function', 'settle');
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
+const REFUNDED = 'refunded: the maker refunded before settle (R-5)';
+/** The depth an outcome must read at before it is final: the same as the filler's own transactions (executor). */
+const finalityDepth = (config: Readonly<ChainConfig>): number => Math.max(1, config.fillConfirmations ?? config.openConfirmations ?? 1);
 /**
  * Nothing more to do for the settlement: confirmed, settled, or lost to a refund.
  * A `failed` settle for any other reason, and a `sent` one whose nonce was lost,
@@ -304,20 +312,21 @@ export class Settler {
     }
   }
 
-  /** Reads the intent; raises the window alerts; closes a refunded or settled intent. Returns its status and `refundAfter`. */
+  /** Reads the intent; raises the window alerts; closes a refunded or settled intent once final. Returns its status and `refundAfter`. */
   private async checkWindow(s: Settleable, source: EvmChainId): Promise<{ status: number; refundAfter: bigint }> {
     const readers = this.options.chains.get(source);
     if (!readers) return { status: INTENT_STATUS.None, refundAfter: 0n };
     const intent = await readers.router.intents(s.orderHash);
-    if (intent.status === INTENT_STATUS.Refunded) {
-      await this.close(s.orderHash, s.fill.attempt, 'failed', 'refunded: the maker refunded before settle (R-5)');
-      this.alert(s.orderHash, s.fill.attempt, 'refunded', {});
+    if (intent.status === INTENT_STATUS.Refunded || intent.status === INTENT_STATUS.Settled) {
+      await this.closeIfFinal(s.orderHash, s.fill.attempt, readers, 'the intent is settled');
       return intent;
     }
-    if (intent.status === INTENT_STATUS.Settled) {
-      await this.close(s.orderHash, s.fill.attempt, 'settled', 'the intent is settled');
+    if (intent.status === INTENT_STATUS.None) {
+      // The filler's output is delivered against an escrow the source no longer has; refundAfter reads 0 there and means nothing.
+      this.alert(s.orderHash, s.fill.attempt, 'escrow-gone', { chain: source, ...(s.fill.txRef ? { fillTx: s.fill.txRef } : {}) });
       return intent;
     }
+    this.rearmAlert(s.orderHash, 'escrow-gone');
     const nowS = BigInt(Math.floor(this.options.clock.now() / 1000));
     const filledAt = s.fill.inclusion ? BigInt(String(s.fill.inclusion.header.timestamp ?? '0')) : undefined;
     if (filledAt !== undefined && filledAt > 0n) {
@@ -395,16 +404,9 @@ export class Settler {
       if (!(error instanceof ChainReadError) || error.reason !== 'reverted') throw new SettleError('unavailable', reasonOf(error));
       const name = revertName(error);
       if (name.startsWith('IntentNotOpen')) {
-        const status = (await readers.router.intents(orderHash)).status;
-        if (status === INTENT_STATUS.Settled) {
-          await this.close(orderHash, attempt, 'settled', 'settled by another transaction');
-          throw new SettleError('already-settled', 'the intent was settled by another transaction');
-        }
-        if (status === INTENT_STATUS.Refunded) {
-          await this.close(orderHash, attempt, 'failed', 'refunded: the maker refunded before settle (R-5)');
-          this.alert(orderHash, attempt, 'refunded', {});
-          throw new SettleError('refunded', 'the maker refunded before settle');
-        }
+        const status = await this.closeIfFinal(orderHash, attempt, readers, 'settled by another transaction');
+        if (status === INTENT_STATUS.Settled) throw new SettleError('already-settled', 'the intent was settled by another transaction');
+        if (status === INTENT_STATUS.Refunded) throw new SettleError('refunded', 'the maker refunded before settle');
       }
       this.stage('settle.refused', orderHash, attempt, { reason: 'reverted', error: name });
       throw new SettleError('reverted', name);
@@ -684,12 +686,8 @@ export class Settler {
     }
     // Reverted: someone settled or refunded first, or the set stopped verifying.
     const readers = this.options.chains.get(chain);
-    const status = readers ? (await readers.router.intents(orderHash)).status : INTENT_STATUS.None;
-    if (status === INTENT_STATUS.Settled) await this.close(orderHash, attempt, 'settled', 'settled by another transaction');
-    else if (status === INTENT_STATUS.Refunded) {
-      await this.close(orderHash, attempt, 'failed', 'refunded: the maker refunded before settle (R-5)');
-      this.alert(orderHash, attempt, 'refunded', {});
-    } else {
+    const status = readers ? await this.closeIfFinal(orderHash, attempt, readers, 'settled by another transaction') : INTENT_STATUS.None;
+    if (status !== INTENT_STATUS.Settled && status !== INTENT_STATUS.Refunded) {
       // Still open: not terminal — the sweep settles again (verified afresh, eth_call first) until refundAfter.
       await this.close(orderHash, attempt, 'failed', `reverted in block ${receipt.blockNumber}`);
       this.alert(orderHash, attempt, 'settle-reverted', { txHash: tx.hash });
@@ -753,6 +751,17 @@ export class Settler {
     });
   }
 
+  /** Reads the intent `fillConfirmations` deep and closes the settlement when it is settled or refunded there. Returns that status. */
+  private async closeIfFinal(orderHash: Hex, attempt: number, readers: ChainReaders, settledReason: string): Promise<number> {
+    const { status } = await readers.router.intents(orderHash, { confirmations: finalityDepth(readers.config) });
+    if (status === INTENT_STATUS.Settled) await this.close(orderHash, attempt, 'settled', settledReason);
+    if (status === INTENT_STATUS.Refunded) {
+      await this.close(orderHash, attempt, 'failed', REFUNDED);
+      this.alert(orderHash, attempt, 'refunded', {});
+    }
+    return status;
+  }
+
   private async release(orderHash: Hex): Promise<void> {
     await this.options.store.withOrder(orderHash, async (tx) => {
       const current = await tx.getSettlement();
@@ -774,6 +783,11 @@ export class Settler {
     this.alerted.add(k);
     this.options.logger.error('settle: alert', { orderHash, attempt, kind, ...detail });
     this.stage('settle.alert', orderHash, attempt, { kind, ...detail });
+  }
+
+  /** The next `alert` of `kind` for the order is raised again: the condition it reported has cleared. */
+  private rearmAlert(orderHash: Hex, kind: string): void {
+    this.alerted.delete(`${orderHash}:${kind}`);
   }
 
   private stage(stage: FillerStage, orderHash: Hex, attempt: number, detail: Readonly<Record<string, string | number | boolean>>): void {
