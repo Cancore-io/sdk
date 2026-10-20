@@ -274,6 +274,7 @@ describe('accept-counter: the counter HTLC is accepted only as the account expec
     await refused([await accept({}, param('backdoor', v.party(MALLORY)))], /the proposal has fields this SDK does not read: backdoor/);
     await refused([await accept({}, { params: (p) => { delete p.feeAmount; } })], /the proposal is missing feeAmount/);
     await refused([await accept({}, { record: (r) => { r.extra = v.text('x'); } })], /the proposal contract has fields this SDK does not read: extra/);
+    await refused([await accept({}, { record: (r) => { r.params = v.text('x'); } })], /the proposal is not a record this SDK reads/);
     await refused([await accept({}, { argument: (a) => { a.redirect = v.party(MALLORY); } })], /the accept has arguments this SDK does not read: redirect/);
   });
 
