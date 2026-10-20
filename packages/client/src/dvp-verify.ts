@@ -325,7 +325,7 @@ export function signerBounds(
 }
 
 /** What the tree spends, per instrument: every holding it consumes must be the signer's, and one the transaction discloses or creates. */
-export function spentHoldings(nodes: Nodes, inputs: Map<string, Create>, created: Map<string, Create>, party: string): Map<string, bigint> | string {
+function spentHoldings(nodes: Nodes, inputs: Map<string, Create>, created: Map<string, Create>, party: string): Map<string, bigint> | string {
   const spent = new Map<string, bigint>();
   for (const node of nodes.values()) {
     const type = nodeType(node)!;
@@ -640,7 +640,7 @@ export const textOf = (value: Value | undefined) => (value?.sum.oneofKind === 't
 export const numericOf = (value: Value | undefined) => (value?.sum.oneofKind === 'numeric' ? value.sum.numeric : undefined);
 
 /** The holding a contract is, if it is one: owner, instrument and amount in 1e-10 units. Read from typed values: `owner` must be a Party. */
-function holdingOf(contract: Create): { owner: string; instrument: string; amount: bigint; locked: boolean } | null {
+export function holdingOf(contract: Create): { owner: string; instrument: string; amount: bigint; locked: boolean } | null {
   const top = fieldsOf(contract.argument);
   if (!top) return null;
   const isSome = (value: Value | undefined) => value !== undefined && !(value.sum.oneofKind === 'optional' && !value.sum.optional.value);
@@ -1052,7 +1052,7 @@ export async function verifyPreapprovalSetupPrepared(legs: Leg[], terms: Preappr
 
 export type Leg = PreparedToSign & { kind: string };
 export type Refuse = (reason: string) => never;
-export type Exercise = Extract<NonNullable<ReturnType<typeof nodeType>>, { oneofKind: 'exercise' }>['exercise'];
+type Exercise = Extract<NonNullable<ReturnType<typeof nodeType>>, { oneofKind: 'exercise' }>['exercise'];
 export type Opened = Awaited<ReturnType<typeof openLeg>>;
 
 export const refuser = (operation: TokenOperation): Refuse => (reason) => {
@@ -1067,7 +1067,7 @@ const TRANSFER_FACTORY_INTERFACE = { moduleName: 'Splice.Api.Token.TransferInstr
 const TRANSFER_INSTRUCTION_INTERFACE = { moduleName: 'Splice.Api.Token.TransferInstructionV1', entityName: 'TransferInstruction' };
 
 /** A Daml value as plain JSON, or null when it holds a kind this SDK does not read. */
-export function readPlain(value: Value | undefined): unknown {
+function readPlain(value: Value | undefined): unknown {
   try {
     return plain(value);
   } catch {
@@ -1290,7 +1290,7 @@ function acceptLeg({ nodes, root, inputs, created }: Opened, what: string, refus
 }
 
 /** Signed by one of `admins` — as the contract disclosed says and as the command exercising it says. */
-export const signedBy = (contract: Create, command: Exercise, admins: string[]) =>
+const signedBy = (contract: Create, command: Exercise, admins: string[]) =>
   [contract.signatories, command.signatories].every((signed) => signed.some((p) => admins.includes(p)));
 
 /** The same transfer: sender, receiver, amount, instrument and admin. */

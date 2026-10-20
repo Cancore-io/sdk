@@ -168,7 +168,7 @@ describe('Flow B: the escrow request and its deposit are signed only as the acco
 
   test('F20: a deposit that costs the account more than the amount and its fee ceiling is refused', async () => {
     await refused([await escrow(), await deposit({ outputs: [{ owner: ME, amount: '10', lockedTo: DEV.dso }] })], /the send costs this account 25 Amulet, more than the 10 it sends/);
-    await refused([await escrow(), await deposit({ outputs: [{ owner: ME, amount: '10', lockedTo: DEV.dso }, { owner: MALLORY, amount: '15' }] })], /creates a holding owned by mallory::1220ff/);
+    await refused([await escrow(), await deposit({ outputs: [{ owner: ME, amount: '10', lockedTo: DEV.dso }, { owner: MALLORY, amount: '15' }] })], /node 3 involves mallory::1220ff, who is not part of this send/);
   });
 
   test('F21: a leg of another kind, a second request or deposit, or no request at all is refused', async () => {
@@ -215,6 +215,11 @@ describe('accept-counter: the counter HTLC is accepted only as the account expec
     await refused([await accept({}, { proposalPackageId: UNTRUSTED_ID })], /not Proposal_Accept on an HTLCProposal of a trusted htlc package/);
     await refused([await accept({}, { command: (c) => { c.templateId = { ...c.templateId!, entityName: 'HTLC' }; } })], /not Proposal_Accept on an HTLCProposal of a trusted htlc package/);
     await refused([await accept({}, { command: (c) => { c.consuming = false; } })], /the accept does not consume the proposal/);
+    const create = await initRequestLeg({
+      party: ME, receiver: TAKER, amount: '5000', instrument: CC, hashLock: HASH_LOCK, timeout: iso(NOW + 2 * HOUR),
+      escrow: ESCROW, executor: EXECUTOR, fee: FEE_PARTY, maxFeeRate: '0.01', provider: null, description: 'counter',
+    });
+    await refused([create], /the accept is not Proposal_Accept on an HTLCProposal of a trusted htlc package/);
   });
 
   test('A2: acting with another party beside the account is refused', async () => {
@@ -272,6 +277,7 @@ describe('accept-counter: the counter HTLC is accepted only as the account expec
   test('A13: an HTLC that is not the proposal\'s, none, or two, is refused', async () => {
     await refused([await accept({}, { htlcParams: (p) => { p.receiver = v.party(MALLORY); } })], /the HTLC it creates differs from the proposal in receiver/);
     await refused([await accept({}, { htlcParams: (p) => { p.amount = v.numeric('4000.0000000000'); } })], /the HTLC it creates differs from the proposal in amount/);
+    await refused([await accept({}, { htlcParams: (p) => { p.backdoor = v.party(MALLORY); } })], /the HTLC it creates has fields this SDK does not read: backdoor/);
     await refused([await accept({}, { htlcs: 0 })], /the accept creates 0 HTLCs, not one/);
     await refused([await accept({}, { htlcs: 2 })], /the accept creates 2 HTLCs, not one/);
     await refused([await accept({}, { htlcPackageId: UNTRUSTED_ID })], /node 1 runs on a HTLC that is neither the HTLC package's nor the instrument admin's/);

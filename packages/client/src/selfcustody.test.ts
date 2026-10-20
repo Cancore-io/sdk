@@ -20,7 +20,7 @@ import {
 } from './selfcustody';
 import { createSession, expiresWithin, LOGIN_CHALLENGE_PREFIX, type KeySigner } from './session';
 import type { SettleRun } from './serve';
-import { acceptCounterLeg, amuletInstruction, ESCROW, EXECUTOR, FEE_PARTY, HASH_LOCK, initRequestLeg, iso } from './htlc-prepared.fixture';
+import { acceptCounterLeg, amuletInstruction, ESCROW, EXECUTOR, HASH_LOCK, initRequestLeg, iso } from './htlc-prepared.fixture';
 
 /**
  * A fake venue that settles one Canton↔Canton swap the way the API does: every

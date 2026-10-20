@@ -21,8 +21,8 @@
 import type { Value } from '@canton-network/core-ledger-proto';
 import { instrumentKey } from './dvp-admins';
 import {
-  CLOCK_SKEW_MS, decimalOf, fieldsOf, nodeType, numericOf, openLeg, partyOf, refuser, sameTemplate, sendCost, signerBounds,
-  spentHoldings, textOf, trusted, units, type Create, type Leg, type Opened, type Refuse,
+  CLOCK_SKEW_MS, decimalOf, fieldsOf, holdingOf, nodeType, numericOf, openLeg, partyOf, refuser, sameTemplate, sendCost, signerBounds,
+  textOf, trusted, units, type Create, type Leg, type Opened, type Refuse,
 } from './dvp-verify';
 
 /** The parties and packages a self-custody HTLC may name, pinned per network (see `dvp-admins.ts`). */
@@ -219,7 +219,7 @@ function checkParties(fields: Map<string, Value>, what: string, pins: HtlcPins, 
 
 /**
  * The accept's tree: every node on the HTLC package or on a contract an instrument admin signed; the
- * account acts at the root only and spends nothing; exactly one HTLC is created, and it is the
+ * account acts at the root only and spends no holding of its own; exactly one HTLC is created, and it is the
  * proposal's but for the allocations the accept re-escrows.
  */
 function checkAcceptTree(
@@ -235,9 +235,15 @@ function checkAcceptTree(
     }
     if (type.oneofKind === 'exercise' && type.exercise.actingParties.includes(terms.party)) refuse(`this account acts below the accept, in node ${node.nodeId}`);
   }
-  const spent = spentHoldings(nodes, inputs, created, terms.party);
-  if (typeof spent === 'string') refuse(`${what}: ${spent}`);
-  else for (const [instrument, amount] of spent) refuse(`${what} spends ${decimalOf(amount)} of this account's ${instrument}`);
+  // The accept may spend the escrow's allocations, never a holding of the account's own. Every target is
+  // disclosed: the origin check above refuses a node on a contract it cannot read.
+  for (const node of nodes.values()) {
+    const type = nodeType(node)!;
+    if (type.oneofKind !== 'exercise' || !type.exercise.consuming || type === root) continue;
+    const target = inputs.get(type.exercise.contractId) ?? created.get(type.exercise.contractId);
+    const holding = target && holdingOf(target);
+    if (holding && holding.owner === terms.party) refuse(`${what} spends ${decimalOf(holding.amount)} of this account's ${holding.instrument}`);
+  }
 
   const htlcs = [...created.values()].filter((c) => isHtlcTemplate(c, 'HTLC', terms));
   if (htlcs.length !== 1) refuse(`${what} creates ${htlcs.length} HTLCs, not one`);
