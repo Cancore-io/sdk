@@ -405,6 +405,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
    * engine's loop know every accept sent for it. In memory: a restart or a lock leaves a booking nobody can vouch for.
    */
   const takenWith = new Map<string, Engine>();
+  /** Unlocks so far: each one starts a new engine with its own settlement loop. */
+  let unlocks = 0;
 
   /** Run on unlock and on every tick: intents, then every order on the book that is due a lookup. */
   async function reconcile(e: Engine) {
@@ -622,6 +624,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
         const cancelled: string[] = [];
         // Captured once: a lock mid-pause must not turn the rest into a TypeError and skip the book cleanup.
         const e = engine;
+        const unlocksBefore = unlocks;
         if (e) {
           // Only a take this engine booked first: an earlier booking's accept went out through a loop that is gone.
           for (const o of book.filter((x) => x.taken)) if (e.untake(o.orderId) && takenWith.get(o.orderId) === e) cancelled.push(o.orderId);
@@ -634,8 +637,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
           openOrders: s.openOrders.filter((o) => {
             if (!cancelled.includes(o.orderId)) return true;
             if (!o.taken || !e) return false;
-            // Another engine since (a lock and unlock while this pause cancelled): its loop may have taken the order again.
-            if (engine !== e) return true;
+            // An unlock since (while this pause cancelled): the new engine's loop may have taken the order again.
+            if (unlocks !== unlocksBefore) return true;
             // A take of it queued again since (a resume while this pause cancelled) is called off in the same step;
             // the order stays booked only if that take's accept is already out.
             e.untake(o.orderId);
@@ -727,6 +730,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
           throw new RpcFault(ERROR.LOCKED, 'unlock failed');
         });
         engine = deps.createEngine(signer, hooks);
+        unlocks++;
         await mutate((s) => ({ ...s, locked: false }));
         engine.start();
         // In the background: a slow API must not time the unlock out after the key is already loaded.
@@ -776,13 +780,14 @@ export function createDispatcher(deps: Deps): Dispatcher {
         // of a slow accept. Released only when this engine, still the running one, booked the take first and none of
         // its accepts went out unrefused.
         const vouched = info.status === 'open' && info.takenBySelf === undefined && engine === e && takenWith.get(orderId) === e;
-        // In the same step as the decision: a take of the same order queued during the read is called off too.
-        if (vouched) e.untake(orderId);
         // Taken by another account or ended: no accept of ours can claim it any more.
         if (info.takenBySelf === false) await endOrder(orderId, 'taken_by_other');
         else if (ENDED.has(info.status)) await endOrder(orderId, info.status);
-        else if (vouched && !e.mayBeTrade(orderId)) await endOrder(orderId, 'released');
-        else throw new RpcFault(ERROR.INVALID_PARAMS, 'not released: an accept for this order may have gone through or may still land; it stays booked until the venue refuses that accept or shows how the order ended', { reason: 'may_be_trade' } as never);
+        else if (vouched && !e.mayBeTrade(orderId)) {
+          // In the same step as that check: a take of the same order queued during the read is called off too.
+          e.untake(orderId);
+          await endOrder(orderId, 'released');
+        } else throw new RpcFault(ERROR.INVALID_PARAMS, 'not released: an accept for this order may have gone through or may still land; it stays booked until the venue refuses that accept or shows how the order ended', { reason: 'may_be_trade' } as never);
         return { orderId, released: true };
       }
       case 'resume': {

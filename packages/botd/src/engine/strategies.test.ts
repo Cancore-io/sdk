@@ -50,6 +50,9 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
     orderHold: undefined as undefined | { id: string; gate: Promise<void> },
     // Orders the loop sent an accept for that no refusal answered: they may be trades.
     sent: [] as string[],
+    // The latest engine's queued takes, and a hook run on every state write (the loop runs while the daemon writes).
+    queued: undefined as Set<string> | undefined,
+    atSave: undefined as undefined | (() => void),
     // One-shot: the next state read waits here, and so does the write it belongs to.
     loadHold: undefined as Promise<void> | undefined };
   const deps = (): Deps => ({
@@ -69,15 +72,19 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         await hold;
         return state;
       },
-      save: async (s) => void (state = s),
+      save: async (s) => {
+        crash.atSave?.();
+        state = s;
+      },
       recordAudit: async () => undefined,
     },
     limits: { load: async () => limits, save: jest.fn() },
     riskgate: check,
     createEngine: (_signer, h) => {
       hooks = h;
-      // Takes queued on this engine's loop: one not called off may send its accept any moment, so it may be a trade.
+      // Takes queued on this engine's loop, like serve's: only a queued take can be called off.
       const queued = new Set<string>();
+      crash.queued = queued;
       return {
         make: async (p) => {
           const orderId = `o${++seq}`;
@@ -97,9 +104,9 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
           await crash.takeHold;
           return { orderId: p.orderId, filled: '0' };
         },
-        // An accept already out cannot be called off.
-        untake: (id: string) => (untaken.push(id), crash.untaken.push(id), queued.delete(id), !crash.sent.includes(id)),
-        mayBeTrade: (id: string) => crash.sent.includes(id) || queued.has(id),
+        // False for a take not queued here or whose accept is already out, like serve's.
+        untake: (id: string) => (untaken.push(id), crash.untaken.push(id), queued.delete(id) && !crash.sent.includes(id)),
+        mayBeTrade: (id: string) => crash.sent.includes(id),
         // The venue applies a cancel: the order then reads cancelled, unless the test already set it otherwise.
         cancel: (id) => {
           // Not even a promise: a cancel that blows up in the caller's hands.
@@ -1263,12 +1270,31 @@ describe('owner release of a booked take (CAN-2836)', () => {
     const releasing = release(w);
     await new Promise((r) => setTimeout(r, 0));
     expect(w.untaken).toEqual(['A']);
-    // The agent takes the same order again while the release waits on the venue: queued, its accept may go out any moment.
+    // The agent takes the same order again while the release waits on the venue.
     await w.call('order.take', { orderId: 'A', amount: '1' }, false);
+    // From here a take still queued sends its accept as soon as the daemon writes the state.
+    w.crash.atSave = () => void (w.crash.queued?.has('A') && w.crash.sent.push('A'));
     read();
     await expect(releasing).resolves.toMatchObject({ result: { released: true } });
     expect(w.untaken).toEqual(['A', 'A']);
     expect(w.state().openOrders).toEqual([]);
+    // Called off before the release wrote the book: no accept of it went out.
+    expect(w.crash.sent).toEqual([]);
+  });
+
+  it('a release refused because an accept is out leaves a take queued during its read alone', async () => {
+    const w = await tookA();
+    w.crash.sent = ['A'];
+    let read!: () => void;
+    w.crash.orderHold = { id: 'A', gate: new Promise<void>((r) => (read = r)) };
+    const releasing = release(w);
+    await new Promise((r) => setTimeout(r, 0));
+    await w.call('order.take', { orderId: 'A', amount: '1' }, false);
+    const before = w.untaken.length;
+    read();
+    await expect(releasing).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
+    expect(w.untaken.length).toBe(before);
+    expect(w.crash.queued?.has('A')).toBe(true);
   });
 
   it('a refused release leaves a take queued during its read alone: only a release calls it off', async () => {
@@ -1337,6 +1363,20 @@ describe('owner release of a booked take (CAN-2836)', () => {
       expect(w.untaken.slice(before)).toContain('A');
       expect(w.state().openOrders.map((o) => o.orderId)).toEqual(out ? ['A', 'A'] : []);
     }
+  });
+
+  it('a lock with no unlock while pause cancels: its final write still drops the takes it called off', async () => {
+    const w = await tookA();
+    await w.call('order.make', { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' }, false);
+    let cancel!: () => void;
+    w.crash.cancelHold = new Promise<void>((r) => (cancel = r));
+    const atCancel = new Promise<void>((r) => (w.crash.atCancel = r));
+    const pausing = w.call('pause', { reason: 'owner stop' }, false);
+    await atCancel;
+    await w.call('lock', {}, true);
+    cancel();
+    await pausing;
+    expect(w.state().openOrders).toEqual([]);
   });
 
   it('a lock and unlock while pause cancels: its final write keeps the takes, the new engine may have taken the order again', async () => {
