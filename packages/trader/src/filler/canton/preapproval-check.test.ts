@@ -67,6 +67,16 @@ describe('preapproval.create: the party’s own preapproval with a pinned regist
     ['TC-SDK-2904-12: an exercise instead of a create', () => check()(prepared(), [create({ kind: 'exercise' })]), /not a create/],
     ['TC-SDK-2904-13: a second node in the transaction', () => check()(prepared(), [create({ extra: [{ nodeId: '1', kind: 'create', contractId: '00y', packageName: 'x', templateId: `${CNRX}:Cnrx.Holding:CnrxHolding`, argument: v.record({}), signatories: [ME], stakeholders: [ME] }] })]), /more than one create/],
     ['TC-SDK-2904-14: an executeBefore already passed', () => check(ADMIN, (Number(BEFORE) + 1) * 1000)(prepared(), [create()]), /has passed/],
+    ['TC-SDK-2904-20: one root, and a node besides it', () => {
+      const tx = create({ extra: [{ nodeId: '1', kind: 'create', contractId: '00y', packageName: 'x', templateId: `${CNRX}:Cnrx.Holding:CnrxHolding`, argument: v.record({}), signatories: [ME], stakeholders: [ME] }] });
+      return check()(prepared(), [{ ...tx, roots: ['0'] }]);
+    }, /more than one create/],
+    ['TC-SDK-2904-21: two roots over one node', () => {
+      const tx = create();
+      return check()(prepared(), [{ ...tx, roots: ['0', '0'] }]);
+    }, /more than one create/],
+    ['TC-SDK-2904-22: allowances stated as one text', () => check()(prepared({ instrumentAllowances: 'CNRX' as never }), [create()]), /not a list of instrument ids/],
+    ['TC-SDK-2904-23: allowances stated with a non-text', () => check()(prepared({ instrumentAllowances: [1] as never }), [create()]), /not a list of instrument ids/],
     ['TC-SDK-2904-15: a second transaction beside the create', () => check()(prepared(), [create(), create()]), /expected one transaction, got 2/],
     ['TC-SDK-2904-16: no transaction', () => check()(prepared(), []), /expected one transaction, got 0/],
     ['TC-SDK-2904-17: another requestedAt in the contract than stated', () => check()(prepared(), [create({ arg: { requestedAt: v.time(String(Number(REQUESTED) - 1)) } })]), /requestedAt is not the stated one/],

@@ -92,9 +92,12 @@ export const topologyLeg = (txs: Uint8Array[], hash = multiHash(txs)): CantonLeg
   topologyTransactions: txs.map(b64),
 });
 
-export async function transactionLeg(over: Partial<CantonLegTransaction> = {}): Promise<CantonLegTransaction> {
+export async function transactionLeg(
+  over: Partial<CantonLegTransaction> = {},
+  body: { transaction?: PreparedTransaction['transaction'] } = {},
+): Promise<CantonLegTransaction> {
   const message = PreparedTransaction.create({
-    transaction: { version: '2.1', roots: [], nodes: [], nodeSeeds: [] },
+    transaction: body.transaction ?? { version: '2.1', roots: [], nodes: [], nodeSeeds: [] },
     metadata: {
       submitterInfo: { actAs: [party()], commandId: 'legs-test' },
       synchronizerId: 'global-domain::1220dso',

@@ -13,8 +13,10 @@ import {
   type TestGatewaySigner,
 } from '../testing';
 import { allocation, NODE_KEY, NODE_PRIVATE_KEY, OTHER_KEY, PARTICIPANT, party, topologyLeg, transactionLeg } from './fixtures';
+import type { CantonTransferFactory } from './factories';
 import { CantonRefusal } from './legs';
 import { type CantonPartySigner, createCantonOperations, signatureHex } from './operations';
+import type { DamlTransaction_Node, Value } from '@canton-network/core-ledger-proto';
 
 const GATEWAY_KEY: Hex = '0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a';
 const MESSAGE_KEY: Hex = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
@@ -40,7 +42,7 @@ const gatewayError = (gateway: TestGatewaySigner, code: string, message: string)
   gateway.frame({ type: 'error', id: `g-${code}`, fillerId: FILLER, code, message } as never);
 
 /** A filler-gateway with the Canton routes; `prepared(body)` and `submitted(body)` shape the answers. */
-function harness(answer: { prepared: (request: Body) => Body | Promise<Body>; submit?: (gateway: TestGatewaySigner) => FakeRoute }) {
+function harness(answer: { prepared: (request: Body) => Body | Promise<Body>; submit?: (gateway: TestGatewaySigner) => FakeRoute; registries?: Record<string, readonly CantonTransferFactory[]> }) {
   const clock = new FakeClock();
   const gateway = createTestGatewaySigner(GATEWAY_KEY, clock);
   const login = createFakeGatewayLogin(gateway, { fillerId: FILLER, clock });
@@ -72,6 +74,7 @@ function harness(answer: { prepared: (request: Body) => Body | Promise<Body>; su
     clock,
     logger,
     instanceId: 'replica-1',
+    ...(answer.registries ? { registries: answer.registries } : {}),
   });
   return { clock, ops, signer, submits, http, logger };
 }
@@ -177,6 +180,69 @@ describe('preapproval.create (CAN-2904)', () => {
     expect(asked).toEqual([expect.objectContaining({ op: 'preapproval.create', params: { admin: ADMIN } })]);
     expect(h.signer.signed).toEqual([]);
     expect(h.submits).toEqual([]);
+  });
+
+  test('the honest create, of a registry the node pins itself, is checked against the node clock, signed once and submitted', async () => {
+    // A stand of its own: the admin and its package are in no default registry, so only the configured registries admit it.
+    const STAND_ADMIN = `stand-registry::1220${'5e'.repeat(32)}`;
+    const PKG = 'ee'.repeat(32);
+    const registries = { [STAND_ADMIN]: [{ packageId: PKG, factory: 'Cnrx.Rules:CnrxRules', holding: 'Cnrx.Holding:CnrxHolding', holdingView: 'holding', offer: 'Cnrx.Transfer:CnrxTransferOffer', serviceChoices: [], preapproval: 'Cnrx.Transfer:CnrxTransferPreapproval' }] };
+    const val = {
+      party: (p: string): Value => ({ sum: { oneofKind: 'party', party: p } }),
+      text: (t: string): Value => ({ sum: { oneofKind: 'text', text: t } }),
+      time: (s: string): Value => ({ sum: { oneofKind: 'timestamp', timestamp: (BigInt(s) * 1_000_000n).toString() } }),
+    };
+    const legFor = async (clock: FakeClock) => {
+      const requestedAt = String(Math.floor(clock.now() / 1000));
+      const executeBefore = String(Math.floor(clock.now() / 1000) + 365 * 86_400);
+      const create: DamlTransaction_Node = {
+        nodeId: '0',
+        versionedNode: {
+          oneofKind: 'v1',
+          v1: {
+            nodeType: {
+              oneofKind: 'create',
+              create: {
+                lfVersion: '2.1', contractId: '', packageName: 'cnrx-registry',
+                templateId: { packageId: PKG, moduleName: 'Cnrx.Transfer', entityName: 'CnrxTransferPreapproval' },
+                argument: {
+                  sum: {
+                    oneofKind: 'record',
+                    record: {
+                      fields: [
+                        { label: 'admin', value: val.party(STAND_ADMIN) },
+                        { label: 'receiver', value: val.party(party()) },
+                        { label: 'instrumentAllowances', value: { sum: { oneofKind: 'list', list: { elements: [val.text('CNRX')] } } } },
+                        { label: 'requestedAt', value: val.time(requestedAt) },
+                        { label: 'executeBefore', value: val.time(executeBefore) },
+                      ],
+                    },
+                  },
+                },
+                signatories: [party()], stakeholders: [party(), STAND_ADMIN],
+              },
+            },
+          },
+        },
+      };
+      const leg = await transactionLeg({}, { transaction: { version: '2.1', roots: ['0'], nodes: [create], nodeSeeds: [{ nodeId: 0, seed: new Uint8Array(32).fill(7) }] } });
+      return {
+        operationId: 'op-pa', op: 'preapproval.create', legs: [leg],
+        summary: { party: party(), admin: STAND_ADMIN, instrumentAllowances: ['CNRX'], requestedAt, executeBefore },
+        expiresAt: clock.now() + 60_000,
+      };
+    };
+    const h = harness({
+      registries,
+      prepared: () => legFor(h.clock),
+      submit: (gateway) => (request) => {
+        const body = JSON.parse(String(request.body)) as Body;
+        return { status: 200, body: gateway.frame({ type: 'canton.submitted', id: 'g-submitted', fillerId: FILLER, re: body.id, operationId: body.operationId, op: 'preapproval.create', updateId: 'u-pa', result: { preapprovalCid: '00pa' } } as never) };
+      },
+    });
+
+    await expect(h.ops.createPreapproval(STAND_ADMIN)).resolves.toMatchObject({ op: 'preapproval.create', result: { preapprovalCid: '00pa' } });
+    expect(h.signer.signed).toHaveLength(1);
   });
 
   test('one leg that is not the create is refused by the same check, nothing signed', async () => {
