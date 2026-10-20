@@ -1281,11 +1281,14 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       try {
         return await swap.accept(order.id);
       } catch (err) {
-        // Only a 4xx (but 409) is the venue's word that this accept did not happen. Anything else (a lost response,
-        // a timeout, a 5xx) may have been applied: the caller keeps treating the take as in flight.
+        // Only a 4xx is the venue's word that this accept did not happen. Anything else (a lost response, a timeout,
+        // a 5xx) may have been applied: the caller keeps treating the take as in flight.
         // Told only when the take ends here; a split and retry keeps it in flight.
-        // 409 is not proof: "already accepted" may be our own accept seen through a lagging read.
-        const definite = err instanceof CancoreApiError && err.status >= 400 && err.status < 500 && err.status !== 409;
+        // 408 is not proof: a proxy answers it while the venue may still be working on the accept.
+        // 409 is not proof: "already accepted" may be our own accept seen through a lagging read. The fee-holding
+        // 409 is: the venue raises it before it claims the order.
+        const definite = err instanceof CancoreApiError && err.status >= 400 && err.status < 500 && err.status !== 408
+          && (err.status !== 409 || refusalOf(err) === 'feeHoldingRequired');
         const fail = (e: unknown): never => {
           if (definite) opts.onAcceptRefused?.();
           throw e;

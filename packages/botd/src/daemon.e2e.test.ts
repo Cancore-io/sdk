@@ -36,7 +36,7 @@ function fakeApi() {
     /** Whether the venue applied that accept before the answer was lost. */
     applyAccept: true,
     /** When set, decides each POST accept by attempt number (1-based) instead of dropAccept/applyAccept. */
-    acceptScript: undefined as undefined | ((attempt: number) => 'lost-unapplied' | 'applied-then-400' | 'refused'),
+    acceptScript: undefined as undefined | ((attempt: number) => 'lost-unapplied' | 'applied-then-400' | 'refused' | 'fee-holding'),
     accepts: 0,
     /** When set, a POST accept reports itself and waits here before the venue answers. */
     acceptHold: undefined as Promise<void> | undefined,
@@ -72,6 +72,8 @@ function fakeApi() {
         const step = api.acceptScript?.(api.accepts);
         if (step === 'lost-unapplied') throw new TypeError('fetch failed: the server was still in its handler');
         if (step === 'refused') return json({ statusCode: 400, message: 'Insufficient balance' }, 400);
+        // Raised before the venue claims the order: the bot must hold its fee apart, and it cannot split USDCx.
+        if (step === 'fee-holding') return json({ statusCode: 409, message: 'refused', errorCode: 'DVP_FEE_HOLDING_REQUIRED', code: 'DVP_FEE_HOLDING_REQUIRED', payerPartyId: party, feeAmount: '0.01' }, 409);
         if (step === 'applied-then-400') {
           // The earlier attempt commits now; this one sees the order no longer open.
           Object.assign(orders.get(accepting[1]!)!, { status: 'accepted', opponentUserId: 'bot' });
@@ -714,7 +716,7 @@ describe('cancore-botd end to end: owner release of a booked take (CAN-2836, F12
     await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
     // Each order is 0.15 USD: one booked take leaves no room for a second in the 0.2 USD day.
     writeFileSync(paths(config).limits, JSON.stringify({ ...LIMITS, perOrderUsd: '100', perDayUsd: '0.2' }), { mode: 0o600 });
-    for (const id of ['x1', 'x2', 'x3']) api.orders.set(id, order(id));
+    for (const id of ['x1', 'x2', 'x3', 'x4']) api.orders.set(id, order(id));
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -728,6 +730,21 @@ describe('cancore-botd end to end: owner release of a booked take (CAN-2836, F12
       expect(await owner('order.release', { orderId: 'x3' })).toMatchObject({ orderId: 'x3', released: true });
       expect(state().openOrders).toEqual([]);
       expect(event('x3', 'released')).toBe(true);
+    } finally {
+      api.acceptScript = undefined;
+      await stop();
+    }
+  });
+
+  it('a take refused for a fee holding it cannot split is released: that refusal comes before the venue claims the order', async () => {
+    const stop = await boot();
+    api.acceptScript = () => 'fee-holding';
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      expect(await agent('order.take', { orderId: 'x4', amount: '1' })).toMatchObject({ orderId: 'x4' });
+      await until(() => event('x4', 'take_failed'));
+      expect(await owner('order.release', { orderId: 'x4' })).toMatchObject({ orderId: 'x4', released: true });
+      expect(state().openOrders).toEqual([]);
     } finally {
       api.acceptScript = undefined;
       await stop();

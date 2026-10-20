@@ -155,7 +155,8 @@ describe('security: through the dispatcher', () => {
     // 'sent' already went out to the API: untake reports it cannot be stopped.
     r.engine.untake = (id: string) => (r.engine.untaken.push(id), id !== 'sent');
     await r.dispatcher.handle(req('pause', { reason: 'owner stop' }), owner);
-    expect(r.engine.untaken.sort()).toEqual(['queued', 'sent']);
+    // The called-off take once more in the final write: a take of it queued again since would be called off too.
+    expect(r.engine.untaken.sort()).toEqual(['queued', 'queued', 'sent']);
     expect(r.state().openOrders.map((o) => o.orderId)).toEqual(['sent']);
   });
 

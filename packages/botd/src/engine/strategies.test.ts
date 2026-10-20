@@ -46,7 +46,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
     takeHold: undefined as Promise<void> | undefined, atTake: undefined as undefined | (() => void), untaken: [] as string[],
     cancelHold: undefined as Promise<void> | undefined, atCancel: undefined as undefined | (() => void), cancelThrows: false,
     atOrder: undefined as undefined | ((id: string) => void),
-    // A read of this order waits here.
+    // One-shot: the next read of this order waits here.
     orderHold: undefined as undefined | { id: string; gate: Promise<void> },
     // Orders the loop sent an accept for that no refusal answered: they may be trades.
     sent: [] as string[],
@@ -113,7 +113,11 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
         order: async (id) => {
           crash.orderLookups.push(id);
           crash.atOrder?.(id);
-          if (crash.orderHold?.id === id) await crash.orderHold.gate;
+          const hold = crash.orderHold;
+          if (hold?.id === id) {
+            crash.orderHold = undefined;
+            await hold.gate;
+          }
           if (crash.orderDown) throw new Error('ECONNRESET');
           if (crash.orderFailOnce === id) {
             crash.orderFailOnce = undefined;
@@ -1120,8 +1124,8 @@ describe('owner release of a booked take (CAN-2836)', () => {
   it('the venue shows the order still open with no taker: the booking and its reservation are released (G0-CAN-2836.1)', async () => {
     const w = await tookA();
     await expect(release(w)).resolves.toMatchObject({ result: { orderId: 'A', released: true } });
-    // The queued take is called off first, so no retry of its accept starts after the venue was read.
-    expect(w.untaken).toEqual(['A']);
+    // The queued take is called off before the venue read, and once more with the decision.
+    expect(w.untaken).toEqual(['A', 'A']);
     expect(w.state().openOrders).toEqual([]);
     expect(w.state().fills ?? []).toEqual([]);
     expect(w.audited).toContainEqual(expect.objectContaining({ method: 'settle', params: expect.objectContaining({ orderId: 'A', event: 'released' }) }));
@@ -1241,24 +1245,47 @@ describe('owner release of a booked take (CAN-2836)', () => {
     await w.call('order.take', { orderId: 'A', amount: '1' }, false);
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
     await expect(release(w)).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
+    const before = w.untaken.length;
     await w.call('pause', { reason: 'owner stop' }, false);
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
+    // Kept on the book, yet the take queued again is still called off: no accept retries while paused.
+    expect(w.untaken.slice(before)).toEqual(['A', 'A']);
   });
 
-  it('decides inside the trade queue: a take sent while it reads the venue waits for it', async () => {
+  it('calls a take of the same order queued during its venue read off too, in the same step as the decision', async () => {
     const w = await tookA();
-    w.infos.B = someoneElses;
     let read!: () => void;
     w.crash.orderHold = { id: 'A', gate: new Promise<void>((r) => (read = r)) };
     const releasing = release(w);
     await new Promise((r) => setTimeout(r, 0));
-    const taking = w.call('order.take', { orderId: 'B', amount: '1' }, false);
-    await new Promise((r) => setTimeout(r, 10));
-    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+    expect(w.untaken).toEqual(['A']);
+    // The agent takes the same order again while the release waits on the venue.
+    await w.call('order.take', { orderId: 'A', amount: '1' }, false);
     read();
     await expect(releasing).resolves.toMatchObject({ result: { released: true } });
-    await expect(taking).resolves.toMatchObject({ result: { orderId: 'B' } });
-    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['B']);
+    expect(w.untaken).toEqual(['A', 'A']);
+    expect(w.state().openOrders).toEqual([]);
+  });
+
+  it('a take queued again after a resume while pause cancels is called off with the rest, and kept booked once its accept is out', async () => {
+    for (const out of [false, true]) {
+      const w = await tookA();
+      await w.call('order.make', { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' }, false);
+      let cancel!: () => void;
+      w.crash.cancelHold = new Promise<void>((r) => (cancel = r));
+      const atCancel = new Promise<void>((r) => (w.crash.atCancel = r));
+      const pausing = w.call('pause', { reason: 'owner stop' }, false);
+      await atCancel;
+      await w.call('resume', {}, true);
+      await w.call('order.take', { orderId: 'A', amount: '1' }, false);
+      expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'o1', 'A']);
+      if (out) w.crash.sent = ['A'];
+      const before = w.untaken.length;
+      cancel();
+      await pausing;
+      expect(w.untaken.slice(before)).toContain('A');
+      expect(w.state().openOrders.map((o) => o.orderId)).toEqual(out ? ['A', 'A'] : []);
+    }
   });
 });
 
