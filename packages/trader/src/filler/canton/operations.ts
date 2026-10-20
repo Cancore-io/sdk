@@ -39,6 +39,7 @@ import { silentLogger, systemClock, type Clock, type HttpFetch, type Logger } fr
 import type { QuoteSigner } from '../signer';
 import { canonicalDecimal, checkHoldingsTransfer, checkRegistryAccept } from './checks';
 import { checkDeliveryFill, type DeliveryFillExpectation } from './delivery-check';
+import { checkPreapprovalCreate } from './preapproval-check';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
 import { CantonRefusal, legKind, verifyTopologyLeg, verifyTransactionLeg } from './legs';
 import type { CantonTransaction } from './transaction';
@@ -139,6 +140,17 @@ export class CantonOperations {
   /** Moves the party's own holdings to another party (operator decision Yu-1): exactly what is asked, checked. */
   transfer(params: CantonOpParams['holdings.transfer']): Promise<SubmittedOf<'holdings.transfer'>> {
     return this.run('holdings.transfer', params, checkHoldingsTransfer({ params, publicKey: this.publicKey, nowMs: this.options.clock.now(), factories: this.registries }));
+  }
+
+  /**
+   * Creates the party's transfer preapproval with the registry of `admin`
+   * (CAN-2904): the one way the party can be credited directly. The prepared
+   * create is held to a pinned registry's preapproval for the party before
+   * the party key signs it.
+   */
+  createPreapproval(admin: string): Promise<SubmittedOf<'preapproval.create'>> {
+    const params = { admin };
+    return this.run('preapproval.create', params, checkPreapprovalCreate({ params, publicKey: this.publicKey, nowMs: this.options.clock.now(), factories: this.registries }));
   }
 
   /**
