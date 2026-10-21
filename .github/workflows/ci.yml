@@ -47,9 +47,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run loc:check
+      - run: npm run complexity:check
+      - run: npm run any:check
       # Build before test: the bundle-isolation tests (no key code in bot-mcp/protocol) read dist.
       - run: npm run build
-      - run: npm test
+      - run: npm test -- --coverage --coverageReporters=json-summary
+      - run: npm run coverage:check
       # The committed vectors must be what the generators produce: a hand-edited
       # or stale spec file fails here instead of shipping (CAN-2496 review F-2).
       - name: Vectors are regenerated, not hand-edited

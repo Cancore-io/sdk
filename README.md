@@ -80,10 +80,14 @@ pretending otherwise.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before the first PR. In short: comments
 only for a why the code cannot carry (the why of a change goes into the
-Linear ticket, the PR and the commit),
-names that say what the code does, and a PR that carries its unit, coverage,
-mutation and integration results, a run on the local stand from
-[Cancore-io/meta](https://github.com/Cancore-io/meta), its RTM row and a Qase run.
+Linear ticket, the PR and the commit; `CAN-2777`),
+names that say what the code does, `>= 90%` line coverage (`npm run coverage:check`),
+local + `nx`/blast-radius mutation testing with 0 surviving mutants, `<= 500` LOC
+per file (`< 300` LOC target; `npm run loc:check`), cognitive complexity `<= 12`
+(`npm run complexity:check`), zero explicit `any` (`npm run any:check`),
+discriminated-union ADTs with `assertNever`, a run on the local stand from
+[Cancore-io/meta](https://github.com/Cancore-io/meta), its RTM row, a Qase run,
+and the PR quality-gate checklist in [`.github/pull_request_template.md`](.github/pull_request_template.md).
 
 ## Releasing
 
