@@ -117,4 +117,25 @@ describe('the registry is closed', () => {
     // @ts-expect-error — the parameter type is the generated union, nothing wider
     expect(() => refusalForCode(future)).toThrow(/NEW_CODE_FOR_TEST/);
   });
+
+  test('ORDER_NOT_OPEN on a conditional cancel is classified as other (not retried)', () => {
+    expect(SDK_ERROR_CODES).toContain('ORDER_NOT_OPEN');
+    expect(refusalForCode('ORDER_NOT_OPEN')).toBe('other');
+    expect(
+      refusalOf(
+        refused(409, {
+          errorCode: 'ORDER_NOT_OPEN',
+          code: 'ORDER_NOT_OPEN',
+          message: 'Order is not open, current status: accepted',
+        }),
+      ),
+    ).toEqual({
+      kind: 'other',
+      status: 409,
+      code: 'ORDER_NOT_OPEN',
+      message: 'POST /x → 409: Order is not open, current status: accepted',
+      retryAfterMs: null,
+    });
+  });
 });
+

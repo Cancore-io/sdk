@@ -1,4 +1,5 @@
-import { CancoreApiError } from './http';
+import { CancoreApiError, isSdkError } from './http';
+import { refusalOf } from './refusal';
 import { TrackTimeoutError, swap } from './swap';
 
 interface Call {
@@ -120,3 +121,48 @@ test('track gives up with the last order in hand, not a bare timeout', async () 
   expect(err).toBeInstanceOf(TrackTimeoutError);
   expect((err as TrackTimeoutError).last.status).toBe('accepted');
 });
+
+test('cancel sends { ifOpen: true } only when conditional cancel is requested', async () => {
+  const { calls, client } = fakeApi([{ body: order('cancelled') }]);
+
+  await client.cancel('o 1');
+  await client.cancel('o 1', {});
+  await client.cancel('o 1', { ifOpen: false });
+  await client.cancel('o 1', { ifOpen: true });
+
+  expect(calls.map((c) => `${c.method} ${new URL(c.url).pathname}`)).toEqual([
+    'POST /orders/o%201/cancel',
+    'POST /orders/o%201/cancel',
+    'POST /orders/o%201/cancel',
+    'POST /orders/o%201/cancel',
+  ]);
+  expect(calls.map((c) => c.body)).toEqual([undefined, undefined, undefined, { ifOpen: true }]);
+});
+
+test('conditional cancel surfaces 409 ORDER_NOT_OPEN as a non-retryable refusal', async () => {
+  const { client } = fakeApi([
+    {
+      status: 409,
+      body: {
+        errorCode: 'ORDER_NOT_OPEN',
+        code: 'ORDER_NOT_OPEN',
+        message: 'Order is not open, current status: accepted',
+      },
+    },
+  ]);
+
+  const err = await client.cancel('o1', { ifOpen: true }).catch((e: unknown) => e);
+
+  expect(err).toBeInstanceOf(CancoreApiError);
+  expect((err as CancoreApiError).status).toBe(409);
+  expect((err as CancoreApiError).errorCode).toBe('ORDER_NOT_OPEN');
+  expect(isSdkError(err, 'ORDER_NOT_OPEN')).toBe(true);
+  expect(refusalOf(err)).toEqual({
+    kind: 'other',
+    status: 409,
+    code: 'ORDER_NOT_OPEN',
+    message: 'POST /orders/o1/cancel → 409: Order is not open, current status: accepted',
+    retryAfterMs: null,
+  });
+});
+

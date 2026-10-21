@@ -208,6 +208,7 @@ const REQUEST_FIELDS: Record<string, string[]> = {
     'expirationHours', 'description', 'dvp',
   ],
   CreatePairOrderDto: ['tradingPairId', 'sourceAmount', 'targetAmount', 'side', 'expirationHours', 'description', 'dvp'],
+  CancelOrderDto: ['ifOpen'],
   BridgeEstimateCostDto: ['operation', 'amount'],
   BridgeMintDirectDto: ['amount', 'evmTxHash', 'sourceChainId', 'retryOf'],
   BridgeBurnDirectDto: ['amount', 'ethRecipient', 'destinationChainId', 'retryOf'],

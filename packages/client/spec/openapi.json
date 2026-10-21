@@ -1845,6 +1845,16 @@
         ],
         "type": "object"
       },
+      "CancelOrderDto": {
+        "properties": {
+          "ifOpen": {
+            "default": false,
+            "description": "Cancel only while the order is OPEN. A taken, cancelled or otherwise closed order answers 409 ORDER_NOT_OPEN and nothing is written. Without it the initiator may also cancel an ACCEPTED or SWAP_CREATED order.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "CantonPackageObservationDto": {
         "properties": {
           "changedAt": {
@@ -7649,7 +7659,8 @@
           "ATTESTOR_KEY",
           "ATTESTOR_LIST_MISSING",
           "REGISTRATION_LINK_INVALID",
-          "REGISTRATION_LINKS_BUSY"
+          "REGISTRATION_LINKS_BUSY",
+          "ORDER_NOT_OPEN"
         ],
         "type": "string"
       },
@@ -28732,6 +28743,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelOrderDto"
+              }
+            }
+          },
+          "required": false
+        },
         "responses": {
           "200": {
             "content": {
@@ -28748,6 +28769,9 @@
           },
           "403": {
             "description": "Only initiator can cancel"
+          },
+          "409": {
+            "description": "Nothing was written. ORDER_NOT_OPEN: the order is not OPEN (with ifOpen) or stopped being OPEN during the cancel; no code: an ACCEPTED or SWAP_CREATED order changed during the cancel — read it again"
           }
         },
         "security": [
