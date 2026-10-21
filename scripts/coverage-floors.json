@@ -1,0 +1,16 @@
+{
+  "global": {
+    "lines": 93
+  },
+  "files": {
+    "packages/bot-mcp": 79,
+    "packages/botd": 91,
+    "packages/client": 98,
+    "packages/contracts": 99,
+    "packages/dapp-connector": 100,
+    "packages/mcp": 77,
+    "packages/trader": 93,
+    "packages/wallet": 97,
+    "scripts": 95
+  }
+}

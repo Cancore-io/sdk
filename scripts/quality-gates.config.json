@@ -1,0 +1,5 @@
+{
+  "sourceDirs": ["packages", "scripts"],
+  "excludePrefixes": ["packages/contracts/src/generated/"],
+  "coverageMode": "jest-packages"
+}
