@@ -19,7 +19,8 @@
   - `checks` (`LoopSubmitChecks`) read the Loop wallet for it: `isCancelled(err)` marks a
     cancellation in the wallet, thrown without a report; `landed(input)` answers whether a
     rejected submit committed anyway (its consumed contract is gone), and then the submit is
-    reported and resolved as a success, without a `transactionId`.
+    reported and resolved as a success, without a `transactionId`; a probe that rejects counts as
+    "not landed".
 - `bridge.registerDeposit({ amount, evmTxHash, sourceChainId })` records the EVM deposit as a
   PENDING mint right after it confirms. Call it once, before the mint: it is idempotent only
   while the deposit is PENDING. The hash is sent lowercase, as the chain recorder stores it.

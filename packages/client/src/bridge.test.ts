@@ -183,6 +183,15 @@ test('a submit that did not land is reported as a failure, then thrown', async (
   expect(bodies['loop-result']).toEqual({ ...MINT_REPORT, success: false, error: 'ledger said no' });
 });
 
+test('a landed check that cannot read the wallet counts as not landed', async () => {
+  const { bodies, client } = loopApi();
+
+  const err = await client.executeLoop(MINT, rejects, { landed: async () => Promise.reject(new Error('wallet unreachable')) }).catch((e: unknown) => e);
+
+  expect((err as Error).message).toBe('ledger said no');
+  expect(bodies['loop-result']).toEqual({ ...MINT_REPORT, success: false, error: 'ledger said no' });
+});
+
 // A cancelled burn reported as a failure is one more FAILED withdrawal in the user's history.
 test('a cancellation in the wallet is thrown as it is and never reported', async () => {
   const cancelled = new Error('Request rejected by the wallet');

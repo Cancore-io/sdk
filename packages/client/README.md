@@ -759,13 +759,15 @@ const isCancelled = (err: unknown) =>
   err instanceof Error && /RejectRequestError|rejected by the wallet|request rejected|window was closed|popup/i.test(`${err.name} ${err.message}`);
 
 // The contract the operation consumes is gone: it landed. The wallet's list trails the ledger,
-// so ask a few times; an empty or unreadable list proves nothing (the party holds its agreement).
+// so ask a few times. An empty, unreadable or ambiguous list proves nothing (the party holds its
+// agreement): the answer's shape is undocumented, so only a lone array is taken as the list.
 const landed = async ({ params }: LoopCommandInput) => {
   const consumed = params.attestationCid ?? params.holdingCids?.[0];
   for (let attempt = 0; consumed && attempt < 3; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     const raw = await provider.getActiveContracts({}).catch(() => null);
-    const listed: unknown[] = Array.isArray(raw) ? raw : (Object.values(raw ?? {}).find(Array.isArray) ?? []);
+    const arrays = Array.isArray(raw) ? [raw] : Object.values(raw ?? {}).filter(Array.isArray);
+    const listed: unknown[] = arrays.length === 1 ? arrays[0] : [];
     if (listed.length > 0 && !JSON.stringify(listed).includes(consumed)) return true;
   }
   return false;
@@ -778,8 +780,8 @@ submitted again. Sending `result` again with `reportLoopResult` is safe when
 `result.transactionId` is set (the backend dedups by it), or when `cause` is a
 `CancoreApiError` with a 4xx status (refused before anything was written). Otherwise the first
 report may have been recorded, and a second one is not deduplicated: a mint's success can close
-another PENDING deposit of the same amount, and a burn gets a second row. Read `history()`
-first.
+another PENDING deposit of the same amount or add a second SUCCESS row, and a burn gets a second
+row. Read `history()` first.
 
 ## Errors
 

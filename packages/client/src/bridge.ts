@@ -212,7 +212,7 @@ export interface LoopSubmitChecks {
    * Loop can reject a transaction that did commit. True when the contract the
    * operation consumes (mint: `params.attestationCid`, burn: `params.holdingCids[0]`)
    * is gone from the wallet: the submit is then reported, and resolves, as a
-   * success without a `transactionId`.
+   * success without a `transactionId`. A probe that rejects counts as false.
    */
   landed?: (input: LoopCommandInput) => Promise<boolean>;
   /** True for a cancellation in the wallet (request rejected, popup closed): thrown as it is, not reported. */
@@ -321,7 +321,7 @@ export function createBridgeClient(http: Http): BridgeClient {
         result = { operationType: input.operationType, success: true, transactionId: answer?.update_id, ...reported };
       } catch (err) {
         if (checks.isCancelled?.(err)) throw err;
-        if (await checks.landed?.(input)) {
+        if (await checks.landed?.(input).catch(() => false)) {
           result = { operationType: input.operationType, success: true, ...reported };
         } else {
           submitError = err;
