@@ -13,7 +13,7 @@
 - [ ] Type safety (no any): 0 new explicit any, no @ts-ignore (npm run any:check)
 - [ ] Algebraic Data Types (ADT): fixed variant sets modeled as discriminated unions with exhaustive default: return assertNever(x)
 - [ ] Local stand verification: end-to-end verified on local compose stand before review
-- [ ] RTM & Qase: RTM scenarios updated and Qase run attached
+- [ ] Allure & Docs-as-Code RTM traceability: scenarios linked in `docs/rtm/rtm.yaml` (`REQ-<DOMAIN>-<NNN>`) and verified in Allure via `scripts/ci/allure-rtm-sync.ts` (no Qase.io)
 
 ## Local & Nx Blast-Radius Mutation Report
 
@@ -27,5 +27,5 @@
 ## Verification Evidence
 
 - Stand run:
-- RTM PR:
-- Qase run:
+- RTM (`docs/rtm/rtm.yaml`) PR:
+- Allure / `allure-rtm-sync.ts` verification:

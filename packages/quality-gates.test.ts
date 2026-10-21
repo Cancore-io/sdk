@@ -63,7 +63,7 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
       '- [ ] Type safety (no any): 0 new explicit any',
       '- [ ] Algebraic Data Types (ADT): fixed variant sets modeled as discriminated unions with exhaustive default: return assertNever(x)',
       '- [ ] Local stand verification:',
-      '- [ ] RTM & Qase:',
+      '- [ ] Allure & Docs-as-Code RTM traceability:',
     ];
     for (const box of requiredCheckboxes) {
       expect(contributing).toContain(box);

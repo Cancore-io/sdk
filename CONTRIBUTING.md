@@ -98,15 +98,14 @@ make stop              # stop the application
 
 Point `CANCORE_INTENT_JSON` and `CANCORE_ACTORS_ENV` at the files meta's genesis writes (`docker/modules/genesis/out/`) and run `npm run test:int`. Every test that can run on a local stand runs there before review; the PR names the stand.
 
-## 10. RTM: use cases and test cases
+## 10. Allure & Docs-as-Code RTM Traceability (`docs/rtm/rtm.yaml`, No Qase.io)
 
-Traceability lives in meta: [`docs/rtm/RTM-sdk.md`](https://github.com/Cancore-io/meta/blob/main/docs/rtm/RTM-sdk.md), use cases in [`docs/rtm/sdk-usecases.md`](https://github.com/Cancore-io/meta/blob/main/docs/rtm/sdk-usecases.md), manual checklists in [`docs/rtm/чеклисты/`](https://github.com/Cancore-io/meta/tree/main/docs/rtm/чеклисты). A PR that adds or changes behaviour updates its RTM row — the use case, the covering test cases (unit, integration, stand) with file paths, and a checklist for what only a human can check — and links that change.
+Traceability lives in [Cancore-io/meta](https://github.com/Cancore-io/meta): canonical registry [`docs/rtm/rtm.yaml`](https://github.com/Cancore-io/meta/blob/main/docs/rtm/rtm.yaml), [`docs/rtm/RTM-sdk.md`](https://github.com/Cancore-io/meta/blob/main/docs/rtm/RTM-sdk.md), use cases in [`docs/rtm/sdk-usecases.md`](https://github.com/Cancore-io/meta/blob/main/docs/rtm/sdk-usecases.md), manual checklists in [`docs/rtm/чеклисты/`](https://github.com/Cancore-io/meta/tree/main/docs/rtm/чеклисты).
 
-## 11. Confirmation in Qase
+- Every test case must be linked to its requirement ID (`REQ-<DOMAIN>-<NNN>`) in `docs/rtm/rtm.yaml` and export Allure results (`allure-results` / JUnit XML) verified via `npx tsx scripts/ci/allure-rtm-sync.ts`.
+- Qase.io is removed from the development and release loop; do not require or attach Qase runs.
 
-Integration and stand runs are recorded as a **Qase run** through the ticket's feature-loop (`/fl`), linked on the PR and the Linear ticket with passed / failed / skipped counts and the cause of every skip. Request review only after the Qase run is attached.
-
-## 12. PR Quality Gate Checklist (Required in Every PR Description)
+## 11. PR Quality Gate Checklist (Required in Every PR Description)
 
 Copy and check off every item in the PR description (`.github/pull_request_template.md`):
 
@@ -118,4 +117,4 @@ Copy and check off every item in the PR description (`.github/pull_request_templ
 - [ ] Type safety (no any): 0 new explicit any, no @ts-ignore (npm run any:check)
 - [ ] Algebraic Data Types (ADT): fixed variant sets modeled as discriminated unions with exhaustive default: return assertNever(x)
 - [ ] Local stand verification: end-to-end verified on local compose stand before review
-- [ ] RTM & Qase: RTM scenarios updated and Qase run attached
+- [ ] Allure & Docs-as-Code RTM traceability: scenarios linked in `docs/rtm/rtm.yaml` (`REQ-<DOMAIN>-<NNN>`) and verified in Allure via `scripts/ci/allure-rtm-sync.ts` (no Qase.io)
