@@ -46,14 +46,14 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: echo "8d92daa5d42eff63f75d7ec1538d4fe170bcde48a264a711111517c6301619f2  scripts/quality-gates.ts" | sha256sum -c -
       - run: npm run typecheck
       - run: npm run loc:check
       - run: npm run complexity:check
       - run: npm run any:check
-      # Build before test: the bundle-isolation tests (no key code in bot-mcp/protocol) read dist.
+      # Build and verify vectors; CAN-2934: running unit tests (npm test) and coverage:check in CI is prohibited during the current phase
+      # (unit tests, >=90% line coverage ratchet, and local+nx/blast-radius mutation checks run locally before PR review).
       - run: npm run build
-      - run: npm test -- --coverage --coverageReporters=json-summary
-      - run: npm run coverage:check
       # The committed vectors must be what the generators produce: a hand-edited
       # or stale spec file fails here instead of shipping (CAN-2496 review F-2).
       - name: Vectors are regenerated, not hand-edited

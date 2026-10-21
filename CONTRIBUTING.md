@@ -10,11 +10,12 @@ Name code and tests after what they do or prove: `refuseExpiredQuote`, not `chec
 
 (CAN-2777; operator decision 2026-10-19 on the CTO compromise.)
 
-## 2. Unit Test Coverage (`>= 90%`)
+## 2. Unit Test Coverage (`>= 90%` — Local-Only Gate)
 
+- **No unit tests in CI during the current phase:** running unit tests (`npm test` / `jest`) and `npm run coverage:check` via CI is **prohibited** during the current phase. Unit tests and the coverage ratchet are mandatory **local pre-PR gates** executed by the author before opening or updating a PR, with the results attached to the PR description.
 - Every new or changed production file must achieve **`>= 90%` line coverage** in unit tests, and must cover all happy, negative, and boundary/edge branches.
-- Package and global floors are enforced by `npm run coverage:check` against `scripts/coverage-floors.json`.
-- `npm run coverage:check:update` only ratchets floors upward when coverage improves; it never lowers an existing floor.
+- Package and global floors are enforced locally by `npm run coverage:check` against `scripts/coverage-floors.json`.
+- `npm run coverage:check:update` only ratchets existing floors upward when coverage improves; it never lowers an existing floor or adds new unapproved baseline keys.
 
 ## 3. Mutation Testing (Local & Nx Blast-Radius Gate)
 
@@ -61,9 +62,9 @@ Attach these results, from the PR's head commit, to the PR description. CI repea
 
 | Run | Command | Attach |
 | --- | --- | --- |
-| Typecheck | `npm run typecheck` | exit code |
-| Quality gates | `npm run loc:check && npm run complexity:check && npm run any:check` | exit code |
-| Unit tests with coverage | `npx jest --selectProjects node web --coverage --coverageReporters=json-summary && npm run coverage:check` | suites/tests passed, coverage of the changed files (`collectCoverageFrom` in `jest.config.mjs`) |
+| Typecheck | `npm run typecheck` | exit code (Local + CI) |
+| Quality gates | `npm run loc:check && npm run complexity:check && npm run any:check` | exit code (Local + CI) |
+| Unit tests with coverage (**local-only — prohibited in CI during current phase**) | `npx jest --selectProjects node web --coverage --coverageReporters=json-summary && npm run coverage:check` | suites/tests passed, coverage of the changed files (`collectCoverageFrom` in `jest.config.mjs`) |
 | Mutation tests (local + `nx`/blast-radius) | revert or flip each changed condition and rerun unit tests across changed files and affected `packages/*` consumers | blast-radius scope + table: mutant → killed / survived, with the killing test |
 | Integration tests | `npm run test:int` against a stand (section 9) | suites/tests passed, **none skipped** |
 | Build | `npm run build` | exit code |
@@ -110,7 +111,7 @@ Integration and stand runs are recorded as a **Qase run** through the ticket's f
 Copy and check off every item in the PR description (`.github/pull_request_template.md`):
 
 - [ ] Comments: why-only in English (CAN-2777) — no "what the code does" comments, existing comments preserved, no license headers
-- [ ] Unit test coverage: ≥ 90% line coverage on new/changed code; coverage-floors.json ratcheted (npm run coverage:check)
+- [ ] Unit tests & coverage (local-only — running unit tests in CI is prohibited during the current phase): ≥ 90% line coverage on new/changed code; coverage-floors.json ratcheted locally (npm test && npm run coverage:check)
 - [ ] Local + nx/blast-radius mutation testing: executed locally over changed files and their nx/blast-radius affected scope; 0 surviving mutants on new/changed logic; report attached to PR body
 - [ ] File size (LOC): target < 300 LOC, hard cap ≤ 500 LOC (npm run loc:check)
 - [ ] Cognitive complexity: CC ≤ 12 per function (npm run complexity:check)

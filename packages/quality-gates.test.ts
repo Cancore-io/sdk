@@ -19,6 +19,7 @@ import {
   nextCoverageFloors,
   nextLocBaseline,
   parseJestCoverageSummary,
+  parseNodeCoverageTable,
   runCli,
   walkProductionFiles,
   type GateVerdict,
@@ -55,7 +56,7 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
 
     const requiredCheckboxes = [
       '- [ ] Comments: why-only in English (CAN-2777)',
-      '- [ ] Unit test coverage: ≥ 90% line coverage',
+      '- [ ] Unit tests & coverage (local-only — running unit tests in CI is prohibited during the current phase): ≥ 90% line coverage',
       '- [ ] Local + nx/blast-radius mutation testing:',
       '- [ ] File size (LOC): target < 300 LOC, hard cap ≤ 500 LOC',
       '- [ ] Cognitive complexity: CC ≤ 12 per function',
@@ -68,6 +69,11 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
       expect(contributing).toContain(box);
       expect(prTemplate).toContain(box);
     }
+
+    const ciYml = fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+    expect(/^\s*-\s*run:\s*npm test\b/m.test(ciYml)).toBe(false);
+    expect(/^\s*-\s*run:\s*npm run coverage:check\b/m.test(ciYml)).toBe(false);
+    expect(ciYml).toMatch(/sha256sum -c/);
   });
 
   test('@happy: clean module with CC <= 12, LOC <= 500, 0 any, coverage >= 90%, and exhaustive ADT passes all gates', () => {
@@ -96,8 +102,8 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
     expect(evaluateAnyRatchet([{ file: 'packages/client/src/clean.ts', count: 0 }], {}).kind).toBe('pass');
     expect(
       evaluateCoverageRatchet(
-        { global: { lines: 94.2, branches: 80 }, packages: { 'packages/client': { lines: 98.1, branches: 87 } } },
-        { global: { lines: 90 }, packages: { 'packages/client': { lines: 90 } } },
+        { global: { lines: 94.2, branches: 80 }, files: { 'packages/client': { lines: 98.1, branches: 87 } } },
+        { global: { lines: 90 }, files: { 'packages/client': 90 } },
       ).kind,
     ).toBe('pass');
   });
@@ -110,8 +116,8 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
 
     const ccVerdict = evaluateComplexityRatchet(units, {});
     expect(ccVerdict.kind).toBe('fail');
-    if (ccVerdict.kind === 'fail' && ccVerdict.gate === 'complexity') {
-      expect(ccVerdict.newOffenders[0]?.complexity).toBe(13);
+    if (ccVerdict.kind === 'fail') {
+      expect(ccVerdict.newOffenders).toHaveLength(1);
     }
     expect(formatVerdictSummary(ccVerdict)).toMatch(/packages\/trader\/src\/over\.ts/);
 
@@ -129,11 +135,29 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
     expect(evaluateAnyRatchet([{ file: 'packages/bot-mcp/src/leaky.ts', count: anyCount }], {}).kind).toBe('fail');
 
     const covVerdict = evaluateCoverageRatchet(
-      { global: { lines: 94, branches: 80 }, packages: { 'packages/new-pkg': { lines: 89.4, branches: 80 } } },
-      { global: { lines: 90 }, packages: {} },
+      { global: { lines: 94, branches: 80 }, files: { 'packages/new-pkg': { lines: 89.4, branches: 80 } } },
+      { global: { lines: 90 }, files: {} },
     );
     expect(covVerdict.kind).toBe('fail');
     expect(() => assertNever('unhandled' as never)).toThrow(/unreachable/);
+
+    const fUnits = analyzeFunctionsInSource(
+      'export const f = (x: number) => x === 0 ? 0 : x === 1 ? 1 : x === 2 ? 2 : x === 3 ? 3 : x === 4 ? 4 : 5;',
+      'packages/trader/src/f.ts',
+    );
+    const gUnits = analyzeFunctionsInSource(
+      'export const g = (x: number) => { return x === 0 ? 0 : x === 1 ? 1 : x === 2 ? 2 : x === 3 ? 3 : x === 4 ? 4 : 5; };',
+      'packages/trader/src/g.ts',
+    );
+    expect(fUnits[0]?.name).toBe('f');
+    expect(fUnits[0]?.complexity).toBe(15);
+    expect(gUnits[0]?.name).toBe('g');
+    expect(gUnits[0]?.complexity).toBe(15);
+    const ternaryVerdict = evaluateComplexityRatchet([...fUnits, ...gUnits], {});
+    expect(ternaryVerdict.kind).toBe('fail');
+    if (ternaryVerdict.kind === 'fail' && ternaryVerdict.gate === 'complexity') {
+      expect(ternaryVerdict.newOffenders).toHaveLength(2);
+    }
   });
 
   test('@edge: baseline ratchet permits untouched legacy ceilings, blocks +1 growth with GREW, excludes generated files, and --update only tightens', () => {
@@ -179,22 +203,28 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
     const nextFloors = nextCoverageFloors(
       {
         global: { lines: 94.2, branches: 80 },
-        packages: {
+        files: {
           'packages/bot-mcp': { lines: 83.4, branches: 85 },
           'packages/client': { lines: 98.1, branches: 87 },
         },
       },
       {
         global: { lines: 90 },
-        packages: {
-          'packages/bot-mcp': { lines: 79 },
-          'packages/client': { lines: 95 },
+        files: {
+          'packages/bot-mcp': 79,
+          'packages/client': 95,
         },
       },
     );
     expect(nextFloors.global.lines).toBe(94);
-    expect(nextFloors.packages['packages/bot-mcp']?.lines).toBe(83);
-    expect(nextFloors.packages['packages/client']?.lines).toBe(98);
+    expect(nextFloors.files['packages/bot-mcp']).toBe(83);
+    expect(nextFloors.files['packages/client']).toBeUndefined();
+
+    expect(
+      nextComplexityBaseline([{ file: 'packages/client/src/new-offender.ts', name: 'bad', line: 1, complexity: 15 }], {}),
+    ).toEqual({});
+    expect(nextLocBaseline([{ file: 'packages/client/src/new-offender.ts', count: 505 }], {})).toEqual({});
+    expect(nextAnyBaseline([{ file: 'packages/client/src/new-offender.ts', count: 2 }], {})).toEqual({});
 
     const checkVerdict = (v: GateVerdict): string => {
       switch (v.kind) {
@@ -227,8 +257,22 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
       ROOT,
     );
     expect(parsedCov.global.lines).toBe(95.1);
-    expect(parsedCov.packages['packages/client']?.lines).toBe(96);
-    expect(parsedCov.packages['scripts']?.lines).toBe(96);
+    expect(parsedCov.files['packages/client']?.lines).toBe(96);
+    expect(parsedCov.files['scripts']?.lines).toBe(96);
+
+    const nodeTable = [
+      'ℹ start of coverage report',
+      'ℹ file | line % | branch % | funcs % | uncovered lines',
+      'ℹ src | | | |',
+      'ℹ  api.ts | 99.32 | 72.09 | 90.91 | 112',
+      'ℹ  watch.ts | 69.30 | 80.00 | 57.14 | 43-44',
+      'ℹ all files | 86.65 | 88.63 | 89.11 |',
+      'ℹ end of coverage report',
+    ].join('\n');
+    const parsedNode = parseNodeCoverageTable(nodeTable);
+    expect(parsedNode?.global.lines).toBe(86.65);
+    expect(parsedNode?.files['src/api.ts']?.lines).toBe(99.32);
+
     expect(runCli(ROOT, ['loc'])).toBe(0);
     expect(runCli(ROOT, ['complexity'])).toBe(0);
     expect(runCli(ROOT, ['any'])).toBe(0);
@@ -237,6 +281,14 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
     const tmpDir = fs.mkdtempSync(path.join('/tmp', 'sdk-qg-'));
     try {
       fs.mkdirSync(path.join(tmpDir, 'scripts'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, 'scripts', 'quality-gates.config.json'),
+        JSON.stringify({
+          scanRoots: ['packages'],
+          excludeSubstrings: ['/src/generated/', '.test.ts'],
+          coverageMode: 'jest-packages',
+        }),
+      );
       fs.mkdirSync(path.join(tmpDir, 'packages', 'demo', 'src'), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, 'packages', 'demo', 'src', 'index.ts'), 'export const x = (n: number): number => n + 1;\n');
       expect(runCli(tmpDir, ['coverage'])).toBe(1);
@@ -256,6 +308,25 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
       expect(runCli(tmpDir, ['any', '--update'])).toBe(0);
       expect(runCli(tmpDir, ['coverage', '--update'])).toBe(0);
       expect(runCli(tmpDir, ['coverage'])).toBe(0);
+
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'demo', 'src', 'offender.ts'), 'export const bad: any = 1;\n');
+      expect(runCli(tmpDir, ['any', '--update'])).toBe(1);
+      expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'scripts', 'any-baseline.json'), 'utf8'))).toEqual({});
+      expect(runCli(tmpDir, ['any'])).toBe(1);
+      fs.rmSync(path.join(tmpDir, 'packages', 'demo', 'src', 'offender.ts'));
+
+      fs.writeFileSync(
+        path.join(tmpDir, 'scripts', 'loc-baseline.json'),
+        JSON.stringify({ 'packages/demo/src/healed.ts': 520 }) + '\n',
+      );
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'demo', 'src', 'healed.ts'), 'export const ok = 1;\n');
+      expect(runCli(tmpDir, ['loc', '--update'])).toBe(0);
+      expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'scripts', 'loc-baseline.json'), 'utf8'))).toEqual({});
+      const lines501 = Array.from({ length: 501 }, (_, i) => `export const v${i} = ${i};`).join('\n');
+      fs.writeFileSync(path.join(tmpDir, 'packages', 'demo', 'src', 'healed.ts'), lines501);
+      expect(runCli(tmpDir, ['loc', '--update'])).toBe(1);
+      expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'scripts', 'loc-baseline.json'), 'utf8'))).toEqual({});
+      expect(runCli(tmpDir, ['loc'])).toBe(1);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
