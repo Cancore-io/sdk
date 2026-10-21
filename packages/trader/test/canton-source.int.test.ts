@@ -322,6 +322,32 @@ function registries(): Record<string, CantonTransferFactory[]> {
   return parsed;
 }
 
+/**
+ * The filler's own one-time setup on the destination: the router may pull the output token from its
+ * EVM key (V-E5 holds the allowance to amountOut).
+ */
+async function approveRouter(rpc: EvmRpc, key: Hex, token: string, router: string): Promise<void> {
+  const signer = createTestFillSigner(key);
+  const word = (v: string | bigint) => (typeof v === 'bigint' ? v.toString(16) : v.replace(/^0x/, '').toLowerCase()).padStart(64, '0');
+  const allowance = BigInt(await rpc.request<string>({ method: 'eth_call', params: [{ to: token, data: `0xdd62ed3e${word(signer.address)}${word(router)}` }, 'latest'] }));
+  if (allowance >= 2n ** 255n) return;
+  const nonce = BigInt(await rpc.request<string>({ method: 'eth_getTransactionCount', params: [signer.address, 'pending'] }));
+  const raw = await signer.signTransaction({
+    chainId: BigInt(await rpc.request<string>({ method: 'eth_chainId' })), nonce, to: token as Hex,
+    data: `0x095ea7b3${word(router)}${word(2n ** 256n - 1n)}` as Hex, value: 0n, gasLimit: 100_000n, maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n,
+  });
+  const tx = await rpc.request<Hex>({ method: 'eth_sendRawTransaction', params: [raw] });
+  for (let i = 0; i < 60; i++) {
+    const receipt = await rpc.request<{ status: string } | null>({ method: 'eth_getTransactionReceipt', params: [tx] });
+    if (receipt) {
+      if (receipt.status !== '0x1') throw new Error(`approve(router) reverted: ${tx}`);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+  throw new Error(`approve(router) not mined: ${tx}`);
+}
+
 const until = async <T>(what: string, read: () => Promise<T | undefined>, timeoutMs: number, why: () => string = () => ''): Promise<T> => {
   const end = Date.now() + timeoutMs;
   let last: unknown;
@@ -384,6 +410,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
     );
     filler.onReconfirm(async () => true);
     filler.onTicketOffer(async () => 'accept');
+    await approveRouter(httpRpc(E.EVM_RPC_URL), E.STAND_FILLER_EVM_KEY as Hex, E.STAND_ROUTE_OUTPUT_TOKEN, E.INTENT_ROUTER_ADDRESS);
     await filler.start();
   });
 
