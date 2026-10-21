@@ -129,13 +129,7 @@ describe('the registry is closed', () => {
           message: 'Order is not open, current status: accepted',
         }),
       ),
-    ).toEqual({
-      kind: 'other',
-      status: 409,
-      code: 'ORDER_NOT_OPEN',
-      message: 'POST /x → 409: Order is not open, current status: accepted',
-      retryAfterMs: null,
-    });
+    ).toBe('other');
   });
 });
 

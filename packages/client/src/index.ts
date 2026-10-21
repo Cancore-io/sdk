@@ -12,6 +12,7 @@ export { SDK_ERROR_CODES } from './sdk-error-codes';
 export type { SdkErrorCode } from './sdk-error-codes';
 export { createSwapClient, swap, TERMINAL_ORDER_STATUSES, TrackTimeoutError } from './swap';
 export type {
+  CancelOrderInput,
   CreateOrderInput,
   CreatePairOrderInput,
   Executed,

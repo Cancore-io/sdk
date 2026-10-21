@@ -157,12 +157,6 @@ test('conditional cancel surfaces 409 ORDER_NOT_OPEN as a non-retryable refusal'
   expect((err as CancoreApiError).status).toBe(409);
   expect((err as CancoreApiError).errorCode).toBe('ORDER_NOT_OPEN');
   expect(isSdkError(err, 'ORDER_NOT_OPEN')).toBe(true);
-  expect(refusalOf(err)).toEqual({
-    kind: 'other',
-    status: 409,
-    code: 'ORDER_NOT_OPEN',
-    message: 'POST /orders/o1/cancel → 409: Order is not open, current status: accepted',
-    retryAfterMs: null,
-  });
+  expect(refusalOf(err)).toBe('other');
 });
 

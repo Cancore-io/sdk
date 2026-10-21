@@ -109,6 +109,16 @@ export interface CreatePairOrderInput {
   dvp?: boolean;
 }
 
+/** `CancelOrderDto` — options for `POST /orders/{id}/cancel`. */
+export interface CancelOrderInput {
+  /**
+   * Cancel only while the order is `open`. A taken, cancelled or otherwise
+   * closed order answers `409 ORDER_NOT_OPEN` and nothing is written; without
+   * it the initiator may also cancel an `accepted` or `swap_created` order.
+   */
+  ifOpen?: boolean;
+}
+
 /** `PaginatedOrderResponseDto` */
 export interface Page<T> {
   items: T[];
@@ -272,7 +282,7 @@ export interface SwapClient {
   createForPair(input: CreatePairOrderInput): Promise<Order>;
   /** Take the other side of an open order. A POST — no signature crosses here. */
   accept(id: string): Promise<Order>;
-  cancel(id: string): Promise<Order>;
+  cancel(id: string, options?: CancelOrderInput): Promise<Order>;
   /** The pool pairs the venue quotes, with the `id` that `quote` needs. */
   pairs(query?: ListPairsQuery): Promise<Pair[]>;
   /** A live pool price. Rates move; the quote is good for `expiresInSec`. */
@@ -298,7 +308,8 @@ export function createSwapClient(http: Http): SwapClient {
     createForPair: (input) => http.post('/orders/pair', input),
     // AcceptOrderDto is `{}` — an empty body, not an absent one.
     accept: (id) => http.post(`/orders/${encodeURIComponent(id)}/accept`, {}),
-    cancel: (id) => http.post(`/orders/${encodeURIComponent(id)}/cancel`),
+    cancel: (id, options) =>
+      http.post(`/orders/${encodeURIComponent(id)}/cancel`, options?.ifOpen === true ? { ifOpen: true } : undefined),
     // The quote service takes a number where the rest of the API takes decimal
     // strings; the client converts so a caller can pass either.
     pairs: (query) => http.get('/auto-trader/pairs', query),

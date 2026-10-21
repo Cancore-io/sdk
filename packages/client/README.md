@@ -145,7 +145,7 @@ refused by a budget. A trade the API cannot price in USD is refused.
 | `swap.create(input)` | `POST /orders` | `orders:write` |
 | `swap.createForPair(input)` | `POST /orders/pair` | `orders:write` |
 | `swap.accept(id)` | `POST /orders/{id}/accept` | `orders:write` |
-| `swap.cancel(id)` | `POST /orders/{id}/cancel` | `orders:write` |
+| `swap.cancel(id, options?)` | `POST /orders/{id}/cancel` | `orders:write` |
 | `swap.pairs(query?)` | `GET /auto-trader/pairs` | not open to a grant |
 | `swap.quote(input)` | `POST /auto-trader/quote` | `pool:trade` |
 | `swap.execute(quoteToken)` | `POST /auto-trader/execute` | `pool:trade` |
@@ -197,7 +197,7 @@ try {
 | `create(input)` | `POST /orders` | an offer named by network + token address on both sides |
 | `createForPair(input)` | `POST /orders/pair` | the same offer, named by a trading pair the venue lists |
 | `accept(id)` | `POST /orders/{id}/accept` | take the other side |
-| `cancel(id)` | `POST /orders/{id}/cancel` | withdraw your offer |
+| `cancel(id, { ifOpen? }?)` | `POST /orders/{id}/cancel` | withdraw your offer; with `{ ifOpen: true }`, cancels only while `open` and answers `409 ORDER_NOT_OPEN` if already taken or closed |
 | `pairs(query?)` | `GET /auto-trader/pairs` | the pool pairs the venue quotes, with the `id` that `quote` takes |
 | `quote({ pairConfigId, sourceAmount })` | `POST /auto-trader/quote` | a live pool price, good for `expiresInSec` |
 | `execute(quoteToken)` | `POST /auto-trader/execute` | trade at that price; returns the order the pool opened for you |
