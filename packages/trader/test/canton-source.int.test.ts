@@ -382,7 +382,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
         ? { amountOut: QUOTED_OUT, validUntil: BigInt(Math.ceil((request.windowCloseAt + request.quoteTtlMs) / 1000) + 60) }
         : null,
     );
-    filler.onReconfirm(async () => false);
+    filler.onReconfirm(async () => true);
     filler.onTicketOffer(async () => 'accept');
     await filler.start();
   });
