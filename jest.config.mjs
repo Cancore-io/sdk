@@ -64,5 +64,10 @@ const webProject = {
 
 export default {
   projects: [nodeProject, webProject, intProject],
-  collectCoverageFrom: ['packages/*/src/**/*.ts', '!packages/*/src/**/*.test.ts'],
+  collectCoverageFrom: [
+    'packages/*/src/**/*.ts',
+    'scripts/*.ts',
+    '!packages/*/src/**/*.test.ts',
+    '!packages/contracts/src/generated/**',
+  ],
 };

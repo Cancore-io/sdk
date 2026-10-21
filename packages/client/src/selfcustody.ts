@@ -390,7 +390,7 @@ export interface TokenCallOptions {
 export const DEFAULT_MAX_FEE_RATE = '0.015';
 const DEFAULT_SETTLEMENT_WINDOW_MS = 3 * 60 * 60_000;
 /** What `GET /htlc/fee-config` answers; its `maxFeeRate` is not read: the ceiling is this account's `maxFeeRate`. */
-type FeeConfig = { feeRate?: string; feeRecipient?: string; venue?: string };
+export type FeeConfig = { feeRate?: string; feeRecipient?: string; venue?: string; maxFeeRate?: string };
 
 /** What `withdrawAllocation` did, leg by leg: no leg's outcome hides another's. */
 export interface Withdrawal {
@@ -506,6 +506,12 @@ export interface SelfCustodyAccount {
    */
   execute<TMeta = Record<string, unknown>>(type: string, params?: Record<string, unknown>): Promise<Executed<TMeta>>;
   swapState(swapId: string): Promise<HtlcSwap>;
+  /** Both legs of a swap as the venue sees them (`GET /htlc/swaps/{id}/full`). */
+  swapInfo(swapId: string): Promise<SwapInfo>;
+  /** The proposal timeouts, in hours, this stand accepts for the order (`GET /htlc/timeout-options`). */
+  timeoutOptions(orderId: string): Promise<number[]>;
+  /** The fee configuration of the order's pool (`GET /htlc/fee-config?orderId=`); null when the stand has none. */
+  feeConfig(orderId: string): Promise<FeeConfig | null>;
   /** Claim the counter HTLC of a swap with its preimage (`POST /htlc/:id/claim-counter`). See {@link postClaimCounter}. */
   claimCounter(swapId: string, preimage: string): Promise<HtlcSwap>;
   /**
@@ -1000,8 +1006,11 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
   }
 
+  const timeoutOptions = async (orderId: string) =>
+    (await http.get<{ timeoutHours: number[] }>('/htlc/timeout-options', { orderId })).timeoutHours;
+
   async function pickTimeout(orderId: string, wanted?: number): Promise<number> {
-    const { timeoutHours } = await http.get<{ timeoutHours: number[] }>('/htlc/timeout-options', { orderId });
+    const timeoutHours = await timeoutOptions(orderId);
     if (wanted !== undefined) {
       if (!timeoutHours.includes(wanted)) {
         throw new SettleError(`timeoutHours ${wanted} is not offered for this order (offered: ${timeoutHours.join(', ')})`, null);
@@ -1576,6 +1585,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     acceptTerms,
     execute,
     swapState,
+    swapInfo,
+    timeoutOptions,
+    feeConfig,
     claimCounter,
     listSwaps,
     make,

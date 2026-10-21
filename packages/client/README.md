@@ -291,6 +291,8 @@ await acct.cashback.collect();   // claim, then accept this claim's payouts as t
 | `cashback.summary()` / `claims()` / `claim()` / `collect(options?)` | partner cashback (role `partner-bot`) |
 | `execute(type, params?)` | any operation of `GET /wallet/operations`: prepare, sign every leg, submit. **Signed as the API prepared it, unread** — the same as `allowUnverified: true`: none of the reading in the rows above reaches a ceremony you run through `execute` |
 | `swapState(swapId)` | `GET /htlc/{id}` |
+| `swapInfo(swapId)` / `timeoutOptions(orderId)` / `feeConfig(orderId)` | `GET /htlc/swaps/{id}/full` (both legs as the venue sees them) / `GET /htlc/timeout-options` (hours this stand accepts for the order) / `GET /htlc/fee-config?orderId=` (the order's pool fee) — what `make` reads, for a program that prices or schedules on its own |
+| `swap.prices()` / `swap.tradingPairs(query?)` | `GET /prices` (`symbol`, `price` in USD, `timestamp` in ms, `source`; the newest value the API has, stale or not — check `timestamp`) / `GET /trading-pairs` (`status`, `network`) |
 
 **The signer.** `createSelfCustody` and `createSession` take any object of this shape, and
 `providerFromMnemonic` (`@cancore/wallet`) returns exactly it:

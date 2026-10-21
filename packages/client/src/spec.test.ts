@@ -274,6 +274,7 @@ const QUERY_FIELDS: Record<string, string[]> = {
   '/canton-wallet/bridge/history': ['page', 'pageSize'],
   '/auto-trader/pairs': ['sourceToken', 'targetToken', 'sortBy', 'sortDir'],
   '/htlc/swaps': ['page', 'pageSize', 'status'],
+  '/trading-pairs': ['status', 'network'],
 };
 
 test.each(Object.entries(QUERY_FIELDS))('GET %s: every query field the client types is a parameter the route declares', (path, fields) => {
@@ -313,8 +314,11 @@ const RESPONSE_FIELDS: Record<string, string[]> = {
   ],
   FullSwapInfoDto: ['swap', 'legs', 'dvp'],
   SwapLegDto: ['role', 'sender', 'receiver', 'tokenId', 'amount', 'lockRef', 'status', 'legId', 'userActionRequired'],
-  TradingPairResponseDto: ['baseToken', 'quoteToken'],
-  TradingPairTokenDto: ['network'],
+  TradingPairResponseDto: [
+    'id', 'baseToken', 'quoteToken', 'label', 'pricePrecision', 'amountPrecision',
+    'minOrderAmount', 'maxOrderAmount', 'status', 'createdAt', 'updatedAt',
+  ],
+  TradingPairTokenDto: ['id', 'symbol', 'name', 'network', 'decimals', 'instrumentId', 'contractAddress'],
   DvpSwapFactsDto: ['tradeCid', 'awaitingApprovalFrom', 'allocateBefore', 'settleBefore'],
   DvpInstrumentDto: ['id'],
   PreparedCommandDto: [
@@ -352,6 +356,7 @@ const RESPONSE_FIELDS: Record<string, string[]> = {
  * the controller. Pinned so the day a schema lands is a red test with the next step in it.
  */
 const UNTYPED_ANSWERS: Array<[string, string]> = [
+  ['get', '/prices'],
   ['post', '/wallet/operations/prepare'],
   ['post', '/wallet/operations/submit'],
   ['get', '/htlc/fee-config'],

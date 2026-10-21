@@ -198,6 +198,47 @@ export interface Executed {
   recordId: string;
 }
 
+/** One symbol's latest USD price, as `GET /prices` serves it. */
+export interface Price {
+  symbol: string;
+  price: number;
+  /** Milliseconds since the epoch when the source reported it. The API serves the newest value it has, stale or not: a quote decides for itself how old is too old. */
+  timestamp: number;
+  source?: string;
+}
+
+export interface TradingPairsQuery {
+  /** Default `active`. */
+  status?: 'active' | 'paused' | 'disabled';
+  /** Pairs with a token on this network. */
+  network?: string;
+}
+
+export interface TradingPairToken {
+  id: string;
+  symbol: string;
+  name: string;
+  network: string;
+  decimals: number;
+  instrumentId?: string;
+  contractAddress?: string;
+}
+
+/** An order-book pair (`GET /trading-pairs`) — the `tradingPairId` of `createForPair`. */
+export interface TradingPair {
+  id: string;
+  baseToken: TradingPairToken;
+  quoteToken: TradingPairToken;
+  label: string;
+  pricePrecision: number;
+  amountPrecision: number;
+  minOrderAmount: string;
+  maxOrderAmount: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface TrackOptions {
   /** Poll interval in milliseconds. Default 3000. */
   intervalMs?: number;
@@ -240,6 +281,10 @@ export interface SwapClient {
   execute(quoteToken: string): Promise<Executed>;
   /** Poll an order until it reaches a terminal status. */
   track(id: string, options?: TrackOptions): Promise<Order>;
+  /** Latest USD price per symbol (`GET /prices`). */
+  prices(): Promise<Price[]>;
+  /** The order-book pairs (`GET /trading-pairs`). */
+  tradingPairs(query?: TradingPairsQuery): Promise<TradingPair[]>;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -260,6 +305,8 @@ export function createSwapClient(http: Http): SwapClient {
     quote: ({ pairConfigId, sourceAmount }) =>
       http.post('/auto-trader/quote', { pairConfigId, sourceAmount: Number(sourceAmount) }),
     execute: (quoteToken) => http.post('/auto-trader/execute', { quoteToken }),
+    prices: () => http.get('/prices'),
+    tradingPairs: (query) => http.get('/trading-pairs', query),
 
     async track(
       id,

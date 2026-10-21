@@ -28,6 +28,13 @@
   PENDING mint right after it confirms.
 - `bridge.depositAttestation({ amount? })` finds the DepositAttestation to claim on our
   participant.
+- `swap.prices()` (`GET /prices`) and `swap.tradingPairs(query?)` (`GET /trading-pairs`): what a
+  market maker quotes from. A price carries the source's `timestamp`; the API serves its newest
+  value even when it is stale, so the caller decides how old is too old.
+- `swapInfo(swapId)`, `timeoutOptions(orderId)` and `feeConfig(orderId)` on the self-custody account:
+  the reads `make` already did, now the program's to make too.
+- `CancoreApiError.retryAfterMs` on a 429: the body's `retryAfter` or the `Retry-After` header, in
+  ms. The client still does not retry by itself.
 
 ## 0.11.0
 
