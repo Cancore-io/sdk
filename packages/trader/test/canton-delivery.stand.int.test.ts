@@ -230,9 +230,12 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
       events,
       settlement: { pullIntervalMs: 5_000 },
     });
-    // The stand filler prices the Canton route only: 5 CNRX for any input, firm for a minute.
+    // The stand filler prices the Canton route only: 5 CNRX for any input, firm a minute past the quote's own
+    // life (windowCloseAt + quoteTtlMs): a shorter validUntil is skipped as short-ttl.
     filler.onQuoteRequest(async (request) =>
-      request.route.dst === env('CANTON_CHAIN') ? { amountOut: encodeCantonAmount('5'), validUntil: BigInt(Math.floor(Date.now() / 1000) + 60) } : null,
+      request.route.dst === env('CANTON_CHAIN')
+        ? { amountOut: encodeCantonAmount('5'), validUntil: BigInt(Math.ceil((request.windowCloseAt + request.quoteTtlMs) / 1000) + 60) }
+        : null,
     );
     filler.onReconfirm(async () => true);
     filler.onTicketOffer(async () => 'accept');
