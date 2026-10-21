@@ -702,6 +702,10 @@ test('two self-custody accounts from one phrase register, onboard and settle a C
   const [made, taken] = await Promise.all([maker.make('o1'), taker.take('o1')]);
 
   expect(made).toMatchObject({ swap: { id: 's1', status: 'dvp_settled' }, delivery: 'direct', flow: 'dvp' });
+  // CAN-2926: what make reads internally is the maker's to read too.
+  await expect(maker.timeoutOptions('o1')).resolves.toEqual([4, 1, 2]);
+  await expect(maker.swapInfo('s1')).resolves.toMatchObject({ swap: { id: 's1', status: 'dvp_settled' } });
+  await expect(maker.feeConfig('o1')).resolves.toEqual({ feeRate: '0.005', feeRecipient: FEE_PARTY, venue: VENUE, maxFeeRate: '0.01' });
   expect(taken).toMatchObject({ swap: { id: 's1', status: 'dvp_settled' }, delivery: 'direct', flow: 'dvp' });
   // The maker recorded the trade once, asking for DvP, with a request the proposal DTO accepts.
   expect(api.proposals).toEqual([expect.objectContaining({

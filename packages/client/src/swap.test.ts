@@ -63,6 +63,22 @@ test('each method hits the API route it documents, with the API field names', as
   expect(calls[5]?.body).toEqual({});
 });
 
+test('prices and the order-book pairs are read from the routes a maker quotes from (CAN-2926)', async () => {
+  const prices = [{ symbol: 'CC', price: 0.15, timestamp: 1790000000000, source: 'bybit' }];
+  const pairs = [{ id: 'p1', label: 'CC/USDCx', status: 'active' }];
+  const { calls, client } = fakeApi([{ body: prices }, { body: pairs }, { body: pairs }]);
+
+  await expect(client.prices()).resolves.toEqual(prices);
+  await expect(client.tradingPairs({ status: 'active', network: 'canton' })).resolves.toEqual(pairs);
+  await expect(client.tradingPairs()).resolves.toEqual(pairs);
+
+  expect(calls.map((c) => `${c.method} ${c.url.replace('https://api.example', '')}`)).toEqual([
+    'GET /prices',
+    'GET /trading-pairs?status=active&network=canton',
+    'GET /trading-pairs',
+  ]);
+});
+
 test('a non-2xx answer becomes one typed error that keeps the server message', async () => {
   const { client } = fakeApi([{ status: 400, body: { message: ['sourceAmount must be positive'] } }]);
   const err = await client.get('o1').catch((e: unknown) => e);
