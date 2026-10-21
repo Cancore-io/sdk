@@ -1,4 +1,4 @@
-import { serve, type ServeEvent, type SettleRun } from './serve';
+import { DONE_LIMIT, serve, type ServeEvent, type SettleRun } from './serve';
 import type { SelfCustodyAccount, Settled, SettleOptions, Withdrawal } from './selfcustody';
 import type { Order } from './swap';
 
@@ -171,6 +171,36 @@ test('orders serve does not drive are left alone: not DvP, an EVM leg, taken by 
   expect(calls).toEqual([]);
   expect(events).toEqual([]);
 });
+
+const expiredLocked = Object.assign(new Error('expired'), { last: { status: 'dvp_expired' }, swapId: null, withdrawable: false });
+test.each<[string, Partial<Order>, (id: string) => Promise<Settled>]>([
+  ['not DvP', { dvp: false }, async (id) => settledOf(id)],
+  ['terminal', { status: 'cancelled' }, async (id) => settledOf(id)],
+  ['taken by another account', { initiatorUserId: 'x', opponentUserId: 'y' }, async (id) => settledOf(id)],
+  ['settled', {}, async (id) => settledOf(id)],
+  ['expired and not withdrawable', {}, async () => { throw expiredLocked; }],
+])('finished orders (%s) are remembered up to a bound: past it the oldest is forgotten and read once more, the newest never', async (_, over, settle) => {
+  const orders = Array.from({ length: DONE_LIMIT + 1 }, (_, i) => order(`o${i}`, over));
+  const byId = new Map(orders.map((o) => [o.id, o]));
+  const reads = new Map<string, number>();
+  let polls = 0;
+  const { acct } = account([], settle);
+  Object.assign(acct.swap, {
+    get: async (id: string) => (reads.set(id, (reads.get(id) ?? 0) + 1), byId.get(id)!),
+    listMine: async ({ statusFilter, page = 1, pageSize = 100 }: { statusFilter?: string; page?: number; pageSize?: number }) => {
+      if (statusFilter !== 'accepted') return { items: [], page, pageSize, total: 0 };
+      if (page === 1) polls++;
+      return { items: orders.slice((page - 1) * pageSize, page * pageSize), page, pageSize, total: orders.length };
+    },
+  });
+  const handle = serve(acct, { reconcileMs: 1 }, noneLocked);
+  await until(() => reads.size === orders.length);
+  const after = polls;
+  await until(() => polls >= after + 3);
+  await handle.stop();
+  expect(reads.get('o0')).toBe(2);
+  expect(reads.get(`o${DONE_LIMIT}`)).toBe(1);
+}, 30_000);
 
 /** Orders o0..o{n-1}, each expired (order cancelled, swap dvp_expired); listSwaps pages them newest first. */
 function expiredAccount(n: number, lockedIds: Set<string>) {

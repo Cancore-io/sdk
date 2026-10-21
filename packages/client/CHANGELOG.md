@@ -53,6 +53,16 @@
 - `trustedPackages.htlc`: the `htlc-contract-v9` builds a self-custody HTLC may run on, pinned by name
   and id.
 
+### Changed
+
+- The spec snapshot is refreshed from the dev gateway (CAN-2930): the refusal registry grows from
+  39 codes to 112, and each new one is decided. `ACCOUNT_STOPPED` reads as the new refusal
+  `accountStopped`; `DVP_FEE_BALANCE_INSUFFICIENT` is surfaced and never read as a fee holding to
+  split (another split would not help); the rest — the partner Temple desk, intent routes and
+  quotes, filler registration, `GEO_RESTRICTED` — are surfaced.
+- `serve()` remembers at most 10,000 finished orders; past that the oldest is forgotten, which costs
+  one more read of it.
+
 ## 0.11.0
 
 ### Added
