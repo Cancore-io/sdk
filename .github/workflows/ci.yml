@@ -46,7 +46,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: echo "8d92daa5d42eff63f75d7ec1538d4fe170bcde48a264a711111517c6301619f2  scripts/quality-gates.ts" | sha256sum -c -
+      - run: echo "45438126603d5e1720b770f305d8deeddd45fb218b4b220ddd2fc45c08053452  scripts/quality-gates.ts" | sha256sum -c -
       - run: npm run typecheck
       - run: npm run loc:check
       - run: npm run complexity:check

@@ -254,13 +254,15 @@ export function nextAnyBaseline(files: readonly FileCount[], prev: Baseline, boo
 }
 
 export function nextCoverageFloors(summary: CoverageSummary, prev: CoverageFloors, boot = false): CoverageFloors {
-  const files: Record<string, number> = {};
+  const files: Record<string, number> = { ...prev.files };
   for (const [file, metric] of Object.entries(summary.files).sort(([a], [b]) => a.localeCompare(b))) {
     const measured = Math.floor(metric.lines);
-    if (measured >= DEFAULT_LINE_FLOOR) continue;
     const prior = prev.files[file];
-    if (prior === undefined && !boot) continue;
-    files[file] = prior !== undefined ? Math.max(prior, measured) : measured;
+    if (prior !== undefined) {
+      files[file] = Math.max(prior, measured);
+    } else if (boot && measured < DEFAULT_LINE_FLOOR) {
+      files[file] = measured;
+    }
   }
   return { global: { lines: Math.max(prev.global.lines, Math.floor(summary.global.lines)) }, files };
 }
@@ -304,7 +306,20 @@ function recordNodeRow(
   return null;
 }
 
-export function parseNodeCoverageTable(output: string): CoverageSummary | null {
+function applyUnloadedProdFiles(
+  g: CoverageMetric,
+  files: Record<string, CoverageMetric>,
+  prodFiles: readonly string[],
+): CoverageSummary {
+  const loaded = Object.keys(files).length;
+  const missing = prodFiles.filter((rel) => !(rel in files));
+  for (const rel of missing) files[rel] = { lines: 0, branches: 0 };
+  const total = loaded + missing.length;
+  const s = missing.length > 0 && total > 0 ? loaded / total : 1;
+  return { global: { lines: Number((g.lines * s).toFixed(2)), branches: Number((g.branches * s).toFixed(2)) }, files };
+}
+
+export function parseNodeCoverageTable(output: string, prodFiles: readonly string[] = []): CoverageSummary | null {
   const files: Record<string, CoverageMetric> = {};
   const stack: string[] = [];
   let globalMetric: CoverageMetric | null = null;
@@ -316,7 +331,7 @@ export function parseNodeCoverageTable(output: string): CoverageSummary | null {
     const g = recordNodeRow(stripped, parts, stack, files);
     if (g) globalMetric = g;
   }
-  return globalMetric ? { global: globalMetric, files } : null;
+  return globalMetric ? applyUnloadedProdFiles(globalMetric, files, prodFiles) : null;
 }
 
 type JestStat = { readonly total?: number; readonly covered?: number; readonly pct?: number };
@@ -412,7 +427,8 @@ function collectCoverageSummary(rootDir: string, cfg: QualityGatesConfig): Cover
       console.error(out);
       return null;
     }
-    return parseNodeCoverageTable(out);
+    const prodFiles = walkProductionFiles(rootDir).map((f) => relative(rootDir, f).split(sep).join('/'));
+    return parseNodeCoverageTable(out, prodFiles);
   }
   const summaryPath = join(rootDir, 'coverage', 'coverage-summary.json');
   if (!existsSync(summaryPath)) {

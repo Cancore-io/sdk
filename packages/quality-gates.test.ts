@@ -218,7 +218,18 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
     );
     expect(nextFloors.global.lines).toBe(94);
     expect(nextFloors.files['packages/bot-mcp']).toBe(83);
-    expect(nextFloors.files['packages/client']).toBeUndefined();
+    expect(nextFloors.files['packages/client']).toBe(98);
+
+    const f4Prev = { global: { lines: 93 }, files: { 'packages/client': 98 } };
+    const f4Summary = {
+      global: { lines: 94, branches: 85 },
+      files: { 'packages/client': { lines: 97, branches: 85 } },
+    };
+    const f4Next = nextCoverageFloors(f4Summary, f4Prev, false);
+    expect(f4Next.files['packages/client']).toBe(98);
+    const f4Verdict = evaluateCoverageRatchet(f4Summary, f4Next);
+    expect(f4Verdict.kind).toBe('fail');
+    expect(formatVerdictSummary(f4Verdict)).toMatch(/REGRESSED packages\/client: 97% < floor 98%/);
 
     expect(
       nextComplexityBaseline([{ file: 'packages/client/src/new-offender.ts', name: 'bad', line: 1, complexity: 15 }], {}),
@@ -273,6 +284,20 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
     expect(parsedNode?.global.lines).toBe(86.65);
     expect(parsedNode?.files['src/api.ts']?.lines).toBe(99.32);
 
+    const parsedNodeWithUnloaded = parseNodeCoverageTable(nodeTable, [
+      'src/api.ts',
+      'src/watch.ts',
+      'src/unloaded-new.ts',
+    ]);
+    expect(parsedNodeWithUnloaded?.files['src/unloaded-new.ts']).toEqual({ lines: 0, branches: 0 });
+    expect((parsedNodeWithUnloaded?.global.lines ?? 100) < (parsedNode?.global.lines ?? 0)).toBe(true);
+    const f3Verdict = evaluateCoverageRatchet(parsedNodeWithUnloaded!, {
+      global: { lines: 50 },
+      files: { 'src/watch.ts': 65 },
+    });
+    expect(f3Verdict.kind).toBe('fail');
+    expect(formatVerdictSummary(f3Verdict)).toMatch(/REGRESSED src\/unloaded-new\.ts: 0% < floor 90%/);
+
     expect(runCli(ROOT, ['loc'])).toBe(0);
     expect(runCli(ROOT, ['complexity'])).toBe(0);
     expect(runCli(ROOT, ['any'])).toBe(0);
@@ -308,6 +333,28 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
       expect(runCli(tmpDir, ['any', '--update'])).toBe(0);
       expect(runCli(tmpDir, ['coverage', '--update'])).toBe(0);
       expect(runCli(tmpDir, ['coverage'])).toBe(0);
+
+      fs.writeFileSync(
+        path.join(tmpDir, 'scripts', 'coverage-floors.json'),
+        JSON.stringify({ global: { lines: 93 }, files: { 'packages/demo': 98 } }, null, 2) + '\n',
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, 'coverage', 'coverage-summary.json'),
+        JSON.stringify({
+          total: { lines: { pct: 94 }, branches: { pct: 90 } },
+          [path.join(tmpDir, 'packages/demo/src/index.ts')]: {
+            lines: { total: 100, covered: 97 },
+            branches: { total: 10, covered: 9 },
+          },
+        }),
+      );
+      expect(runCli(tmpDir, ['coverage', '--update'])).toBe(1);
+      expect(
+        JSON.parse(fs.readFileSync(path.join(tmpDir, 'scripts', 'coverage-floors.json'), 'utf8')).files[
+          'packages/demo'
+        ],
+      ).toBe(98);
+      expect(runCli(tmpDir, ['coverage'])).toBe(1);
 
       fs.writeFileSync(path.join(tmpDir, 'packages', 'demo', 'src', 'offender.ts'), 'export const bad: any = 1;\n');
       expect(runCli(tmpDir, ['any', '--update'])).toBe(1);
