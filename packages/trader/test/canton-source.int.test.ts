@@ -343,14 +343,8 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
         { order: order as never, ticket: { ...ticket, orderHash } as never, party: E.STAND_FILLER_CANTON_PARTY, fillerId: E.STAND_FILLER_ID, requiredProofWindowSec: MIN_PROOF_WINDOW_S, reader: ops },
         (check) => void passed.push(check),
       );
-    // The live intent, as the participant holds it, passes every check. On a
-    // refusal the payload is printed as the operator reads it: filler-gateway's
-    // CANTON_NOT_READY does not name the field it could not describe.
-    await run(opened.order).catch(async (error: unknown) => {
-      const [intent] = await active(E.INTENT_OPERATOR_PARTY_ID, `${INTENT}:SwapIntent`, (a) => hexOf(a.orderHash) === opened.orderHash);
-      console.error(`SwapIntent ${opened.orderHash} as the ledger holds it: ${JSON.stringify(intent?.createArgument ?? null)}`);
-      throw error;
-    });
+    // The live intent, as the participant holds it, passes every check.
+    await run(opened.order);
     expect(passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6']);
     // An offer that differs from the committed terms by one base unit: V-C2.
     await expect(run({ ...opened.order, minReceived: String(BigInt(opened.order.minReceived as string) + 1n) })).rejects.toMatchObject({ check: 'V-C2', reason: 'ESCROW_MISMATCH' });
