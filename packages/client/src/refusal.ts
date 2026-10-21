@@ -78,6 +78,9 @@ export function refusalForCode(code: SdkErrorCode): Refusal {
     case 'EMAIL_REGISTERED_AS_PASSWORD':
     case 'WALLET_MISMATCH':
     case 'SIGNING_METHOD_UNSUPPORTED':
+    // A cancel conditional on OPEN lost the race to an accept or found the order closed: nothing was
+    // written, and a maker treats the quote as taken rather than retrying the cancel.
+    case 'ORDER_NOT_OPEN':
     case 'NOT_FOUND':
     // The agent mandate (backend `/agent/mandate*` and the `mandate.*` wallet ceremonies). No flow of
     // this client runs those yet, so there is nothing for it to do about them but surface them.

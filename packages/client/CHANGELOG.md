@@ -52,6 +52,11 @@
   account's. Only the hash lock is sent: no preimage, encrypted or not, leaves the caller.
 - `trustedPackages.htlc`: the `htlc-contract-v9` builds a self-custody HTLC may run on, pinned by name
   and id.
+- `swap.cancel(id, { ifOpen?: boolean })` (`CancelOrderInput`, `CancelOrderDto`) sends
+  `{ ifOpen: true }` on `POST /orders/{id}/cancel` to cancel only while the order is `open`; a
+  taken, cancelled or otherwise closed order answers `409 ORDER_NOT_OPEN` (`SdkErrorCode`,
+  classified as `'other'` so a maker treats the quote as taken and does not retry) with nothing
+  written (CAN-2933).
 
 ### Changed
 

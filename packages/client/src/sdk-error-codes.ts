@@ -112,6 +112,7 @@ export const SDK_ERROR_CODES = [
   'ATTESTOR_LIST_MISSING',
   'REGISTRATION_LINK_INVALID',
   'REGISTRATION_LINKS_BUSY',
+  'ORDER_NOT_OPEN',
 ] as const;
 
 export type SdkErrorCode = (typeof SDK_ERROR_CODES)[number];

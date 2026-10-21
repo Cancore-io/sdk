@@ -98,7 +98,7 @@ async function routesTheClientCalls(onBody: (route: string, body: unknown) => vo
   await Promise.all([
     s.listOpen(), s.listMine(), s.get('o1'), s.create(offer),
     s.createForPair({ tradingPairId: 'p', sourceAmount: '1', targetAmount: '1' }),
-    s.accept('o1'), s.cancel('o1'), s.pairs(), s.quote({ pairConfigId: 'p', sourceAmount: 1 }), s.execute('q'),
+    s.accept('o1'), s.cancel('o1'), s.cancel('o1', { ifOpen: true }), s.pairs(), s.quote({ pairConfigId: 'p', sourceAmount: 1 }), s.execute('q'),
     s.track('o1', { sleep: async () => {} }),
     b.limits(), b.history(), b.checkOnboarding(), b.estimateCost({ operation: 'burn', amount: '1' }),
     b.mint({}), b.burn({ amount: '1', ethRecipient: '0x0' }),
@@ -208,6 +208,7 @@ const REQUEST_FIELDS: Record<string, string[]> = {
     'expirationHours', 'description', 'dvp',
   ],
   CreatePairOrderDto: ['tradingPairId', 'sourceAmount', 'targetAmount', 'side', 'expirationHours', 'description', 'dvp'],
+  CancelOrderDto: ['ifOpen'],
   BridgeEstimateCostDto: ['operation', 'amount'],
   BridgeMintDirectDto: ['amount', 'evmTxHash', 'sourceChainId', 'retryOf'],
   BridgeBurnDirectDto: ['amount', 'ethRecipient', 'destinationChainId', 'retryOf'],
