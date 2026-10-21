@@ -125,16 +125,16 @@ test('track gives up with the last order in hand, not a bare timeout', async () 
 test('cancel sends { ifOpen: true } only when conditional cancel is requested', async () => {
   const { calls, client } = fakeApi([{ body: order('cancelled') }]);
 
-  await client.cancel('o 1');
-  await client.cancel('o 1', {});
-  await client.cancel('o 1', { ifOpen: false });
-  await client.cancel('o 1', { ifOpen: true });
+  await client.cancel('o/1');
+  await client.cancel('o/1', {});
+  await client.cancel('o/1', { ifOpen: false });
+  await client.cancel('o/1', { ifOpen: true });
 
   expect(calls.map((c) => `${c.method} ${new URL(c.url).pathname}`)).toEqual([
-    'POST /orders/o%201/cancel',
-    'POST /orders/o%201/cancel',
-    'POST /orders/o%201/cancel',
-    'POST /orders/o%201/cancel',
+    'POST /orders/o%2F1/cancel',
+    'POST /orders/o%2F1/cancel',
+    'POST /orders/o%2F1/cancel',
+    'POST /orders/o%2F1/cancel',
   ]);
   expect(calls.map((c) => c.body)).toEqual([undefined, undefined, undefined, { ifOpen: true }]);
 });
