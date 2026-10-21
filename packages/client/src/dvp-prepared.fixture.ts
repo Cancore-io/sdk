@@ -62,7 +62,7 @@ export const v = {
 const meta = () => v.record({ values: v.textMap({}) });
 
 /** Daml Numeric 10, as the ledger writes it. */
-const numeric10 = (amount: string) => {
+export const numeric10 = (amount: string) => {
   const [whole = '0', fraction = ''] = amount.split('.');
   return `${whole}.${(fraction + '0000000000').slice(0, 10)}`;
 };
@@ -76,9 +76,9 @@ const legValue = (leg: FixtureLeg) =>
     meta: meta(),
   });
 
-type NodeType = Extract<DamlTransaction_Node['versionedNode'], { oneofKind: 'v1' }>['v1']['nodeType'];
-const node = (nodeId: string, nodeType: NodeType): DamlTransaction_Node => ({ nodeId, versionedNode: { oneofKind: 'v1', v1: { nodeType } } });
-const template = (moduleName: string, entityName: string, packageId: string) => ({ packageId, moduleName, entityName });
+export type NodeType = Extract<DamlTransaction_Node['versionedNode'], { oneofKind: 'v1' }>['v1']['nodeType'];
+export const node = (nodeId: string, nodeType: NodeType): DamlTransaction_Node => ({ nodeId, versionedNode: { oneofKind: 'v1', v1: { nodeType } } });
+export const template = (moduleName: string, entityName: string, packageId: string) => ({ packageId, moduleName, entityName });
 
 export function proposalCreate(nodeId: string, input: { venue: string; swapId: string; legs: Record<string, FixtureLeg>; approvers: string[]; expiresAt?: string; packageId?: string }): DamlTransaction_Node {
   return node(nodeId, {
@@ -167,7 +167,7 @@ export const FACTORY_CID = '22'.repeat(34);
 /** Settlement instants to replace; null leaves the field out. */
 export type Window = Partial<Record<'requestedAt' | 'allocateBefore' | 'settleBefore', string | null>>;
 
-const createOf = (contractId: string, packageName: string, packageId: string, moduleName: string, entityName: string, argument: Value, signatories: string[]): Create => ({
+export const createOf = (contractId: string, packageName: string, packageId: string, moduleName: string, entityName: string, argument: Value, signatories: string[]): Create => ({
   lfVersion: '2.1', contractId, packageName, templateId: template(moduleName, entityName, packageId), argument, signatories, stakeholders: signatories,
 });
 
@@ -459,19 +459,19 @@ export async function factoryTransferLeg(input: {
   offer?: Partial<FixtureLeg> | null;
   command?: Partial<FixtureLeg>; expectedAdmin?: string; factory?: (honest: Create) => Create;
   commandOn?: Pick<Create, 'packageName' | 'templateId'>; commandSignatories?: string[]; interfaceEntity?: string;
-  inputOwner?: string; actAs?: string;
+  /** The offer contract in place of the utility registry's TransferOffer (CC's own instruction, say). */
+  inputOwner?: string; actAs?: string; offerContract?: (honest: Create) => Create;
 }) {
   const leg: FixtureLeg = { sender: input.party, receiver: input.receiver, amount: input.amount, instrumentId: input.instrument, ...input.command };
   const honest = factoryContract(input.instrument.admin, { instrument: input.instrument.id });
-  const factory = input.factory?.(honest) ?? honest;
-  const on = input.commandOn ?? factory;
+  const [factory, honestOffer] = [input.factory?.(honest) ?? honest, transferOffer(OFFER_CID, { ...leg, ...input.offer }, [input.instrument.admin, input.party])];
   const owned = holding('a0'.repeat(34), input.inputOwner ?? input.party, input.instrument, input.input);
   const outputs = input.outputs.map((o, i) => createNode(String(i + 2), holding(`a${i + 1}`.repeat(34), o.owner, o.instrument ?? input.instrument, o.amount, { lockedTo: o.lockedTo })));
-  const offer = input.offer === null ? [] : [createNode(String(outputs.length + 2), transferOffer(OFFER_CID, { ...leg, ...input.offer }, [input.instrument.admin, input.party]))];
+  const offer = input.offer === null ? [] : [createNode(String(outputs.length + 2), input.offerContract?.(honestOffer) ?? honestOffer)];
   const root = node('0', {
     oneofKind: 'exercise',
     exercise: {
-      lfVersion: '2.1', contractId: factory.contractId, packageName: on.packageName, templateId: on.templateId,
+      lfVersion: '2.1', contractId: factory.contractId, packageName: (input.commandOn ?? factory).packageName, templateId: (input.commandOn ?? factory).templateId,
       interfaceId: template('Splice.Api.Token.TransferInstructionV1', input.interfaceEntity ?? 'TransferFactory', TRANSFER_API),
       signatories: input.commandSignatories ?? factory.signatories, stakeholders: factory.stakeholders, actingParties: [input.party],
       choiceId: 'TransferFactory_Transfer',

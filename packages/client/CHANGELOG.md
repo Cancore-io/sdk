@@ -42,6 +42,16 @@
   the reads `make` already did, now the program's to make too.
 - `CancoreApiError.retryAfterMs` on a 429: the body's `retryAfter` or the `Retry-After` header, in
   ms. The client still does not retry by itself.
+- Self-custody HTLC on the account (CAN-2929): `openHtlc(input)` opens a swap (Flow B, the escrow
+  request and its deposit), `acceptCounter(swapId, expect)` accepts its counter leg, `refund(swapId)`
+  asks the venue to refund the HTLC after its timeout (nothing signed). Both ceremonies are read from
+  their bytes before the key signs: the receiver, amount, instrument, hash lock and timeout asked for, the pinned escrow, venue and fee
+  party (`DEFAULT_ESCROWS`, option `escrowPartyId`), the account as the only signatory and actor, every
+  field, template and choice known (an unknown one is refused), a deposit of exactly the amount to
+  exactly that escrow, and an accept that creates the proposal's HTLC and spends nothing of the
+  account's. Only the hash lock is sent: no preimage, encrypted or not, leaves the caller.
+- `trustedPackages.htlc`: the `htlc-contract-v9` builds a self-custody HTLC may run on, pinned by name
+  and id.
 
 ## 0.11.0
 

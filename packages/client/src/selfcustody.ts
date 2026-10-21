@@ -28,6 +28,8 @@ export { UnexpectedLegError } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
 import { DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
+import { createHtlcActions, postClaimCounter, randomHex, sha256Hex, type CounterExpectation, type OpenedHtlc, type OpenHtlcInput } from './selfcustody-htlc';
+export { newPreimage, postClaimCounter, sha256Hex, type CounterExpectation, type OpenedHtlc, type OpenHtlcInput } from './selfcustody-htlc';
 import {
   acceptCost, DEFAULT_TRUSTED_PACKAGES, feeCost, selfSendCost, sendCost, units, UnverifiedTransactionError, verifyConsolidatePrepared, verifyDvpPrepared,
   verifyPreapprovalSetupPrepared, verifySelfSendPrepared,
@@ -35,7 +37,7 @@ import {
 } from './dvp-verify';
 
 export { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, type TokenOperation, type TrustedPackages } from './dvp-verify';
-export { API_NETWORKS, DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, networkOf, type DvpNetwork } from './dvp-admins';
+export { API_NETWORKS, DEFAULT_ESCROWS, DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, networkOf, type DvpNetwork } from './dvp-admins';
 import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
@@ -318,6 +320,11 @@ export interface SelfCustodyOptions extends SessionOptions {
    */
   feeRecipientPartyId?: string | readonly string[];
   /**
+   * More escrow parties a self-custody HTLC may name. Added to `DEFAULT_ESCROWS` (the split pools'
+   * `cancore-escrow-*` parties), never replacing it: a request or counter naming another escrow is refused.
+   */
+  escrowPartyId?: string | readonly string[];
+  /**
    * How far ahead of now a proposal's expiry or an allocation's deadlines may lie — a later one
    * keeps the account's funds locked longer. Default 3 hours.
    */
@@ -547,6 +554,22 @@ export interface SelfCustodyAccount {
    * locked is `withdrawn: []`; a trade that is not expired is a `SettleError`.
    */
   withdrawAllocation(swapId: string): Promise<Withdrawal>;
+  /**
+   * Open a self-custody HTLC (Flow B, `htlc.flow-b-create`): the escrow request and the deposit that funds
+   * it, each read before the key signs it — the receiver, amount, instrument, hash lock and timeout asked
+   * for here, the pinned escrow, venue and fee party, a fee rate within `maxFeeRate`, and a deposit of
+   * exactly the amount to exactly that escrow (its CC fee within `maxFee`). The preimage stays with the
+   * caller: only its hash lock is sent.
+   */
+  openHtlc(input: OpenHtlcInput): Promise<OpenedHtlc>;
+  /**
+   * Accept the counter HTLC of a swap this account opened (`htlc.accept-counter`), read before it is signed
+   * against what the account EXPECTS — not what the API reports: the amount and token of the counter
+   * leg, its own hash lock, and a timeout no earlier than `minTimeout`, so there is time left to claim.
+   */
+  acceptCounter(swapId: string, expect: CounterExpectation): Promise<Executed>;
+  /** Ask the venue to refund this account's HTLC after its timeout (`POST /htlc/{id}/refund`). Nothing is signed. */
+  refund(swapId: string): Promise<HtlcSwap>;
   /** Transfers waiting for this account's acceptance. */
   incoming(): Promise<IncomingTransfer[]>;
   /**
@@ -673,6 +696,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   const trustedPackages: TrustedPackages = {
     swap: mergeLists(DEFAULT_TRUSTED_PACKAGES.swap, options.trustedPackages?.swap),
     wallet: mergeLists(DEFAULT_TRUSTED_PACKAGES.wallet, options.trustedPackages?.wallet),
+    htlc: mergeLists(DEFAULT_TRUSTED_PACKAGES.htlc, options.trustedPackages?.htlc),
   };
   const feeRecipients = [...new Set([...(network ? DEFAULT_FEE_RECIPIENTS[network] : []), ...[options.feeRecipientPartyId ?? []].flat()])];
   // Every Canton↔Canton order this account places asks for allocation-DvP: that is the only way it settles.
@@ -1436,6 +1460,10 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   const alreadyGone = (err: unknown) =>
     err instanceof CeremonyError && err.stage === 'prepare' && /nothing left to withdraw|no locked allocation/i.test(err.message);
 
+  const { openHtlc, acceptCounter, refund } = createHtlcActions({
+    http, options, network, feeRecipients, trustedHtlc: trustedPackages.htlc, maxFeeRate: options.maxFeeRate ?? DEFAULT_MAX_FEE_RATE, now, instrumentOf, tokenAdmins, feeCeiling, run, reading,
+  });
+
   async function withdrawAllocation(swapId: string): Promise<Withdrawal> {
     const info = await swapInfo(swapId);
     if (!isDvp(info.swap)) throw new SettleError(`swap ${swapId} is an HTLC swap (${info.swap.status}); only a DvP allocation is withdrawn here`, swapId, info.swap);
@@ -1593,6 +1621,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     make,
     take,
     withdrawAllocation,
+    openHtlc,
+    acceptCounter,
+    refund,
     incoming,
     accept,
     acceptIncoming,
@@ -1662,35 +1693,4 @@ function utf8ToBinaryString(text: string): string {
   let out = '';
   for (const byte of new TextEncoder().encode(text)) out += String.fromCharCode(byte);
   return out;
-}
-
-function randomHex(bytes: number): string {
-  return Array.from(globalThis.crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-/** The hash lock of a preimage: SHA-256 over its UTF-8 text, as the ledger computes it. */
-export async function sha256Hex(text: string): Promise<string> {
-  const digest = new Uint8Array(await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)));
-  return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-/**
- * A fresh HTLC preimage: 32 random bytes as hex text, and its hash lock, the SHA-256 of that text. The SDK
- * keeps no copy of the preimage, so the caller must store it before the swap is made: a lost preimage means
- * the counter leg can never be claimed, and the swap ends in a refund.
- */
-export async function newPreimage(): Promise<{ preimage: string; hashLock: string }> {
-  const preimage = randomHex(32);
-  return { preimage, hashLock: await sha256Hex(preimage) };
-}
-
-/**
- * Claim the counter HTLC of a swap with its preimage (`POST /htlc/:id/claim-counter`). The venue executes
- * the claim, so this call signs nothing, and it never logs or stores the preimage. The venue receives the
- * preimage, so this call trusts the venue not to use it on the other HTLC of the swap and not to leak it.
- * An empty preimage is refused before any request is made.
- */
-export function postClaimCounter(http: Pick<Http, 'post'>, swapId: string, preimage: string): Promise<HtlcSwap> {
-  if (preimage.length === 0) return Promise.reject(new Error('preimage must not be empty'));
-  return http.post<HtlcSwap>(`/htlc/${encodeURIComponent(swapId)}/claim-counter`, { preimage });
 }

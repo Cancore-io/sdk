@@ -20,6 +20,7 @@ import {
 } from './selfcustody';
 import { createSession, expiresWithin, LOGIN_CHALLENGE_PREFIX, type KeySigner } from './session';
 import type { SettleRun } from './serve';
+import { acceptCounterLeg, amuletInstruction, ESCROW, EXECUTOR, HASH_LOCK, initRequestLeg, iso } from './htlc-prepared.fixture';
 
 /**
  * A fake venue that settles one Canton↔Canton swap the way the API does: every
@@ -3232,4 +3233,95 @@ test('session.token() renews an expiring token before handing it out, and reuses
   expect(await session.token()).toBe(renewed);
   expect(await session.token()).toBe(renewed);
   expect(seen).toEqual(['/auth/challenge', '/auth/login-signature', '/auth/refresh']);
+});
+
+describe('self-custody HTLC: Flow B, accept-counter and refund sign only what they read (CAN-2929)', () => {
+  const HOUR = 3_600_000;
+  const CC = { id: 'Amulet', admin: DEV.dso };
+  const MALLORY = 'mallory::1220ff';
+  type Leg = { kind: string; preparedTransaction: string; preparedTransactionHash: string };
+  const asLegs = (legs: Leg[]) => legs.map((l, i) => ({ legId: `l${i}`, hash: l.preparedTransactionHash, kind: l.kind, preparedTransaction: l.preparedTransaction }));
+
+  async function account(seed: number, legsFor: (party: string, type: string, params: Record<string, unknown>) => Promise<Leg[]>) {
+    const signer = await providerFromMnemonic(PHRASE, { account: seed });
+    const party = `party-me::${cantonFingerprint(signer.public_key)}`;
+    const asked: Array<{ type: string; params: Record<string, unknown> }> = [];
+    const api = stub({
+      'GET /auth/me': () => ({ id: 'me', partyId: party }),
+      'POST /wallet/operations/prepare': async (body) => {
+        const { type, params } = body as { type: string; params: Record<string, unknown> };
+        asked.push({ type, params });
+        return { operationId: 'op1', legs: asLegs(await legsFor(party, type, params)), meta: { swapId: 's1' } };
+      },
+      'POST /wallet/operations/submit': () => ({ ok: true }),
+      'POST /htlc/s1/refund': () => ({ id: 's1', status: 'htlc_refunded' }),
+    });
+    const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, maxFee: '0.5' });
+    return { acct, api, party, asked };
+  }
+
+  const request = (party: string, over: Record<string, unknown> = {}) => ({
+    party, receiver: 'party-taker::1220bb', amount: '10', instrument: CC, hashLock: HASH_LOCK, timeout: iso(Date.now() + 2 * HOUR),
+    escrow: ESCROW, executor: EXECUTOR, fee: FEE_PARTY, maxFeeRate: '0.01', provider: null, description: '', ...over,
+  });
+  const deposit = (party: string, receiver = ESCROW) => factoryTransferLeg({
+    party, receiver, instrument: CC, amount: '10', input: '25', offerContract: amuletInstruction,
+    outputs: [{ owner: party, amount: '10', lockedTo: DEV.dso }, { owner: party, amount: '15' }],
+  });
+  const open = { tokenId: 'CC', amount: '10', receiver: 'party-taker::1220bb', hashLock: HASH_LOCK, timeoutHours: 2 };
+
+  test('openHtlc reads both transactions, signs them, and never sends an encrypted preimage', async () => {
+    const { acct, api, asked } = await account(61, async (party) => [await initRequestLeg(request(party)), await deposit(party)]);
+
+    await expect(acct.openHtlc(open)).resolves.toMatchObject({ swapId: 's1' });
+
+    expect(asked).toEqual([{ type: 'htlc.flow-b-create', params: { tokenId: 'CC', amount: 10, receiver: 'party-taker::1220bb', hashLock: HASH_LOCK, timeoutHours: 2 } }]);
+    expect(JSON.stringify(asked)).not.toMatch(/encryptedPreimage/);
+    expect(api.hits).toContain('POST /wallet/operations/submit');
+  });
+
+  test('openHtlc refuses a request to another receiver, or a deposit to another escrow, before signing', async () => {
+    for (const legs of [
+      async (party: string) => [await initRequestLeg(request(party, { receiver: MALLORY })), await deposit(party)],
+      async (party: string) => [await initRequestLeg(request(party)), await deposit(party, MALLORY)],
+    ]) {
+      const { acct, api } = await account(62, legs);
+      const error = await acct.openHtlc(open).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(CeremonyError);
+      expect((error as CeremonyError).cause).toBeInstanceOf(UnverifiedTransactionError);
+      expect(api.hits).not.toContain('POST /wallet/operations/submit');
+    }
+  });
+
+  const counter = (party: string, over: Record<string, unknown> = {}) => ({
+    party, sender: 'party-taker::1220bb', amount: '5000', instrument: CC, hashLock: HASH_LOCK, timeout: iso(Date.now() + 2 * HOUR),
+    escrow: ESCROW, executor: EXECUTOR, fee: FEE_PARTY, feeAmount: null, provider: null, description: '', ...over,
+  });
+  const expectation = { amount: '5000', tokenId: 'CC', hashLock: HASH_LOCK, minTimeout: Date.now() + HOUR };
+
+  test('acceptCounter signs the accept that matches what the account expects', async () => {
+    const { acct, api, asked } = await account(63, async (party) => [await acceptCounterLeg(counter(party))]);
+
+    await acct.acceptCounter('s1', expectation);
+
+    expect(asked).toEqual([{ type: 'htlc.accept-counter', params: { swapId: 's1' } }]);
+    expect(api.hits).toContain('POST /wallet/operations/submit');
+  });
+
+  test('acceptCounter refuses a counter that times out inside the claim margin, before signing', async () => {
+    const { acct, api } = await account(64, async (party) => [await acceptCounterLeg(counter(party, { timeout: iso(Date.now() + 10 * 60_000) }))]);
+
+    const error = await acct.acceptCounter('s1', expectation).catch((e: unknown) => e);
+
+    expect((error as CeremonyError).cause).toBeInstanceOf(UnverifiedTransactionError);
+    expect(api.hits).not.toContain('POST /wallet/operations/submit');
+  });
+
+  test('refund asks the venue to refund the swap and signs nothing', async () => {
+    const { acct, api } = await account(65, async () => []);
+
+    await expect(acct.refund('s1')).resolves.toMatchObject({ id: 's1', status: 'htlc_refunded' });
+
+    expect(api.signed()).toEqual([]);
+  });
 });
