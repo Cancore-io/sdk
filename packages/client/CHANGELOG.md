@@ -11,12 +11,18 @@
     the wallet read (`agreementCid`, `attestationCid`, `holdingCids`);
   - `bridge.reportLoopResult(result)` records what the wallet answered; it is the only writer of
     the party's bridge row;
-  - `bridge.executeLoop(input, submit)` runs build, your Loop submitter and the report. The report
-    is sent after a failed submit too, and the submit error is then thrown as it was; a refused
-    report throws `LoopReportError`, whose `result` can be sent again. A Loop answer with
-    `status: 'failed'` is a failed submit.
+  - `bridge.executeLoop(input, submit, checks?)` runs build, your Loop submitter and the report.
+    The report is sent after a failed submit too, and the submit error is then thrown as it was.
+    A Loop answer with `status: 'failed'` is a failed submit. A refused report throws
+    `LoopReportError`; its `result` is safe to send again when it carries a `transactionId` or
+    the refusal was a 4xx, otherwise check history first.
+  - `checks` (`LoopSubmitChecks`) read the Loop wallet for it: `isCancelled(err)` marks a
+    cancellation in the wallet, thrown without a report; `landed(input)` answers whether a
+    rejected submit committed anyway (its consumed contract is gone), and then the submit is
+    reported and resolved as a success, without a `transactionId`.
 - `bridge.registerDeposit({ amount, evmTxHash, sourceChainId })` records the EVM deposit as a
-  PENDING mint right after it confirms.
+  PENDING mint right after it confirms. Call it once, before the mint: it is idempotent only
+  while the deposit is PENDING. The hash is sent lowercase, as the chain recorder stores it.
 - `bridge.depositAttestation({ amount? })` finds the DepositAttestation to claim on our
   participant.
 - `swap.prices()` (`GET /prices`) and `swap.tradingPairs(query?)` (`GET /trading-pairs`): what a

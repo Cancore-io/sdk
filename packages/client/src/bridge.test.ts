@@ -43,6 +43,14 @@ test('each method hits the bridge route it documents', async () => {
   expect(calls[3]?.body).toEqual({ operation: 'burn', amount: '10' });
 });
 
+test('registerDeposit sends the hash lowercase, as the chain recorder stores it', async () => {
+  const { calls, client } = fakeApi({ id: 'row-1' });
+
+  await client.registerDeposit({ amount: '25', evmTxHash: `0x${'AB'.repeat(32)}`, sourceChainId: '1' });
+
+  expect(calls[0]?.body).toEqual({ amount: '25', evmTxHash: `0x${'ab'.repeat(32)}`, sourceChainId: '1' });
+});
+
 // The self-custody path is the reason the client exists next to the direct
 // routes: the hash goes OUT to a signer the client never sees, and only the
 // signature comes back in. The signer here proves that is the only exchange.
@@ -130,6 +138,64 @@ test.each([
   expect((err as Error).message).toBe('ledger said no');
   expect(events).toEqual(['loop-command', 'loop-result']);
   expect(bodies['loop-result']).toEqual({ ...MINT_REPORT, success: false, error: 'ledger said no' });
+});
+
+test.each([
+  ['an error longer than the DTO takes is cut to 2000 characters', async () => Promise.reject(new Error('x'.repeat(2500))), 'x'.repeat(2000)],
+  ["a 'failed' answer without a message", async () => ({ status: 'failed' }), 'The Loop wallet reported the transaction failed'],
+  ['a rejection that is not an Error', async () => Promise.reject('popup blocked'), 'popup blocked'],
+] as Array<[string, LoopSubmitter, string]>)('the reported error: %s', async (_, submit, error) => {
+  const { bodies, client } = loopApi();
+
+  await client.executeLoop(MINT, submit).catch(() => undefined);
+
+  expect(bodies['loop-result']).toEqual({ ...MINT_REPORT, success: false, error });
+});
+
+// Loop can reject a transaction that committed. Reported as a failure, a mint's
+// row would stay PENDING for good and a burn would get a FAILED row it does not deserve.
+test.each([
+  ['rejects', rejects],
+  ["resolves with Loop's status: 'failed'", answersFailed],
+])('a submit that %s is reported and resolved as a success when the caller\'s check says it landed', async (_, submit) => {
+  const { events, bodies, client } = loopApi();
+  const asked: unknown[] = [];
+
+  const result = await client.executeLoop(MINT, submit, {
+    landed: async (input) => {
+      asked.push(input);
+      return true;
+    },
+  });
+
+  expect(asked).toEqual([MINT]);
+  expect(events).toEqual(['loop-command', 'loop-result']);
+  expect(bodies['loop-result']).toEqual({ ...MINT_REPORT, success: true });
+  expect(result).toEqual(bodies['loop-result']);
+});
+
+test('a submit that did not land is reported as a failure, then thrown', async () => {
+  const { bodies, client } = loopApi();
+
+  const err = await client.executeLoop(MINT, rejects, { landed: async () => false, isCancelled: () => false }).catch((e: unknown) => e);
+
+  expect((err as Error).message).toBe('ledger said no');
+  expect(bodies['loop-result']).toEqual({ ...MINT_REPORT, success: false, error: 'ledger said no' });
+});
+
+// A cancelled burn reported as a failure is one more FAILED withdrawal in the user's history.
+test('a cancellation in the wallet is thrown as it is and never reported', async () => {
+  const cancelled = new Error('Request rejected by the wallet');
+  const { events, client } = loopApi();
+  const landed = jest.fn(async () => true);
+
+  const err = await client
+    .executeLoop(MINT, async () => Promise.reject(cancelled), { isCancelled: (e) => e === cancelled, landed })
+    .catch((e: unknown) => e);
+
+  expect(err).toBe(cancelled);
+  expect(events).toEqual(['loop-command']);
+  expect(landed).not.toHaveBeenCalled();
 });
 
 test('a failed submit is thrown as the submitter threw it', async () => {

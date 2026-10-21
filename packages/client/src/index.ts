@@ -47,6 +47,7 @@ export type {
   LoopCommandInput,
   LoopResult,
   LoopSubmitAnswer,
+  LoopSubmitChecks,
   LoopSubmitter,
   MintInput,
   OnboardingStatus,

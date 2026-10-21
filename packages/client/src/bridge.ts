@@ -126,7 +126,10 @@ export interface PreparedInteractive {
 /** A signer for the interactive path: base64 hash in, base64 signature out. `@cancore/wallet`'s `HashSigner` fits. */
 export type PreparedHashSigner = (preparedTransactionHashB64: string) => Promise<string>;
 
-/** `BridgeRegisterDepositDto` — the EVM deposit, recorded as a PENDING mint. Idempotent per `evmTxHash`. */
+/**
+ * `BridgeRegisterDepositDto` — the EVM deposit, recorded as a PENDING mint. Idempotent only while
+ * that deposit is PENDING: call it once, before the mint.
+ */
 export interface RegisterDepositInput {
   amount: string;
   evmTxHash: string;
@@ -199,17 +202,31 @@ export interface LoopSubmitAnswer {
 /**
  * Submits a built command through the Loop wallet and waits for the ledger:
  * `(command) => provider.submitAndWaitForTransaction(command, { message })` fits.
- * A rejection and a `status: 'failed'` answer are both a failed submit. Loop
- * can reject a transaction that did commit, so a submitter that can read the
- * wallet should check whether the consumed contract is gone before it rejects.
+ * A rejection and a `status: 'failed'` answer are both a failed submit.
  */
 export type LoopSubmitter = (command: LoopCommand) => Promise<LoopSubmitAnswer | undefined>;
+
+/** What `executeLoop` asks before it reports a failed submit. Both read the Loop wallet, which this package cannot. */
+export interface LoopSubmitChecks {
+  /**
+   * Loop can reject a transaction that did commit. True when the contract the
+   * operation consumes (mint: `params.attestationCid`, burn: `params.holdingCids[0]`)
+   * is gone from the wallet: the submit is then reported, and resolves, as a
+   * success without a `transactionId`.
+   */
+  landed?: (input: LoopCommandInput) => Promise<boolean>;
+  /** True for a cancellation in the wallet (request rejected, popup closed): thrown as it is, not reported. */
+  isCancelled?: (err: unknown) => boolean;
+}
 
 /**
  * The Loop wallet answered, but bridge history did not take the report.
  * `result` is that answer (`result.success` says whether the transaction
- * went through): send it again with `reportLoopResult`, and do not resubmit a
- * mint or burn that succeeded.
+ * went through); do not resubmit a mint or burn that succeeded. Sending
+ * `result` again with `reportLoopResult` is safe when `result.transactionId`
+ * is set, or when `cause` is a `CancoreApiError` with a 4xx status (refused
+ * before anything was written). Otherwise the first report may have been
+ * recorded: read `history()` before sending it again.
  */
 export class LoopReportError extends Error {
   constructor(
@@ -255,8 +272,10 @@ export interface BridgeClient {
    * Loop, both steps, with your submitter in between. The outcome is reported
    * whether the submit succeeded or not; a failed submit is then rethrown, and a
    * failed report throws `LoopReportError`. Resolves with the report it sent.
+   * `checks` keep a cancellation out of history and a rejected submit that
+   * landed from being recorded as a failure.
    */
-  executeLoop(input: LoopCommandInput, submit: LoopSubmitter): Promise<LoopResult>;
+  executeLoop(input: LoopCommandInput, submit: LoopSubmitter, checks?: LoopSubmitChecks): Promise<LoopResult>;
 }
 
 export function createBridgeClient(http: Http): BridgeClient {
@@ -281,11 +300,13 @@ export function createBridgeClient(http: Http): BridgeClient {
       const signature = await sign(prepared.preparedTransactionHash);
       return submitInteractive({ submissionKey: prepared.submissionKey, signature });
     },
-    registerDeposit: (input) => http.post('/canton-wallet/bridge/history/pending-deposit', input),
+    // The chain recorder stores the node's lowercase hash, and both sides dedup by the exact string.
+    registerDeposit: (input) =>
+      http.post('/canton-wallet/bridge/history/pending-deposit', { ...input, evmTxHash: input.evmTxHash.toLowerCase() }),
     depositAttestation: (query = {}) => http.post('/canton-wallet/bridge/deposit-attestation', query),
     buildLoopCommand,
     reportLoopResult,
-    async executeLoop(input, submit) {
+    async executeLoop(input, submit, checks = {}) {
       const command = await buildLoopCommand(input);
       const reported = Object.fromEntries(
         REPORTED_FIELDS.filter((k) => input.params[k] != null).map((k) => [k, input.params[k]]),
@@ -299,9 +320,14 @@ export function createBridgeClient(http: Http): BridgeClient {
         }
         result = { operationType: input.operationType, success: true, transactionId: answer?.update_id, ...reported };
       } catch (err) {
-        submitError = err;
-        const error = (err instanceof Error ? err.message : String(err)).slice(0, REPORTED_ERROR_MAX);
-        result = { operationType: input.operationType, success: false, error, ...reported };
+        if (checks.isCancelled?.(err)) throw err;
+        if (await checks.landed?.(input)) {
+          result = { operationType: input.operationType, success: true, ...reported };
+        } else {
+          submitError = err;
+          const error = (err instanceof Error ? err.message : String(err)).slice(0, REPORTED_ERROR_MAX);
+          result = { operationType: input.operationType, success: false, error, ...reported };
+        }
       }
       await reportLoopResult(result).catch((err: unknown) => {
         throw new LoopReportError(result, err);
