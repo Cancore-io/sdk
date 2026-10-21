@@ -25,13 +25,20 @@ import { createSwapClient } from './swap';
  * three pool-trade routes are held to their fields like the rest. The
  * device-flow routes are still held for the part the document does not carry.
  */
+interface Schema {
+  $ref?: string;
+  properties?: Record<string, Schema>;
+  items?: Schema;
+  required?: string[];
+  enum?: string[];
+}
 interface Spec {
   paths: Record<string, Record<string, unknown>>;
-  components: { schemas: Record<string, { properties?: Record<string, unknown>; required?: string[]; enum?: string[] }> };
+  components: { schemas: Record<string, Schema> };
 }
 interface Operation {
   parameters?: Array<{ name: string }>;
-  requestBody?: { content: Record<string, { schema?: { $ref?: string } }> };
+  requestBody?: { content: Record<string, { schema?: Schema }> };
   responses?: Record<string, { content?: unknown }>;
 }
 const spec = JSON.parse(readFileSync(join(__dirname, '..', 'spec', 'openapi.json'), 'utf8')) as Spec;
@@ -52,15 +59,17 @@ const SELF_CUSTODY_REPLIES: Record<string, unknown> = {
 };
 const DEVICE_REPLY = { deviceCode: 'd', userCode: 'U', verificationUri: '/w', expiresIn: 600, interval: 5, status: 'granted', token: 't' };
 
-/** Drive every method once; collect `METHOD /path` with ids folded back to `{id}`. */
-async function routesTheClientCalls(): Promise<string[]> {
+/** Drive every method once; collect `METHOD /path` with ids folded back to `{id}`, and hand each body sent to `onBody`. */
+async function routesTheClientCalls(onBody: (route: string, body: unknown) => void = () => {}): Promise<string[]> {
   const seen = new Set<string>();
   const request = async (url: string, init: RequestInit) => {
     const raw = new URL(url).pathname;
     const path = raw
       .replace(/\/o1(?=\/|$)/, '/{id}')
       .replace(/^\/tokens\/balance\/[^/]+\/[^/]+$/, '/tokens/balance/{partyId}/{instrumentId}');
-    seen.add(`${(init.method ?? 'GET').toLowerCase()} ${path}`);
+    const route = `${(init.method ?? 'GET').toLowerCase()} ${path}`;
+    seen.add(route);
+    if (init.body !== undefined) onBody(route, JSON.parse(String(init.body)));
     const reply = SELF_CUSTODY_REPLIES[raw] ?? (path.startsWith('/auth/device/') ? DEVICE_REPLY : ORDER_REPLY);
     return new Response(JSON.stringify(reply));
   };
@@ -113,6 +122,44 @@ test('every route the client actually calls exists in the gateway document, with
     return spec.paths[path]?.[method] === undefined;
   });
   expect(missing).toEqual([]);
+});
+
+const resolve = (schema: Schema | undefined): Schema | undefined =>
+  schema?.$ref ? spec.components.schemas[schema.$ref.replace('#/components/schemas/', '')] : schema;
+
+/** What in `value` the schema does not allow: a field it lacks, or one it requires and `value` leaves out. Nested DTOs too. */
+function bodyDrift(schema: Schema | undefined, value: unknown, at: string): string[] {
+  const properties = schema?.properties ?? {};
+  // A schema with no properties is one the document leaves untyped (DevicePollDto); those are pinned below.
+  if (Object.keys(properties).length === 0 || value === null || typeof value !== 'object' || Array.isArray(value)) return [];
+  const fields = value as Record<string, unknown>;
+  return [
+    ...Object.keys(fields).filter((f) => !(f in properties)).map((f) => `${at}: ${f} is not in the schema`),
+    ...(schema?.required ?? []).filter((f) => !(f in fields)).map((f) => `${at}: ${f} is required`),
+    ...Object.entries(fields).flatMap(([f, v]) => {
+      const nested = resolve(properties[f]?.items ?? properties[f]);
+      return (Array.isArray(v) ? v : [v]).flatMap((item) => bodyDrift(nested, item, `${at} ${f}`));
+    }),
+  ];
+}
+
+/**
+ * Every body the client actually sends, against the schema its route declares. The gateway's
+ * ValidationPipe runs with `forbidNonWhitelisted`, so a field the DTO lacks is a 400 before any
+ * service runs. REQUEST_FIELDS below holds the client's TYPES to the DTOs; that passed while
+ * `prepareInteractive` sent `{ operation, amount }` to a route taking `{ operationType, params }`
+ * (CAN-2937), because what a method puts on the wire is not its input type.
+ */
+test('every body the client sends has only fields its route declares, and all it requires', async () => {
+  // The document's sign-up requires `email`; the API does not for a self-custody sign-up (the sign-up test below).
+  const notEnforced = ['post /auth/register: email is required'];
+  const drift: string[] = [];
+  await routesTheClientCalls((route, body) => {
+    const [method, path] = route.split(' ') as [string, string];
+    const op = spec.paths[path]?.[method] as Operation | undefined;
+    drift.push(...bodyDrift(resolve(op?.requestBody?.content['application/json']?.schema), body, route));
+  });
+  expect(drift.filter((d) => !notEnforced.includes(d))).toEqual([]);
 });
 
 /**

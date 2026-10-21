@@ -1,5 +1,14 @@
 # Changelog — `@cancore/client`
 
+## 0.12.1
+
+### Fixed
+
+- `bridge.prepareInteractive` and `bridge.executeInteractive` send the body the route takes,
+  `{ operationType: 'bridgeMint' | 'bridgeBurn', params }`, built from the same
+  `PrepareInteractiveInput` as before (CAN-2937). They sent the input as it was, and the gateway
+  refused every call with a 400 before any service ran.
+
 ## 0.12.0
 
 ### Added
