@@ -94,6 +94,9 @@ async function routesTheClientCalls(): Promise<string[]> {
     b.limits(), b.history(), b.checkOnboarding(), b.estimateCost({ operation: 'burn', amount: '1' }),
     b.mint({}), b.burn({ amount: '1', ethRecipient: '0x0' }),
     b.prepareInteractive({ operation: 'burn', amount: '1' }), b.submitInteractive({ submissionKey: 'k', signature: 's' }),
+    b.registerDeposit({ amount: '1', evmTxHash: '0x0', sourceChainId: '1' }), b.depositAttestation({ amount: '1' }),
+    b.buildLoopCommand({ operationType: 'bridgeMint', params: { agreementCid: 'a', attestationCid: 'b' } }),
+    b.reportLoopResult({ operationType: 'bridgeMint', success: true }),
     requestGrant({
       baseUrl: 'https://api.example', request, appName: 'a', scopes: ['orders:write'],
       limits: { maxOrderUsd: 1, windowUsd: 1, windowSeconds: 60 },
@@ -162,6 +165,12 @@ const REQUEST_FIELDS: Record<string, string[]> = {
   BridgeMintDirectDto: ['amount', 'evmTxHash', 'sourceChainId', 'retryOf'],
   BridgeBurnDirectDto: ['amount', 'ethRecipient', 'destinationChainId', 'retryOf'],
   BridgeInteractiveSubmitDto: ['submissionKey', 'signature'],
+  BridgeRegisterDepositDto: ['amount', 'evmTxHash', 'sourceChainId'],
+  BridgeDepositAttestationQueryDto: ['amount'],
+  BridgeLoopResultDto: [
+    'operationType', 'success', 'transactionId', 'error', 'amount', 'evmTxHash', 'sourceChainId',
+    'ethRecipient', 'destinationChainId',
+  ],
   DeviceAuthorizeDto: ['appName', 'scopes', 'limits'],
   GrantLimitsDto: ['maxOrderUsd', 'windowUsd', 'windowSeconds', 'pairIds'],
   ChallengeRequestDto: ['publicKey'],
@@ -176,7 +185,7 @@ const REQUEST_FIELDS: Record<string, string[]> = {
   ClaimHtlcDto: ['preimage'],
   // The DvP path of make/take (selfcustody.ts): the maker's trade request, and every signed step.
   CreateProposalDto: ['orderId', 'dvp', 'tokenId', 'amount', 'receiver', 'hashLock', 'timeoutHours'],
-  PrepareCommandDto: ['operationType', 'params'],
+  PrepareCommandDto: ['operationType', 'params'], // and bridge.buildLoopCommand
   SignedCommandDto: [
     'commandId', 'operationType', 'actAs', 'commands', 'signature', 'signatures', 'publicKey',
     'applicationId', 'serializedForSigning', 'hashForSigning',
@@ -289,10 +298,11 @@ const RESPONSE_FIELDS: Record<string, string[]> = {
 };
 
 /**
- * Routes the self-custody account reads whose answers the document does not
- * type: the envelope's prepare/submit, the fee and timeout lookups, and the
- * partner cashback routes. Their shapes in selfcustody.ts are written from the
- * services. Pinned so the day a schema lands is a red test with the next step in it.
+ * Routes the client reads whose answers the document does not type: the
+ * self-custody envelope's prepare/submit, the fee and timeout lookups, the
+ * partner cashback routes, and the bridge's deposit and Loop command routes.
+ * Their shapes in selfcustody.ts and bridge.ts are written from the services and
+ * the controller. Pinned so the day a schema lands is a red test with the next step in it.
  */
 const UNTYPED_ANSWERS: Array<[string, string]> = [
   ['post', '/wallet/operations/prepare'],
@@ -302,9 +312,12 @@ const UNTYPED_ANSWERS: Array<[string, string]> = [
   ['get', '/partner/cashback/me'],
   ['get', '/partner/cashback/claims'],
   ['post', '/partner/cashback/claim'],
+  ['post', '/canton-wallet/bridge/history/pending-deposit'],
+  ['post', '/canton-wallet/bridge/deposit-attestation'],
+  ['post', '/canton-wallet/bridge/loop-command'],
 ];
 
-test('the self-custody routes whose answers are untyped are still untyped', () => {
+test('the routes whose answers are untyped are still untyped', () => {
   const typed = UNTYPED_ANSWERS.filter(([method, path]) => {
     const op = spec.paths[path]?.[method] as Operation | undefined;
     expect(op).toBeDefined();
@@ -315,7 +328,7 @@ test('the self-custody routes whose answers are untyped are still untyped', () =
   if (typed.length > 0) {
     throw new Error(
       `${typed.map(([m, p]) => `${m.toUpperCase()} ${p}`).join(', ')} now type(s) the answer. This is the expected ` +
-        'signal, not a regression: hold the matching type in selfcustody.ts to it in RESPONSE_FIELDS and drop the route here.',
+        'signal, not a regression: hold the matching type in selfcustody.ts or bridge.ts to it in RESPONSE_FIELDS and drop the route here.',
     );
   }
 });
