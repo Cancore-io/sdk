@@ -141,8 +141,8 @@ async function ledgerHoldings(party: string, asset: { admin: string; id: string 
     method: 'POST',
     headers,
     body: JSON.stringify({
+      // eventFormat alone: the participant refuses it beside the older top-level verbose/filter.
       activeAtOffset: end.offset,
-      verbose: true,
       eventFormat: { verbose: true, filtersByParty: { [party]: { cumulative: [{ identifierFilter: { TemplateFilter: { value: { templateId, includeCreatedEventBlob: false } } } }] } } },
     }),
   });
