@@ -31,7 +31,7 @@ export type {
   TradingPairsQuery,
   TradingPairToken,
 } from './swap';
-export { createBridgeClient, bridge } from './bridge';
+export { createBridgeClient, bridge, LoopReportError } from './bridge';
 export type {
   BridgeClient,
   BridgeCostEstimate,
@@ -40,11 +40,21 @@ export type {
   BridgeLimits,
   BridgeOperation,
   BurnInput,
+  DepositAttestation,
+  LoopBridgeOperation,
+  LoopBridgeParams,
+  LoopCommand,
+  LoopCommandInput,
+  LoopResult,
+  LoopSubmitAnswer,
+  LoopSubmitChecks,
+  LoopSubmitter,
   MintInput,
   OnboardingStatus,
   PreparedHashSigner,
   PreparedInteractive,
   PrepareInteractiveInput,
+  RegisterDepositInput,
 } from './bridge';
 
 import { createBridgeClient, type BridgeClient } from './bridge';
