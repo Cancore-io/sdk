@@ -40,8 +40,10 @@ import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
 import { serve, type ServeHandle, type ServeOptions, type SettleRun } from './serve';
+import type { CashbackClaim, CashbackSummary } from './cashback';
 
 export type { ServeEvent, ServeHandle, ServeOptions } from './serve';
+export type { CashbackClaim, CashbackPayout, CashbackSummary, CashbackTokenAmount } from './cashback';
 
 export { createSession, expiresWithin } from './session';
 export type { AccountUser, KeySigner, RegisterInput, Session, SessionOptions } from './session';
@@ -190,40 +192,6 @@ export interface LegalStatus {
   accepted: boolean;
   /** The document bundle this stand requires, or null when it requires none. */
   requiredVersion: string | null;
-}
-
-/** Cashback owed or paid, per token. */
-export interface CashbackTokenAmount {
-  tokenId: string;
-  amount: string;
-  swaps: number;
-}
-
-export interface CashbackSummary {
-  claimable: CashbackTokenAmount[];
-  claimed: CashbackTokenAmount[];
-  swapsAccrued: number;
-  swapsClaimed: number;
-  /** A claim is still being paid out; the API refuses a new one until it is. */
-  hasPendingClaim: boolean;
-}
-
-export interface CashbackPayout {
-  id: string;
-  tokenId: string;
-  amount: string;
-  settlementStatus: 'pending' | 'accepted' | 'expired_reclaimed' | 'failed';
-  /** The transfer to accept, for a token that is not delivered directly. */
-  transferInstructionCid: string | null;
-}
-
-export interface CashbackClaim {
-  id: string;
-  status: 'settling' | 'executed' | 'failed';
-  requestedAt: string;
-  executedAt: string | null;
-  failureReason: string | null;
-  payouts?: CashbackPayout[];
 }
 
 /** `FaucetClaimResponseDto` */
