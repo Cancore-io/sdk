@@ -106,7 +106,7 @@ export interface BurnInput {
   retryOf?: string;
 }
 
-/** `PrepareCommandDto` — what the self-custody path asks the backend to prepare. */
+/** What the self-custody path asks the backend to prepare. Sent as `PrepareCommandDto`: `{ operationType, params }`. */
 export interface PrepareInteractiveInput {
   operation: BridgeOperation;
   amount: string;
@@ -227,6 +227,8 @@ export class LoopReportError extends Error {
 const REPORTED_FIELDS = ['amount', 'evmTxHash', 'sourceChainId', 'ethRecipient', 'destinationChainId'] as const;
 const REPORTED_ERROR_MAX = 2000;
 
+const OPERATION_TYPE = { mint: 'bridgeMint', burn: 'bridgeBurn' } as const;
+
 export interface BridgeClient {
   limits(): Promise<BridgeLimits>;
   history(query?: BridgeHistoryQuery): Promise<Page<BridgeHistoryItem>>;
@@ -260,8 +262,8 @@ export interface BridgeClient {
 }
 
 export function createBridgeClient(http: Http): BridgeClient {
-  const prepareInteractive = (input: PrepareInteractiveInput) =>
-    http.post<PreparedInteractive>('/canton-wallet/bridge/prepare-interactive', input);
+  const prepareInteractive = ({ operation, ...params }: PrepareInteractiveInput) =>
+    http.post<PreparedInteractive>('/canton-wallet/bridge/prepare-interactive', { operationType: OPERATION_TYPE[operation], params });
   const submitInteractive = (input: { submissionKey: string; signature: string }) =>
     http.post<unknown>('/canton-wallet/bridge/submit-interactive', input);
   const buildLoopCommand = (input: LoopCommandInput) => http.post<LoopCommand>('/canton-wallet/bridge/loop-command', input);

@@ -19,7 +19,7 @@ test('each method hits the bridge route it documents', async () => {
   await client.estimateCost({ operation: 'burn', amount: '10' });
   await client.mint({ evmTxHash: '0xdead', sourceChainId: '11155111' });
   await client.burn({ amount: '10', ethRecipient: '0xabc' });
-  await client.prepareInteractive({ operation: 'burn', amount: '10', ethRecipient: '0xabc' });
+  await client.prepareInteractive({ operation: 'mint', amount: '25', evmTxHash: '0xdead', sourceChainId: '1' });
   await client.submitInteractive({ submissionKey: 'sk', signature: 'c2ln' });
   await client.registerDeposit({ amount: '25', evmTxHash: '0xdead', sourceChainId: '1' });
   await client.depositAttestation({ amount: '25' });
@@ -41,6 +41,7 @@ test('each method hits the bridge route it documents', async () => {
     'POST /canton-wallet/bridge/loop-result',
   ]);
   expect(calls[3]?.body).toEqual({ operation: 'burn', amount: '10' });
+  expect(calls[6]?.body).toEqual({ operationType: 'bridgeMint', params: { amount: '25', evmTxHash: '0xdead', sourceChainId: '1' } });
 });
 
 // The self-custody path is the reason the client exists next to the direct
@@ -56,6 +57,7 @@ test('executeInteractive hands the prepared hash to the signer and submits what 
   });
 
   expect(signed).toEqual(['aGFzaA==']);
+  expect(calls[0]?.body).toEqual({ operationType: 'bridgeBurn', params: { amount: '10', ethRecipient: '0xabc' } });
   expect(calls[1]?.body).toEqual({ submissionKey: 'sk-1', signature: 'sig(aGFzaA==)' });
 });
 
