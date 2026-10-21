@@ -767,7 +767,7 @@ const landed = async ({ params }: LoopCommandInput) => {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     const raw = await provider.getActiveContracts({}).catch(() => null);
     const arrays = Array.isArray(raw) ? [raw] : Object.values(raw ?? {}).filter(Array.isArray);
-    const listed: unknown[] = arrays.length === 1 ? arrays[0] : [];
+    const listed: unknown[] = arrays.length === 1 ? (arrays[0] ?? []) : [];
     if (listed.length > 0 && !JSON.stringify(listed).includes(consumed)) return true;
   }
   return false;
