@@ -44,6 +44,8 @@ export class CancoreApiError extends Error {
     readonly path: string,
     /** The response body, parsed when it was JSON, raw text otherwise. */
     readonly body: unknown,
+    /** On a 429: how long the gateway asked to wait, in ms. The client does not retry by itself — the caller decides. */
+    readonly retryAfterMs?: number,
   ) {
     super(`${method} ${path} → ${status}${messageOf(body)}`);
     this.name = 'CancoreApiError';
@@ -90,7 +92,7 @@ export function createHttp({ baseUrl, request, fetchImpl }: ClientOptions): Http
     const res = await send(`${root}${path}`, init);
     const text = await res.text();
     const parsed: unknown = text ? tryJson(text) : undefined;
-    if (!res.ok) throw new CancoreApiError(res.status, method, path, parsed);
+    if (!res.ok) throw new CancoreApiError(res.status, method, path, parsed, retryAfterOf(res.status, parsed, res.headers.get('retry-after')));
     return parsed as T;
   }
 
@@ -98,6 +100,16 @@ export function createHttp({ baseUrl, request, fetchImpl }: ClientOptions): Http
     get: (path, query) => call('GET', path + queryString(query)),
     post: (path, body, headers) => call('POST', path, body, headers),
   };
+}
+
+/** The gateway's throttles put `retryAfter` (seconds) in the body and set `Retry-After` (seconds); the body wins. */
+function retryAfterOf(status: number, body: unknown, header: string | null): number | undefined {
+  if (status !== 429) return undefined;
+  const fromBody = body !== null && typeof body === 'object' ? (body as { retryAfter?: unknown }).retryAfter : undefined;
+  for (const seconds of [fromBody, header === null ? undefined : Number(header)]) {
+    if (typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+  }
+  return undefined;
 }
 
 function tryJson(text: string): unknown {

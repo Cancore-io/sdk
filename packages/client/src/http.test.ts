@@ -105,3 +105,38 @@ describe('isSdkError', () => {
     }
   });
 });
+
+describe('CancoreApiError.retryAfterMs (CAN-2926)', () => {
+  const answer = async (status: number, body: unknown, headers: Record<string, string> = {}): Promise<CancoreApiError> => {
+    const http = createHttp({
+      baseUrl: 'https://api.example',
+      request: async () => new Response(body === undefined ? '' : JSON.stringify(body), { status, headers }),
+    });
+    try {
+      await http.get('/orders');
+    } catch (e) {
+      return e as CancoreApiError;
+    }
+    throw new Error(`a ${status} was not refused`);
+  };
+
+  test('a 429 with retryAfter in the body is that many seconds', async () => {
+    expect((await answer(429, { statusCode: 429, message: 'slow down', retryAfter: 60 })).retryAfterMs).toBe(60_000);
+  });
+
+  test('a 429 with only the Retry-After header is read from the header', async () => {
+    expect((await answer(429, undefined, { 'retry-after': '5' })).retryAfterMs).toBe(5_000);
+  });
+
+  test('the body wins over the header when both are present', async () => {
+    expect((await answer(429, { retryAfter: 2 }, { 'retry-after': '9' })).retryAfterMs).toBe(2_000);
+  });
+
+  test.each([
+    ['no hint at all', 429, { message: 'slow down' }, {}],
+    ['a hint that is not a positive number', 429, { retryAfter: -1 }, { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' }],
+    ['a hint on a status that is not 429', 503, { retryAfter: 30 }, { 'retry-after': '30' }],
+  ])('%s gives undefined', async (_name, status, body, headers) => {
+    expect((await answer(status, body, headers)).retryAfterMs).toBeUndefined();
+  });
+});

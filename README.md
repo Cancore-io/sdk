@@ -1,6 +1,8 @@
 # Cancore SDK
 
-The packages a third-party dApp, an AI agent, or a wallet build installs from npm.
+The packages a third-party dApp, an AI agent, or a wallet build installs from npm. Three are not on
+npm yet (`@cancore/trader`, `@cancore/botd`, `@cancore/bot-mcp`): those install from this
+repository.
 
 | Package | npm | What it is |
 | --- | --- | --- |
@@ -9,9 +11,9 @@ The packages a third-party dApp, an AI agent, or a wallet build installs from np
 | [`@cancore/contracts`](packages/contracts) | [`@cancore/contracts`](https://www.npmjs.com/package/@cancore/contracts) | The EVM contracts as data: ABIs, custom-error selectors, deployments per environment, the EIP-712 voucher, the network registry. No runtime code. |
 | [`@cancore/client`](packages/client) | [`@cancore/client`](https://www.npmjs.com/package/@cancore/client) | A typed client for the API: orders and pool trades (`./swap`), the USDCx bridge (`./bridge`), live order updates over the gateway's socket (`./realtime`), scoped trading grants by device flow (`./auth`). Hands out hashes to sign, never holds a key. |
 | [`@cancore/wallet`](packages/wallet) | [`@cancore/wallet`](https://www.npmjs.com/package/@cancore/wallet) | The wallet core: key material, signing, storage contracts, the operations-envelope client. |
-| [`@cancore/trader`](packages/trader) | [`@cancore/trader`](https://www.npmjs.com/package/@cancore/trader) | Programmatic trading. `./filler`: filler protocol v1 for a filler node over injected signers, RPC, ledger and store. Holds no keys and no state of its own. Skeleton; not published yet. |
-| [`@cancore/botd`](packages/botd) | [`@cancore/botd`](https://www.npmjs.com/package/@cancore/botd) | A self-custody trading daemon (Linux, systemd): holds one bot account's key in an encrypted keystore, trades behind owner-set default-deny limits, keeps a hash-chained audit log. Release candidate. |
-| [`@cancore/bot-mcp`](packages/bot-mcp) | [`@cancore/bot-mcp`](https://www.npmjs.com/package/@cancore/bot-mcp) | An MCP server that lets an AI agent drive a local `cancore-botd` within those limits. No key, no withdraw, no limit changes. Release candidate. |
+| [`@cancore/trader`](packages/trader) | not on npm yet | Programmatic trading. `./filler`: filler protocol v1 for a filler node over injected signers, RPC, ledger and store. Holds no keys and no state of its own. Skeleton; not published yet. |
+| [`@cancore/botd`](packages/botd) | not on npm yet | A self-custody trading daemon (Linux, systemd): holds one bot account's key in an encrypted keystore, trades behind owner-set default-deny limits, keeps a hash-chained audit log. Release candidate. |
+| [`@cancore/bot-mcp`](packages/bot-mcp) | not on npm yet | An MCP server that lets an AI agent drive a local `cancore-botd` within those limits. No key, no withdraw, no limit changes. Release candidate. |
 
 **Agent skills** live in [`skills/`](skills): [`cancore-trading`](skills/cancore-trading/SKILL.md)
 teaches an agent to trade through `@cancore/bot-mcp`.
@@ -50,6 +52,46 @@ trades without asking each time. The owner chooses that for one bot wallet with 
 balance, sets the limits it signs within, and alone can unlock, resume, change limits or withdraw
 (to the owner's own party only). bot-mcp gives an agent none of those.
 
+## Agentic trading: botd and bot-mcp
+
+An AI agent trades a self-custody bot wallet without ever seeing its key. The key lives in a local
+daemon, `cancore-botd`, under its own OS user. The agent sends commands through an MCP server,
+`cancore-bot-mcp`; the daemon checks each one against the owner's limits and writes it to a
+hash-chained audit log. The owner does everything else with a CLI, `cancore-bot`.
+
+```
+AI agent --MCP, stdio--> cancore-bot-mcp --bot.sock---------+
+                                                            v
+                                                      cancore-botd --HTTPS--> Cancore API
+                                                            ^   key, limits, audit log
+you --sudo -u cancore-bot--> cancore-bot --owner.sock-------+
+```
+
+| Action | Agent (`bot.sock`, through bot-mcp) | Owner (`owner.sock`, through `cancore-bot`) |
+| --- | --- | --- |
+| Read status, balances, orders, limits, the audit tail, a quote | yes | status, limits and the audit log; no CLI command for balances, orders or a quote |
+| Cancel orders, stop a strategy, pause | yes | `pause` (it stops every strategy and, while the daemon is unlocked, cancels the resting orders) |
+| Place or take an order, start a strategy | yes, inside the limits | no CLI command |
+| Resume, change limits, unlock, lock, register, release a booked take | no | yes |
+| Withdraw | no | yes, only to `ownerParty` from the config |
+| Get the key or the recovery phrase | no | no: no such method exists |
+
+**Status:** release candidates (`0.1.0-rc.0`), not on npm yet, so install from source. v1 runs on
+devnet only (`https://api-dev.cancore.app`), where it settles CC, CBTC, cETH and HTEST, on Linux
+with systemd; the agent must run on the same machine as the daemon, as a user of its own without
+sudo rights. The bot itself is made in the Cancore wallet (Settings → My bots), which gives it its
+party: v1 cannot create one for a new key.
+
+**Quick start:** make the bot in My bots,
+[install from source](packages/botd/README.md#install-from-source-until-it-is-on-npm), follow the
+daemon's [Install](packages/botd/README.md#install) steps, then
+[connect the agent](packages/bot-mcp/README.md#setup-from-source) and
+[give it the skill](packages/bot-mcp/README.md#give-the-agent-the-skill):
+[`cancore-trading`](skills/cancore-trading/SKILL.md) teaches it the hard rules (no secrets, no
+owner actions), what to check before an order, and what each refusal means.
+
+**Documentation:** <https://docs.cancore.io/sdk/botd> and <https://docs.cancore.io/sdk/bot-mcp>.
+
 ## Working in this repository
 
 ```bash
@@ -80,10 +122,14 @@ pretending otherwise.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before the first PR. In short: comments
 only for a why the code cannot carry (the why of a change goes into the
-Linear ticket, the PR and the commit),
-names that say what the code does, and a PR that carries its unit, coverage,
-mutation and integration results, a run on the local stand from
-[Cancore-io/meta](https://github.com/Cancore-io/meta), its RTM row and a Qase run.
+Linear ticket, the PR and the commit; `CAN-2777`),
+names that say what the code does, `>= 90%` line coverage (`npm run coverage:check`),
+local + `nx`/blast-radius mutation testing with 0 surviving mutants, `<= 500` LOC
+per file (`< 300` LOC target; `npm run loc:check`), cognitive complexity `<= 12`
+(`npm run complexity:check`), zero explicit `any` (`npm run any:check`),
+discriminated-union ADTs with `assertNever`, a run on the local stand from
+[Cancore-io/meta](https://github.com/Cancore-io/meta), its RTM row, a Qase run,
+and the PR quality-gate checklist in [`.github/pull_request_template.md`](.github/pull_request_template.md).
 
 ## Releasing
 
