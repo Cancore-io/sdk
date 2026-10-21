@@ -116,9 +116,13 @@ async function userToken(): Promise<string> {
   return ((await response.json()) as { access_token: string }).access_token;
 }
 
-/** A bearer token of the stand's Canton JSON API (client credentials). */
+/**
+ * A bearer token of the stand's Canton JSON API (client credentials). The stand's Keycloak issues ledger tokens
+ * under `openid` (as its own scripts ask); `CANTON_TOKEN_SCOPE` names another scope where the issuer wants one.
+ */
 async function cantonToken(): Promise<string> {
-  const form = new URLSearchParams({ grant_type: 'client_credentials', client_id: env('CANTON_CLIENT_ID'), client_secret: env('CANTON_CLIENT_SECRET'), scope: 'daml_ledger_api' });
+  const scope = process.env.CANTON_TOKEN_SCOPE || 'openid';
+  const form = new URLSearchParams({ grant_type: 'client_credentials', client_id: env('CANTON_CLIENT_ID'), client_secret: env('CANTON_CLIENT_SECRET'), scope });
   const response = await fetch(env('CANTON_TOKEN_URL'), { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form });
   if (!response.ok) throw new Error(`Canton JSON API login: ${response.status} ${(await response.text()).slice(0, 300)}`);
   return ((await response.json()) as { access_token: string }).access_token;
