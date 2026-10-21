@@ -322,7 +322,7 @@ function registries(): Record<string, CantonTransferFactory[]> {
   return parsed;
 }
 
-const until = async <T>(what: string, read: () => Promise<T | undefined>, timeoutMs: number): Promise<T> => {
+const until = async <T>(what: string, read: () => Promise<T | undefined>, timeoutMs: number, why: () => string = () => ''): Promise<T> => {
   const end = Date.now() + timeoutMs;
   let last: unknown;
   while (Date.now() < end) {
@@ -334,7 +334,7 @@ const until = async <T>(what: string, read: () => Promise<T | undefined>, timeou
     }
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
-  throw new Error(`timed out: ${what}${last ? ` (last error: ${String(last)})` : ''}`);
+  throw new Error(`timed out: ${what}${last ? ` (last error: ${String(last)})` : ''}\n${why()}`);
 };
 
 live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_SettleWithProof (CAN-2321)', () => {
@@ -391,6 +391,13 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
     await filler?.stop();
   });
 
+  /** What the SDK filler did, for a red run: its stages and declines, and its warnings. */
+  const diagnostics = () =>
+    [
+      ...events.events.filter((e) => e.type === 'stage' || e.type === 'declined').map((e) => JSON.stringify(e, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))),
+      ...logger.entries.filter((l) => l.level !== 'debug').slice(-40).map((l) => `${l.level} ${l.message} ${JSON.stringify(l.fields ?? {})}`),
+    ].join('\n');
+
   const checked = (orderHash: string) =>
     events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === 'ticket.checked' && String(e.orderHash).toLowerCase() === orderHash);
 
@@ -433,7 +440,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
     await until('the ticket of the Canton-source intent is receipted', async () => {
       const state = (await store.withOrder(opened.orderHash, (tx) => tx.getTicket(0)))?.state;
       return state === 'receipted' || state === 'filled' ? true : undefined;
-    }, 5 * 60_000);
+    }, 5 * 60_000, diagnostics);
     expect(checked(opened.orderHash).map((e) => [e.detail?.check, e.detail?.status])).toEqual(
       ['form', 'V-T4', 'V-T2', 'V-T3', 'V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-T1', 'V-E5'].map((c) => [c, 'passed']),
     );
@@ -441,13 +448,13 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
     const fill = await until('the fill on anvil is confirmed', async () => {
       const f = await store.withOrder(opened.orderHash, (tx) => tx.getFill(0));
       return f?.state === 'confirmed' ? f : undefined;
-    }, 5 * 60_000);
+    }, 5 * 60_000, diagnostics);
     expect(fill.chain).toBe(DST);
 
     const settlement = await until('SwapIntent_SettleWithProof is submitted', async () => {
       const s = await store.withOrder(opened.orderHash, (tx) => tx.getSettlement());
       return s?.state === 'confirmed' || s?.state === 'settled' ? s : undefined;
-    }, 8 * 60_000);
+    }, 8 * 60_000, diagnostics);
     expect(settlement.chain).toMatch(/^canton:/);
 
     // On the ledger: the intent is consumed, the party holds the net of the give.
