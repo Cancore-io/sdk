@@ -136,7 +136,8 @@ async function ledgerHoldings(party: string, asset: { admin: string; id: string 
   const base = env('CANTON_JSON_API_URL').replace(/\/$/, '');
   const headers = { 'content-type': 'application/json', authorization: `Bearer ${await cantonToken()}` };
   const end = (await (await fetch(`${base}/v2/state/ledger-end`, { headers })).json()) as { offset: number };
-  const templateId = `${registry.packageId}:${registry.holding}`;
+  // A filter names the template by package name (`#name:Module:Entity`); a package id is refused there.
+  const templateId = `#${process.env.CANTON_REGISTRY_PACKAGE_NAME || 'cnrx-registry'}:${registry.holding}`;
   const response = await fetch(`${base}/v2/state/active-contracts`, {
     method: 'POST',
     headers,
