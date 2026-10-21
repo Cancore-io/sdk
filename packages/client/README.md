@@ -151,6 +151,7 @@ refused by a budget. A trade the API cannot price in USD is refused.
 | `swap.execute(quoteToken)` | `POST /auto-trader/execute` | `pool:trade` |
 | `bridge.limits()`, `bridge.history(query?)`, `bridge.checkOnboarding()`, `bridge.estimateCost(input)` | `/canton-wallet/bridge/*` | not open to a grant |
 | `bridge.mint(input)`, `bridge.burn(input)`, `bridge.prepareInteractive(input)`, `bridge.submitInteractive(input)`, `bridge.executeInteractive(input, sign)` | `/canton-wallet/bridge/*` | not open to a grant |
+| `bridge.registerDeposit(input)`, `bridge.depositAttestation(query?)`, `bridge.buildLoopCommand(input)`, `bridge.reportLoopResult(result)`, `bridge.executeLoop(input, submit)` | `/canton-wallet/bridge/*` | not open to a grant |
 | `orderUpdates(socket, handler)`, `waitForOrder(socket, id, options?)` | the `/presence` socket | not open to a grant: the handshake takes a user's session token only. Use `swap.track` |
 | `requestGrant(options)`, `wait(options?)` | `POST /auth/device/authorize`, `POST /auth/device/token` | none: this is how you get one |
 
@@ -682,6 +683,19 @@ test holds them to `spec/openapi.json`.
 | `prepareInteractive(input)` | `POST …/prepare-interactive` | **self-custody**, step one: a hash to sign |
 | `submitInteractive({ submissionKey, signature })` | `POST …/submit-interactive` | step two: the signature over it |
 | `executeInteractive(input, sign)` | both | with your signer between them |
+| `registerDeposit({ amount, evmTxHash, sourceChainId })` | `POST …/history/pending-deposit` | **every party**: the EVM deposit as a PENDING mint, right after it confirms |
+| `depositAttestation({ amount? })` | `POST …/deposit-attestation` | the DepositAttestation to claim, read on our participant |
+| `buildLoopCommand({ operationType, params })` | `POST …/loop-command` | **Loop wallet**, step one: the command the wallet submits |
+| `reportLoopResult(result)` | `POST …/loop-result` | step two: what the wallet answered |
+| `executeLoop(input, submit)` | both | with your Loop submitter between them |
+
+**Which path.** It follows where the party is hosted and who holds its key:
+
+| Party | Mint and burn |
+| --- | --- |
+| custodial (the backend holds the key) | `mint` / `burn` |
+| self-custody on our participant | `executeInteractive` |
+| Loop wallet (hosted on Loop's participant) | `executeLoop` |
 
 ```ts
 import { signPreparedHashBase64 } from '@cancore/wallet/operations';
@@ -694,6 +708,37 @@ await cancore.bridge.executeInteractive(
 
 The signer sees a base64 hash and returns a base64 signature. That is the whole exchange —
 the key it uses never crosses into this package.
+
+**Two calls keep history and monitoring true.** Call `registerDeposit` as soon as the EVM
+deposit confirms, whatever the party. For a Loop party, report the wallet's answer: our
+participant cannot see a Loop party's transactions, so the report is the only thing that closes
+its bridge row. Skip either and the deposit stays PENDING in the user's history and in our
+monitoring forever, minted or not. `executeLoop` sends the report for you, after a failed submit
+too.
+
+**Loop.** Our participant cannot read a Loop party's contracts, so `checkOnboarding` and
+`depositAttestation` answer "not found" for it. Read the agreement, the DepositAttestation (mint)
+and the USDCx holdings (burn) from the Loop wallet and pass their contract ids:
+
+```ts
+await cancore.bridge.registerDeposit({ amount: '25', evmTxHash, sourceChainId: '1' });
+// …the bridge operator attests the deposit on Canton; the Loop wallet lists the attestation…
+
+const minted = await cancore.bridge.executeLoop(
+  { operationType: 'bridgeMint', params: { agreementCid, attestationCid, amount: '25', evmTxHash, sourceChainId: '1' } },
+  (command) => provider.submitAndWaitForTransaction(command, { message: 'Mint USDCx' }),
+);
+// minted.transactionId is the Canton update id; history now shows the deposit as SUCCESS.
+```
+
+A burn passes `{ agreementCid, holdingCids, amount, ethRecipient, destinationChainId }`.
+`evmTxHash` and `amount` are what the report finds the deposit's row by.
+
+The submit's outcome is reported either way; a failed submit is then thrown as it was. A
+`LoopReportError` means the wallet answered but history did not take the report: its `result`
+says whether the transaction went through. Send `result` again with `reportLoopResult`, and do
+not resubmit a mint or burn that went through. The Loop SDK can also reject a transaction that
+committed: before retrying a burn, check that its holdings are gone from the wallet.
 
 ## Errors
 
