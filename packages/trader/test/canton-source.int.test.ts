@@ -188,9 +188,10 @@ interface Pick {
 
 /** quote → pick of the stand filler → intent.open, as the stand user whose account party is the custodial owner. */
 async function openAsUser(recipient: Hex): Promise<Pick> {
+  // trading forwards outputAsset as given and quote.request admits only a lowercase address.
   const quote = await userApi<{ quoteId: string; offers: Array<{ fillerId: string; amountOut: string }> }>('/v1/intents/quote', {
     src: 'canton:devnet', dst: 'eip155:11155111', inputToken: { admin: E.CNRX_ADMIN_PARTY, id: 'CNRX' },
-    inputAmount: scaled(GIVE).toString(), outputAsset: E.STAND_ROUTE_OUTPUT_TOKEN, recipient,
+    inputAmount: scaled(GIVE).toString(), outputAsset: E.STAND_ROUTE_OUTPUT_TOKEN.toLowerCase(), recipient,
   });
   const offer = quote.offers.find((o) => o.fillerId === E.STAND_FILLER_ID);
   if (!offer) throw new Error(`the quote has no offer of ${E.STAND_FILLER_ID}: ${JSON.stringify(quote)}`);
