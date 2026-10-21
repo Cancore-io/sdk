@@ -8,9 +8,11 @@
  * deployed CancoreRouter. Nothing is faked.
  *
  * 1. A filler on the stand's filler id logs in with its Canton party.
- * 2. The test opens a Canton-source intent naming that filler, as the
- *    custodial owner over the JSON Ledger API (IntentFactory_Open, the give
- *    committed to the filler).
+ * 2. The stand user opens a Canton-source intent the way a Cancore user does:
+ *    POST /v1/intents/quote (the SDK filler answers the quote.request), the
+ *    pick of the stand filler, then the wallet operation intent.open — trading
+ *    tickets only a picked order. The reads of test 1 open IntentFactory_Open
+ *    directly as the custodial owner over the JSON Ledger API.
  * 3. trading tickets it to the picked filler (CAN-2326); the SDK runs V-C1…V-C6
  *    against GET /v1/filler/canton/intents/{orderHash}, receipts, fills on anvil.
  * 4. The attestors sign, filler-gateway delivers settle.attestations, the SDK
@@ -48,6 +50,7 @@ const KEYS = [
   'CNRX_ADMIN_PARTY', 'CANTON_TRANSFER_FACTORIES_JSON',
   'STAND_FILLER_ID', 'STAND_FILLER_MESSAGE_KEY', 'STAND_FILLER_EVM_KEY', 'STAND_FILLER_CANTON_PARTY', 'STAND_FILLER_CANTON_PARTY_KEY', 'STAND_FILLER_REGISTRY_ENTRY_CID',
   'STAND_OWNER_PARTY', 'STAND_ROUTE_OUTPUT_TOKEN', 'STAND_ROUTE_OUTPUT_DECIMALS', 'STAND_INTENT_FACTORY_CID',
+  'TRADING_URL', 'GATEWAY_URL', 'STAND_USER_TOKEN_URL', 'STAND_USER_CLIENT_ID', 'STAND_USER_CLIENT_SECRET', 'STAND_USER_NAME', 'STAND_USER_PASSWORD',
   'INTENT_OPERATOR_PARTY_ID', 'INTENT_BOOK_GUARDIAN_PARTY', 'INTENT_ATTESTOR_GOVERNOR_PARTY', 'INTENT_ATTESTOR_REGISTRY_CID', 'INTENT_ATTESTOR_SET_COMMITMENT',
 ] as const;
 type StandKey = (typeof KEYS)[number];
@@ -148,6 +151,58 @@ const createdOf = (events: Created[], suffix: string) => events.find((c) => c.te
 const hexOf = (v: unknown) => `0x${String(typeof v === 'string' ? v : (v as { hex?: string })?.hex ?? '').replace(/^0x/, '')}`.toLowerCase();
 const ledgerHex = (h: string) => ({ hex: h.replace(/^0x/, '').toLowerCase() });
 const iso = (s: number) => new Date(s * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+
+// -- trading, as the stand user (Keycloak password grant, the gateway's own client) ---------------
+
+async function userToken(): Promise<string> {
+  const form = new URLSearchParams({
+    grant_type: 'password', client_id: E.STAND_USER_CLIENT_ID, client_secret: E.STAND_USER_CLIENT_SECRET,
+    username: E.STAND_USER_NAME, password: E.STAND_USER_PASSWORD, scope: 'openid',
+  });
+  const res = await fetch(E.STAND_USER_TOKEN_URL, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form });
+  if (!res.ok) throw new Error(`stand user login: ${res.status}`);
+  return ((await res.json()) as { access_token: string }).access_token;
+}
+
+/** trading serves the user API with its own JWT guard; the gateway is tried when trading refuses the token or the path. */
+async function userApi<T>(path: string, body: unknown): Promise<T> {
+  let last = '';
+  for (const base of [E.TRADING_URL, E.GATEWAY_URL]) {
+    const res = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${await userToken()}` }, body: JSON.stringify(body) });
+    const text = await res.text();
+    if (res.ok) return (text ? JSON.parse(text) : null) as T;
+    last = `${base}${path}: ${res.status} ${text.slice(0, 600)}`;
+    if (res.status !== 401 && res.status !== 404) break;
+  }
+  throw new Error(`POST ${last}`);
+}
+
+interface Pick {
+  orderHash: Hex;
+  feeBps: number;
+  inputAmount: string;
+  amountOut: string;
+  fillDeadline: number;
+  refundAfter: number | null;
+}
+
+/** quote → pick of the stand filler → intent.open, as the stand user whose account party is the custodial owner. */
+async function openAsUser(recipient: Hex): Promise<Pick> {
+  const quote = await userApi<{ quoteId: string; offers: Array<{ fillerId: string; amountOut: string }> }>('/v1/intents/quote', {
+    src: 'canton:devnet', dst: 'eip155:11155111', inputToken: { admin: E.CNRX_ADMIN_PARTY, id: 'CNRX' },
+    inputAmount: scaled(GIVE).toString(), outputAsset: E.STAND_ROUTE_OUTPUT_TOKEN, recipient,
+  });
+  const offer = quote.offers.find((o) => o.fillerId === E.STAND_FILLER_ID);
+  if (!offer) throw new Error(`the quote has no offer of ${E.STAND_FILLER_ID}: ${JSON.stringify(quote)}`);
+  const pick = await userApi<Pick>(`/v1/intents/quote/${quote.quoteId}/pick`, { fillerId: E.STAND_FILLER_ID });
+  const shard = pick.orderHash.slice(2, 3);
+  // settle needs the operator's FillBook of the shard: open it now, not in the middle of the payout.
+  await Promise.all([bookOf('IntentBook', shard), bookOf('FillBook', shard)]);
+  const prepared = await userApi<{ operationId: string; legs: unknown[] }>('/wallet/operations/prepare', { type: 'intent.open', params: { quoteId: quote.quoteId } });
+  // The custodial owner confirms intent.open with no signature of its own (OWNER_CONFIRMED).
+  await userApi('/wallet/operations/submit', { operationId: prepared.operationId, signatures: [] });
+  return { ...pick, orderHash: pick.orderHash.toLowerCase() as Hex };
+}
 
 /** CNRX the registrar mints to the owner, free: the give the open commits. */
 async function mintGive(owner: string, amount: string): Promise<string[]> {
@@ -284,6 +339,7 @@ const until = async <T>(what: string, read: () => Promise<T | undefined>, timeou
 live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_SettleWithProof (CAN-2321)', () => {
   jest.setTimeout(20 * 60_000);
   const DST = 'eip155:11155111' as const;
+  let QUOTED_OUT = 0n;
   // Built on first use: a skipped suite still runs this body, without the stand's keys.
   let party: CantonPartySigner | undefined;
   const signerOf = () => (party ??= partySigner(E.STAND_FILLER_CANTON_PARTY_KEY));
@@ -293,6 +349,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
   let filler: Filler;
 
   beforeAll(async () => {
+    QUOTED_OUT = 10n ** BigInt(Math.max(0, Number(E.STAND_ROUTE_OUTPUT_DECIMALS) - 2));
     const policy = { router: E.INTENT_ROUTER_ADDRESS as Hex, openConfirmations: 1, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: MIN_PROOF_WINDOW_S, sendGuardSec: 10, minGasWei: 10n ** 15n };
     filler = createFiller({
       gatewayUrl: E.FILLER_GATEWAY_WS_URL,
@@ -316,7 +373,14 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
       logger,
       webSocket: globalWebSocket,
     });
-    filler.onQuoteRequest(async () => null);
+    // The stand filler prices the Canton-source route only: 0.01 of the output token for any give, under
+    // the "too good" ceiling of the reference price (FS-4), firm a minute past the quote's own life
+    // (windowCloseAt + quoteTtlMs): a shorter validUntil is skipped as short-ttl.
+    filler.onQuoteRequest(async (request) =>
+      request.route.src === 'canton:devnet' && request.route.dst === DST
+        ? { amountOut: QUOTED_OUT, validUntil: BigInt(Math.ceil((request.windowCloseAt + request.quoteTtlMs) / 1000) + 60) }
+        : null,
+    );
     filler.onReconfirm(async () => false);
     filler.onTicketOffer(async () => 'accept');
     await filler.start();
@@ -357,8 +421,12 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
 
   test('CAN-1863 + CAN-2321: ticketed, checked V-C1…V-C6, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
     const before = await freeCnrx(E.STAND_FILLER_CANTON_PARTY);
-    const nowS = Math.floor(Date.now() / 1000);
-    const opened = await openIntent({ fillDeadline: nowS + 900, refundAfter: nowS + 900 + MIN_PROOF_WINDOW_S + 60 });
+    const opened = await openAsUser(`0x${'b0'.repeat(20)}`);
+    expect(opened.amountOut).toBe(QUOTED_OUT.toString());
+    await until('IntentFactory_Open of intent.open created the SwapIntent', async () => {
+      const intents = await active(E.INTENT_OPERATOR_PARTY_ID, `${INTENT}:SwapIntent`, (a) => hexOf(a.orderHash) === opened.orderHash);
+      return intents.length > 0 ? true : undefined;
+    }, 2 * 60_000);
 
     // The receipt only after every check passed, V-C1…V-C6 among them (T-22).
     await until('the ticket of the Canton-source intent is receipted', async () => {
@@ -383,7 +451,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
 
     // On the ledger: the intent is consumed, the party holds the net of the give.
     expect(await active(E.INTENT_OPERATOR_PARTY_ID, `${INTENT}:SwapIntent`, (a) => hexOf(a.orderHash) === opened.orderHash)).toHaveLength(0);
-    const { payout } = cantonInclusiveFeeSplit(scaled(GIVE), opened.feeBps);
+    const { payout } = cantonInclusiveFeeSplit(BigInt(opened.inputAmount), BigInt(opened.feeBps));
     expect((await freeCnrx(E.STAND_FILLER_CANTON_PARTY)) - before).toBe(payout);
     const registered: CantonParty = await filler.canton!.party();
     expect(registered.registry.state).toBe('ACTIVE');
