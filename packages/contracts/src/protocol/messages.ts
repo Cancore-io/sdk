@@ -61,7 +61,7 @@ export const PENALTY_STEPS = ['RECORDED', 'BANNED', 'UNBANNED'] as const;
 export const DRAW_CLOSED_BY = ['OFFER_TIMEOUT', 'OFFER_DECLINE', 'TICKET_DECLINE', 'TICKET_EXPIRED', 'FILLED'] as const;
 export const TICKET_LIST_STATUSES = ['OFFERED', 'ISSUED'] as const;
 /** The Canton operations of the filler's own party (§3.19): the backend prepares and submits, the node signs with its party key. */
-export const CANTON_OPS = ['party.allocate', 'registry.accept', 'delivery.fill', 'intent.settle', 'holdings.transfer'] as const;
+export const CANTON_OPS = ['party.allocate', 'registry.accept', 'delivery.fill', 'intent.settle', 'holdings.transfer', 'preapproval.create'] as const;
 /** `holdings.transfer` result: the receiver holds it, or a TransferInstruction waits for it to accept. */
 export const CANTON_TRANSFER_OUTCOMES = ['COMPLETED', 'PENDING'] as const;
 export const CANTON_LEG_KINDS = ['transaction', 'topology'] as const;
@@ -232,6 +232,8 @@ export interface CantonOpParams {
   'intent.settle': { orderHash: Hex };
   /** To a party other than the filler's own; never what the party's open delivery orders need. */
   'holdings.transfer': { asset: CantonAsset; amount: string; toParty: string };
+  /** The party's transfer preapproval with the registry of the instrument admin `admin`: transfers to it complete at once. */
+  'preapproval.create': { admin: string };
 }
 /** What the prepared legs do, by op: the node checks it before it signs. */
 export interface CantonOpSummary {
@@ -263,6 +265,18 @@ export interface CantonOpSummary {
     fee: { receiver: string; amount: string };
   };
   'holdings.transfer': { asset: CantonAsset; amount: string; receiver: string; inputHoldingCids: string[]; executeBefore: DecString };
+  'preapproval.create': {
+    /** The receiver: the filler's own party. */
+    party: string;
+    /** The registry's instrument admin, as asked. */
+    admin: string;
+    /** Instrument ids the preapproval is limited to; empty: every instrument of the admin. */
+    instrumentAllowances: string[];
+    /** Unix s. */
+    requestedAt: DecString;
+    /** Unix s: the preapproval expires then; renew it before. */
+    executeBefore: DecString;
+  };
 }
 /** What the committed operation created, by op. */
 export interface CantonOpResult {
@@ -271,6 +285,7 @@ export interface CantonOpResult {
   'delivery.fill': { receiptCid: string };
   'intent.settle': Record<string, never>;
   'holdings.transfer': { outcome: (typeof CANTON_TRANSFER_OUTCOMES)[number]; transferInstructionCid?: string };
+  'preapproval.create': { preapprovalCid: string };
 }
 /**
  * A prepared transaction to sign. The node MUST, before signing (§3.19): recompute `hash` from
@@ -349,11 +364,15 @@ export interface StakeBindingRequest extends F2SEnvelope { partnerId: string; st
 export interface FillerStats { won: number; delivered: number; noShow: number; reliability: number; capacityUsd: string; inFlightUsd: string }
 export interface PenaltyRecord { violationId: string; code: string; step: PenaltyStep; orderHash?: Hex; attempt?: number; at: TimeMs; details: Record<string, unknown> }
 export type PenaltyList = Page<PenaltyRecord>;
+/** A live transfer preapproval of the party with one registry (`preapproval.create`); `executeBefore` in unix s (the Daml Time cut to seconds). */
+export interface CantonPreapproval { admin: string; contractId: string; instrumentAllowances: string[]; executeBefore: DecString }
 /** `GET /v1/filler/canton/party`: the party registered for the fillerId and its `FillerRegistryEntry`. */
 export interface CantonParty {
   party: string | null;
   publicKey: Hex | null;
   registry: { state: CantonRegistryState; proposalCid: string | null; entryCid: string | null };
+  /** The party's live transfer preapprovals, one per registry admin at most; absent from a gateway that predates them. */
+  preapprovals?: CantonPreapproval[];
 }
 export interface CantonHolding { contractId: string; asset: CantonAsset; amount: string; locked: boolean }
 /** `GET /v1/filler/canton/holdings`. */

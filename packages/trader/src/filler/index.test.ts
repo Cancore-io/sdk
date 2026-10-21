@@ -97,6 +97,17 @@ describe('createFiller: injected dependencies are validated up front', () => {
     expect(configErrorField(() => createFiller({ ...baseConfig(), ...patch } as FillerConfig))).toBe(field);
   });
 
+  const withOpenConfirmations = (openConfirmations: unknown): FillerConfig =>
+    ({ ...baseConfig(), chains: { 'eip155:1': { ...baseConfig().chains['eip155:1']!, openConfirmations } } }) as FillerConfig;
+
+  test.each(['safe', 'finalized', 0, 12] as const)('CAN-2808: openConfirmations %p is accepted', (openConfirmations) => {
+    expect(() => createFiller(withOpenConfirmations(openConfirmations))).not.toThrow();
+  });
+
+  test.each(['latest', 'pending', 'Safe', -1, 1.5, '3'])('CAN-2808: openConfirmations %p is refused', (openConfirmations) => {
+    expect(configErrorField(() => createFiller(withOpenConfirmations(openConfirmations)))).toBe('chains.eip155:1.openConfirmations');
+  });
+
   test('a fill-signer key that is not an eip155 chain id is refused', () => {
     const config = { ...baseConfig(), fillSigners: { 'canton:mainnet': fillSigner(FILL_KEY) } } as unknown as FillerConfig;
     expect(configErrorField(() => createFiller(config))).toBe('fillSigners.canton:mainnet');
@@ -175,6 +186,17 @@ describe('the skeleton of sdk.md §3.6', () => {
     } finally {
       (globalThis as { fetch?: unknown }).fetch = original;
     }
+  });
+
+  test("CAN-2808: start() refuses a finality tag the chain's RPC does not serve", async () => {
+    const rpc = new FakeEvmRpc('a').on('eth_chainId', '0x1').fail('eth_getBlockByNumber', new Error('invalid block tag: finalized'));
+    const config: FillerConfig = { ...baseConfig(), rpc: { 'eip155:1': [rpc] }, chains: { 'eip155:1': { ...baseConfig().chains['eip155:1']!, openConfirmations: 'finalized' } } };
+    const filler = createFiller(config);
+    filler.onQuoteRequest(async () => null);
+    filler.onReconfirm(async () => true);
+    filler.onTicketOffer(async () => 'decline');
+    await expect(filler.start()).rejects.toMatchObject({ name: 'FillerConfigError', field: 'chains.eip155:1.openConfirmations' });
+    expect(rpc.calls.filter((c) => c.method === 'eth_getBlockByNumber').map((c) => c.params?.[0])).toContain('finalized');
   });
 
   test('a malformed transport option is refused up front', () => {

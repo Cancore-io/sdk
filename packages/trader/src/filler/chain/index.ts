@@ -6,15 +6,19 @@ import type { Hex } from '@cancore/contracts';
 import { isEvmChainId, type EvmChainId } from '../chains';
 import type { EvmRpcMap } from '../rpc';
 import type { Logger } from '../runtime';
-import { ChainClient } from './client';
+import { ChainClient, type OpenDepth } from './client';
 import { RouterReader } from './router';
 
 /** How the SDK reads one EVM chain. Every value comes from the node's config; none has a default (CAN-1720). */
 export interface ChainConfig {
   /** The pinned `CancoreRouter` of this chain (filler-node `routers.<caip2>`); never taken from filler-gateway. */
   router: Hex;
-  /** Blocks below the head an escrow must already be open at to count (V-E2, `openConfirmations`). */
-  openConfirmations: number;
+  /**
+   * How deep an escrow must already be open to count (V-E2): N reads the deepest
+   * block with N confirmations, `head − block + 1 ≥ N` (0 and 1 read the head);
+   * `safe` / `finalized` read the block the chain reports under that tag.
+   */
+  openConfirmations: OpenDepth;
   /** An endpoint whose head trails the best one by more than this is passed over (`ops.maxHeadLagBlocks`). */
   maxHeadLagBlocks: number;
   /** `MIN_TICKET_TTL[destination]`, seconds (V-T3). */
@@ -25,10 +29,16 @@ export interface ChainConfig {
   sendGuardSec: number;
   /** Native balance the delivery address must hold for gas, wei (V-E5; filler-node `ops.minGas`). */
   minGasWei: bigint;
-  /** Blocks deep an own transaction (`fill`, `settle`) must be before it counts as done; until then a reorg is answered by resending. Default `openConfirmations`. */
+  /** Confirmations (`head − block + 1`) an own transaction (`fill`, `settle`) must have before it counts as done; until then a reorg is answered by resending. Default `openConfirmations`: a tag there means done once the tag's block reaches the transaction's block. */
   fillConfirmations?: number;
   /** Ceiling on `maxFeePerGas`, wei: no transaction and no replacement is priced above it. Default none. */
   maxFeePerGasWei?: bigint;
+}
+
+/** How deep an own `fill` or `settle`, and a settlement read, must be to count as done: `fillConfirmations`, else `openConfirmations`; at least one confirmation. */
+export function fillDepth(config: Readonly<ChainConfig>): OpenDepth {
+  const depth = config.fillConfirmations ?? config.openConfirmations;
+  return typeof depth === 'number' ? Math.max(1, depth) : depth;
 }
 
 export interface ChainReaders {
@@ -59,8 +69,8 @@ export class FillerChains {
 }
 
 export { AbiDecodeError } from './abi';
-export { ChainClient, ChainReadError } from './client';
-export type { BlockHeader, ChainReadFailure, EndpointHealth, ReadAt } from './client';
+export { ChainClient, ChainReadError, describeDepth, readAtDepth } from './client';
+export type { BlockHeader, ChainReadFailure, EndpointHealth, OpenDepth, ReadAt } from './client';
 export { RouterEventWatcher, ROUTER_EVENTS } from './events';
 export type { RouterEventName, RouterEventUpdate, RouterEventWatcherOptions, RouterLog } from './events';
 export { hashFillProof, hashOrder, hashTicket } from './hashes';

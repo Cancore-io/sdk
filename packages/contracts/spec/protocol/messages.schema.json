@@ -540,9 +540,9 @@
       }
     },
     "cantonOp": {
-      "description": "A Canton operation of the filler's own external party on the Cancore participant (protocol §3.19): the backend prepares and submits it, the node signs it with its party key and never talks to a Ledger API. party.allocate creates the party (topology); registry.accept accepts the FillerRegistryEntryProposal of the fillerId; delivery.fill exercises DeliveryOrder_Fill of a Canton ticket issued to the filler; intent.settle exercises SwapIntent_SettleWithProof of a Canton-source order the filler delivered; holdings.transfer moves the party's own holdings to a party it names (TransferFactory_Transfer)",
+      "description": "A Canton operation of the filler's own external party on the Cancore participant (protocol §3.19): the backend prepares and submits it, the node signs it with its party key and never talks to a Ledger API. party.allocate creates the party (topology); registry.accept accepts the FillerRegistryEntryProposal of the fillerId; delivery.fill exercises DeliveryOrder_Fill of a Canton ticket issued to the filler; intent.settle exercises SwapIntent_SettleWithProof of a Canton-source order the filler delivered; holdings.transfer moves the party's own holdings to a party it names (TransferFactory_Transfer); preapproval.create gives the party a transfer preapproval with the registry of an instrument admin, so transfers to it complete at once",
       "anyOf": [
-        { "enum": ["party.allocate", "registry.accept", "delivery.fill", "intent.settle", "holdings.transfer"] },
+        { "enum": ["party.allocate", "registry.accept", "delivery.fill", "intent.settle", "holdings.transfer", "preapproval.create"] },
         { "type": "string", "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$" }
       ]
     },
@@ -598,7 +598,7 @@
     "canton.prepare": {
       "x-direction": "F2S",
       "type": "object",
-      "description": "Prepare a Canton operation of the sender's own party (§3.19); answered by canton.prepared (re = this id) or error. params select the operation only: the backend picks every contract itself (holdings, delivery order, intent, registry entry, disclosed contracts, attestor signatures). Admission: party.allocate — the fillerId has no party yet, or this key's party; registry.accept — a proposal for the fillerId and its party is live; delivery.fill — an ISSUED Canton ticket of this filler for (orderHash, attempt), before validUntil; intent.settle — a Canton-source order this filler delivered, with attestations held; holdings.transfer — enough unlocked holdings of the asset beyond what the party's open delivery orders need, to a party other than its own. Each prepare prepares afresh and replaces the filler's open operation of the same op and target",
+      "description": "Prepare a Canton operation of the sender's own party (§3.19); answered by canton.prepared (re = this id) or error. params select the operation only: the backend picks every contract itself (holdings, delivery order, intent, registry entry, disclosed contracts, attestor signatures). Admission: party.allocate — the fillerId has no party yet, or this key's party; registry.accept — a proposal for the fillerId and its party is live; delivery.fill — an ISSUED Canton ticket of this filler for (orderHash, attempt), before validUntil; intent.settle — a Canton-source order this filler delivered, with attestations held; holdings.transfer — enough unlocked holdings of the asset beyond what the party's open delivery orders need, to a party other than its own; preapproval.create — a registry admin Cancore serves and no live preapproval of the party with it. Each prepare prepares afresh and replaces the filler's open operation of the same op and target",
       "allOf": [
         { "$ref": "#/$defs/f2sBase" },
         {
@@ -649,6 +649,20 @@
                   "amount": { "type": "string", "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]{1,10})?$", "description": "Daml Decimal, > 0" },
                   "toParty": { "type": "string", "minLength": 1, "maxLength": 255, "description": "the receiving Canton party; never the filler's own" }
                 }
+              }
+            }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "preapproval.create" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["params"],
+            "properties": {
+              "params": {
+                "type": "object",
+                "required": ["admin"],
+                "properties": { "admin": { "type": "string", "minLength": 1, "maxLength": 255, "description": "the instrument admin whose registry the preapproval is with" } }
               }
             }
           }
@@ -812,6 +826,26 @@
               }
             }
           }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "preapproval.create" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["summary"],
+            "properties": {
+              "summary": {
+                "type": "object",
+                "required": ["party", "admin", "instrumentAllowances", "requestedAt", "executeBefore"],
+                "properties": {
+                  "party": { "type": "string", "minLength": 1, "description": "the receiver: the filler's own party" },
+                  "admin": { "type": "string", "minLength": 1, "description": "the registry's instrument admin, as asked" },
+                  "instrumentAllowances": { "type": "array", "maxItems": 10, "items": { "type": "string", "minLength": 1 }, "description": "instrument ids it is limited to; empty: every instrument of the admin" },
+                  "requestedAt": { "$ref": "#/$defs/timeS", "description": "unix s: the Daml Time (microseconds) cut to whole seconds" },
+                  "executeBefore": { "$ref": "#/$defs/timeS", "description": "unix s, cut likewise: the preapproval expires then" }
+                }
+              }
+            }
+          }
         }
       ],
       "required": ["type", "re", "operationId", "op", "legs", "summary", "expiresAt"],
@@ -889,6 +923,14 @@
                 }
               }
             }
+          }
+        },
+        {
+          "if": { "type": "object", "properties": { "op": { "const": "preapproval.create" } }, "required": ["op"] },
+          "then": {
+            "type": "object",
+            "required": ["result"],
+            "properties": { "result": { "type": "object", "required": ["preapprovalCid"], "properties": { "preapprovalCid": { "type": "string", "minLength": 1 } } } }
           }
         }
       ],
