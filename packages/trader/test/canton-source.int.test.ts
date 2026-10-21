@@ -43,7 +43,7 @@ import { TicketRefusal } from '../src/filler/tickets/refusal';
 
 const ENV_FILE = process.env.CANCORE_INTENT_STAND_ENV ?? process.env.INTENT_STAND_ENV;
 const KEYS = [
-  'FILLER_GATEWAY_URL', 'FILLER_GATEWAY_SIGNER', 'TICKET_SIGNERS', 'EVM_RPC_URL', 'INTENT_ROUTER_ADDRESS',
+  'FILLER_GATEWAY_WS_URL', 'FILLER_GATEWAY_SIGNER', 'TICKET_SIGNERS', 'EVM_RPC_URL', 'INTENT_ROUTER_ADDRESS',
   'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET', 'CANTON_PARTICIPANT_UID', 'CANTON_ORIGIN_ID',
   'CNRX_ADMIN_PARTY', 'CANTON_TRANSFER_FACTORIES_JSON',
   'STAND_FILLER_ID', 'STAND_FILLER_MESSAGE_KEY', 'STAND_FILLER_EVM_KEY', 'STAND_FILLER_CANTON_PARTY', 'STAND_FILLER_CANTON_PARTY_KEY', 'STAND_FILLER_REGISTRY_ENTRY_CID',
@@ -295,7 +295,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
   beforeAll(async () => {
     const policy = { router: E.INTENT_ROUTER_ADDRESS as Hex, openConfirmations: 1, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: MIN_PROOF_WINDOW_S, sendGuardSec: 10, minGasWei: 10n ** 15n };
     filler = createFiller({
-      gatewayUrl: E.FILLER_GATEWAY_URL,
+      gatewayUrl: E.FILLER_GATEWAY_WS_URL,
       fillerId: E.STAND_FILLER_ID,
       gatewaySigner: E.FILLER_GATEWAY_SIGNER as Hex,
       ticketSigners: E.TICKET_SIGNERS.split(',').map((s) => s.trim() as Hex),
@@ -333,7 +333,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
     const nowS = Math.floor(Date.now() / 1000);
     const opened = await openIntent({ fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 });
     const ops = createCantonOperations({
-      gatewayUrl: E.FILLER_GATEWAY_URL, fillerId: E.STAND_FILLER_ID, gatewaySigner: E.FILLER_GATEWAY_SIGNER as Hex,
+      gatewayUrl: E.FILLER_GATEWAY_WS_URL, fillerId: E.STAND_FILLER_ID, gatewaySigner: E.FILLER_GATEWAY_SIGNER as Hex,
       messageSigner: createTestTypedDataSigner(E.STAND_FILLER_MESSAGE_KEY as Hex), partySigner: signerOf(), participantUid: E.CANTON_PARTICIPANT_UID, registries: registries(),
     });
     const ticket = { orderHash: opened.orderHash, repayTo: repayToFromParty(E.STAND_FILLER_CANTON_PARTY) };
