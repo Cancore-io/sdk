@@ -285,9 +285,9 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
     expect(parsedNode?.files['src/api.ts']?.lines).toBe(99.32);
 
     const parsedNodeWithUnloaded = parseNodeCoverageTable(nodeTable, [
-      'src/api.ts',
-      'src/watch.ts',
-      'src/unloaded-new.ts',
+      { file: 'src/api.ts', count: 10 },
+      { file: 'src/watch.ts', count: 10 },
+      { file: 'src/unloaded-new.ts', count: 10 },
     ]);
     expect(parsedNodeWithUnloaded?.files['src/unloaded-new.ts']).toEqual({ lines: 0, branches: 0 });
     expect((parsedNodeWithUnloaded?.global.lines ?? 100) < (parsedNode?.global.lines ?? 0)).toBe(true);
@@ -297,6 +297,26 @@ describe('CAN-2934 quality gates (@happy, @negative, @edge)', () => {
     });
     expect(f3Verdict.kind).toBe('fail');
     expect(formatVerdictSummary(f3Verdict)).toMatch(/REGRESSED src\/unloaded-new\.ts: 0% < floor 90%/);
+
+    const f5Table = [
+      'ℹ start of coverage report',
+      'ℹ file | line % | branch % | funcs % | uncovered lines',
+      'ℹ src | | | |',
+      ...Array.from({ length: 9 }, (_, i) => `ℹ  m${i + 1}.ts | 100.00 | 100.00 | 100.00 |`),
+      'ℹ all files | 100.00 | 100.00 | 100.00 |',
+      'ℹ end of coverage report',
+    ].join('\n');
+    const f5Parsed = parseNodeCoverageTable(f5Table, [
+      ...Array.from({ length: 9 }, (_, i) => ({ file: `src/m${i + 1}.ts`, count: 1 })),
+      { file: 'src/unloaded-400.ts', count: 400 },
+    ]);
+    expect(f5Parsed?.global.lines).toBe(2.2);
+    const f5Verdict = evaluateCoverageRatchet(f5Parsed!, {
+      global: { lines: 78 },
+      files: { 'src/unloaded-400.ts': 0 },
+    });
+    expect(f5Verdict.kind).toBe('fail');
+    expect(formatVerdictSummary(f5Verdict)).toMatch(/REGRESSED global\.lines: 2\.2% < floor 78%/);
 
     expect(runCli(ROOT, ['loc'])).toBe(0);
     expect(runCli(ROOT, ['complexity'])).toBe(0);
