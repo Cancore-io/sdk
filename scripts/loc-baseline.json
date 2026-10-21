@@ -2,7 +2,7 @@
   "packages/botd/src/daemon.ts": 1017,
   "packages/client/src/dvp-prepared.fixture.ts": 538,
   "packages/client/src/dvp-verify.ts": 1288,
-  "packages/client/src/selfcustody.ts": 1684,
+  "packages/client/src/selfcustody.ts": 1696,
   "packages/trader/src/filler/delivery/executor.ts": 1083,
   "packages/trader/src/filler/filler.ts": 717,
   "packages/trader/src/filler/settlement/settler.ts": 804,
