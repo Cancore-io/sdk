@@ -1052,11 +1052,10 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
   }
 
-  // The order's own choice decides the mechanic: one placed without `dvp: true` is opened as HTLC, which this SDK never
-  // funds — a taker bound to it leaves the maker's lock waiting out its refund.
-  function assertDvpOrder(order: Order, outcome: string): void {
+  // The order's `dvp` decides the mechanic: without it the trade is HTLC, which this SDK never funds or settles.
+  function assertDvpOrder(order: Order, why: string, outcome: string): void {
     if (order.dvp) return;
-    throw new SettleError(`order ${order.id} was placed without dvp: true, so the venue would settle it as HTLC; Canton↔Canton orders settle only through DvP here. ${outcome}`, null, order);
+    throw new SettleError(`order ${order.id} ${why}; Canton↔Canton orders settle only through DvP here. ${outcome}`, null, order);
   }
 
   /**
@@ -1229,7 +1228,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
 
   /** The maker records the trade: `POST /htlc/proposals` with `dvp: true`, which the backend turns into a DvP draft. */
   async function proposeDvp(order: Order, opts: SettleOptions): Promise<string> {
-    assertDvpOrder(order, 'Cancel it and place it again with acct.swap.create / createForPair.');
+    assertDvpOrder(order, 'was taken as HTLC: placed without dvp: true, or made HTLC at the take (a Loop-wallet taker)',
+      'Nothing was recorded or signed: the venue cancels a taken order that no trade follows, and a new one goes through acct.swap.create / createForPair.');
     // Everything a later signature will be held to is checked before the trade is recorded:
     // the pair, the venue, and the fee rate against this account's ceiling.
     await dvpTerms(order, null, await ownParty(), 'maker');
@@ -1370,7 +1370,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     assertCantonOrder(order);
     const self = await me();
     if (order.status === 'open') {
-      assertDvpOrder(order, 'Nothing was accepted.');
+      assertDvpOrder(order, 'was placed without dvp: true, so the venue would settle it as HTLC', 'Nothing was accepted.');
       // The ask is not the route: an off pair becomes HTLC. shortcut: the stand lists instruments, not pairs, so two listed instruments on an off pair still pass; check per pair once the API answers per pair.
       await dvpInstruments(order);
       const open = order;

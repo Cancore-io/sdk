@@ -496,7 +496,11 @@ knows. The codes a partner sees, and where each one arrives:
   instrumentAdmins` — a token or network the SDK does not pin ([section 2](#2-prerequisites)).
 - `…is above this account's ceiling … (maxFeeRate)` — the stand charges more than you allow. Raise
   `maxFeeRate` only if you agree to the rate.
-- `…was placed without dvp: true` — cancel the order and place it again with `acct.swap`.
+- `…was placed without dvp: true … Nothing was accepted` (at `take`) — the order would settle as
+  HTLC; take another one.
+- `…was taken as HTLC …` (at `make`) — the order was placed without `dvp: true`, or the venue made it
+  HTLC at the take (a Loop-wallet taker). Nothing is locked and nothing needs cancelling: the venue
+  cancels a taken order once no trade follows. Place a new order with `acct.swap` if you still want one.
 - `…is dvp_expired …` — see [expired trades](#expired-trades-and-locked-funds).
 - `timed out waiting for …` — the other side did not act within `deadlineMs`. Run `make`/`take`
   again to resume.

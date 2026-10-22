@@ -1126,12 +1126,16 @@ describe('the paths where a mistake costs money', () => {
     await expect(maker.swap.create(offer)).rejects.toThrow(/placing the order: allocation-DvP is not open to this account/);
   });
 
-  test('an order placed without dvp: true is refused before anything is recorded — it would be opened as HTLC', async () => {
+  // The venue clears `dvp` at the take when the trade may not use DvP (a Loop-wallet taker), as if it was never asked.
+  test('a taken order without dvp: true is refused before anything is recorded, and the refusal advises no cancel', async () => {
     const api = venue();
     const { maker, taker } = await tradingPair(api, [56, 57]);
     await taker.swap.accept('o1');
     api.order.dvp = false;
-    await expect(maker.make('o1')).rejects.toThrow(/placed without dvp: true.*place it again/);
+    const error = await maker.make('o1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SettleError);
+    expect((error as Error).message).toMatch(/order o1 was taken as HTLC: placed without dvp: true, or made HTLC at the take.*Nothing was recorded or signed.*a new one goes through acct\.swap\.create/);
+    expect((error as Error).message).not.toMatch(/\bcancel it\b/i);
     expect(api.proposals).toEqual([]);
   });
 
