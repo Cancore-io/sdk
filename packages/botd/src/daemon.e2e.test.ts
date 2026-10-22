@@ -4,6 +4,7 @@ import { join } from 'path';
 import { ed25519 } from '@noble/curves/ed25519';
 import { cantonFingerprint } from '@cancore/wallet';
 import { selfSendLeg } from '../../client/src/dvp-prepared.fixture';
+import { DEFAULT_INSTRUMENT_ADMINS } from '../../client/src/dvp-admins';
 import { createDispatcher, defaultDeps, start } from './daemon';
 import { connect, RpcCallError } from './ipc/client';
 import { DEFAULTS, paths, type BotConfig } from './config';
@@ -19,6 +20,9 @@ import type { BotState } from './types';
 const PHRASE = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
 const OWNER = 'owner::1220aa';
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+
+// devnet pins no USDCx admin: the configs below add this one.
+const USDCX_ADMIN = 'usdcx-admin::1220ab';
 
 function fakeApi() {
   let party = '';
@@ -97,6 +101,8 @@ function fakeApi() {
       }
       if (route === 'GET /orders/my') return json({ items: [], page: 1, pageSize: 100, total: 0 });
       if (route === 'GET /htlc/swaps') return json([]);
+      // A take reads the pair from the stand before it accepts (CAN-2979).
+      if (route === 'GET /htlc/dvp/instruments') return json([{ id: 'CC', admin: DEFAULT_INSTRUMENT_ADMINS.devnet.Amulet![0] }, { id: 'USDCx', admin: USDCX_ADMIN }]);
       if (pathname.startsWith('/tokens/balance/')) return json({ balance: '42.5' });
       if (route === 'POST /wallet/operations/prepare' && body.type === 'tokens.send') {
         const { receiverPartyId: to, amount } = body.params;
@@ -160,7 +166,7 @@ describe('cancore-botd end to end', () => {
     dir = mkdtempSync(join(tmpdir(), 'botd-e2e-'));
     config = {
       ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
-      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
+      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', instrumentAdmins: { USDCx: [USDCX_ADMIN] }, ownerParty: OWNER, maxFee: '1',
     };
     delete (config as Partial<BotConfig>).clientsGroup;
     await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
@@ -278,7 +284,7 @@ describe('cancore-botd end to end: an accept whose answer was lost (F128-LOST-AC
     dir = mkdtempSync(join(tmpdir(), 'botd-e2e-lost-'));
     config = {
       ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
-      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
+      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', instrumentAdmins: { USDCx: [USDCX_ADMIN] }, ownerParty: OWNER, maxFee: '1',
     };
     delete (config as Partial<BotConfig>).clientsGroup;
     await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
@@ -397,7 +403,7 @@ describe('cancore-botd end to end: a 400 after a lost accept answer (F128-ACCEPT
     dir = mkdtempSync(join(tmpdir(), 'botd-e2e-400-'));
     config = {
       ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
-      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
+      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', instrumentAdmins: { USDCx: [USDCX_ADMIN] }, ownerParty: OWNER, maxFee: '1',
     };
     delete (config as Partial<BotConfig>).clientsGroup;
     await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
@@ -483,7 +489,7 @@ describe('cancore-botd end to end: an ambiguous take stays booked until the venu
     dir = mkdtempSync(join(tmpdir(), prefix));
     config = {
       ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
-      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
+      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', instrumentAdmins: { USDCx: [USDCX_ADMIN] }, ownerParty: OWNER, maxFee: '1',
     };
     delete (config as Partial<BotConfig>).clientsGroup;
     await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
@@ -617,7 +623,7 @@ describe('cancore-botd end to end: a lock between a take and its booking (N-1)',
     dir = mkdtempSync(join(tmpdir(), 'botd-e2e-n1-'));
     config = {
       ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
-      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
+      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', instrumentAdmins: { USDCx: [USDCX_ADMIN] }, ownerParty: OWNER, maxFee: '1',
     };
     delete (config as Partial<BotConfig>).clientsGroup;
     await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
@@ -711,7 +717,7 @@ describe('cancore-botd end to end: owner release of a booked take (CAN-2836, F12
     dir = mkdtempSync(join(tmpdir(), 'botd-e2e-release-'));
     config = {
       ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
-      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', ownerParty: OWNER, maxFee: '1',
+      baseUrl: 'https://api-dev.cancore.app', network: 'devnet', instrumentAdmins: { USDCx: [USDCX_ADMIN] }, ownerParty: OWNER, maxFee: '1',
     };
     delete (config as Partial<BotConfig>).clientsGroup;
     await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');

@@ -8,6 +8,9 @@
   accepts it (CAN-2979). It accepted the order first and failed only after the maker opened an
   HTLC, so the taker was bound to a trade it never funds and the maker's lock waited out its
   refund. The `SettleError` says nothing was accepted. `make` already refused such an order.
+- `take(orderId)` also checks the pair against the stand's DvP instruments (and their admins
+  against the SDK's pins) before it accepts. An order that asks for DvP on a pair the stand does
+  not settle through DvP is opened as HTLC all the same; it used to be accepted and fail later.
 
 ## 0.12.2
 

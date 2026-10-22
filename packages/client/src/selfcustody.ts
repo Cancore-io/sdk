@@ -1371,6 +1371,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     const self = await me();
     if (order.status === 'open') {
       assertDvpOrder(order, 'Nothing was accepted.');
+      // The ask alone is not the route: on a pair the stand does not settle through DvP it becomes HTLC all the same.
+      await dvpInstruments(order);
       const open = order;
       order = await step(opts, 'taking the order', null, open, () => acceptOrder(open, self.partyId ?? undefined, opts));
     }
@@ -1381,14 +1383,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     opts.onAccepted?.();
     if (!self.partyId) throw new Error('the account has no party yet — run onboard()');
     const party = self.partyId;
-    order = await waitFor(
-      () => swap.get(orderId),
-      (o) => Boolean(o.swapId) || TERMINAL_ORDER_STATUSES.has(o.status),
-      deadline,
-      'the maker to open the trade',
-      null,
-      opts.signal,
-    );
+    order = await waitFor(() => swap.get(orderId), (o) => Boolean(o.swapId) || TERMINAL_ORDER_STATUSES.has(o.status), deadline, 'the maker to open the trade', null, opts.signal);
     const swapId = order.swapId;
     if (!swapId) throw new SettleError(`order ${orderId} is ${order.status}`, null, order);
     // The maker's signature turns the draft into a proposal; this account's approval completes it.

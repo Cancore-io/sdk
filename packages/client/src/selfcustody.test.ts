@@ -1144,6 +1144,14 @@ describe('the paths where a mistake costs money', () => {
     expect(api.order.status).toBe('open');
   });
 
+  test('an order that asks for DvP on a pair the stand does not settle through DvP is not taken', async () => {
+    const api = venue({ pairOff: true });
+    const { taker } = await tradingPair(api, [60, 61]);
+    await expect(taker.take('o1', { deadlineMs: 300 })).rejects.toThrow(/CBTC\/CC: this pair is not enabled for DvP on this stand/);
+    expect(api.takes()).toBe(0);
+    expect(api.order.status).toBe('open');
+  });
+
   test('a stand that does not settle the pair through DvP is refused before anything is recorded', async () => {
     const api = venue({ pairOff: true });
     const { maker, taker } = await tradingPair(api, [4, 5]);
@@ -2509,6 +2517,7 @@ describe('a 403 that is not a DvP refusal reaches the caller as the API said it 
     const { api, acct } = await account({
       'GET /orders/o1': () => takenOrder({ status: 'open', opponentUserId: null, opponent: null }),
       'GET /auth/me': () => ({ id: 'me', partyId: 'party-me' }),
+      'GET /htlc/dvp/instruments': () => [{ id: 'CBTC', admin: DEV.cbtcRegistrar }, { id: 'CC', admin: DEV.dso }],
       'POST /orders/o1/accept': () => refuse(403, message, errorCode),
     });
 
@@ -2541,6 +2550,7 @@ describe('a 403 that is not a DvP refusal reaches the caller as the API said it 
     const { acct } = await account({
       'GET /orders/o1': () => takenOrder({ status: 'open', opponentUserId: null, opponent: null }),
       'GET /auth/me': () => ({ id: 'me', partyId: 'party-me' }),
+      'GET /htlc/dvp/instruments': () => [{ id: 'CBTC', admin: DEV.cbtcRegistrar }, { id: 'CC', admin: DEV.dso }],
       'POST /orders/o1/accept': () => refuse(403, message, errorCode),
       'POST /orders': () => refuse(403, message, errorCode),
     });
