@@ -182,7 +182,7 @@ export function createEngine(options: EngineOptions): Engine {
       // Who took it: this account, another one, or not known (no opponent yet). Our id is asked once, and only when needed.
       if (o.opponentUserId && selfId === undefined) selfId = (await acct.me()).id;
       const takenBySelf = o.opponentUserId ? o.opponentUserId === selfId : undefined;
-      return { orderId: o.id, status: o.status, source: o.sourceTokenAddress, sourceAmount: o.sourceAmount, target: o.targetTokenAddress, targetAmount: o.targetAmount, ...(takenBySelf !== undefined && { takenBySelf }) };
+      return { orderId: o.id, status: o.status, dvp: o.dvp === true, source: o.sourceTokenAddress, sourceAmount: o.sourceAmount, target: o.targetTokenAddress, targetAmount: o.targetAmount, ...(takenBySelf !== undefined && { takenBySelf }) };
     },
     async balances(instruments) {
       return Promise.all(instruments.map(async (instrument) => ({ instrument, amount: (await acct.balance(instrument)).balance })));

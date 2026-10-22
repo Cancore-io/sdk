@@ -132,7 +132,7 @@ describe('security: through the dispatcher', () => {
     ['order.take', () => req('order.take', { orderId: 'held', amount: '10' })],
     ['strategy.start', () => req('strategy.start', { kind: 'grid', base: 'CC', quote: 'USDCx', config: { side: 'buy', levels: 2, amountPerLevel: '10', lowerPrice: '0.149', upperPrice: '0.151' } })],
   ])('%s held in the gate while a pause returns is refused and acts on nothing', async (_m, request) => {
-    r.engine.orders.set('held', { orderId: 'held', status: 'open', source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
+    r.engine.orders.set('held', { orderId: 'held', status: 'open', dvp: true, source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
     let release!: () => void;
     r.engine.gateHold = new Promise((res) => (release = res));
     const held = new Promise<void>((res) => (r.engine.onGateHold = res));
@@ -148,8 +148,8 @@ describe('security: through the dispatcher', () => {
   });
 
   it('a pause drops a queued take whose accept has not been sent, and keeps one already accepted', async () => {
-    r.engine.orders.set('queued', { orderId: 'queued', status: 'open', source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
-    r.engine.orders.set('sent', { orderId: 'sent', status: 'open', source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
+    r.engine.orders.set('queued', { orderId: 'queued', status: 'open', dvp: true, source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
+    r.engine.orders.set('sent', { orderId: 'sent', status: 'open', dvp: true, source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
     expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'queued', amount: '10' }), agent))).toBe('ok');
     expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'sent', amount: '10' }), agent))).toBe('ok');
     // 'sent' already went out to the API: untake reports it cannot be stopped.
@@ -161,7 +161,7 @@ describe('security: through the dispatcher', () => {
   });
 
   it('a pause written between the take gate and its booking drops the queued take', async () => {
-    r.engine.orders.set('late', { orderId: 'late', status: 'open', source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
+    r.engine.orders.set('late', { orderId: 'late', status: 'open', dvp: true, source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
     let release!: () => void;
     r.engine.takeHold = new Promise((res) => (release = res));
     const started = new Promise<void>((res) => (r.engine.onTakeStart = res));
@@ -176,19 +176,26 @@ describe('security: through the dispatcher', () => {
   });
 
   it('a take larger than the limits, or at a hostile price, is refused', async () => {
-    r.engine.orders.set('big', { orderId: 'big', status: 'open', source: 'CC', sourceAmount: '500', target: 'USDCx', targetAmount: '75' });
+    r.engine.orders.set('big', { orderId: 'big', status: 'open', dvp: true, source: 'CC', sourceAmount: '500', target: 'USDCx', targetAmount: '75' });
     expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'big', amount: '500' }), agent))).toBe('order_size_exceeded');
     // 10 CC for 100 USDCx: price 10 against a 0.15 reference.
-    r.engine.orders.set('rip', { orderId: 'rip', status: 'open', source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '100' });
+    r.engine.orders.set('rip', { orderId: 'rip', status: 'open', dvp: true, source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '100' });
     expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'rip', amount: '10' }), agent))).toBe('price_deviation_exceeded');
     // A partial take of a big order is no way around the size cap.
     expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'big', amount: '50' }), agent))).toBe('no_rule');
     expect(r.engine.taken).toEqual([]);
   });
 
+  it('a take of an order that does not settle through DvP is refused before it is booked', async () => {
+    r.engine.orders.set('htlc', { orderId: 'htlc', status: 'open', dvp: false, source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
+    expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'htlc', amount: '10' }), agent))).toBe('no_rule');
+    expect(r.engine.taken).toEqual([]);
+    expect(r.state().openOrders).toEqual([]);
+  });
+
   it('a take of an order whose API amounts do not parse is denied and audited, not an internal error', async () => {
-    r.engine.orders.set('bad', { orderId: 'bad', status: 'open', source: 'CC', sourceAmount: '1e3', target: 'USDCx', targetAmount: '0' });
-    r.engine.orders.set('long', { orderId: 'long', status: 'open', source: 'CC', sourceAmount: '1.00000000001', target: 'USDCx', targetAmount: '0.15' });
+    r.engine.orders.set('bad', { orderId: 'bad', status: 'open', dvp: true, source: 'CC', sourceAmount: '1e3', target: 'USDCx', targetAmount: '0' });
+    r.engine.orders.set('long', { orderId: 'long', status: 'open', dvp: true, source: 'CC', sourceAmount: '1.00000000001', target: 'USDCx', targetAmount: '0.15' });
     expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'bad', amount: '1' }), agent))).toBe('no_rule');
     expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'long', amount: '1.00000000001' }), agent))).toBe('no_rule');
     expect(r.audit().filter((e) => e.method === 'order.take').map((e) => e.decision)).toEqual(['deny', 'deny']);

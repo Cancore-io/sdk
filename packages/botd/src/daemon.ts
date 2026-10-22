@@ -140,15 +140,13 @@ type Taken = { base: string; quote: string; side: 'buy' | 'sell'; amount: string
 
 /**
  * Someone else's order as a trade of ours on an allowed pair: the taker receives the order's source
- * and gives its target. Undefined when neither orientation is an allowed pair.
+ * and gives its target. Undefined when neither orientation is an allowed pair, or the order is not
+ * DvP: serve never accepts an HTLC order, so booked, its take would hold an open-order slot until the order ends.
  */
 export function takeView(order: OrderInfo, allowedPairs: string[]): Taken | undefined {
-  if (allowedPairs.includes(`${order.source}/${order.target}`)) {
-    return { base: order.source, quote: order.target, side: 'buy', amount: order.sourceAmount, price: ratio(order.targetAmount, order.sourceAmount) };
-  }
-  if (allowedPairs.includes(`${order.target}/${order.source}`)) {
-    return { base: order.target, quote: order.source, side: 'sell', amount: order.targetAmount, price: ratio(order.sourceAmount, order.targetAmount) };
-  }
+  if (!order.dvp) return undefined;
+  if (allowedPairs.includes(`${order.source}/${order.target}`)) return { base: order.source, quote: order.target, side: 'buy', amount: order.sourceAmount, price: ratio(order.targetAmount, order.sourceAmount) };
+  if (allowedPairs.includes(`${order.target}/${order.source}`)) return { base: order.target, quote: order.source, side: 'sell', amount: order.targetAmount, price: ratio(order.sourceAmount, order.targetAmount) };
   return undefined;
 }
 

@@ -163,6 +163,7 @@ export interface StrategyOrder {
 export interface OrderInfo {
   orderId: string;
   status: string;
+  dvp: boolean;
   source: string;
   sourceAmount: string;
   target: string;

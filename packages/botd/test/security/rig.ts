@@ -55,7 +55,7 @@ export function fakeEngine(): FakeEngine {
       e.made.push(p);
       const orderId = `o${++n}`;
       // A made order rests on the venue, so a pause can still cancel it.
-      e.orders.set(orderId, { orderId, status: 'open', source: p.base, sourceAmount: p.amount, target: p.quote, targetAmount: p.amount });
+      e.orders.set(orderId, { orderId, status: 'open', dvp: true, source: p.base, sourceAmount: p.amount, target: p.quote, targetAmount: p.amount });
       return { orderId };
     },
     untake: (orderId: string) => (e.untaken.push(orderId), true),

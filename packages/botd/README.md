@@ -487,8 +487,9 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    `price_deviation_exceeded`, `order_size_exceeded`, `notional_exceeded`) →
    `daily_volume_exceeded` → `position_exceeded` → `open_orders_exceeded` → USD (`usd_cap_missing`,
    `usd_price_missing`, `usd_order_exceeded`, `usd_daily_exceeded`) → for `order.make` the hourly
-   budget (`rate_limited`). Takes: the order must be open, on an allowed pair (either orientation),
-   and the amount the whole order, else `no_rule`.
+   budget (`rate_limited`). Takes: the order must be open, settle through DvP (placed with
+   `dvp: true`; the bot never accepts an HTLC order), be on an allowed pair (either orientation),
+   and the amount must be the whole order, else `no_rule`.
 
 9. **Check** (after a restart, `unlock` again first):
 

@@ -209,3 +209,11 @@ describe('engine pins (CAN-2979)', () => {
     expect(seen[1]).toMatchObject({ venuePartyId: expect.stringMatching(/^cancore::1220076a/) });
   });
 });
+
+describe('engine.order', () => {
+  it('reports DvP only for an order placed with dvp: true', async () => {
+    const orders: Record<string, Order> = { d: order({ id: 'd', status: 'open', dvp: true }), h: order({ id: 'h', status: 'open', dvp: false }), old: order({ id: 'old', status: 'open' }) };
+    const e = await engineOver({ swap: { get: async (id: string) => orders[id] } });
+    expect(await Promise.all(['d', 'h', 'old'].map(async (id) => (await e.order(id)).dvp))).toEqual([true, false, false]);
+  });
+});

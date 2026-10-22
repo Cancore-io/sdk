@@ -1135,6 +1135,15 @@ describe('the paths where a mistake costs money', () => {
     expect(api.proposals).toEqual([]);
   });
 
+  test.each([false, undefined])('an open order with dvp: %s is not taken — the venue would settle it as HTLC', async (dvp) => {
+    const api = venue();
+    const { taker } = await tradingPair(api, [58, 59]);
+    Object.assign(api.order, { dvp });
+    await expect(taker.take('o1', { deadlineMs: 300 })).rejects.toThrow(/order o1 was placed without dvp: true.*Nothing was accepted/);
+    expect(api.takes()).toBe(0);
+    expect(api.order.status).toBe('open');
+  });
+
   test('a stand that does not settle the pair through DvP is refused before anything is recorded', async () => {
     const api = venue({ pairOff: true });
     const { maker, taker } = await tradingPair(api, [4, 5]);

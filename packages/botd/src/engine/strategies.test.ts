@@ -134,7 +134,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
             crash.orderFailOnce = undefined;
             throw new Error('ECONNRESET');
           }
-          return { orderId: id, status: statuses[id] ?? 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1', ...infos[id], ...(id in takers && { takenBySelf: takers[id] }) };
+          return { orderId: id, status: statuses[id] ?? 'open', dvp: true, source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1', ...infos[id], ...(id in takers && { takenBySelf: takers[id] }) };
         },
         balances: jest.fn(),
         referencePrices: async () => ({ 'CC/USDCx': '0.15' }),

@@ -1052,6 +1052,13 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     }
   }
 
+  // The order's own choice decides the mechanic: one placed without `dvp: true` is opened as HTLC, which this SDK never
+  // funds — a taker bound to it leaves the maker's lock waiting out its refund.
+  function assertDvpOrder(order: Order, outcome: string): void {
+    if (order.dvp) return;
+    throw new SettleError(`order ${order.id} was placed without dvp: true, so the venue would settle it as HTLC; Canton↔Canton orders settle only through DvP here. ${outcome}`, null, order);
+  }
+
   /**
    * A DvP refusal that ends the trade before anything is signed, said in words a partner can act
    * on. The stand refuses at the earliest point it can — placing the order, taking it — and again
@@ -1222,15 +1229,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
 
   /** The maker records the trade: `POST /htlc/proposals` with `dvp: true`, which the backend turns into a DvP draft. */
   async function proposeDvp(order: Order, opts: SettleOptions): Promise<string> {
-    // The order's own choice decides the mechanic: one placed without `dvp: true` would be opened as HTLC.
-    if (!order.dvp) {
-      throw new SettleError(
-        `order ${order.id} was placed without dvp: true, so the venue would settle it as HTLC; Canton↔Canton orders settle ` +
-          'only through DvP here. Cancel it and place it again with acct.swap.create / createForPair.',
-        null,
-        order,
-      );
-    }
+    assertDvpOrder(order, 'Cancel it and place it again with acct.swap.create / createForPair.');
     // Everything a later signature will be held to is checked before the trade is recorded:
     // the pair, the venue, and the fee rate against this account's ceiling.
     await dvpTerms(order, null, await ownParty(), 'maker');
@@ -1371,6 +1370,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     assertCantonOrder(order);
     const self = await me();
     if (order.status === 'open') {
+      assertDvpOrder(order, 'Nothing was accepted.');
       const open = order;
       order = await step(opts, 'taking the order', null, open, () => acceptOrder(open, self.partyId ?? undefined, opts));
     }

@@ -1,5 +1,14 @@
 # Changelog — `@cancore/client`
 
+## 0.12.3
+
+### Fixed
+
+- `take(orderId)` refuses an open Canton↔Canton order placed without `dvp: true` before it
+  accepts it (CAN-2979). It accepted the order first and failed only after the maker opened an
+  HTLC, so the taker was bound to a trade it never funds and the maker's lock waited out its
+  refund. The `SettleError` says nothing was accepted. `make` already refused such an order.
+
 ## 0.12.2
 
 ### Fixed
