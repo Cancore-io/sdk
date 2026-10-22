@@ -1,7 +1,8 @@
 import { CANCORE_ROUTER_ERRORS, describeRevert } from '@cancore/contracts';
 import { ChainReadError } from '../chain/client';
 
-const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+/** The message of an error, or its string form. */
+export const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /** The custom error a reverted call names, from the revert data of the RPC error. */
 export function revertName(error: unknown): string {

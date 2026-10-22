@@ -56,7 +56,7 @@ import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, TicketRe
 import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from '../tickets/terms';
 import { CantonDelivery } from './canton';
 import { FeeCeilingError, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
-import { retryableEstimateFailure, revertName } from './reverts';
+import { reasonOf, retryableEstimateFailure, revertName } from './reverts';
 import { awaitValidFrom } from './validFrom';
 
 // ---------------------------------------------------------------------------
@@ -185,7 +185,6 @@ const FILLED_LOOKBACK = 5_000n;
 
 /** The address of an EVM `bytes32` asset (left-padded), or undefined. */
 const tokenOf = (asset: string): Hex | undefined => (/^0x0{24}[0-9a-fA-F]{40}$/.test(asset) ? (`0x${asset.slice(26).toLowerCase()}` as Hex) : undefined);
-const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /** One in-flight nonce this replica drives. */
 interface Tracker {
@@ -464,7 +463,16 @@ export class Executor {
     const validUntilMs = Number(issued.ticket.validUntil) * 1000;
     const guard = () => clock.now() + readers.config.sendGuardSec * 1000 > validUntilMs;
     if (guard()) return this.refuse(orderHash, attempt, 'send-guard', `less than sendGuard (${readers.config.sendGuardSec} s) left to validUntil`);
-    const notYetValid = await awaitValidFrom({ clock, driver, validFrom: issued.ticket.validFrom, pollMs: this.delivery.pollIntervalMs, wake: () => void this.deliver(orderHash, attempt) });
+    const notYetValid = await awaitValidFrom({
+      clock,
+      driver,
+      validFrom: issued.ticket.validFrom,
+      pollMs: this.delivery.pollIntervalMs,
+      wake: () => {
+        if (!this.stopped) void this.deliver(orderHash, attempt);
+      },
+      onChainLag: (detail) => this.options.logger.warn('delivery: not sent yet, the latest block is short of validFrom', { orderHash, attempt, detail }),
+    });
     if (notYetValid) return notYetValid;
 
     const minReceived = BigInt(offer.order.minReceived);

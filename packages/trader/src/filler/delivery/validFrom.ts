@@ -1,5 +1,6 @@
 import type { DecString } from '@cancore/contracts';
 import type { Clock } from '../runtime';
+import { reasonOf } from './reverts';
 import type { TransactionDriver } from './transactions';
 
 export interface ValidFromWait {
@@ -11,6 +12,8 @@ export interface ValidFromWait {
   pollMs: number;
   /** Runs the delivery again. */
   wake: () => void;
+  /** Told each time the clock is past `validFrom` but the latest block is not (or is unreadable), so a stalled destination is visible. */
+  onChainLag?: (detail: string) => void;
 }
 
 /**
@@ -19,20 +22,21 @@ export interface ValidFromWait {
  * compares `validFrom` with `block.timestamp`, and the latest block lags the
  * clock by up to a block time (CAN-2986).
  */
-export async function awaitValidFrom({ clock, driver, validFrom, pollMs, wake }: ValidFromWait): Promise<{ status: 'waiting'; detail: string } | undefined> {
+export async function awaitValidFrom({ clock, driver, validFrom, pollMs, wake, onChainLag }: ValidFromWait): Promise<{ status: 'waiting'; detail: string } | undefined> {
   const validFromMs = Number(validFrom) * 1000;
   if (clock.now() < validFromMs) {
     clock.schedule(validFromMs - clock.now(), wake);
     return { status: 'waiting', detail: 'validFrom not reached' };
   }
-  let chainTime: bigint;
+  let detail: string;
   try {
-    chainTime = await driver.chainTime();
+    const chainTime = await driver.chainTime();
+    if (chainTime >= BigInt(validFrom)) return undefined;
+    detail = `validFrom not reached on chain: latest block at ${chainTime}, validFrom ${validFrom}`;
   } catch (error) {
-    clock.schedule(pollMs, wake);
-    return { status: 'waiting', detail: `latest block unreadable: ${error instanceof Error ? error.message : String(error)}` };
+    detail = `latest block unreadable: ${reasonOf(error)}`;
   }
-  if (chainTime >= BigInt(validFrom)) return undefined;
+  onChainLag?.(detail);
   clock.schedule(pollMs, wake);
-  return { status: 'waiting', detail: `validFrom not reached on chain: latest block at ${chainTime}, validFrom ${validFrom}` };
+  return { status: 'waiting', detail };
 }

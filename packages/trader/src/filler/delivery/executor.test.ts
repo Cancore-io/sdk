@@ -255,6 +255,36 @@ describe('Executor — nothing is sent', () => {
 describe('Executor — validFrom on chain time (CAN-2986)', () => {
   const sendCalls = (w: Awaited<ReturnType<typeof world>>) => w.dst.calls.filter((c) => c.method === 'eth_sendRawTransaction');
   const estimateCalls = (w: Awaited<ReturnType<typeof world>>) => w.dst.calls.filter((c) => c.method === 'eth_estimateGas');
+  // FakeChain estimates at head + 1, while a real node estimates on the latest block itself: the fake is more permissive,
+  // so a test that wants the router to see a block short of validFrom moves the head further back than one block.
+
+  test('the latest block exactly at validFrom: sent at once (the router refuses only block.timestamp < validFrom)', async () => {
+    const w = await world();
+    w.dst.setTimestamp(w.dst.head, BigInt(w.ticket.validFrom));
+    const executor = w.executor();
+    await executor.start();
+
+    expect(await executor.deliver(w.orderHash, 0)).toMatchObject({ status: 'sent' });
+    expect(w.fills()).toHaveLength(1);
+    executor.stop();
+  });
+
+  test('a chain-lag wait is logged, and stops polling once the executor is stopped', async () => {
+    const w = await world();
+    w.dst.blockTime = 12n;
+    w.dst.setTimestamp(w.dst.head, w.nowS - 10n);
+    const executor = w.executor();
+    await executor.start();
+
+    expect(await executor.deliver(w.orderHash, 0)).toMatchObject({ status: 'waiting' });
+    expect(w.logger.entries.some((e) => e.message === 'delivery: not sent yet, the latest block is short of validFrom' && String(e.fields?.detail ?? '').startsWith('validFrom not reached on chain'))).toBe(true);
+
+    executor.stop();
+    w.dst.mine();
+    await w.tick(3_000, false);
+    expect(estimateCalls(w)).toHaveLength(0);
+    expect(sendCalls(w)).toHaveLength(0);
+  });
 
   test('the latest block lags the clock past validFrom: waits for a block at or after validFrom, then sends', async () => {
     const w = await world();
