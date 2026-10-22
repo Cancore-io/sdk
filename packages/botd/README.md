@@ -34,7 +34,7 @@ devnet, so a config that names no host never spends real funds: mainnet is alway
 | Network | `baseUrl` | Settles | Platform limits | Funding |
 | --- | --- | --- | --- | --- |
 | devnet | `https://api-dev.cancore.app` (the default) | CC, CBTC, cETH, HTEST | an order of at least $1 | CC only |
-| testnet | `https://api-testnet.cancore.app` | CBTC, USDCx; CC only once the config adds the testnet DSO party to `instrumentAdmins` (every testnet pair has CC) | new orders an hour per person (you and your bots together) | CC only; every withdraw also needs that DSO party and `networkFeeRecipients`, since its fee is paid in CC |
+| testnet | `https://api-testnet.cancore.app` | CBTC, USDCx; CC only once the config adds the testnet DSO party to `instrumentAdmins`, with `"network": "testnet"` (every testnet pair has CC) | new orders an hour per person (you and your bots together) | CC only; every withdraw also needs that DSO party and `networkFeeRecipients`, since its fee is paid in CC |
 | mainnet | `https://api.cancore.io` | CC, CBTC, USDCx, HECTO | an order of at least $10 | CC only |
 
 - **Settles** is the instruments whose admin the SDK pins for the network (`DEFAULT_INSTRUMENT_ADMINS`
