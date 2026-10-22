@@ -1371,7 +1371,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     const self = await me();
     if (order.status === 'open') {
       assertDvpOrder(order, 'Nothing was accepted.');
-      // The ask alone is not the route: on a pair the stand does not settle through DvP it becomes HTLC all the same.
+      // The ask is not the route: an off pair becomes HTLC. shortcut: the stand lists instruments, not pairs, so two listed instruments on an off pair still pass; check per pair once the API answers per pair.
       await dvpInstruments(order);
       const open = order;
       order = await step(opts, 'taking the order', null, open, () => acceptOrder(open, self.partyId ?? undefined, opts));

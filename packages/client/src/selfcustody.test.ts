@@ -1144,7 +1144,7 @@ describe('the paths where a mistake costs money', () => {
     expect(api.order.status).toBe('open');
   });
 
-  test('an order that asks for DvP on a pair the stand does not settle through DvP is not taken', async () => {
+  test('an order that asks for DvP with an instrument the stand settles through DvP on no pair is not taken', async () => {
     const api = venue({ pairOff: true });
     const { taker } = await tradingPair(api, [60, 61]);
     await expect(taker.take('o1', { deadlineMs: 300 })).rejects.toThrow(/CBTC\/CC: this pair is not enabled for DvP on this stand/);
