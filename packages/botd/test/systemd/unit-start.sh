@@ -25,8 +25,8 @@ pass() { echo "ok   $1"; }
 fail() { echo "FAIL $1"; fails=$((fails + 1)); }
 check() { if "${@:2}" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
 
-# The install recipe of packages/botd/README.md, from a root-owned copy: install refuses a node or
-# daemon path that a non-root user could rewrite, and a mounted checkout belongs to the runner.
+# The install recipe of packages/botd/README.md, from a copy: the checkout is mounted read-only, and
+# npm ci and the build write into the tree.
 tar -C "$SRC" --exclude=./node_modules --exclude='./packages/*/node_modules' --exclude='./packages/*/dist' -cf - . | tar -C "$BUILD" -xf -
 cd "$BUILD"
 npm ci --ignore-scripts --no-audit --no-fund >/dev/null
@@ -47,6 +47,9 @@ sleep 3
 
 check "the unit is active" test "$(systemctl is-active cancore-botd)" = active
 check "the daemon has not restarted" test "$(systemctl show -p NRestarts --value cancore-botd)" = 0
+# systemd drops a sandbox setting it cannot apply; a daemon without seccomp would pass the checks above
+# on a unit that lacks @chown.
+check "the daemon runs under a seccomp filter" grep -Eq '^Seccomp:[[:space:]]+2$' "/proc/$(systemctl show -p MainPID --value cancore-botd)/status"
 check "agent socket is group cancore-bot-clients, mode 660" test "$(stat -c '%G %a' /run/cancore-bot/bot.sock)" = "cancore-bot-clients 660"
 check "owner socket is cancore-bot only, mode 600" test "$(stat -c '%U %a' /run/cancore-bot/owner.sock)" = "cancore-bot 600"
 check "the owner CLI reads status over owner.sock" bash -c "runuser -u cancore-bot -- cancore-bot status | grep -q '\"locked\": true'"

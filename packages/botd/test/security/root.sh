@@ -97,8 +97,8 @@ JSON
 chmod 0644 "$W/foreign.json"
 expect_refused "daemon refuses a state dir owned by another user" "owned by this user" as cancore-bot timeout 5 "$NODE" "$DIST/daemon.js" --config "$W/foreign.json"
 
-# systemd hardening (ProtectSystem, NoNewPrivileges, SystemCallFilter …) needs a systemd host, not a container:
-# there, after `cancore-bot install`, run `systemd-analyze security cancore-botd`.
+# systemd hardening (ProtectSystem, NoNewPrivileges, SystemCallFilter …) needs systemd as PID 1: `npm run
+# test:systemd` starts the real unit in such a container; on a host, run `systemd-analyze security cancore-botd`.
 
 kill "$PID" 2>/dev/null || true
 wait 2>/dev/null || true
