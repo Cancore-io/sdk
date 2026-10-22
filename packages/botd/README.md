@@ -347,15 +347,16 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    {
      "baseUrl": "https://api.cancore.io",
      "ownerParty": "<your own wallet's party id>",
-     "maxFee": "10"
+     "maxFee": "1"
    }
    EOF
    sudo chown root:root /etc/cancore-bot/config.json && sudo chmod 644 /etc/cancore-bot/config.json
    ```
 
    `maxFee` is a ceiling, not the price. On mainnet the network fee of a withdraw follows the cost of
-   the network's traffic, priced in CC, so leave room; a withdraw that would cost more is refused
-   before anything is signed, and you can raise the ceiling then.
+   the network's traffic, priced in CC; a withdraw that would cost more is refused before anything is
+   signed, and you can then raise the ceiling, restart the daemon and unlock it (the config is read at
+   start).
 
    Strict JSON: an unknown or misspelt key, or a wrong type, stops the daemon at start. The file must
    be owned by root (or the daemon user), not writable by group or others, not a symlink. A missing
