@@ -34,7 +34,8 @@
     "release:client": "npm publish -w @cancore/client --access public",
     "release:contracts": "npm publish -w @cancore/contracts --access public",
     "test:int": "jest --selectProjects int",
-    "test:security:root": "bash packages/botd/test/security/root.sh"
+    "test:security:root": "bash packages/botd/test/security/root.sh",
+    "test:systemd": "bash packages/botd/test/systemd/unit-start.sh"
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",

@@ -160,7 +160,8 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
 
 **systemd hardening** (`cancore-bot install` writes the unit): `ProtectSystem=strict`,
 `ProtectHome=yes`, `PrivateTmp`, `PrivateDevices`, `NoNewPrivileges`, empty capability set,
-`SystemCallFilter=@system-service`, `LimitCORE=0`, `UMask=0077`.
+`SystemCallFilter=@system-service` without `@privileged` but with `@chown` (the daemon hands
+`bot.sock` to `cancore-bot-clients`), `LimitCORE=0`, `UMask=0077`.
 
 ### Residual risks
 
@@ -769,7 +770,8 @@ upgrade to. `git pull` does not work here: the pin leaves the clone on a detache
 (`You are not currently on a branch`). The links and the unit keep pointing at the same paths; the
 state, limits, keystore and audit log in `/var/lib/cancore-bot` are untouched, and the old
 passphrase still unlocks. Run
-`sudo cancore-bot install` again only if the node binary moved (the unit names its path).
+`sudo cancore-bot install` again if the node binary moved (the unit names its path), or if the unit
+was written by an `install` from before the `@chown` fix (see [Troubleshooting](#troubleshooting)).
 
 ### Removing it
 
@@ -789,6 +791,7 @@ sudo userdel -r cancore-agent      # the agent's user and its home, if you no lo
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| the daemon never comes up: the journal shows `status=31/SYS`, then `Start request repeated too quickly` | the unit was written by an `install` from before the `@chown` fix: its `SystemCallFilter=~@privileged` also removes `@chown`, and systemd kills the daemon when it hands `bot.sock` to `cancore-bot-clients` | `sudo cancore-bot install` from this version rewrites the unit; then `sudo systemctl reset-failed cancore-botd && sudo systemctl restart cancore-botd` |
 | `cancore-botd must run as cancore-bot` | started by hand as another user | run it through systemd (`--dev` skips the check, for development only) |
 | the daemon exits: `cancore-botd v1 runs on devnet only; <url> is <network>` | `baseUrl` is not on `api-dev.cancore.app`, or `network` is set to something other than `devnet` | use the default `baseUrl` and leave `network` unset: v1 runs on devnet only, and `network` or `venuePartyId` do not let another host through |
 | the daemon exits: `<url> must be an https URL` | `baseUrl` is not https | `https://api-dev.cancore.app` |

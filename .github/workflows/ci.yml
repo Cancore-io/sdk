@@ -337,3 +337,31 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run test:security:root
+
+  # The unit `cancore-bot install` writes, started by a real systemd: only systemd applies its sandbox
+  # (SystemCallFilter, ProtectSystem …), so a unit that kills the daemon passes every unit test
+  # (CAN-2978). systemd must be PID 1, which a job `container:` cannot give; the job starts its own.
+  botd-systemd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Start a container with systemd as PID 1
+        run: |
+          docker build -t botd-systemd - <<'DOCKERFILE'
+          FROM node:22@sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8
+          RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus \
+            && rm -rf /var/lib/apt/lists/*
+          STOPSIGNAL SIGRTMIN+3
+          CMD ["/sbin/init"]
+          DOCKERFILE
+          docker run -d --name botd-systemd --privileged --cgroupns=private \
+            --tmpfs /run --tmpfs /run/lock -v "$PWD":/src:ro botd-systemd
+          for _ in $(seq 30); do
+            state=$(docker exec botd-systemd systemctl is-system-running 2>/dev/null || true)
+            [[ $state == running || $state == degraded ]] && break
+            sleep 1
+          done
+      - name: Start cancore-botd through its unit
+        # Makes unit-start.sh fail instead of skipping, so this job can never be a false green.
+        run: docker exec -e CANCORE_SYSTEMD_TESTS=1 botd-systemd bash /src/packages/botd/test/systemd/unit-start.sh
