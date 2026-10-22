@@ -6,12 +6,17 @@ import type { BotConfig } from './config';
  * `network` says: the network picks the pinned venue, fee pools and instrument admins, so a label must not move a
  * host onto another network's pins.
  */
-export function tradingNetwork(config: Pick<BotConfig, 'baseUrl' | 'network'>): DvpNetwork {
+export function tradingNetwork(config: Pick<BotConfig, 'baseUrl' | 'network' | 'instrumentAdmins' | 'networkFeeRecipients'>): DvpNetwork {
   // TLS too: the API answers carry the prices the USD caps and the price corridor trust.
   const tls = (() => { try { return new URL(config.baseUrl).protocol === 'https:'; } catch { return false; } })();
   if (!tls) throw new Error(`cancore-botd: ${config.baseUrl} must be an https URL`);
   const byHost = networkOf(config.baseUrl);
   if (!byHost) throw new Error(`cancore-botd: ${config.baseUrl} is not a Cancore API host (${Object.keys(API_NETWORKS).join(', ')})`);
+  // A token admin trusted on one network must never be trusted on another: the label ties the extra pins to the
+  // network they were written for, so a later baseUrl edit stops the daemon instead of carrying them over.
+  if ((config.instrumentAdmins || config.networkFeeRecipients) && config.network === undefined) {
+    throw new Error('cancore-botd: instrumentAdmins and networkFeeRecipients need `network` in the config: they are trusted on that network only');
+  }
   if (config.network !== undefined && config.network !== byHost) {
     throw new Error(`cancore-botd: network ${config.network} does not match ${config.baseUrl}, which is ${byHost}`);
   }

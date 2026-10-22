@@ -34,7 +34,7 @@ devnet, so a config that names no host never spends real funds: mainnet is alway
 | Network | `baseUrl` | Settles | Platform limits | Funding |
 | --- | --- | --- | --- | --- |
 | devnet | `https://api-dev.cancore.app` (the default) | CC, CBTC, cETH, HTEST | an order of at least $1 | CC only |
-| testnet | `https://api-testnet.cancore.app` | CBTC, USDCx; CC only once the config adds the testnet DSO party to `instrumentAdmins` (every testnet pair has CC) | new orders an hour per person (you and your bots together) | CC only; a CC withdraw also needs `networkFeeRecipients` |
+| testnet | `https://api-testnet.cancore.app` | CBTC, USDCx; CC only once the config adds the testnet DSO party to `instrumentAdmins` (every testnet pair has CC) | new orders an hour per person (you and your bots together) | CC only; every withdraw also needs that DSO party and `networkFeeRecipients`, since its fee is paid in CC |
 | mainnet | `https://api.cancore.io` | CC, CBTC, USDCx, HECTO | an order of at least $10 | CC only |
 
 - **Settles** is the instruments whose admin the SDK pins for the network (`DEFAULT_INSTRUMENT_ADMINS`
@@ -77,7 +77,7 @@ devnet, so a config that names no host never spends real funds: mainnet is alway
                                   |
                                   |  HTTPS
                                   v
-               Cancore API  (https://api-dev.cancore.app)
+               Cancore API  (baseUrl: api.cancore.io, api-testnet.cancore.app or api-dev.cancore.app)
 ```
 
 A command from the agent passes four checks before anything is signed: the protocol schema (strict:
@@ -170,6 +170,15 @@ the config or the SDK's pin for the network, never what the API says. The platfo
 by the API for each order and must be one of the SDK's Cancore fee pools for the network or a
 `feeRecipientPartyId` from the config (added to the pools, never replacing them). The SDK refuses a
 fee rate above `maxFeeRate` from the config (default `0.015`, 1.5%).
+
+**Token issuers are trust anchors.** A DvP allocation runs only under an instrument admin the SDK
+pins for the network, because the admin's code is what the allocation runs. A party you add with
+`instrumentAdmins` can settle trades in that token as if it issued it, and one you add with
+`networkFeeRecipients` can be paid the network fee. Take them from a source you trust (for CC, the
+network scan's `dso-party-id`; for another token, its issuer), never from an error message or the
+API: a refusal quotes the admin the API named, which is the party the pin protects against. Both
+fields need `network` in the config, so they stay on the network they were written for; a `baseUrl`
+that moves to another network then stops the daemon instead of carrying them over.
 
 **Risk gate.** Default-deny: omitted limits allow nothing. Every trade command is checked against
 fresh reference prices; if the price feed is unreachable there is no reference and the gate
@@ -313,8 +322,8 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    | `ordersPerHour` | `5` | new orders an hour, agent and strategies together: the daemon's own budget ([Rate limit](#strategies)) |
    | `venuePartyId`, `maxFeeRate` | the SDK's venue for the network; `0.015` | trust boundary: the API cannot move them |
    | `feeRecipientPartyId` | unset: only the SDK's fee pools for the network | more fee receivers to trust, added to the SDK's pools, never replacing them |
-   | `instrumentAdmins` | unset: only the SDK's admins for the network | more instrument admins, by instrument id (`Amulet` for CC), e.g. `{ "Amulet": ["DSO::1220…"] }`; added to the SDK's pins, never replacing them |
-   | `networkFeeRecipients` | unset: only the SDK's for the network | more parties a network-fee leg (a withdraw's, say) may pay; added, never replacing |
+   | `instrumentAdmins` | unset: only the SDK's admins for the network | more instrument admins, by instrument id (`Amulet` for CC), e.g. `{ "Amulet": ["DSO::1220…"] }`; added to the SDK's pins, never replacing them. Needs `network`. A trust anchor: see [Security model](#security-model) |
+   | `networkFeeRecipients` | unset: only the SDK's for the network | more parties a network-fee leg (a withdraw's, say) may pay; added, never replacing. Needs `network` |
    | `daemonUser` | `cancore-bot` | the daemon refuses to run as anyone else (`--dev` skips this; development only) |
    | `clientsGroup` | `cancore-bot-clients` | group allowed on `bot.sock` |
    | `stateDir` | `/var/lib/cancore-bot` | must be the daemon user's, mode `0700` |
@@ -837,7 +846,8 @@ sudo userdel -r cancore-agent      # the agent's user and its home, if you no lo
 | `cancore-botd must run as cancore-bot` | started by hand as another user | run it through systemd (`--dev` skips the check, for development only) |
 | the daemon exits: `<url> is not a Cancore API host (…)` | `baseUrl` names another host | one of the three hosts in [Networks](#networks); `network` or `venuePartyId` do not let another host through |
 | the daemon exits: `network <network> does not match <url>, which is <network>` | `network` names another network than the host of `baseUrl` | leave `network` unset, or set the host's |
-| the daemon exits: `<url> must be an https URL` | `baseUrl` is not https | `https://api-dev.cancore.app` |
+| the daemon exits: `<url> must be an https URL` | `baseUrl` is not https | the https URL of the host ([Networks](#networks)) |
+| the daemon exits: `` instrumentAdmins and networkFeeRecipients need `network` in the config `` | extra pins without a network label | add `"network"`, the network of `baseUrl`, to the config |
 | the daemon exits: `/etc/cancore-bot/config.json: writable by group or others` / `owned by uid …`, or `config: <field>: …` | the config's mode or owner, or an unknown key or a wrong type in it | `sudo chown root:root` and `sudo chmod 644` it; fix the field; restart |
 | `sudo cancore-bot …` fails with `env: 'node': No such file or directory`, or `install` with `<path> is owned by uid …: install cancore-botd and node where only root can write` | no system-wide Node (nvm's is on your own `PATH` only), or node or the package lives where a non-root user can write | a system-wide Node.js 20+ (`sudo node --version` must work), then [Install from source](#install-from-source-until-it-is-on-npm) again |
 | `a TTY is required to enter secrets` | `init`, `unlock` or `register` from a pipe or a script | run it in a terminal |

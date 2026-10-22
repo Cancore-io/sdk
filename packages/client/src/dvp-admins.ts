@@ -98,7 +98,9 @@ export const API_NETWORKS: Readonly<Record<string, DvpNetwork>> = Object.freeze(
 
 export function networkOf(baseUrl: string): DvpNetwork | undefined {
   try {
-    return API_NETWORKS[new URL(baseUrl).hostname];
+    const host = new URL(baseUrl).hostname;
+    // Own keys only: `constructor` or `__proto__` would otherwise read what the lookup object inherits.
+    return Object.hasOwn(API_NETWORKS, host) ? API_NETWORKS[host] : undefined;
   } catch {
     return undefined;
   }

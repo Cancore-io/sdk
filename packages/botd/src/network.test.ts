@@ -15,8 +15,16 @@ describe('tradingNetwork', () => {
     expect(() => tradingNetwork({ baseUrl })).toThrow(/must be an https URL/);
   });
 
-  it.each(['https://api.cancore.io.evil.example', 'https://cancore.io', 'https://api-staging.cancore.app'])('refuses %s: not a Cancore API host', (baseUrl) => {
+  it.each(['https://api.cancore.io.evil.example', 'https://cancore.io', 'https://api-staging.cancore.app', 'https://constructor', 'https://__proto__', 'https://tostring'])('refuses %s: not a Cancore API host', (baseUrl) => {
     expect(() => tradingNetwork({ baseUrl })).toThrow(/not a Cancore API host \(api-dev\.cancore\.app, api-testnet\.cancore\.app, api\.cancore\.io\)/);
+  });
+
+  it('refuses extra pins without a network label: they are trusted on one network, and a baseUrl edit must not carry them to another', () => {
+    expect(() => tradingNetwork({ baseUrl: 'https://api-testnet.cancore.app', instrumentAdmins: { Amulet: ['DSO::1220aa'] } })).toThrow(/instrumentAdmins and networkFeeRecipients need `network`/);
+    expect(() => tradingNetwork({ baseUrl: 'https://api-testnet.cancore.app', networkFeeRecipients: ['op::1220bb'] })).toThrow(/need `network`/);
+    expect(tradingNetwork({ baseUrl: 'https://api-testnet.cancore.app', network: 'testnet', instrumentAdmins: { Amulet: ['DSO::1220aa'] }, networkFeeRecipients: ['op::1220bb'] })).toBe('testnet');
+    // The testnet pins, once baseUrl moves to mainnet, stop the daemon instead of being trusted there.
+    expect(() => tradingNetwork({ baseUrl: 'https://api.cancore.io', network: 'testnet', instrumentAdmins: { Amulet: ['DSO::1220aa'] } })).toThrow(/does not match/);
   });
 
   it('refuses a label that is not the host\'s network, in every direction', () => {

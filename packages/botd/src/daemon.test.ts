@@ -457,7 +457,7 @@ describe('the network comes from the API host (CAN-2979)', () => {
     const { defaultDeps: withFakeEngine } = await import('./daemon');
     const stateDir = mkdtempSync(join(tmpdir(), 'botd-pins-'));
     try {
-      const pins = { instrumentAdmins: { Amulet: ['DSO::1220aa'] }, networkFeeRecipients: ['op::1220bb'] };
+      const pins = { network: 'testnet' as const, instrumentAdmins: { Amulet: ['DSO::1220aa'] }, networkFeeRecipients: ['op::1220bb'] };
       (await withFakeEngine({ ...DEFAULTS, stateDir, baseUrl: 'https://api-testnet.cancore.app', ...pins })).createEngine({} as never, {} as never);
       (await withFakeEngine({ ...DEFAULTS, stateDir, baseUrl: 'https://api.cancore.io' })).createEngine({} as never, {} as never);
       expect(seen[0]).toMatchObject({ baseUrl: 'https://api-testnet.cancore.app', ...pins });
