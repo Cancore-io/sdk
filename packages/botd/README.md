@@ -160,7 +160,8 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
 
 **systemd hardening** (`cancore-bot install` writes the unit): `ProtectSystem=strict`,
 `ProtectHome=yes`, `PrivateTmp`, `PrivateDevices`, `NoNewPrivileges`, empty capability set,
-`SystemCallFilter=@system-service`, `LimitCORE=0`, `UMask=0077`.
+`SystemCallFilter=@system-service` with `@privileged` removed (in `0.1.0-rc.0` that removes `@chown`
+too, which the daemon needs: see step 5 of [Install](#install)), `LimitCORE=0`, `UMask=0077`.
 
 ### Residual risks
 
@@ -335,11 +336,14 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
 
 5. **Start the daemon.** In `0.1.0-rc.0` the unit that `install` writes stops the daemon at start:
    its system-call filter (`SystemCallFilter=~@privileged`) also removes `@chown`, which the daemon
-   needs to hand `bot.sock` to `cancore-bot-clients`, and systemd kills it (`code=dumped, signal=SYS`,
-   then `Start request repeated too quickly`). Until a fixed version is out, add those system calls
-   back with a drop-in before the first start. The daemon has no capabilities, so it can only change
-   the group of its own files, to a group it is in. `install` does not touch the drop-in; remove it
-   once a version whose unit allows `@chown` is installed.
+   needs to hand `bot.sock` to `cancore-bot-clients`, and systemd kills it with `SIGSYS`
+   (`status=31/SYS` in the journal), then gives up (`Start request repeated too quickly`). Until a
+   fixed version is out, add those system calls back with a drop-in before the first start. The
+   daemon has no capabilities, so it can only change the group of its own files, to a group it is
+   in. `install` writes only the unit file and leaves the drop-in alone, and an upgrade does not
+   rewrite the unit unless you run `sudo cancore-bot install` again. Keep the drop-in: it is
+   harmless. Remove it only after `install` from a fixed version has rewritten the unit with a
+   filter that allows `@chown` (`systemctl cat cancore-botd` shows the unit in use).
 
    ```sh
    sudo mkdir -p /etc/systemd/system/cancore-botd.service.d
@@ -798,7 +802,7 @@ sudo userdel -r cancore-agent      # the agent's user and its home, if you no lo
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `systemctl status cancore-botd` shows `code=dumped, signal=SYS`, and the journal `Start request repeated too quickly` | The unit's system-call filter in `0.1.0-rc.0` removes `@chown`, and the daemon is killed when it hands `bot.sock` to `cancore-bot-clients`. | The drop-in in step 5 of [Install](#install), then `sudo systemctl reset-failed cancore-botd && sudo systemctl start cancore-botd`. |
+| the daemon never comes up: the journal shows `status=31/SYS` and then `Start request repeated too quickly` (`systemctl status` says `signal=SYS`) | The unit's system-call filter in `0.1.0-rc.0` removes `@chown`, and the daemon is killed when it hands `bot.sock` to `cancore-bot-clients`. | The three drop-in commands in step 5 of [Install](#install) (they end with `daemon-reload`), then `sudo systemctl reset-failed cancore-botd && sudo systemctl start cancore-botd`. |
 | `cancore-botd must run as cancore-bot` | started by hand as another user | run it through systemd (`--dev` skips the check, for development only) |
 | the daemon exits: `cancore-botd v1 runs on devnet only; <url> is <network>` | `baseUrl` is not on `api-dev.cancore.app`, or `network` is set to something other than `devnet` | use the default `baseUrl` and leave `network` unset: v1 runs on devnet only, and `network` or `venuePartyId` do not let another host through |
 | the daemon exits: `<url> must be an https URL` | `baseUrl` is not https | `https://api-dev.cancore.app` |
