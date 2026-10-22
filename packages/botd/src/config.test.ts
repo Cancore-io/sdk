@@ -20,6 +20,16 @@ describe('loadConfig', () => {
     expect(() => loadConfig(file({ ownerParty: 42 }))).toThrow(/config: ownerParty/);
   });
 
+  it('reads extra instrument admins and network-fee recipients, and refuses empty or mistyped ones (CAN-2979)', () => {
+    const pins = { instrumentAdmins: { Amulet: ['DSO::1220aa'] }, networkFeeRecipients: ['op::1220bb'] };
+    expect(loadConfig(file(pins))).toEqual({ ...DEFAULTS, ...pins });
+    expect(() => loadConfig(file({ instrumentAdmins: { Amulet: [] } }))).toThrow(/config: instrumentAdmins/);
+    expect(() => loadConfig(file({ instrumentAdmins: { Amulet: 'DSO::1220aa' } }))).toThrow(/config: instrumentAdmins/);
+    expect(() => loadConfig(file({ instrumentAdmins: { Amulet: [''] } }))).toThrow(/config: instrumentAdmins/);
+    expect(() => loadConfig(file({ networkFeeRecipients: [] }))).toThrow(/config: networkFeeRecipients/);
+    expect(() => loadConfig(file({ networkFeeRecipients: 'op::1220bb' }))).toThrow(/config: networkFeeRecipients/);
+  });
+
   it('refuses a config writable by group or others, and a symlink', () => {
     const path = file({ network: 'devnet' });
     chmodSync(path, 0o664);

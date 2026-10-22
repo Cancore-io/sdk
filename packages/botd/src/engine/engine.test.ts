@@ -193,3 +193,19 @@ describe('engine serve events (CAN-2833)', () => {
     expect(events).toEqual(['take_failed:o1:SettleError']);
   });
 });
+
+describe('engine pins (CAN-2979)', () => {
+  it('hands the config\'s extra instrument admins and network-fee recipients to the SDK, which adds them to its own', async () => {
+    const seen: Record<string, unknown>[] = [];
+    jest.resetModules();
+    jest.doMock('@cancore/client/selfcustody', () => ({ ...jest.requireActual('@cancore/client/selfcustody'), createSelfCustody: (o: Record<string, unknown>) => (seen.push(o), {}) }));
+    const { createEngine } = await import('./index');
+    const hooks = { onSettled: () => undefined, onEnded: () => undefined, onVerifyFailed: () => undefined };
+    createEngine({ signer, baseUrl: 'https://api-testnet.cancore.app', hooks, instrumentAdmins: { Amulet: ['DSO::1220aa'] }, networkFeeRecipients: ['op::1220bb'] });
+    createEngine({ signer, baseUrl: 'https://api.cancore.io', hooks });
+    expect(seen[0]).toMatchObject({ instrumentAdmins: { Amulet: ['DSO::1220aa'] }, networkFeeRecipients: ['op::1220bb'], venuePartyId: expect.stringMatching(/^cancore::12207fca/) });
+    expect(seen[1]).not.toHaveProperty('instrumentAdmins');
+    expect(seen[1]).not.toHaveProperty('networkFeeRecipients');
+    expect(seen[1]).toMatchObject({ venuePartyId: expect.stringMatching(/^cancore::1220076a/) });
+  });
+});

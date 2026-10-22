@@ -73,7 +73,7 @@ export interface Limits {
   perDayUsd?: string;
   /** Explicit owner opt-out of the USD caps; without it a missing cap denies every trade. */
   usdCapsOptOut: boolean;
-  /** New orders per hour, all sources together (the platform's per-user limit). Set by the daemon from its config, never from limits.json; default 5. */
+  /** New orders per hour, all sources together: the daemon's own budget. Set by the daemon from its config, never from limits.json; default 5. */
   ordersPerHour?: number;
 }
 

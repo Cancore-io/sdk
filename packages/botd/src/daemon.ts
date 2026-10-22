@@ -9,8 +9,8 @@ import { emptyLimits, loadLimits, parseLimits } from './limits';
 import { check, checkTake, dcaConfig, DEFAULT_ORDERS_PER_HOUR, gridConfig, ordersLastHour } from './riskgate';
 import { dcaNext } from './engine/dca';
 import { gridNext, gridRefill, gridSlots } from './engine/grid';
-import { networkOf } from '@cancore/client/selfcustody';
 import { createEngine, pinnedVenue, type EngineOptions } from './engine/index';
+import { assertNever, makeFailure, tradingNetwork } from './network';
 import { dec, fmt, SCALE } from './decimal';
 import { listen, RpcFault, type IpcServer } from './ipc/server';
 import { flag, loadConfig, paths, type BotConfig } from './config';
@@ -31,7 +31,7 @@ export interface Deps {
   now(): number;
   /** The only party `withdraw` may send to (config `ownerParty`); unset disables withdraw. */
   ownerParty?: string;
-  /** New orders an hour, agent and strategies together (config `ordersPerHour`); default 5, the platform's limit. */
+  /** New orders an hour, agent and strategies together (config `ordersPerHour`); default 5, the daemon's own budget. */
   ordersPerHour?: number;
   /** Runs `fn` periodically until the returned stop is called; drives the strategy loop. Default: every 5s. */
   every?(fn: () => void): () => void;
@@ -76,11 +76,6 @@ function withoutStale(s: BotState, now: number): BotState {
 /** Ceiling of the backoff between lookups of one intent while the API keeps failing. */
 const LOOKUP_BACKOFF_MAX_MS = 15 * 60_000;
 
-/** A 4xx answer (not timeout/throttle) is the API's refusal: it made no order. Anything else may have made one. */
-const refused = (err: unknown) => {
-  const status = (err as { status?: unknown } | null)?.status;
-  return typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 429;
-};
 
 const active = (s: StrategyRecord) => s.status === 'running' || s.status === 'rate_limited';
 const everyFiveSeconds = (fn: () => void) => {
@@ -225,6 +220,24 @@ export function createDispatcher(deps: Deps): Dispatcher {
     return after && after.status !== 'open' ? 'kept' : 'sent';
   }
 
+  /** What a make that came back without an order leaves behind, and the error its caller gets. */
+  async function makeFailed(err: unknown, intent: OrderIntent, at: number): Promise<unknown> {
+    const failure = makeFailure(err);
+    switch (failure) {
+      case 'throttled':
+        // No order (the hourly limit answers before any write); the slot stays spent so a strategy stops asking.
+        await mutate((s) => dropIntent(s, intent));
+        return new RpcFault(ERROR.DENIED, 'rate_limited', { reason: 'rate_limited' });
+      case 'refused':
+        // The API answered no: nothing to reconcile, and the hourly slot is given back.
+        await mutate((s) => ({ ...dropIntent(s, intent), orderTimes: withoutOne(s.orderTimes ?? [], at) }));
+        return err;
+      case 'lost': // No answer (network, timeout, 5xx): the order may exist. The intent stays; a tick resolves it.
+        return new RpcFault(ERROR.UNCONFIRMED, 'unconfirmed', { intent: intent.key });
+      default:
+        return assertNever(failure);
+    }
+  }
   /**
    * Books a confirmed order. One that lands after a pause (its make or its intent was in flight) is cancelled
    * at once. True only when it was actually cancelled and unbooked; otherwise it stays booked as a trade.
@@ -444,7 +457,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
     // Done only once every placement is a real order: an intent still unresolved may yet be dropped and need placing again.
     const unresolved = (state.intents ?? []).some((i) => i.strategy?.id === rec.strategyId);
     if (rec.kind === 'dca' && rec.placed.length >= dcaConfig.parse(rec.config).maxOrders) return unresolved ? undefined : setStrategy(rec.strategyId, { status: 'done' });
-    // The platform's order limit is per user, one budget for every source: waiting here beats a refused order.
+    // The hourly budget is one for every source: waiting here beats a refused order.
     if (ordersLastHour(state, now) >= (deps.ordersPerHour ?? DEFAULT_ORDERS_PER_HOUR)) {
       if (rec.status !== 'rate_limited') await setStrategy(rec.strategyId, { status: 'rate_limited', reason: 'rate_limited' });
       return;
@@ -675,13 +688,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
         try {
           ({ orderId } = await e.make({ ...params, clientKey: intent.key }));
         } catch (err) {
-          if (refused(err)) {
-            // The API answered no: nothing to reconcile, and the hourly slot is given back.
-            await mutate((s) => ({ ...dropIntent(s, intent), orderTimes: withoutOne(s.orderTimes ?? [], at) }));
-            throw err;
-          }
-          // No answer (network, timeout, 5xx): the order may exist. The intent stays; a tick resolves it.
-          throw new RpcFault(ERROR.UNCONFIRMED, 'unconfirmed', { intent: intent.key });
+          throw await makeFailed(err, intent, at);
         }
         if (await adoptOrCancel(e, intent, orderId)) {
           throw engine === e ? new RpcFault(ERROR.PAUSED, 'paused: the order was cancelled') : new RpcFault(ERROR.LOCKED, 'locked: the order was cancelled');
@@ -925,15 +932,7 @@ function fileLimits(path: string): Deps['limits'] {
 
 /** The real modules. `engine` carries test-only overrides (a fake API's fetch, short poll intervals). */
 export async function defaultDeps(config: BotConfig, engine: Partial<Pick<EngineOptions, 'fetchImpl' | 'pollMs' | 'reconcileMs'>> = {}): Promise<Deps> {
-  // v1 is dev only: testnet and mainnet are refused before any engine or API call exists.
-  // The URL decides, whatever `network` says: a devnet label must not carry a mainnet baseUrl through.
-  const byUrl = networkOf(config.baseUrl);
-  // TLS too: the API answers carry the prices the USD caps and the price corridor trust.
-  const tls = (() => { try { return new URL(config.baseUrl).protocol === 'https:'; } catch { return false; } })();
-  if (!tls) throw new Error(`cancore-botd: ${config.baseUrl} must be an https URL`);
-  if (byUrl !== 'devnet' || (config.network !== undefined && config.network !== 'devnet')) {
-    throw new Error(`cancore-botd v1 runs on devnet only; ${config.baseUrl} is ${byUrl ?? 'an unknown network'}${config.network ? `, network ${config.network}` : ''}`);
-  }
+  tradingNetwork(config);
   const p = paths(config);
   // Keystore, state, limits and audit are trusted only inside a directory nobody else can enter or swap files in.
   const dir = statSync(config.stateDir);
@@ -958,6 +957,7 @@ export async function defaultDeps(config: BotConfig, engine: Partial<Pick<Engine
         ...(config.maxFeeRate && { maxFeeRate: config.maxFeeRate }),
         ...(config.feeRecipientPartyId && { feeRecipientPartyId: config.feeRecipientPartyId }),
         ...(config.network && { network: config.network }),
+        ...(config.instrumentAdmins && { instrumentAdmins: config.instrumentAdmins }), ...(config.networkFeeRecipients && { networkFeeRecipients: config.networkFeeRecipients }),
         ...(config.maxFee && { maxFee: config.maxFee }),
       }),
     now: Date.now,

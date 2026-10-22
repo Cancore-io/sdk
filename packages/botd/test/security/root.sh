@@ -40,7 +40,7 @@ id outsider >/dev/null 2>&1 || useradd --create-home outsider
 
 install -d -m 0700 -o cancore-bot -g cancore-bot "$W/state"
 install -d -m 0711 -o cancore-bot -g cancore-bot "$W/run"
-# v1 accepts only the dev API URL; in this throwaway container it resolves to a closed local port, so nothing leaves.
+# The dev API host; in this throwaway container it resolves to a closed local port, so nothing leaves.
 grep -q "api-dev.cancore.app" /etc/hosts || echo "127.0.0.1 api-dev.cancore.app" >>/etc/hosts
 cat >"$W/config.json" <<JSON
 {"stateDir":"$W/state","agentSocket":"$W/run/bot.sock","ownerSocket":"$W/run/owner.sock","baseUrl":"https://api-dev.cancore.app"}

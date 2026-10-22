@@ -105,8 +105,8 @@ describe('security: pinned trust boundary', () => {
     const dir = mkdtempSync(join(tmpdir(), 'botd-venue-'));
     chmodSync(dir, 0o700);
     try {
-      // The daemon refuses any host it cannot place on devnet (v1 is dev only), before the venue is looked up.
-      await expect(defaultDeps({ ...DEFAULTS, stateDir: dir, baseUrl: 'https://api.example.com', network: undefined })).rejects.toThrow(/devnet only/);
+      // The daemon refuses any host that is not a Cancore API host, before the venue is looked up.
+      await expect(defaultDeps({ ...DEFAULTS, stateDir: dir, baseUrl: 'https://api.example.com', network: undefined })).rejects.toThrow(/not a Cancore API host/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

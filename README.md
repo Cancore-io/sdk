@@ -77,9 +77,10 @@ you --sudo -u cancore-bot--> cancore-bot --owner.sock-------+
 | Get the key or the recovery phrase | no | no: no such method exists |
 
 **Status:** release candidates (`0.1.0-rc.0`), not on npm yet, so install from source. v1 runs on
-devnet only (`https://api-dev.cancore.app`), where it settles CC, CBTC, cETH and HTEST, on Linux
-with systemd; the agent must run on the same machine as the daemon, as a user of its own without
-sudo rights. The bot itself is made in the Cancore wallet (Settings → My bots), which gives it its
+devnet, testnet and mainnet, on the network of its `baseUrl` (devnet unless the config names
+another host; what settles where: [Networks](packages/botd/README.md#networks)), on Linux with
+systemd; the agent must run on the same machine as the daemon, as a user of its own without sudo
+rights. The bot itself is made in the Cancore wallet (Settings → My bots), which gives it its
 party: v1 cannot create one for a new key.
 
 **Quick start:** make the bot in My bots,

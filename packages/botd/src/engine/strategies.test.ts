@@ -326,6 +326,24 @@ describe('grid', () => {
     expect(strategyOf(w).status).toBe('running');
   });
 
+  it('waits as rate_limited when the platform answers 429, and every refused make spends an hourly slot (CAN-2979)', async () => {
+    const w = world(LIMITS, 2);
+    await w.unlock();
+    await w.call('strategy.start', grid, false);
+    w.crash.refuse = true;
+    w.crash.refuseStatus = 429;
+    for (let i = 0; i < 4; i++) await w.tick();
+    expect(w.made).toHaveLength(0);
+    expect(w.state().intents).toEqual([]);
+    expect(w.state().orderTimes).toHaveLength(2);
+    expect(strategyOf(w)).toMatchObject({ status: 'rate_limited', reason: 'rate_limited' });
+    w.crash.refuse = false;
+    w.advance(3_600_001);
+    await w.tick();
+    expect(w.made).toHaveLength(1);
+    expect(strategyOf(w).status).toBe('running');
+  });
+
   it('gridPrice spaces levels exactly', () => {
     expect(gridPrice({ side: 'buy', levels: 4, amountPerLevel: '1', lowerPrice: '1', upperPrice: '2' }, 1)).toBe('1.3333333333');
   });
@@ -1453,13 +1471,24 @@ describe('mutant pins on the sdk#128 lock/settle/gate paths (CAN-2833)', () => {
     await expect(w.call('order.make', make, false)).rejects.toMatchObject({ data: { reason: 'usd_daily_exceeded' } });
   });
 
-  it.each([408, 429])('a make answered %i is not a refusal: the intent stays and the answer is unconfirmed (F22)', async (status) => {
+  it('a make answered 408 is not a refusal: the intent stays and the answer is unconfirmed (F22)', async () => {
     const w = world();
     await w.unlock();
     w.crash.refuse = true;
-    w.crash.refuseStatus = status;
+    w.crash.refuseStatus = 408;
     await expect(w.call('order.make', make, false)).rejects.toMatchObject({ code: ERROR.UNCONFIRMED });
     expect(w.state().intents).toHaveLength(1);
+  });
+
+  it('a make answered 429 is the platform\'s hourly limit: denied rate_limited, the intent dropped, the hourly slot kept (CAN-2979)', async () => {
+    const w = world();
+    await w.unlock();
+    w.crash.refuse = true;
+    w.crash.refuseStatus = 429;
+    await expect(w.call('order.make', make, false)).rejects.toMatchObject({ code: ERROR.DENIED, data: { reason: 'rate_limited' } });
+    expect(w.state().intents).toEqual([]);
+    expect(w.state().orderTimes).toHaveLength(1);
+    expect(w.audited).toContainEqual(expect.objectContaining({ method: 'order.make', decision: 'error', reason: 'rate_limited' }));
   });
 
   it('a 400 is the API\'s refusal: the intent is dropped (F22 control)', async () => {
@@ -1588,10 +1617,10 @@ describe('mutation audit of e422a58 (CAN-2833)', () => {
     await expect(w.call('order.make', make, false)).rejects.toMatchObject({ code: ERROR.DENIED, data: { reason: 'usd_daily_exceeded' } });
   });
 
-  it.each([408, 429])('a make answered %i is not a refusal: the order may exist, so the intent and its hourly slot stay (F22)', async (status) => {
+  it('a make answered 408 is not a refusal: the order may exist, so the intent and its hourly slot stay (F22)', async () => {
     const w = world();
     await w.unlock();
-    w.crash.status = status;
+    w.crash.status = 408;
     await expect(w.call('order.make', make, false)).rejects.toMatchObject({ code: ERROR.UNCONFIRMED });
     expect(w.state().intents).toHaveLength(1);
     expect(w.state().orderTimes).toHaveLength(1);
