@@ -33,6 +33,9 @@ export interface EngineOptions {
   maxFeeRate?: string;
   feeRecipientPartyId?: string | string[];
   network?: DvpNetwork;
+  /** Added to the SDK's pins for the network, never replacing them. */
+  instrumentAdmins?: Record<string, string[]>;
+  networkFeeRecipients?: string[];
   /** Ceiling of one withdraw's network fee, in CC; without it the SDK refuses every withdraw. */
   maxFee?: string;
   /** Injected for tests; defaults to globalThis.fetch. */
@@ -83,6 +86,8 @@ export function createEngine(options: EngineOptions): Engine {
     ...(options.maxFeeRate && { maxFeeRate: options.maxFeeRate }),
     ...(options.feeRecipientPartyId && { feeRecipientPartyId: options.feeRecipientPartyId }),
     ...(options.network && { network: options.network }),
+    ...(options.instrumentAdmins && { instrumentAdmins: options.instrumentAdmins }),
+    ...(options.networkFeeRecipients && { networkFeeRecipients: options.networkFeeRecipients }),
     ...(options.maxFee && { maxFee: options.maxFee }),
     ...(options.pollMs && { pollMs: options.pollMs }),
   });

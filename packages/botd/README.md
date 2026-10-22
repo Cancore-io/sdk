@@ -21,11 +21,35 @@ limits the owner set.
 import { parseRequest, RISK_CLASS, DENY_REASONS } from '@cancore/botd/protocol';
 ```
 
-**v1:** devnet only (`https://api-dev.cancore.app`), Linux with systemd only, Canton DvP orders
-only. The agent must run on the same machine as the daemon: the daemon listens on local unix
+**v1:** devnet, testnet and mainnet ([Networks](#networks)), Linux with systemd only, Canton DvP
+orders only. The agent must run on the same machine as the daemon: the daemon listens on local unix
 sockets and has no remote transport. Full documentation: <https://docs.cancore.io/sdk/botd>.
 
-[How it works](#how-it-works) · [Security model](#security-model) ·
+## Networks
+
+The daemon trades on the network of its `baseUrl` and nowhere else. Without a `baseUrl` it stays on
+devnet, so a config that names no host never spends real funds: mainnet is always an explicit
+`baseUrl`.
+
+| Network | `baseUrl` | Settles | Platform limits | Funding |
+| --- | --- | --- | --- | --- |
+| devnet | `https://api-dev.cancore.app` (the default) | CC, CBTC, cETH, HTEST | an order of at least $1 | CC only |
+| testnet | `https://api-testnet.cancore.app` | CBTC, USDCx; CC only once the config adds the testnet DSO party to `instrumentAdmins` (every testnet pair has CC) | new orders an hour per person (you and your bots together) | CC only; every withdraw also needs that DSO party and `networkFeeRecipients`, since its fee is paid in CC |
+| mainnet | `https://api.cancore.io` | CC, CBTC, USDCx, HECTO | an order of at least $10 | CC only |
+
+- **Settles** is the instruments whose admin the SDK pins for the network (`DEFAULT_INSTRUMENT_ADMINS`
+  in `@cancore/client`). A pair with any other instrument can pass the risk gate and is then refused
+  at settlement: allow only pairs of these. `GET <baseUrl>/trading-pairs` lists the network's pairs.
+- **Platform limits** belong to the network and can change; the public `GET <baseUrl>/htlc/fee-config`
+  shows the current `minOrderUsd`. An order below it is refused by the API. A per-person hourly
+  limit answers 429, which the daemon reports as `rate_limited` ([Rate limit](#strategies)). The
+  daemon's own budget, `ordersPerHour` (default 5), applies on every network.
+- **Funding** is CC only on every network: the settlement loop never accepts an incoming transfer
+  ([Install](#install), step 7).
+- The venue and the platform-fee pools are pinned for all three networks; `venuePartyId`,
+  `feeRecipientPartyId` and `maxFeeRate` work the same on each.
+
+[Networks](#networks) · [How it works](#how-it-works) · [Security model](#security-model) ·
 [What happens if…](#what-happens-if) · [Install from source](#install-from-source-until-it-is-on-npm) ·
 [Install](#install) · [How orders are tracked](#how-orders-are-tracked) · [Day to day](#day-to-day) ·
 [Strategies](#strategies) · [Examples](#examples) · [Recovery and upgrades](#recovery-and-upgrades) ·
@@ -53,7 +77,7 @@ sockets and has no remote transport. Full documentation: <https://docs.cancore.i
                                   |
                                   |  HTTPS
                                   v
-               Cancore API  (https://api-dev.cancore.app)
+               Cancore API  (baseUrl: api.cancore.io, api-testnet.cancore.app or api-dev.cancore.app)
 ```
 
 A command from the agent passes four checks before anything is signed: the protocol schema (strict:
@@ -142,10 +166,21 @@ challenge only in the challenge's own format (the wallet signer's `signChallenge
 is refused. That is why a new key's party topology, a binary hash, cannot be signed
 ([Install](#install), step 6).
 The SDK's own checks of what each DvP or transfer does run underneath. The API cannot move the pinned trust boundary either: the venue is `venuePartyId` from
-the config or the SDK's pin for devnet, never what the API says. The platform-fee receiver is named
-by the API for each order and must be one of the SDK's Cancore fee pools for devnet or a
+the config or the SDK's pin for the network, never what the API says. The platform-fee receiver is named
+by the API for each order and must be one of the SDK's Cancore fee pools for the network or a
 `feeRecipientPartyId` from the config (added to the pools, never replacing them). The SDK refuses a
 fee rate above `maxFeeRate` from the config (default `0.015`, 1.5%).
+
+**Token issuers are trust anchors.** A DvP allocation runs only under an instrument admin the SDK
+pins for the network, because the admin's code is what the allocation runs. A party you add with
+`instrumentAdmins` can settle trades in that token as if it issued it, and one you add with
+`networkFeeRecipients` can be paid the network fee. Take them from a source you trust (for CC, the
+`dso-party-id` of the network's scan, which a validator's scan proxy answers; for another token, its
+issuer), never from an error message or the API: a refusal quotes the admin the API named, which is
+the party the pin protects against. Every party you pin in the config — `venuePartyId`,
+`feeRecipientPartyId`, `instrumentAdmins`, `networkFeeRecipients` — needs `network` beside it, so
+it stays on the network it was written for: a `baseUrl` that moves to another network then stops
+the daemon instead of carrying the party over.
 
 **Risk gate.** Default-deny: omitted limits allow nothing. Every trade command is checked against
 fresh reference prices; if the price feed is unreachable there is no reference and the gate
@@ -276,26 +311,49 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    sudo chmod 644 /etc/cancore-bot/config.json
    ```
 
-   `ownerParty` is your own party (the Wallet page shows it).
+   `ownerParty` is your own party (the Wallet page shows it). This example is devnet; for testnet or
+   mainnet put that network's host in `baseUrl` (the mainnet config is below the table), and your
+   party on that network in `ownerParty`.
 
    | Field | Default | Meaning |
    | --- | --- | --- |
-   | `baseUrl` | `https://api-dev.cancore.app` | the API. v1: must be https on this host |
-   | `network` | unset: taken from `baseUrl` (devnet) | v1 refuses anything but `devnet` |
+   | `baseUrl` | `https://api-dev.cancore.app` | the API: https on one of the three Cancore hosts ([Networks](#networks)) |
+   | `network` | unset: taken from `baseUrl` | when set, it must be the network of `baseUrl` |
    | `ownerParty` | unset: every withdraw refused | the only party `withdraw` sends to |
    | `maxFee` | unset: every withdraw refused | the most CC of network fee one withdraw may pay |
-   | `ordersPerHour` | `5` | new orders an hour, agent and strategies together: the daemon's own count of the platform's hourly limit, which you and your bots share ([Rate limit](#strategies)) |
-   | `venuePartyId`, `maxFeeRate` | the SDK's venue for devnet; `0.015` | trust boundary: the API cannot move them |
-   | `feeRecipientPartyId` | unset: only the SDK's fee pools for devnet | more fee receivers to trust, added to the SDK's pools, never replacing them |
+   | `ordersPerHour` | `5` | new orders an hour, agent and strategies together: the daemon's own budget ([Rate limit](#strategies)) |
+   | `venuePartyId`, `maxFeeRate` | the SDK's venue for the network; `0.015` | trust boundary: the API cannot move them. `venuePartyId` needs `network` |
+   | `feeRecipientPartyId` | unset: only the SDK's fee pools for the network | more fee receivers to trust, added to the SDK's pools, never replacing them. Needs `network` |
+   | `instrumentAdmins` | unset: only the SDK's admins for the network | more instrument admins, by instrument id (`Amulet` for CC), e.g. `{ "Amulet": ["DSO::1220…"] }`; added to the SDK's pins, never replacing them. Needs `network`. A trust anchor: see [Security model](#security-model) |
+   | `networkFeeRecipients` | unset: only the SDK's for the network | more parties a network-fee leg (a withdraw's, say) may pay; added, never replacing. Needs `network` |
    | `daemonUser` | `cancore-bot` | the daemon refuses to run as anyone else (`--dev` skips this; development only) |
    | `clientsGroup` | `cancore-bot-clients` | group allowed on `bot.sock` |
    | `stateDir` | `/var/lib/cancore-bot` | must be the daemon user's, mode `0700` |
    | `agentSocket` | `/run/cancore-bot/bot.sock` | |
    | `ownerSocket` | `/run/cancore-bot/owner.sock` | |
 
-   **v1 runs on devnet only.** The daemon refuses to start unless `baseUrl` is https on
-   `api-dev.cancore.app` and `network` is unset or `devnet`: `cancore-botd v1 runs on devnet only;
-   <url> is <network>`. Setting `network` or `venuePartyId` does not let another host through.
+   **The host decides the network.** The daemon refuses to start unless `baseUrl` is https on one of
+   `api-dev.cancore.app`, `api-testnet.cancore.app` and `api.cancore.io`, and refuses a `network` that
+   is not that host's: the network picks which venue, fee pools and instrument admins are trusted, so
+   a label must not move a host onto another network's pins. Setting `network` or `venuePartyId` does
+   not let another host through.
+
+   On mainnet, with real funds:
+
+   ```sh
+   sudo tee /etc/cancore-bot/config.json >/dev/null <<'EOF'
+   {
+     "baseUrl": "https://api.cancore.io",
+     "ownerParty": "<your own wallet's party id>",
+     "maxFee": "10"
+   }
+   EOF
+   sudo chown root:root /etc/cancore-bot/config.json && sudo chmod 644 /etc/cancore-bot/config.json
+   ```
+
+   `maxFee` is a ceiling, not the price. On mainnet the network fee of a withdraw follows the cost of
+   the network's traffic, priced in CC, so leave room; a withdraw that would cost more is refused
+   before anything is signed, and you can raise the ceiling then.
 
    Strict JSON: an unknown or misspelt key, or a wrong type, stops the daemon at start. The file must
    be owned by root (or the daemon user), not writable by group or others, not a symlink. A missing
@@ -411,10 +469,10 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    are rejected. The daemon stores the limits in `/var/lib/cancore-bot/limits.json`; `limits show`
    prints them with the defaults filled in.
 
-   **What settles on devnet.** The SDK pins an instrument admin on devnet only for CC, CBTC, cETH
-   and HTEST, and the config cannot add one. A trade in any other token (USDCx included) can pass
-   the gate and is then refused by the SDK at settlement
-   (`<id> admin for devnet not configured — pass instrumentAdmins`). Allow pairs of those four only.
+   **What settles.** The SDK pins instrument admins per network ([Networks](#networks)). A trade in
+   any other token can pass the gate and is then refused by the SDK at settlement
+   (`<id> admin for <network> not configured — pass instrumentAdmins`). Allow pairs of the network's
+   pinned tokens only, or add an admin you have checked with `instrumentAdmins` in the config.
 
    USD values use the Cancore API's price per instrument (`sourcePriceUsd` of the listed pairs; a
    token that is only ever a pair's target is valued through the market rate, rounded up, the
@@ -479,12 +537,14 @@ including a fill that happened while it was an intent); no match twice, a minute
 intent. Intents younger than 60 s are not looked up at all. Limit: two identical orders within that
 window, both with their description rewritten, cannot be told apart.
 
-**Lost answers.** A make whose answer never arrives — a network error, a 5xx, a 408 or 429, the
+**Lost answers.** A make whose answer never arrives — a network error, a 5xx, a 408, the
 engine's 20 s request timeout, or the socket's 30 s timeout of a trade method — returns
 `unconfirmed` (code -32005) and keeps its intent; a strategy stays `running` and its slot stays
 held. Each tick looks the intents up the same way an unlock does (unlock does it in the
 background); a lookup that fails backs off (2, 4, 8 … minutes, at most 15). A dropped intent frees
-the slot, so the strategy places it again. Any other 4xx (including a DvP refusal) is a definite
+the slot, so the strategy places it again. A 429 is the platform's hourly limit, which the API
+checks before it creates anything: the intent is dropped, the hourly slot stays spent, and the
+answer is `rate_limited` (a strategy waits). Any other 4xx (including a DvP refusal) is a definite
 no: the intent and its hourly slot are dropped at once, and the caller gets `-32603 internal error`
 (`daemon_error` through bot-mcp). An agent must not repeat an `unconfirmed` make: that is how
 duplicates happen.
@@ -579,20 +639,20 @@ the daemon is unlocked (locked, the orders stay on the venue). A
 strategy order cancelled by hand (`order.cancel`, `orders.cancelAll`, or in the web app) is not
 placed again: its slot is listed in the strategy's `cancelledByUser` in `status`.
 
-**Rate limit.** The platform accepts 5 new orders an hour per user, and it counts an owner and
-their bots as one user: you and your bots share that allowance. The daemon keeps one budget,
-`ordersPerHour` in the config (default 5), for the agent and every strategy together, over a
-sliding hour: 5 orders at once, then up to 5 more as each hour-old one drops out. A strategy that
-finds it spent waits with `status: "rate_limited"`; an agent's `order.make` past it is refused with
-`rate_limited`. The daemon counts only its own orders. Orders you or your other bots place elsewhere
-spend the shared allowance too, and the API then refuses the daemon's make with a 429, which the
-daemon cannot tell from a lost answer: the make answers `unconfirmed`, and its intent is dropped
-once two lookups find no order. Lower `ordersPerHour` to leave room for orders placed elsewhere.
+**Rate limit.** The daemon keeps one budget, `ordersPerHour` in the config (default 5), for the
+agent and every strategy together, over a sliding hour: 5 orders at once, then up to 5 more as each
+hour-old one drops out. A strategy that finds it spent waits with `status: "rate_limited"`; an
+agent's `order.make` past it is refused with `rate_limited`. A network may also limit new orders an
+hour per person ([Networks](#networks)), counting an owner and their bots as one person. The daemon
+counts only its own orders, so orders you or your other bots place elsewhere spend that allowance
+too; the API then refuses the daemon's make with a 429 before it creates anything. The make answers
+`rate_limited`, its intent is dropped, and its hourly slot stays spent, so the daemon stops asking
+once its own budget is used up. Lower `ordersPerHour` to leave room for orders placed elsewhere.
 
 ## Examples
 
 Prices are illustrative: 1 CC = 0.0000015 CBTC, and CC ≈ $0.15. Amounts and ids are illustrative
-too; the arithmetic is what the gate computes. The pair is CC/CBTC, one that settles on devnet.
+too; the arithmetic is what the gate computes. The pair is CC/CBTC, one that settles on devnet and mainnet.
 
 ### Narrow limits for the first week
 
@@ -790,8 +850,10 @@ sudo userdel -r cancore-agent      # the agent's user and its home, if you no lo
 | Symptom | Cause | Fix |
 |---|---|---|
 | `cancore-botd must run as cancore-bot` | started by hand as another user | run it through systemd (`--dev` skips the check, for development only) |
-| the daemon exits: `cancore-botd v1 runs on devnet only; <url> is <network>` | `baseUrl` is not on `api-dev.cancore.app`, or `network` is set to something other than `devnet` | use the default `baseUrl` and leave `network` unset: v1 runs on devnet only, and `network` or `venuePartyId` do not let another host through |
-| the daemon exits: `<url> must be an https URL` | `baseUrl` is not https | `https://api-dev.cancore.app` |
+| the daemon exits: `<url> is not a Cancore API host (…)` | `baseUrl` names another host | one of the three hosts in [Networks](#networks); `network` or `venuePartyId` do not let another host through |
+| the daemon exits: `network <network> does not match <url>, which is <network>` | `network` names another network than the host of `baseUrl` | with no party pins in the config, leave `network` unset or set the host's. With `venuePartyId`, `feeRecipientPartyId`, `instrumentAdmins` or `networkFeeRecipients`, those were written for the old network: remove them, or replace them with parties of the new one, before you change `network` |
+| the daemon exits: `<url> must be an https URL` | `baseUrl` is not https | the https URL of the host ([Networks](#networks)) |
+| the daemon exits: `` venuePartyId, feeRecipientPartyId, instrumentAdmins and networkFeeRecipients need `network` in the config `` | a party pin without a network label | add `"network"`, the network the pins were written for; it must also be the network of `baseUrl` |
 | the daemon exits: `/etc/cancore-bot/config.json: writable by group or others` / `owned by uid …`, or `config: <field>: …` | the config's mode or owner, or an unknown key or a wrong type in it | `sudo chown root:root` and `sudo chmod 644` it; fix the field; restart |
 | `sudo cancore-bot …` fails with `env: 'node': No such file or directory`, or `install` with `<path> is owned by uid …: install cancore-botd and node where only root can write` | no system-wide Node (nvm's is on your own `PATH` only), or node or the package lives where a non-root user can write | a system-wide Node.js 20+ (`sudo node --version` must work), then [Install from source](#install-from-source-until-it-is-on-npm) again |
 | `a TTY is required to enter secrets` | `init`, `unlock` or `register` from a pipe or a script | run it in a terminal |
@@ -804,12 +866,11 @@ sudo userdel -r cancore-agent      # the agent's user and its home, if you no lo
 | `limits set` fails: `EACCES: permission denied, open '/dev/stdin'` | `limits.json` is not readable by others (e.g. `600`), or it came through a pipe | `chmod 644 limits.json`, and pass it with `<`, never a pipe |
 | agent gets `socket_unavailable` | the agent's user is not in `cancore-bot-clients`, or the MCP client started in a login from before the install | `id cancore-agent` must list `cancore-bot-clients`; start the MCP client in a new login of that user |
 | every make `rate_limited`, every take `no_rule` | no limits set yet (`maxCommandsPerMinute` `0`, no `allowedPairs`) | set the limits (step 8) |
-| `order.make` `rate_limited` with `maxCommandsPerMinute` set | the hourly `ordersPerHour` budget is spent | wait; it is the platform's limit |
-| makes answer `unconfirmed` and never show up in `trade_orders_list`, with the API up | orders you or your other bots placed elsewhere spent the hourly allowance you share; the API answers 429, which the daemon treats as a lost answer | wait for the hour to pass; lower `ordersPerHour` to leave room |
+| `order.make` `rate_limited` with `maxCommandsPerMinute` set | the daemon's hourly `ordersPerHour` budget is spent, or the network's per-person hourly limit answered 429 (the audit log then has the make as `error`, reason `rate_limited`) | wait for the hour to pass; lower `ordersPerHour` to leave room for orders placed elsewhere |
 | `register` fails with `-32603 internal error` and the audit log has `verify_failed` | a key from `init` or `init --import`: v1 cannot create its party (the signer guard refuses the topology signature); retrying fails the same way | use a bot made in My bots, imported with `init --import-key` (step 4) |
 | after the first unlock, `status` shows no `partyId` and the audit log has `not registered: run cancore-bot register` | the account has no party (a key from `init` or `init --import`), or onboarding failed, for example with the API unreachable | a bot from My bots; to retry, `lock` and `unlock` again |
 | a token other than CC sent to the bot does not show in `trade_balances` | it waits as an offer the bot has to accept, and the daemon never accepts one | **Accept incoming** on the bot's row in My bots, or trade CC into that token |
-| a trade in a token other than CC, CBTC, cETH or HTEST never settles | the SDK pins no instrument admin for it on devnet, and the config cannot add one | allow pairs of those four only (step 8) |
+| a trade never settles, with `<id> admin for <network> not configured` | the SDK pins no instrument admin for that token on the network ([Networks](#networks)); on testnet that includes CC | allow pairs of the pinned tokens only (step 8), or add the admin with `instrumentAdmins` |
 | paused with `pauseReason: unbooked_fill` | a trade settled on the bot account that the daemon never booked (for example one made by hand in the web app on the bot's account); the limits cannot account for it, so the bot stops placing orders (orders already resting stay on the venue and can still fill; strategies continue after `resume`) | check the audit log and the account's orders, then `cancore-bot resume`; do not trade by hand on the bot account |
 | `order.cancel` fails with `reason: not_open` (`not_open` through bot-mcp) | the venue shows the order taken, settling or ended; cancelling it could leave an HTLC that still executes, so the daemon keeps it booked as a trade | nothing to do: it settles or ends on its own (audit log) |
 | `order.cancel` answers `cancelled: true` but the order is still in `orders.list` (`trade_orders_list`) | the venue did not answer the status read, so the cancel was sent unconfirmed; the order stays booked (it still counts against open orders) until reconcile sees it ended, within about 30 s once the venue answers | nothing |
@@ -831,7 +892,8 @@ sudo userdel -r cancore-agent      # the agent's user and its home, if you no lo
   ([Install](#install), step 4).
 - Accepting incoming transfers: fund the bot with CC; another token waits as an offer (accept it in
   My bots, or trade CC into it).
-- Other instruments: on devnet only CC, CBTC, cETH and HTEST settle.
-- Networks other than devnet, and order types other than Canton DvP.
+- Other instruments than the network's pinned ones ([Networks](#networks)), unless the config adds
+  their admin.
+- Order types other than Canton DvP.
 - A remote transport: the agent must run on the same machine as the daemon.
 - Platforms other than Linux with systemd.

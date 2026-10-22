@@ -1,7 +1,7 @@
 import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
 import type { Create, PreparedTransaction } from '@canton-network/core-ledger-proto';
 import { acceptTransferLeg, allocationTree, createNode, DEV, exercise, factoryContract, factoryTransferLeg, holding, OFFER_CID, preapprovalContract, preapprovalProposalLeg, prepared, proposalAccept, remade, proposalCreate, selfSendLeg, spend, spendTransfer, v, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
-import { DEFAULT_INSTRUMENT_ADMINS, DEFAULT_VENUES, instrumentKey, mergeLists } from './dvp-admins';
+import { DEFAULT_INSTRUMENT_ADMINS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf } from './dvp-admins';
 import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyAcceptPrepared, verifyConsolidatePrepared, verifyDvpPrepared, verifyFeePrepared, verifyPreapprovalSetupPrepared, verifySelfSendPrepared, verifySendPrepared, type AcceptTerms, type ConsolidateTerms, type DvpTerms, type PreapprovalSetupTerms, type SelfSendTerms, type SendTerms } from './dvp-verify';
 
 const MAKER = 'maker::1220aa';
@@ -381,6 +381,15 @@ test('overrides add to the pinned lists: one entry added keeps every default', (
   expect(merged.CBTC).toEqual([...DEFAULT_INSTRUMENT_ADMINS.devnet.CBTC!, 'extra::1220ab']);
   expect(merged.Amulet).toEqual(DEFAULT_INSTRUMENT_ADMINS.devnet.Amulet);
   expect(mergeLists(DEFAULT_TRUSTED_PACKAGES.swap, { 'cancore-swap': ['ff'.repeat(32)] })['cancore-swap']).toHaveLength(DEFAULT_TRUSTED_PACKAGES.swap['cancore-swap']!.length + 1);
+});
+
+test('networkOf places only the Cancore API hosts, never a name the lookup object inherits (CAN-2979)', () => {
+  expect(networkOf('https://api-dev.cancore.app')).toBe('devnet');
+  expect(networkOf('https://api-testnet.cancore.app/')).toBe('testnet');
+  expect(networkOf('https://API.cancore.io')).toBe('mainnet');
+  for (const host of ['constructor', '__proto__', 'tostring', 'hasownproperty', 'valueof', 'api.cancore.io.example', 'cancore.io'])
+    expect(networkOf(`https://${host}`)).toBeUndefined();
+  expect(networkOf('not a url')).toBeUndefined();
 });
 
 test('the pinned venue of each network is exactly the stand’s own (BUG-1291)', () => {

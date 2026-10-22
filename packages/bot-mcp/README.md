@@ -13,8 +13,8 @@ It can read state, reduce risk and trade within limits. It has no tool to withdr
 
 Install and secure the daemon first: [`@cancore/botd`](../botd). For agents, the [`cancore-trading` skill](../../skills/cancore-trading/SKILL.md) explains how to use these tools.
 
-**v1:** devnet only, like the daemon (where only CC, CBTC, cETH and HTEST settle); Linux with
-systemd. bot-mcp talks to a local unix socket, so the agent (the MCP client that starts
+**v1:** devnet, testnet and mainnet, on whichever network the daemon's `baseUrl` names (what settles
+on each: [Networks](../botd/README.md#networks)); Linux with systemd. bot-mcp talks to a local unix socket, so the agent (the MCP client that starts
 `cancore-bot-mcp`) must run on the daemon's machine, as a user of its own in `cancore-bot-clients`.
 Full documentation: <https://docs.cancore.io/sdk/bot-mcp>.
 

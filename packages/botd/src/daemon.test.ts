@@ -403,7 +403,7 @@ describe('owner lock when the audit write fails', () => {
   });
 });
 
-describe('v1 is dev only', () => {
+describe('the network comes from the API host (CAN-2979)', () => {
   it('refuses plain http to the dev host before any engine or API call', async () => {
     const fetchImpl = jest.fn();
     await expect(defaultDeps({ ...DEFAULTS, baseUrl: 'http://api-dev.cancore.app', stateDir: '/nonexistent-botd' }, { fetchImpl })).rejects.toThrow(/must be an https URL/);
@@ -411,27 +411,75 @@ describe('v1 is dev only', () => {
   });
 
   it.each([
-    [{ network: 'testnet' as const }],
-    [{ network: 'mainnet' as const }],
-    [{ baseUrl: 'https://api.cancore.io', network: undefined }],
     [{ baseUrl: 'https://unknown.example', network: undefined }],
-  ])('refuses %j before any engine or API call', async (over) => {
+    [{ baseUrl: 'https://unknown.example', network: 'mainnet' as const }],
+    [{ baseUrl: 'https://api.cancore.io.example', network: undefined }],
+  ])('refuses %j, a host that is not a Cancore API, before any engine or API call', async (over) => {
     const fetchImpl = jest.fn();
     // stateDir does not exist: the refusal must come first, before anything is opened.
-    await expect(defaultDeps({ ...DEFAULTS, stateDir: '/nonexistent-botd', ...over }, { fetchImpl })).rejects.toThrow(/devnet only/);
+    await expect(defaultDeps({ ...DEFAULTS, stateDir: '/nonexistent-botd', ...over }, { fetchImpl })).rejects.toThrow(/not a Cancore API host/);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it.each([
-    [{ baseUrl: 'https://api.cancore.io' }],
+    [{ network: 'testnet' as const }],
+    [{ network: 'mainnet' as const }],
+    [{ baseUrl: 'https://api.cancore.io', network: 'devnet' as const }],
+    [{ baseUrl: 'https://api-testnet.cancore.app', network: 'mainnet' as const }],
+  ])('refuses %j: a network label that is not the host\'s', async (over) => {
+    const fetchImpl = jest.fn();
+    await expect(defaultDeps({ ...DEFAULTS, stateDir: '/nonexistent-botd', ...over }, { fetchImpl })).rejects.toThrow(/does not match/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['https://api-dev.cancore.app', undefined],
+    ['https://api-testnet.cancore.app', undefined],
+    ['https://api.cancore.io', undefined],
+    ['https://api.cancore.io', 'mainnet' as const],
+    ['https://api-testnet.cancore.app', 'testnet' as const],
+  ])('starts on %s (network %s) without calling the API', async (baseUrl, network) => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'botd-net-'));
+    try {
+      const fetchImpl = jest.fn();
+      const deps = await defaultDeps({ ...DEFAULTS, stateDir, baseUrl, ...(network && { network }) }, { fetchImpl });
+      expect(deps.createEngine).toEqual(expect.any(Function));
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it('hands the config\'s extra pins to the engine, and nothing when the config sets none', async () => {
+    const seen: Record<string, unknown>[] = [];
+    jest.resetModules();
+    jest.doMock('./engine/index', () => ({ ...jest.requireActual('./engine/index'), createEngine: (o: Record<string, unknown>) => (seen.push(o), {}) }));
+    const { defaultDeps: withFakeEngine } = await import('./daemon');
+    const stateDir = mkdtempSync(join(tmpdir(), 'botd-pins-'));
+    try {
+      const pins = { network: 'testnet' as const, instrumentAdmins: { Amulet: ['DSO::1220aa'] }, networkFeeRecipients: ['op::1220bb'] };
+      (await withFakeEngine({ ...DEFAULTS, stateDir, baseUrl: 'https://api-testnet.cancore.app', ...pins })).createEngine({} as never, {} as never);
+      (await withFakeEngine({ ...DEFAULTS, stateDir, baseUrl: 'https://api.cancore.io' })).createEngine({} as never, {} as never);
+      expect(seen[0]).toMatchObject({ baseUrl: 'https://api-testnet.cancore.app', ...pins });
+      expect(seen[1]).toMatchObject({ baseUrl: 'https://api.cancore.io' });
+      expect(seen[1]).not.toHaveProperty('instrumentAdmins');
+      expect(seen[1]).not.toHaveProperty('networkFeeRecipients');
+    } finally {
+      jest.dontMock('./engine/index');
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
     [{ baseUrl: 'https://api.cancore.io', network: 'devnet' }],
-  ])('refuses a loaded config %j: the URL decides, not the label', async (file) => {
+    [{ baseUrl: 'https://api-dev.cancore.app', network: 'mainnet' }],
+  ])('refuses a loaded config %j: the host decides, a label cannot move it', async (file) => {
     const d = mkdtempSync(join(tmpdir(), 'botd-cfg-'));
     try {
       const path = join(d, 'config.json');
       writeFileSync(path, JSON.stringify(file), { mode: 0o600 });
       const fetchImpl = jest.fn();
-      await expect(defaultDeps({ ...loadConfig(path), stateDir: '/nonexistent-botd' }, { fetchImpl })).rejects.toThrow(/devnet only/);
+      await expect(defaultDeps({ ...loadConfig(path), stateDir: '/nonexistent-botd' }, { fetchImpl })).rejects.toThrow(/does not match/);
       expect(fetchImpl).not.toHaveBeenCalled();
     } finally {
       rmSync(d, { recursive: true, force: true });
@@ -449,7 +497,8 @@ describe('v1 is dev only', () => {
     }
   });
 
-  it('defaults to the dev API', () => {
+  it('defaults to the dev API: mainnet, with real funds, only by an explicit baseUrl', () => {
     expect(DEFAULTS).toMatchObject({ baseUrl: 'https://api-dev.cancore.app' });
+    expect(DEFAULTS).not.toHaveProperty('network');
   });
 });

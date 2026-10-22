@@ -24,9 +24,19 @@ export interface BotConfig {
   feeRecipientPartyId?: string | string[];
   /** Which pinned instrument admins and fee pools apply; derived from baseUrl for Cancore's hosts. */
   network?: 'devnet' | 'testnet' | 'mainnet';
+  /**
+   * More instrument admins a DvP allocation may run under, by instrument id (`Amulet` for CC). Added to the SDK's
+   * pins for the network, never replacing them: testnet has no pinned CC admin, so CC trades there need it.
+   */
+  instrumentAdmins?: Record<string, string[]>;
+  /** More parties a network-fee leg (of a withdraw, say) may pay; added to the SDK's pins. Testnet has none pinned. */
+  networkFeeRecipients?: string[];
   /** Ceiling of one withdraw's network fee, in CC; unset refuses every withdraw. */
   maxFee?: string;
-  /** New orders an hour, agent and strategies together; default 5, the platform's per-user limit. */
+  /**
+   * New orders an hour, agent and strategies together; default 5. The daemon's own budget: the platform may have a
+   * per-person limit of its own on top, and a 429 from it is a `rate_limited` refusal.
+   */
   ordersPerHour?: number;
 }
 
@@ -38,7 +48,7 @@ export const DEFAULTS: BotConfig = {
   stateDir: '/var/lib/cancore-bot',
   agentSocket: '/run/cancore-bot/bot.sock',
   ownerSocket: '/run/cancore-bot/owner.sock',
-  // v1 is dev only: the daemon refuses any other network at start.
+  // Devnet unless the config names another host: a config without baseUrl must never spend real funds.
   baseUrl: 'https://api-dev.cancore.app',
 };
 
@@ -49,6 +59,7 @@ const configSchema = z
     daemonUser: str, clientsGroup: str, stateDir: str, agentSocket: str, ownerSocket: str, baseUrl: z.string().url(),
     ownerParty: str, venuePartyId: str, maxFeeRate: str, feeRecipientPartyId: z.union([str, z.array(str)]),
     network: z.enum(['devnet', 'testnet', 'mainnet']), maxFee: str, ordersPerHour: z.number().int().positive(),
+    instrumentAdmins: z.record(str, z.array(str).min(1)), networkFeeRecipients: z.array(str).min(1),
   })
   .partial()
   .strict();

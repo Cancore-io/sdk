@@ -9,7 +9,8 @@ You drive a self-custody bot wallet through the `trade_*` MCP tools. The daemon 
 enforces the owner's limits; you never see the key and cannot change the limits. Treat every
 refusal as an answer, not an obstacle to work around.
 
-v1 runs on **devnet only** (`https://api-dev.cancore.app`): the daemon refuses testnet and mainnet.
+The daemon trades on one network, the one of its `baseUrl`: devnet, testnet or mainnet. On mainnet
+the funds are real.
 
 ## Hard rules
 
@@ -24,8 +25,9 @@ v1 runs on **devnet only** (`https://api-dev.cancore.app`): the daemon refuses t
 ## Start of every session
 
 1. `trade_tools` — the tools available and their risk class (`read`, `reduce`, `trade`).
-2. `trade_status` — `locked`, `paused`, `partyId` (the bot's address; absent
-   until the human runs `cancore-bot register`), strategies.
+2. `trade_status` — `locked`, `paused`, `partyId` (the bot's address; a bot made in the wallet's
+   My bots gets it a few seconds after the first unlock, so if it is still absent, ask the human to
+   check the audit log, not to run `register`), strategies.
    - `locked: true` → stop and tell the human: *"The bot is locked. Please run
      `sudo -u cancore-bot cancore-bot unlock` in your terminal."*
    - `paused: true` → tell them it is paused and that only they can resume:

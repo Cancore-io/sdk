@@ -1,5 +1,13 @@
 # Changelog — `@cancore/client`
 
+## 0.12.2
+
+### Fixed
+
+- `networkOf` reads only the Cancore API hosts themselves (CAN-2979). For a host such as
+  `constructor` or `__proto__` it returned what the lookup object inherits, a truthy value that is
+  not a network, instead of `undefined`.
+
 ## 0.12.1
 
 ### Fixed

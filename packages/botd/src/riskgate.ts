@@ -120,7 +120,7 @@ function checkUsd(legs: Leg[], state: BotState, limits: Limits, now: number): De
 
 const amt = z.string().regex(/^\d{1,20}(\.\d{1,10})?$/);
 
-/** The platform's per-user limit on new orders an hour; one budget for the agent and every strategy. */
+/** The daemon's own limit on new orders an hour; one budget for the agent and every strategy. A stand's per-person limit answers 429 on top. */
 export const DEFAULT_ORDERS_PER_HOUR = 5;
 const HOUR_MS = 3_600_000;
 
