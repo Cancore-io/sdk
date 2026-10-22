@@ -333,11 +333,20 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    - **`--import`** takes a phrase you type and derives account 0 of it, with a warning: **use a
      phrase made for this bot, never your wallet's** (account 0 of your wallet phrase is your wallet).
 
-5. **Start the daemon.**
+5. **Start the daemon.** In `0.1.0-rc.0` the unit that `install` writes stops the daemon at start:
+   its system-call filter (`SystemCallFilter=~@privileged`) also removes `@chown`, which the daemon
+   needs to hand `bot.sock` to `cancore-bot-clients`, and systemd kills it (`code=dumped, signal=SYS`,
+   then `Start request repeated too quickly`). Until a fixed version is out, add those system calls
+   back with a drop-in before the first start. The daemon has no capabilities, so it can only change
+   the group of its own files, to a group it is in. `install` does not touch the drop-in; remove it
+   once a version whose unit allows `@chown` is installed.
 
    ```sh
+   sudo mkdir -p /etc/systemd/system/cancore-botd.service.d
+   printf '[Service]\nSystemCallFilter=@chown\n' | sudo tee /etc/systemd/system/cancore-botd.service.d/chown.conf > /dev/null
+   sudo systemctl daemon-reload
    sudo systemctl enable --now cancore-botd
-   journalctl -u cancore-botd -f    # "cancore-botd listening on …"
+   sudo journalctl -u cancore-botd -f    # "cancore-botd listening on …"
    ```
 
 6. **Unlock** (it prompts at the terminal):
@@ -777,7 +786,7 @@ First `pause`, `withdraw` what is on the bot to `ownerParty`, and `lock`. Then:
 
 ```sh
 sudo systemctl disable --now cancore-botd
-sudo rm /etc/systemd/system/cancore-botd.service && sudo systemctl daemon-reload
+sudo rm -rf /etc/systemd/system/cancore-botd.service /etc/systemd/system/cancore-botd.service.d && sudo systemctl daemon-reload
 sudo rm -f /usr/local/bin/cancore-bot /usr/local/bin/cancore-botd /usr/local/bin/cancore-bot-mcp
 sudo rm -rf /opt/cancore-bot
 sudo rm -rf /var/lib/cancore-bot /etc/cancore-bot      # the keystore and the audit log: keep copies if you want them
@@ -789,6 +798,7 @@ sudo userdel -r cancore-agent      # the agent's user and its home, if you no lo
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `systemctl status cancore-botd` shows `code=dumped, signal=SYS`, and the journal `Start request repeated too quickly` | The unit's system-call filter in `0.1.0-rc.0` removes `@chown`, and the daemon is killed when it hands `bot.sock` to `cancore-bot-clients`. | The drop-in in step 5 of [Install](#install), then `sudo systemctl reset-failed cancore-botd && sudo systemctl start cancore-botd`. |
 | `cancore-botd must run as cancore-bot` | started by hand as another user | run it through systemd (`--dev` skips the check, for development only) |
 | the daemon exits: `cancore-botd v1 runs on devnet only; <url> is <network>` | `baseUrl` is not on `api-dev.cancore.app`, or `network` is set to something other than `devnet` | use the default `baseUrl` and leave `network` unset: v1 runs on devnet only, and `network` or `venuePartyId` do not let another host through |
 | the daemon exits: `<url> must be an https URL` | `baseUrl` is not https | `https://api-dev.cancore.app` |
