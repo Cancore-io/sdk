@@ -19,9 +19,18 @@ describe('tradingNetwork', () => {
     expect(() => tradingNetwork({ baseUrl })).toThrow(/not a Cancore API host \(api-dev\.cancore\.app, api-testnet\.cancore\.app, api\.cancore\.io\)/);
   });
 
-  it('refuses extra pins without a network label: they are trusted on one network, and a baseUrl edit must not carry them to another', () => {
-    expect(() => tradingNetwork({ baseUrl: 'https://api-testnet.cancore.app', instrumentAdmins: { Amulet: ['DSO::1220aa'] } })).toThrow(/instrumentAdmins and networkFeeRecipients need `network`/);
-    expect(() => tradingNetwork({ baseUrl: 'https://api-testnet.cancore.app', networkFeeRecipients: ['op::1220bb'] })).toThrow(/need `network`/);
+  it.each([
+    [{ instrumentAdmins: { Amulet: ['DSO::1220aa'] } }],
+    [{ networkFeeRecipients: ['op::1220bb'] }],
+    [{ venuePartyId: 'v::1220cc' }],
+    [{ feeRecipientPartyId: 'f::1220dd' }],
+    [{ feeRecipientPartyId: ['f::1220dd'] }],
+  ])('refuses %j without a network label: a party trusted on one network must not be carried to another by a baseUrl edit', (pins) => {
+    expect(() => tradingNetwork({ baseUrl: 'https://api-testnet.cancore.app', ...pins })).toThrow(/venuePartyId, feeRecipientPartyId, instrumentAdmins and networkFeeRecipients need `network`/);
+    expect(tradingNetwork({ baseUrl: 'https://api-testnet.cancore.app', network: 'testnet', ...pins })).toBe('testnet');
+  });
+
+  it('carries no party pin across networks once labelled', () => {
     expect(tradingNetwork({ baseUrl: 'https://api-testnet.cancore.app', network: 'testnet', instrumentAdmins: { Amulet: ['DSO::1220aa'] }, networkFeeRecipients: ['op::1220bb'] })).toBe('testnet');
     // The testnet pins, once baseUrl moves to mainnet, stop the daemon instead of being trusted there.
     expect(() => tradingNetwork({ baseUrl: 'https://api.cancore.io', network: 'testnet', instrumentAdmins: { Amulet: ['DSO::1220aa'] } })).toThrow(/does not match/);
