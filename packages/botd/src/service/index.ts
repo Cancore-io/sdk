@@ -68,6 +68,9 @@ PrivateIPC=yes
 RemoveIPC=yes
 KeyringMode=private
 SystemCallFilter=~@privileged
+# @privileged includes @chown, and the daemon chowns bot.sock to the clients group at start. With no
+# capabilities, chown can only regroup the daemon's own files to a group it is in.
+SystemCallFilter=@chown
 
 [Install]
 WantedBy=multi-user.target
@@ -105,11 +108,28 @@ export function assertRootOwnedChain(path: string, fs: { realpath(p: string): st
   }
 }
 
+/** What install touches on the host; tests pass a fake, the CLI the real one. */
+export interface InstallHost {
+  uid(): number | undefined;
+  rootOwned(path: string): string;
+  exec(file: string, args: string[], stdio: 'inherit' | 'ignore'): void;
+  writeFile(path: string, data: string): void;
+}
+
+const realHost: InstallHost = {
+  uid: () => process.getuid?.(),
+  rootOwned: (path) => assertRootOwnedChain(path),
+  exec: (file, args, stdio) => {
+    execFileSync(file, args, { stdio });
+  },
+  writeFile: (path, data) => writeFileSync(path, data, { mode: 0o644 }),
+};
+
 /** Creates the user, group and directories and installs the unit; needs root unless dryRun, which only prints. */
-export async function install(options: ServiceOptions & { human?: string; dryRun?: boolean }): Promise<void> {
-  if (!options.dryRun && process.getuid?.() !== 0) throw new Error('install must run as root (or pass --dry-run)');
+export async function install(options: ServiceOptions & { human?: string; dryRun?: boolean }, host: InstallHost = realHost): Promise<void> {
+  if (!options.dryRun && host.uid() !== 0) throw new Error('install must run as root (or pass --dry-run)');
   if (!options.dryRun) {
-    options = { ...options, nodePath: assertRootOwnedChain(options.nodePath ?? process.execPath), execPath: assertRootOwnedChain(options.execPath) };
+    options = { ...options, nodePath: host.rootOwned(options.nodePath ?? process.execPath), execPath: host.rootOwned(options.execPath) };
   }
   const plan = installPlan(options);
   for (const step of plan) {
@@ -118,7 +138,7 @@ export async function install(options: ServiceOptions & { human?: string; dryRun
       const path = first!.slice('write:'.length);
       process.stdout.write(`# write ${path}\n`);
       if (options.dryRun) process.stdout.write(systemdUnit(options));
-      else writeFileSync(path, systemdUnit(options), { mode: 0o644 });
+      else host.writeFile(path, systemdUnit(options));
       continue;
     }
     const line = step.join(' ');
@@ -126,12 +146,12 @@ export async function install(options: ServiceOptions & { human?: string; dryRun
     if (options.dryRun) continue;
     // `a || b`: run b only when a fails; the only shell-ish form in the plan.
     const or = step.indexOf('||');
-    if (or < 0) execFileSync(first!, rest, { stdio: 'inherit' });
+    if (or < 0) host.exec(first!, rest, 'inherit');
     else {
       try {
-        execFileSync(step[0]!, step.slice(1, or), { stdio: 'ignore' });
+        host.exec(step[0]!, step.slice(1, or), 'ignore');
       } catch {
-        execFileSync(step[or + 1]!, step.slice(or + 2), { stdio: 'inherit' });
+        host.exec(step[or + 1]!, step.slice(or + 2), 'inherit');
       }
     }
   }
