@@ -940,7 +940,7 @@ export async function defaultDeps(config: BotConfig, engine: Partial<Pick<Engine
     throw new Error(`${config.stateDir}: must be a directory owned by this user with mode 0700 (mode ${(dir.mode & 0o777).toString(8)})`);
   }
   // The venue settles every trade: one the API could name is refused here, before anything listens.
-  if (!pinnedVenue(config)) throw new Error(`no venue is pinned for ${config.baseUrl}: set venuePartyId (or network) in the config`);
+  if (!pinnedVenue(config)) throw new Error(`no venue is pinned for ${config.baseUrl}: set venuePartyId, with network, in the config`);
   return {
     keystore: createKeystore(p.keystore),
     audit: await openAuditLog(p.audit),

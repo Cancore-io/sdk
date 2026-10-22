@@ -47,7 +47,8 @@ devnet, so a config that names no host never spends real funds: mainnet is alway
 - **Funding** is CC only on every network: the settlement loop never accepts an incoming transfer
   ([Install](#install), step 7).
 - The venue and the platform-fee pools are pinned for all three networks; `venuePartyId`,
-  `feeRecipientPartyId` and `maxFeeRate` work the same on each.
+  `feeRecipientPartyId` and `maxFeeRate` work the same on each, and the two party pins need
+  `network` beside them.
 
 [Networks](#networks) · [How it works](#how-it-works) · [Security model](#security-model) ·
 [What happens if…](#what-happens-if) · [Install from source](#install-from-source-until-it-is-on-npm) ·
@@ -177,7 +178,7 @@ pins for the network, because the admin's code is what the allocation runs. A pa
 `networkFeeRecipients` can be paid the network fee. Take them from a source you trust (for CC, the
 `dso-party-id` of the network's scan, which a validator's scan proxy answers; for another token, its
 issuer), never from an error message or the API: a refusal quotes the admin the API named, which is
-the party the pin protects against. Every party you pin in the config — `venuePartyId`,
+the party the pin protects against. Every party you pin as trusted in the config — `venuePartyId`,
 `feeRecipientPartyId`, `instrumentAdmins`, `networkFeeRecipients` — needs `network` beside it, so
 it stays on the network it was written for: a `baseUrl` that moves to another network then stops
 the daemon instead of carrying the party over.
@@ -832,6 +833,10 @@ state, limits, keystore and audit log in `/var/lib/cancore-bot` are untouched, a
 passphrase still unlocks. Run
 `sudo cancore-bot install` again if the node binary moved (the unit names its path), or if the unit
 was written by an `install` from before the `@chown` fix (see [Troubleshooting](#troubleshooting)).
+
+Upgrading from a devnet-only commit (before testnet and mainnet support): a config that sets
+`venuePartyId` or `feeRecipientPartyId` now needs `"network": "devnet"` beside them, or the daemon
+does not start ([Troubleshooting](#troubleshooting)).
 
 ### Removing it
 
