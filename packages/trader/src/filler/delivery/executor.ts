@@ -37,9 +37,7 @@
  */
 import {
   CANCORE_ROUTER_ABI,
-  CANCORE_ROUTER_ERRORS,
   IBURN_MINT_ERC20_ABI,
-  describeRevert,
   type DecString,
   type Hex,
   type OrderJson,
@@ -58,6 +56,8 @@ import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, TicketRe
 import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from '../tickets/terms';
 import { CantonDelivery } from './canton';
 import { FeeCeilingError, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
+import { reasonOf, retryableEstimateFailure, revertName } from './reverts';
+import { awaitValidFrom } from './validFrom';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -185,16 +185,6 @@ const FILLED_LOOKBACK = 5_000n;
 
 /** The address of an EVM `bytes32` asset (left-padded), or undefined. */
 const tokenOf = (asset: string): Hex | undefined => (/^0x0{24}[0-9a-fA-F]{40}$/.test(asset) ? (`0x${asset.slice(26).toLowerCase()}` as Hex) : undefined);
-const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
-
-/** The custom error a reverted call names, from the revert data of the RPC error. */
-function revertName(error: unknown): string {
-  const cause = error instanceof ChainReadError ? error.cause : error;
-  const data = typeof cause === 'object' && cause !== null ? (cause as { data?: unknown }).data : undefined;
-  const hex = typeof data === 'string' ? data : typeof data === 'object' && data !== null && typeof (data as { data?: unknown }).data === 'string' ? (data as { data: string }).data : undefined;
-  const name = hex && /^0x[0-9a-fA-F]{8}/.test(hex) ? describeRevert(hex, [CANCORE_ROUTER_ERRORS]) : undefined;
-  return name ?? reasonOf(error);
-}
 
 /** One in-flight nonce this replica drives. */
 interface Tracker {
@@ -471,13 +461,19 @@ export class Executor {
     if (existing && existing.owner !== instanceId && (existing.leaseUntilMs ?? 0) > (await store.now())) return { status: 'tracking', detail: 'another replica is sending it' };
 
     const validUntilMs = Number(issued.ticket.validUntil) * 1000;
-    const validFromMs = Number(issued.ticket.validFrom) * 1000;
     const guard = () => clock.now() + readers.config.sendGuardSec * 1000 > validUntilMs;
     if (guard()) return this.refuse(orderHash, attempt, 'send-guard', `less than sendGuard (${readers.config.sendGuardSec} s) left to validUntil`);
-    if (clock.now() < validFromMs) {
-      clock.schedule(validFromMs - clock.now(), () => void this.deliver(orderHash, attempt));
-      return { status: 'waiting', detail: 'validFrom not reached' };
-    }
+    const notYetValid = await awaitValidFrom({
+      clock,
+      driver,
+      validFrom: issued.ticket.validFrom,
+      pollMs: this.delivery.pollIntervalMs,
+      wake: () => {
+        if (!this.stopped) void this.deliver(orderHash, attempt);
+      },
+      onChainLag: (detail) => this.options.logger.warn('delivery: not sent yet, the latest block is short of validFrom', { orderHash, attempt, detail }),
+    });
+    if (notYetValid) return notYetValid;
 
     const minReceived = BigInt(offer.order.minReceived);
     const amount = await this.amountFor({ orderHash, attempt, chain, order: offer.order, amountOut: BigInt(offer.amountOut) });
@@ -521,7 +517,7 @@ export class Executor {
     try {
       gasLimit = await driver.estimateGas(call);
     } catch (error) {
-      if (!(error instanceof ChainReadError) || error.reason !== 'reverted') return this.retry(orderHash, attempt, validUntilMs, readers, `eth_estimateGas: ${reasonOf(error)}`);
+      if (retryableEstimateFailure(error)) return this.retry(orderHash, attempt, validUntilMs, readers, `eth_estimateGas: ${revertName(error)}`);
       const name = revertName(error);
       return this.refuse(orderHash, attempt, name.startsWith('AlreadyFilled') ? 'already-filled' : 'reverted', name, true);
     }

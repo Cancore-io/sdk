@@ -252,6 +252,102 @@ describe('Executor — nothing is sent', () => {
   });
 });
 
+describe('Executor — validFrom on chain time (CAN-2986)', () => {
+  const sendCalls = (w: Awaited<ReturnType<typeof world>>) => w.dst.calls.filter((c) => c.method === 'eth_sendRawTransaction');
+  const estimateCalls = (w: Awaited<ReturnType<typeof world>>) => w.dst.calls.filter((c) => c.method === 'eth_estimateGas');
+  // FakeChain estimates at head + 1, while a real node estimates on the latest block itself: the fake is more permissive,
+  // so a test that wants the router to see a block short of validFrom moves the head further back than one block.
+
+  test('the latest block exactly at validFrom: sent at once (the router refuses only block.timestamp < validFrom)', async () => {
+    const w = await world();
+    w.dst.setTimestamp(w.dst.head, BigInt(w.ticket.validFrom));
+    const executor = w.executor();
+    await executor.start();
+
+    expect(await executor.deliver(w.orderHash, 0)).toMatchObject({ status: 'sent' });
+    expect(w.fills()).toHaveLength(1);
+    executor.stop();
+  });
+
+  test('a chain-lag wait is logged, and stops polling once the executor is stopped', async () => {
+    const w = await world();
+    w.dst.blockTime = 12n;
+    w.dst.setTimestamp(w.dst.head, w.nowS - 10n);
+    const executor = w.executor();
+    await executor.start();
+
+    expect(await executor.deliver(w.orderHash, 0)).toMatchObject({ status: 'waiting' });
+    expect(w.logger.entries.some((e) => e.message === 'delivery: not sent yet, the latest block is short of validFrom' && String(e.fields?.detail ?? '').startsWith('validFrom not reached on chain'))).toBe(true);
+
+    executor.stop();
+    w.dst.mine();
+    await w.tick(3_000, false);
+    expect(estimateCalls(w)).toHaveLength(0);
+    expect(sendCalls(w)).toHaveLength(0);
+  });
+
+  test('the latest block lags the clock past validFrom: waits for a block at or after validFrom, then sends', async () => {
+    const w = await world();
+    w.dst.blockTime = 12n;
+    w.dst.setTimestamp(w.dst.head, w.nowS - 10n);
+    const executor = w.executor();
+    await executor.start();
+
+    expect(await executor.deliver(w.orderHash, 0)).toMatchObject({ status: 'waiting' });
+    expect(estimateCalls(w)).toHaveLength(0);
+    expect(sendCalls(w)).toHaveLength(0);
+    expect(w.stages('fill.refused')).toHaveLength(0);
+
+    w.dst.mine();
+    await w.tick(1_000, false);
+    expect(w.fills()).toHaveLength(1);
+    expect(w.stages('fill.sent')).toHaveLength(1);
+    executor.stop();
+  });
+
+  test('the latest block unreadable: waiting, nothing estimated or sent, read again on the next poll', async () => {
+    const w = await world();
+    const executor = w.executor();
+    await executor.start();
+    const driver = executor.driver(DST)!;
+    const chainTime = driver.chainTime.bind(driver);
+    driver.chainTime = async () => {
+      throw new Error('endpoint down');
+    };
+
+    expect(await executor.deliver(w.orderHash, 0)).toMatchObject({ status: 'waiting', detail: 'latest block unreadable: endpoint down' });
+    expect(estimateCalls(w)).toHaveLength(0);
+
+    driver.chainTime = chainTime;
+    await w.tick(1_000);
+    expect(w.fills()).toHaveLength(1);
+    executor.stop();
+  });
+
+  test('eth_estimateGas reverts TicketNotYetValid(): retried, the attempt stays open, sent once the chain is there', async () => {
+    const w = await world();
+    w.dst.blockTime = 12n;
+    w.dst.setTimestamp(w.dst.head, w.nowS - 20n);
+    const executor = w.executor();
+    await executor.start();
+    const driver = executor.driver(DST)!;
+    const chainTime = driver.chainTime.bind(driver);
+    driver.chainTime = async () => BigInt(w.ticket.validFrom);
+
+    expect(await executor.deliver(w.orderHash, 0)).toMatchObject({ status: 'waiting', detail: 'eth_estimateGas: TicketNotYetValid()' });
+    expect(await fillOf(w)).toMatchObject({ state: 'pending' });
+    expect(w.stages('fill.refused')).toHaveLength(0);
+    expect(sendCalls(w)).toHaveLength(0);
+
+    driver.chainTime = chainTime;
+    w.dst.mine(2n);
+    await w.tick(1_000, false);
+    expect(w.fills()).toHaveLength(1);
+    expect(w.stages('fill.refused')).toHaveLength(0);
+    executor.stop();
+  });
+});
+
 describe('Executor — router allowance', () => {
   test('short allowance: approve(router, configured limit) first, then the fill; never unlimited', async () => {
     const w = await world({ allowance: 0n, delivery: { approvals: { [DST]: { [TOKEN]: 5_000n } } } });
