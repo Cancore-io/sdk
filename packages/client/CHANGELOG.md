@@ -1,5 +1,23 @@
 # Changelog — `@cancore/client`
 
+## 0.12.3
+
+### Fixed
+
+- `take(orderId)` refuses an open Canton↔Canton order placed without `dvp: true` before it
+  accepts it (CAN-2996, CAN-2979). It accepted the order first and failed only after the maker opened an
+  HTLC, so the taker was bound to a trade it never funds and the maker's lock waited out its
+  refund. The `SettleError` says nothing was accepted. `make` already refused such an order.
+- `take(orderId)` also checks both instruments against the stand's DvP instruments (and their
+  admins against the SDK's pins) before it accepts. An order that asks for DvP with an instrument
+  the stand settles through DvP on no pair is opened as HTLC all the same; it used to be accepted
+  and fail later. The stand lists instruments, not pairs: an order on a pair that is off while both
+  of its instruments are on other DvP pairs still passes this check.
+- `make(orderId)` on an order that was taken as HTLC (placed without `dvp: true`, or made HTLC by
+  the venue at the take, as for a Loop-wallet taker) no longer says "cancel it" (CAN-2996). The
+  order is already taken there, so a cancel through `cancore-botd` answers `not_open`; the venue
+  cancels a taken order that no trade follows on its own.
+
 ## 0.12.2
 
 ### Fixed

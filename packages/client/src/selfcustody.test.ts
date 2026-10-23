@@ -1126,13 +1126,34 @@ describe('the paths where a mistake costs money', () => {
     await expect(maker.swap.create(offer)).rejects.toThrow(/placing the order: allocation-DvP is not open to this account/);
   });
 
-  test('an order placed without dvp: true is refused before anything is recorded — it would be opened as HTLC', async () => {
+  // The venue clears `dvp` at the take when the trade may not use DvP (a Loop-wallet taker), as if it was never asked.
+  test('a taken order without dvp: true is refused before anything is recorded, and the refusal advises no cancel', async () => {
     const api = venue();
     const { maker, taker } = await tradingPair(api, [56, 57]);
     await taker.swap.accept('o1');
     api.order.dvp = false;
-    await expect(maker.make('o1')).rejects.toThrow(/placed without dvp: true.*place it again/);
+    const error = await maker.make('o1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SettleError);
+    expect((error as Error).message).toMatch(/order o1 was taken as HTLC: placed without dvp: true, or made HTLC at the take.*Nothing was recorded or signed.*a new one goes through acct\.swap\.create/);
+    expect((error as Error).message).not.toMatch(/\bcancel it\b/i);
     expect(api.proposals).toEqual([]);
+  });
+
+  test.each([false, undefined])('an open order with dvp: %s is not taken — the venue would settle it as HTLC', async (dvp) => {
+    const api = venue();
+    const { taker } = await tradingPair(api, [58, 59]);
+    Object.assign(api.order, { dvp });
+    await expect(taker.take('o1', { deadlineMs: 300 })).rejects.toThrow(/order o1 was placed without dvp: true.*Nothing was accepted/);
+    expect(api.takes()).toBe(0);
+    expect(api.order.status).toBe('open');
+  });
+
+  test('an order that asks for DvP with an instrument the stand settles through DvP on no pair is not taken', async () => {
+    const api = venue({ pairOff: true });
+    const { taker } = await tradingPair(api, [60, 61]);
+    await expect(taker.take('o1', { deadlineMs: 300 })).rejects.toThrow(/CBTC\/CC: this pair is not enabled for DvP on this stand/);
+    expect(api.takes()).toBe(0);
+    expect(api.order.status).toBe('open');
   });
 
   test('a stand that does not settle the pair through DvP is refused before anything is recorded', async () => {
@@ -2500,6 +2521,7 @@ describe('a 403 that is not a DvP refusal reaches the caller as the API said it 
     const { api, acct } = await account({
       'GET /orders/o1': () => takenOrder({ status: 'open', opponentUserId: null, opponent: null }),
       'GET /auth/me': () => ({ id: 'me', partyId: 'party-me' }),
+      'GET /htlc/dvp/instruments': () => [{ id: 'CBTC', admin: DEV.cbtcRegistrar }, { id: 'CC', admin: DEV.dso }],
       'POST /orders/o1/accept': () => refuse(403, message, errorCode),
     });
 
@@ -2532,6 +2554,7 @@ describe('a 403 that is not a DvP refusal reaches the caller as the API said it 
     const { acct } = await account({
       'GET /orders/o1': () => takenOrder({ status: 'open', opponentUserId: null, opponent: null }),
       'GET /auth/me': () => ({ id: 'me', partyId: 'party-me' }),
+      'GET /htlc/dvp/instruments': () => [{ id: 'CBTC', admin: DEV.cbtcRegistrar }, { id: 'CC', admin: DEV.dso }],
       'POST /orders/o1/accept': () => refuse(403, message, errorCode),
       'POST /orders': () => refuse(403, message, errorCode),
     });

@@ -49,7 +49,7 @@ function fakeDeps(log: string[]) {
       mayBeTrade: () => false,
       cancel: jest.fn(async (id: string) => void (log.push('engine:cancel'), gone.add(id))),
       // Our resting orders read open, so a pause or cancel takes them off the book.
-      order: jest.fn(async (id: string) => ({ orderId: id, status: gone.has(id) ? 'cancelled' : 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' })),
+      order: jest.fn(async (id: string) => ({ orderId: id, status: gone.has(id) ? 'cancelled' : 'open', dvp: true, source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' })),
       balances: jest.fn(),
       referencePrices: async () => ({}),
       usdPrices: async () => ({}),
@@ -237,7 +237,7 @@ describe('pause against an in-flight order.make', () => {
     // The venue applies the cancel, so the order reads cancelled afterwards.
     const gone = new Set<string>();
     const cancel = jest.fn(async (id: string) => void gone.add(id));
-    const order = async (id: string) => ({ orderId: id, status: gone.has(id) ? 'cancelled' : 'open', source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' });
+    const order = async (id: string) => ({ orderId: id, status: gone.has(id) ? 'cancelled' : 'open', dvp: true, source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1' });
     deps.createEngine = ((...a: Parameters<typeof base>) => ({ ...base(...a), cancel, order, ...engineOverrides })) as never;
     const d = createDispatcher(deps);
     await d.handle(req('unlock', { passphrase: 'right' }), { owner: true });
