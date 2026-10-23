@@ -76,7 +76,7 @@ export function createEngine(options: EngineOptions): Engine {
   const { hooks } = options;
   // A venue taken from the API's fee-config would let the API pick who settles: pinned, or no engine.
   const venuePartyId = pinnedVenue(options);
-  if (!venuePartyId) throw new Error(`no venue is pinned for ${options.baseUrl}: set venuePartyId (or network) in the config`);
+  if (!venuePartyId) throw new Error(`no venue is pinned for ${options.baseUrl}: set venuePartyId, with network, in the config`);
   const guarded = guardSigning(options.signer, options.fetchImpl ?? ((url, init) => globalThis.fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS) })), hooks.onVerifyFailed);
   const acct = createSelfCustody({
     baseUrl: options.baseUrl,

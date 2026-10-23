@@ -34,7 +34,7 @@ devnet, so a config that names no host never spends real funds: mainnet is alway
 | Network | `baseUrl` | Settles | Platform limits | Funding |
 | --- | --- | --- | --- | --- |
 | devnet | `https://api-dev.cancore.app` (the default) | CC, CBTC, cETH, HTEST | an order of at least $1 | CC only |
-| testnet | `https://api-testnet.cancore.app` | CBTC, USDCx; CC only once the config adds the testnet DSO party to `instrumentAdmins` (every testnet pair has CC) | new orders an hour per person (you and your bots together) | CC only; every withdraw also needs that DSO party and `networkFeeRecipients`, since its fee is paid in CC |
+| testnet | `https://api-testnet.cancore.app` | CBTC, USDCx; CC only once the config adds the testnet DSO party to `instrumentAdmins`, with `"network": "testnet"` (every testnet pair has CC) | new orders an hour per person (you and your bots together) | CC only; every withdraw also needs that DSO party and `networkFeeRecipients`, since its fee is paid in CC |
 | mainnet | `https://api.cancore.io` | CC, CBTC, USDCx, HECTO | an order of at least $10 | CC only |
 
 - **Settles** is the instruments whose admin the SDK pins for the network (`DEFAULT_INSTRUMENT_ADMINS`
@@ -47,7 +47,8 @@ devnet, so a config that names no host never spends real funds: mainnet is alway
 - **Funding** is CC only on every network: the settlement loop never accepts an incoming transfer
   ([Install](#install), step 7).
 - The venue and the platform-fee pools are pinned for all three networks; `venuePartyId`,
-  `feeRecipientPartyId` and `maxFeeRate` work the same on each.
+  `feeRecipientPartyId` and `maxFeeRate` work the same on each, and the two party pins need
+  `network` beside them.
 
 [Networks](#networks) · [How it works](#how-it-works) · [Security model](#security-model) ·
 [What happens if…](#what-happens-if) · [Install from source](#install-from-source-until-it-is-on-npm) ·
@@ -177,7 +178,7 @@ pins for the network, because the admin's code is what the allocation runs. A pa
 `networkFeeRecipients` can be paid the network fee. Take them from a source you trust (for CC, the
 `dso-party-id` of the network's scan, which a validator's scan proxy answers; for another token, its
 issuer), never from an error message or the API: a refusal quotes the admin the API named, which is
-the party the pin protects against. Every party you pin in the config — `venuePartyId`,
+the party the pin protects against. Every party you pin as trusted in the config — `venuePartyId`,
 `feeRecipientPartyId`, `instrumentAdmins`, `networkFeeRecipients` — needs `network` beside it, so
 it stays on the network it was written for: a `baseUrl` that moves to another network then stops
 the daemon instead of carrying the party over.
@@ -346,15 +347,16 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    {
      "baseUrl": "https://api.cancore.io",
      "ownerParty": "<your own wallet's party id>",
-     "maxFee": "10"
+     "maxFee": "1"
    }
    EOF
    sudo chown root:root /etc/cancore-bot/config.json && sudo chmod 644 /etc/cancore-bot/config.json
    ```
 
    `maxFee` is a ceiling, not the price. On mainnet the network fee of a withdraw follows the cost of
-   the network's traffic, priced in CC, so leave room; a withdraw that would cost more is refused
-   before anything is signed, and you can raise the ceiling then.
+   the network's traffic, priced in CC; a withdraw that would cost more is refused before anything is
+   signed, and you can then raise the ceiling, restart the daemon and unlock it (the config is read at
+   start).
 
    Strict JSON: an unknown or misspelt key, or a wrong type, stops the daemon at start. The file must
    be owned by root (or the daemon user), not writable by group or others, not a symlink. A missing
@@ -832,6 +834,10 @@ state, limits, keystore and audit log in `/var/lib/cancore-bot` are untouched, a
 passphrase still unlocks. Run
 `sudo cancore-bot install` again if the node binary moved (the unit names its path), or if the unit
 was written by an `install` from before the `@chown` fix (see [Troubleshooting](#troubleshooting)).
+
+Upgrading from a devnet-only commit (before testnet and mainnet support): a config that sets
+`venuePartyId` or `feeRecipientPartyId` now needs `"network": "devnet"` beside them, or the daemon
+does not start ([Troubleshooting](#troubleshooting)).
 
 ### Removing it
 
