@@ -1,11 +1,7 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { projectTools, type ContractTool } from './contract';
-import { createServer } from './server';
-import { CancoreSession } from './session';
+import { connectTestClient } from './test-server';
 
 const CONTRACT_PATH = join(__dirname, '..', 'contract', 'agent-tools.contract.json');
 
@@ -14,20 +10,9 @@ const CONTRACT_PATH = join(__dirname, '..', 'contract', 'agent-tools.contract.js
  * the protocol, not by importing the registration table.
  */
 async function announcedTools(): Promise<ContractTool[]> {
-  const session = new CancoreSession({
-    apiBaseUrl: 'https://api.example',
-    appBaseUrl: 'https://app.example',
-    appName: 'contract',
-    grantPath: join(mkdtempSync(join(tmpdir(), 'cancore-mcp-')), 'grants.json'),
-  });
-  const server = createServer(session, '0.0.0-test');
-  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverSide);
-  const client = new Client({ name: 'contract-test', version: '0' });
-  await client.connect(clientSide);
+  const { client, close } = await connectTestClient();
   const { tools } = await client.listTools();
-  await client.close();
-  await server.close();
+  await close();
   return projectTools(tools);
 }
 
