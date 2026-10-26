@@ -45,7 +45,7 @@ export const PARAMS = {
     .strict(),
   'order.take': z.object({ orderId: z.string().min(1), amount }).strict(),
   'strategy.start': z
-    .object({ kind: z.enum(['grid', 'dca']), base: instrument, quote: instrument, config: z.record(z.unknown()) })
+    .object({ kind: z.enum(['grid', 'dca']), base: instrument, quote: instrument, config: z.record(z.string(), z.unknown()) })
     .strict(),
   // owner
   unlock: z.object({ passphrase: z.string().min(1) }).strict(),
@@ -53,7 +53,7 @@ export const PARAMS = {
   register: z.object({ inviteCode: z.string().min(1).max(200).optional() }).strict(),
   lock: z.object({}).strict(),
   resume: z.object({}).strict(),
-  'limits.set': z.object({ limits: z.record(z.unknown()) }).strict(),
+  'limits.set': z.object({ limits: z.record(z.string(), z.unknown()) }).strict(),
   /** Only to the owner party pinned in the daemon's config; anything else is refused. */
   withdraw: z.object({ to: z.string().min(1), instrument, amount }).strict(),
   /**
