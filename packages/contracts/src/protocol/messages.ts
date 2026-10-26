@@ -201,6 +201,8 @@ export interface TicketJson { orderHash: Hex; fillerId: Hex; deliveryKey: Hex; r
 export interface TicketIssuedEvm extends S2FBase { type: 'ticket.issued'; form: 'evm'; orderHash: Hex; attempt: number; ticket: TicketJson; ticketSig: Hex }
 export interface TicketIssuedCanton extends S2FBase {
   type: 'ticket.issued'; form: 'canton'; orderHash: Hex; attempt: number; deliveryOrderCid: string; validUntil: DecString; repayTo: Hex;
+  /** `DeliveryOrder.validFrom`, unix s: `DeliveryOrder_Fill` refuses before it (CAN-3026). Absent from a gateway that predates it. */
+  validFrom?: DecString;
 }
 export type TicketIssued = TicketIssuedEvm | TicketIssuedCanton;
 /** EVM-form receipt (`form` absent or `"evm"`): `sig` = `TicketReceipt{ticketHash, ticketSigHash}` by the message key. */

@@ -465,6 +465,10 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.18` — Canton-form `ticket.issued` gains optional `validFrom` (CAN-3026): the order's
+  `DeliveryOrder.validFrom`, before which `DeliveryOrder_Fill` is refused — the EVM source repays
+  only `filledAt >= openedAt`. A gateway that predates it omits the field; the offered `validFrom`
+  is the same value. Additive.
 - `0.2.0-rc.17` — Canton op `preapproval.create` (CAN-2904): `params {admin}`, `summary {party,
   admin, instrumentAllowances, requestedAt, executeBefore}`, `result {preapprovalCid}` — the filler's
   external party signs its own transfer preapproval with a registry, the one way it can be credited

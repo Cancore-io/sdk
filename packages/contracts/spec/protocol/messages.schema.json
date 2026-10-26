@@ -397,7 +397,7 @@
         },
         {
           "if": { "type": "object", "properties": { "form": { "const": "canton" } }, "required": ["form"] },
-          "then": { "type": "object", "required": ["deliveryOrderCid", "validUntil", "repayTo"], "properties": { "deliveryOrderCid": { "type": "string", "minLength": 1 }, "validUntil": { "$ref": "#/$defs/timeS" }, "repayTo": { "$ref": "#/$defs/repayTo", "description": "the repayTo of the DeliveryOrder, = the filler's signed ticket.intent (S-22); fillerId is the envelope's" } } }
+          "then": { "type": "object", "required": ["deliveryOrderCid", "validUntil", "repayTo"], "properties": { "deliveryOrderCid": { "type": "string", "minLength": 1 }, "validFrom": { "$ref": "#/$defs/timeS", "description": "DeliveryOrder.validFrom, the order's floor: DeliveryOrder_Fill refuses before it, because the EVM source repays only filledAt >= openedAt (CAN-3026); the offered validFrom" }, "validUntil": { "$ref": "#/$defs/timeS" }, "repayTo": { "$ref": "#/$defs/repayTo", "description": "the repayTo of the DeliveryOrder, = the filler's signed ticket.intent (S-22); fillerId is the envelope's" } } }
         }
       ]
     },

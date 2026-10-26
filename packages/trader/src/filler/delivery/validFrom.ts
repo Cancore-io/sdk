@@ -40,3 +40,20 @@ export async function awaitValidFrom({ clock, driver, validFrom, pollMs, wake, o
   clock.schedule(pollMs, wake);
   return { status: 'waiting', detail };
 }
+
+/** Allowance for the participant's clock running behind this process when the ledger time of the Fill is taken. */
+export const LEDGER_CLOCK_SLACK_MS = 1_000;
+
+/**
+ * The Canton twin of `awaitValidFrom` (CAN-3026): `waiting` (with `wake`
+ * scheduled) until the process clock is `LEDGER_CLOCK_SLACK_MS` past the
+ * order's `validFrom`; undefined once it is. `DeliveryOrder_Fill` compares
+ * `validFrom` with the ledger time, which the node cannot read (T-1);
+ * trading refuses an earlier prepare with `CANTON_NOT_READY`.
+ */
+export function awaitLedgerValidFrom(clock: Clock, validFrom: DecString, wake: () => void): { status: 'waiting'; detail: string } | undefined {
+  const opensAtMs = Number(validFrom) * 1000 + LEDGER_CLOCK_SLACK_MS;
+  if (clock.now() >= opensAtMs) return undefined;
+  clock.schedule(opensAtMs - clock.now(), wake);
+  return { status: 'waiting', detail: `validFrom not reached: the order opens at ${validFrom}` };
+}

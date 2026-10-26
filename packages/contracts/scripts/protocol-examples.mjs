@@ -106,7 +106,7 @@ export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHas
     'ticket.intent.ack': [{ type: 'ticket.intent.ack', id: 'g-11', ...S, sentAt: 1790000021001, re: 'i-1', ...t, intentHash, receivedAt: 1790000021000 }],
     'ticket.issued': [
       { type: 'ticket.issued', id: 'g-12', ...S, sentAt: 1790000024000, form: 'evm', ...t, ticket, ticketSig: PLACEHOLDER_SIG },
-      { type: 'ticket.issued', id: 'g-13', ...S, sentAt: 1790000024000, form: 'canton', ...t, attempt: 2, deliveryOrderCid: CANTON_DELIVERY_ORDER_CID, validUntil: ticket.validUntil, repayTo: ticket.repayTo },
+      { type: 'ticket.issued', id: 'g-13', ...S, sentAt: 1790000024000, form: 'canton', ...t, attempt: 2, deliveryOrderCid: CANTON_DELIVERY_ORDER_CID, validFrom: ticket.validFrom, validUntil: ticket.validUntil, repayTo: ticket.repayTo },
     ],
     'ticket.receipt': [
       { type: 'ticket.receipt', ...F('rc-1', 1790000025000), ...t, ticketHash, ticketSigHash: receiptSigHash, sig: PLACEHOLDER_SIG },

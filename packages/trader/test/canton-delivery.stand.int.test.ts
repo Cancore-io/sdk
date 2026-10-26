@@ -251,7 +251,12 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     await filler?.stop();
   });
 
-  test('TC-CAN-1867-STAND-01: an order to canton:devnet is delivered by the filler’s party and settled on the router: repayTo paid, the party’s CNRX spent', async () => {
+  /**
+   * quote → pick → openFor → ticket → `DeliveryOrder_Fill` → attestations → settle. `sourceAheadS` opens the
+   * order on a block that many seconds ahead of the wall clock — the source chain's clock ahead of the Canton
+   * participant's, so the order's `openedAt`, and with it the ticket's `validFrom`, lies in the ledger's future.
+   */
+  const deliverAndSettle = async (sourceAheadS: number) => {
     // -- quote → pick → openFor, as a user of Cancore (backend quote.service): only a picked order is ticketed,
     // and the Canton recipient is recorded with the quote (the readiness check and DeliveryBook_Dispatch read it).
     // trading serves /v1/intents/quote with its own JWT guard; the gateway is tried when trading refuses the token.
@@ -319,6 +324,11 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     if (!registry) throw new Error(`CANTON_TRANSFER_FACTORIES_JSON has no registry of ${asset.admin}`);
     const recipientBefore = await ledgerHoldings(recipient, asset, registry);
 
+    if (sourceAheadS > 0) {
+      const latest = BigInt((await rpc.request<{ timestamp: string }>({ method: 'eth_getBlockByNumber', params: ['latest', false] })).timestamp);
+      const ahead = BigInt(Math.floor(Date.now() / 1000) + sourceAheadS);
+      await rpc.request({ method: 'evm_setNextBlockTimestamp', params: [Number(ahead > latest ? ahead : latest + 1n)] });
+    }
     const nonce = BigInt(await rpc.request<string>({ method: 'eth_getTransactionCount', params: [maker.address, 'pending'] }));
     const raw = await maker.signTransaction({ chainId: BigInt(toSign.chainId), nonce, to: router, data, value: 0n, gasLimit: 1_500_000n, maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n });
     const openTx = await rpc.request<Hex>({ method: 'eth_sendRawTransaction', params: [raw] });
@@ -381,5 +391,22 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     expect(named('Settled')).toHaveLength(1);
     expect(named('Filled')).toHaveLength(0);
     expect(named('Settled')[0]!.log.blockNumber).toBeGreaterThan(openBlock);
+    const ticket = await store.withOrder(orderHash, async (tx) => (await tx.listTickets()).find((t) => t.attempt === fill.attempt));
+    return { orderHash, fill, ticket, openedAt: (await reader.intents(orderHash)).openedAt };
+  };
+
+  test('TC-CAN-1867-STAND-01: an order to canton:devnet is delivered by the filler’s party and settled on the router: repayTo paid, the party’s CNRX spent', async () => {
+    await deliverAndSettle(0);
+  }, 20 * 60_000);
+
+  // The finding of CAN-3026 end to end: the source block opens the order 15 s ahead of the participant's clock. The
+  // ticket's validFrom is that openedAt, the node waits for it, DeliveryOrder_Fill lands at or after it, and the
+  // router — which refuses filledAt < openedAt (FilledBeforeOpen) — settles the delivery.
+  test('TC-CAN-3026-STAND-01: with the source chain 15 s ahead, the filler fills no earlier than validFrom = openedAt and the router settles it', async () => {
+    const { fill, ticket, openedAt } = await deliverAndSettle(15);
+    const issued = ticket?.issued as { validFrom?: string } | undefined;
+    const validFrom = BigInt(issued?.validFrom ?? (ticket?.offer as { validFrom: string } | undefined)?.validFrom ?? '0');
+    expect(validFrom).toBeGreaterThanOrEqual(openedAt);
+    expect(BigInt(fill.sentAtMs ?? 0)).toBeGreaterThanOrEqual(openedAt * 1000n);
   }, 20 * 60_000);
 });

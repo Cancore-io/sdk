@@ -227,6 +227,9 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
     expect(await verify([t.deliveryOrder], holdings, { ...t.offer, order: { ...order, feeBps: '31' } })).toMatchObject({ ok: false, reason: 'ESCROW_MISMATCH' });
     const evilRepayTo = repayToFromEvm(addressOf(key('BOB')));
     expect(await verify([{ ...t.deliveryOrder, repayTo: evilRepayTo }], holdings)).toMatchObject({ ok: false, reason: 'TICKET_MISMATCH', detail: expect.stringContaining('repayTo') });
+    // CAN-3026: the floor the issued ticket names is the offered one.
+    const laterFloor = { ...t.issued, validFrom: String(BigInt(t.offer.validFrom) + 1n) } as TicketIssuedCanton;
+    expect(await verifierFor(clock, [t.deliveryOrder], holdings).verify({ offer: t.offer, issued: laterFloor, issuedAtMs: clock.now(), intent: t.intent })).toMatchObject({ ok: false, reason: 'TICKET_MISMATCH', detail: expect.stringContaining('validFrom') });
     expect(await verify([t.deliveryOrder], [{ ...holdings[0]!, amount: '10' }, { contractId: 'h2', asset: ASSET, amount: '100', locked: true }])).toMatchObject({ ok: false, reason: 'NO_INVENTORY' });
   }, 60_000);
 

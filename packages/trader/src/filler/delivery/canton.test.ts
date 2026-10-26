@@ -27,6 +27,7 @@ import { GatewayError } from '../errors';
 import type { FillRecord, TicketRecord } from '../store';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, FakeClock, InMemoryFillerStore } from '../testing';
 import { CantonDelivery, cantonFillRef } from './canton';
+import { LEDGER_CLOCK_SLACK_MS } from './validFrom';
 import type { DeliveryResult } from './executor';
 
 const FILL_KEY: Hex = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
@@ -36,9 +37,9 @@ const ORDER_HASH = `0x${'5a'.repeat(32)}` as Hex;
 const START = 1_790_000_000_000;
 const ASSET = { admin: `cancore::1220${'4f'.repeat(32)}`, id: 'CNRX' };
 
-type Step = 'commit' | 'refused-before-sign' | 'closed-at-prepare' | 'transport-after-sign' | 'closed-after-sign';
+type Step = 'commit' | 'refused-before-sign' | 'closed-at-prepare' | 'not-ready' | 'transport-after-sign' | 'closed-after-sign';
 
-function harness(opts: { validUntilSec?: number; script: Step[] }) {
+function harness(opts: { validUntilSec?: number; validFromSec?: number; script: Step[] }) {
   const clock = new FakeClock(START);
   const store = new InMemoryFillerStore(clock);
   const events = createRecordingEventSink();
@@ -53,7 +54,10 @@ function harness(opts: { validUntilSec?: number; script: Step[] }) {
   const ticket: TicketRecord = {
     orderHash: ORDER_HASH, attempt: 0, state: 'receipted', sentAtMs: START, updatedAtMs: START,
     offer: { type: 'ticket.offer', orderHash: ORDER_HASH, attempt: 0, order, amountOut: order.minReceived, validFrom: String(START / 1000 - 5), validUntil, acceptBy: START } as unknown as TicketOffer,
-    issued: { type: 'ticket.issued', form: 'canton', orderHash: ORDER_HASH, attempt: 0, deliveryOrderCid: `00${'0d'.repeat(33)}`, validUntil, repayTo } as unknown as TicketIssuedCanton,
+    issued: {
+      type: 'ticket.issued', form: 'canton', orderHash: ORDER_HASH, attempt: 0, deliveryOrderCid: `00${'0d'.repeat(33)}`, validUntil, repayTo,
+      ...(opts.validFromSec !== undefined ? { validFrom: String(opts.validFromSec) } : {}),
+    } as unknown as TicketIssuedCanton,
   } as TicketRecord;
 
   const script = [...opts.script];
@@ -64,6 +68,7 @@ function harness(opts: { validUntilSec?: number; script: Step[] }) {
       const step = script.shift() ?? 'closed-at-prepare';
       if (step === 'refused-before-sign') throw new CantonRefusal('-', 'delivery.fill: the root is not DeliveryOrder_Fill');
       if (step === 'closed-at-prepare') throw new GatewayError('TICKET_CLOSED', true, 'the ticket is filled');
+      if (step === 'not-ready') throw new GatewayError('CANTON_NOT_READY', true, 'the ticket opens later; fill from then');
       await hooks.onSigned?.('op-1');
       if (step === 'transport-after-sign') throw new CantonSubmitUnknown('delivery.fill', 'op-1', new Error('socket hang up'));
       if (step === 'closed-after-sign') throw new CantonSubmitUnknown('delivery.fill', 'op-1', new GatewayError('TICKET_CLOSED', true, 'already submitted'));
@@ -103,6 +108,40 @@ describe('Canton delivery: a commit (CAN-1867)', () => {
     // A recorded fill is never prepared again.
     await expect(h.run()).resolves.toMatchObject({ status: 'tracking' });
     expect(h.calls).toHaveLength(1);
+  });
+});
+
+describe('Canton delivery: not before the order\'s validFrom (CAN-3026)', () => {
+  test('TC-SDK-3026-01: a ticket whose validFrom is ahead waits, unclaimed and unprepared, and fills once the clock is LEDGER_CLOCK_SLACK_MS past it', async () => {
+    const h = harness({ validFromSec: START / 1000 + 5, script: ['commit'] });
+    await h.seed(h.ticket);
+    await expect(h.run()).resolves.toMatchObject({ status: 'waiting', detail: expect.stringContaining('validFrom not reached') });
+    expect(h.calls).toHaveLength(0);
+    await expect(h.fill()).resolves.toBeUndefined();
+    await h.advance(5_000 + LEDGER_CLOCK_SLACK_MS - 1);
+    expect(h.calls).toHaveLength(0);
+    await h.advance(1);
+    expect(h.calls).toEqual([START + 5_000 + LEDGER_CLOCK_SLACK_MS]);
+    await expect(h.fill()).resolves.toMatchObject({ state: 'confirmed', txRef: 'upd-1' });
+  });
+
+  test('TC-SDK-3026-02: a ticket.issued without validFrom (a gateway that predates it) waits on the offered validFrom', async () => {
+    const h = harness({ script: ['commit'] });
+    h.ticket.offer = { ...h.ticket.offer!, validFrom: String(START / 1000 + 3) } as TicketOffer;
+    await h.seed(h.ticket);
+    await expect(h.run()).resolves.toMatchObject({ status: 'waiting' });
+    await h.advance(3_000 + LEDGER_CLOCK_SLACK_MS);
+    expect(h.calls).toEqual([START + 3_000 + LEDGER_CLOCK_SLACK_MS]);
+  });
+
+  test('TC-SDK-3026-03: trading refuses the prepare before validFrom (CANTON_NOT_READY): retried, nothing signed, then filled', async () => {
+    const h = harness({ validFromSec: START / 1000 - 5, script: ['not-ready', 'commit'] });
+    await h.seed(h.ticket);
+    await expect(h.run()).resolves.toMatchObject({ status: 'waiting', detail: expect.stringContaining('CANTON_NOT_READY') });
+    await expect(h.fill()).resolves.toMatchObject({ state: 'pending' });
+    await h.advance(2_000);
+    expect(h.calls).toHaveLength(2);
+    await expect(h.fill()).resolves.toMatchObject({ state: 'confirmed' });
   });
 });
 

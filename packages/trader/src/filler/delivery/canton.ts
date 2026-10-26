@@ -20,6 +20,12 @@
  *   the issued `repayTo` must be the node's payee; everything else is held to
  *   the ticket, the offered order and the node's identity in the decoded
  *   transaction (`canton/delivery-check.ts`) before the party key signs.
+ * - **validFrom** (CAN-3026): `DeliveryOrder_Fill` refuses before the order's
+ *   `validFrom` — the EVM source repays only a fill not before its `openedAt`.
+ *   No prepare until the process clock is `LEDGER_CLOCK_SLACK_MS` past it
+ *   (`ticket.issued.validFrom`, else the offer's). The node reads no ledger
+ *   time (T-1); trading refuses an earlier prepare with `CANTON_NOT_READY`,
+ *   which is retried like any transient refusal, before anything is signed.
  * - **sendGuard** (T-29): no prepare when less than `canton.destination.sendGuardSec`
  *   is left to `validUntil`. A transient refusal (`CANTON_NOT_READY`,
  *   `CANTON_UNAVAILABLE`, `OPERATION_EXPIRED`, `INTERNAL`, `RATE_LIMITED`, a
@@ -45,6 +51,7 @@ import type { Clock, Logger } from '../runtime';
 import type { FillerStore, TicketRecord } from '../store';
 import { chainsOf, identityFor, type TicketKeys } from '../tickets/terms';
 import type { DeliveryResult, FillRefusal } from './executor';
+import { awaitLedgerValidFrom } from './validFrom';
 
 /** `FillProof.fillRef` of a Canton delivery: `keccak256(utf8(updateId))` (attestors.md, protocol §3.13). */
 export const cantonFillRef = (updateId: string): Hex => `0x${bytesToHex(keccak_256(utf8ToBytes(updateId)))}` as Hex;
@@ -102,11 +109,8 @@ export class CantonDelivery {
     const validUntilMs = Number(issued.validUntil) * 1000;
     // Signed by an earlier try — this replica's or a dead one's: it may have committed.
     const signedBefore = existing?.sentAtMs !== undefined;
-    if (clock.now() + this.options.sendGuardSec * 1000 > validUntilMs) {
-      const detail = `less than sendGuard (${this.options.sendGuardSec} s) left to validUntil`;
-      if (signedBefore) return this.unknown(orderHash, attempt, `send-guard after a signed try: ${detail}`);
-      return this.refuse(orderHash, attempt, 'send-guard', detail, existing ? 'failed' : undefined);
-    }
+    const held = await this.outsideWindow(ticket, issued.validFrom ?? offer.validFrom, validUntilMs, signedBefore, existing !== undefined, again);
+    if (held) return held;
     const claimed = await store.withOrder(orderHash, async (tx) => {
       const fill = await tx.getFill(attempt);
       const at = await store.now();
@@ -156,6 +160,23 @@ export class CantonDelivery {
     this.emit({ type: 'filled', orderHash, attempt, txHash: fillRef, amount });
     this.options.onFilled?.(orderHash, attempt);
     return { status: 'sent', txHash: fillRef };
+  }
+
+  /**
+   * Not now: past sendGuard (T-29), or before the order's `validFrom` (CAN-3026) — a try already signed is
+   * never held back by `validFrom`, it ends by the ledger's answer.
+   */
+  private async outsideWindow(ticket: TicketRecord, validFrom: string, validUntilMs: number, signedBefore: boolean, claimedBefore: boolean, again: () => void): Promise<DeliveryResult | undefined> {
+    const { orderHash, attempt } = ticket;
+    if (this.options.clock.now() + this.options.sendGuardSec * 1000 > validUntilMs) {
+      const detail = `less than sendGuard (${this.options.sendGuardSec} s) left to validUntil`;
+      if (signedBefore) return this.unknown(orderHash, attempt, `send-guard after a signed try: ${detail}`);
+      return this.refuse(orderHash, attempt, 'send-guard', detail, claimedBefore ? 'failed' : undefined);
+    }
+    if (signedBefore) return undefined;
+    return awaitLedgerValidFrom(this.options.clock, validFrom, () => {
+      if (!this.stopped) again();
+    });
   }
 
   /** The committed fill: `confirmed` with its update id, or `sent` (outcome adopted at settle) without one; the ticket is filled. */
