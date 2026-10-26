@@ -1,6 +1,6 @@
 import { FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, fillerIdHash, repayToFromEvm, type Hex, type OrderJson, type TicketJson } from '@cancore/contracts';
 import { CANCORE_ROUTER_ABI } from '@cancore/contracts';
-import { FillerChains, hashOrder, type ChainConfig } from '../chain';
+import { ChainClient, FillerChains, fillDepth, hashOrder, readAtDepth, type ChainConfig, type OpenDepth } from '../chain';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../chain/abi';
 import type { FillerEvent, StageEvent } from '../events';
 import type { TicketRecord } from '../store';
@@ -808,4 +808,169 @@ describe('review sdk#65', () => {
     expect(w.fills()).toHaveLength(1);
     r1.stop();
   });
+});
+
+// CAN-2893: property harness for finality depth and tags (RX-1, RX-2 of the CAN-2808 audit).
+/** Fixed, so a failing draw replays from the seed its message prints. */
+const SEED = 0xca2893;
+const PURE_DRAWS = 200;
+const DELIVERY_DRAWS = 12;
+
+type Rng = () => number;
+
+function seededRandom(seed: number): Rng {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const between = (rng: Rng, low: number, high: number): number => low + Math.floor(rng() * (high - low + 1));
+const chance = (rng: Rng, probability: number): boolean => rng() < probability;
+const pick = <T>(rng: Rng, items: readonly T[]): T => items[between(rng, 0, items.length - 1)]!;
+
+async function forDraws(draws: number, check: (rng: Rng) => void | Promise<void>): Promise<void> {
+  const rng = seededRandom(SEED);
+  for (let draw = 0; draw < draws; draw++) {
+    try {
+      await check(rng);
+    } catch (error) {
+      throw new Error(`seed 0x${SEED.toString(16)}, draw ${draw}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+}
+
+const ascending = (values: readonly bigint[]): bigint[] => [...values].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
+
+const chainWith = (openConfirmations: OpenDepth, fillConfirmations?: number): ChainConfig => ({ ...POLICY, openConfirmations, fillConfirmations });
+
+describe('fillDepth', () => {
+  test('CAN-2893: fillDepth never reads below one confirmation, whatever integer the config holds, with or without fillConfirmations (RX-1)', async () => {
+    await forDraws(PURE_DRAWS, (rng) => {
+      const zeroOrNegative = -between(rng, 0, 50);
+      expect(fillDepth(chainWith(zeroOrNegative))).toBe(1);
+      expect(fillDepth(chainWith(3, zeroOrNegative))).toBe(1);
+      const positive = between(rng, 1, 50);
+      expect(fillDepth(chainWith(positive))).toBe(positive);
+    });
+  });
+
+  test('CAN-2893: fillDepth reads fillConfirmations when it is set (0 included), else openConfirmations; a tag passes through', async () => {
+    await forDraws(PURE_DRAWS, (rng) => {
+      const open: OpenDepth = chance(rng, 0.4) ? pick(rng, ['safe', 'finalized'] as const) : between(rng, 0, 12);
+      const fill = chance(rng, 0.5) ? undefined : between(rng, 0, 12);
+      const source = fill ?? open;
+      expect(fillDepth(chainWith(open, fill))).toBe(typeof source === 'number' ? Math.max(1, source) : source);
+    });
+  });
+});
+
+describe('readAtDepth', () => {
+  test('CAN-2893: readAtDepth names N confirmations as N and a tag as itself; the client resolves N to head − (N − 1) and a tag to the block the RPC reports for it', async () => {
+    await forDraws(PURE_DRAWS, async (rng) => {
+      const head = BigInt(between(rng, 30, 300));
+      const depth = between(rng, 1, 20);
+      const tag = pick(rng, ['safe', 'finalized'] as const);
+      const boundaryBlock = head - BigInt(depth) + 1n;
+      const chain = new FakeChain(1n);
+      chain.head = head;
+      chain[tag] = boundaryBlock;
+      const client = new ChainClient({ chain: DST, endpoints: [chain], maxHeadLagBlocks: 5, logger: createRecordingLogger() });
+      expect(readAtDepth(depth)).toEqual({ confirmations: depth });
+      expect(readAtDepth(tag)).toBe(tag);
+      expect(await client.resolve(readAtDepth(depth))).toBe(boundaryBlock);
+      expect(await client.resolve(readAtDepth(tag))).toBe(boundaryBlock);
+    });
+  });
+});
+
+type FinalityWorld = Awaited<ReturnType<typeof world>> & { readonly delivery: Executor };
+
+async function finalityWorld(chain: ChainConfig): Promise<FinalityWorld> {
+  const w = await world({ chain });
+  return { ...w, delivery: w.executor() };
+}
+
+async function deliverOnce(w: FinalityWorld): Promise<Hex> {
+  await w.delivery.start();
+  const result = await w.delivery.deliver(w.orderHash, 0);
+  expect(result).toMatchObject({ status: 'sent' });
+  return result.txHash!;
+}
+
+/** The tag is set after the mine and before the poll, so one poll sees one head and one tag. */
+async function step(w: FinalityWorld, setTag?: () => void): Promise<boolean> {
+  w.dst.mine();
+  setTag?.();
+  w.clock.advance(1_000);
+  await flush();
+  const fill = await fillOf(w);
+  return fill?.state === 'confirmed';
+}
+
+const includedBlock = (w: FinalityWorld, txHash: Hex): bigint => w.dst.minedTransactions.get(txHash)!.blockNumber;
+
+/** A swallowed tick error retries and reads as "not yet", which would pass a `false` verdict for the wrong reason. */
+const tickFailures = (w: FinalityWorld) => w.logger.entries.filter((e) => e.message.startsWith('delivery: tick failed'));
+
+// No monotonicity property: `confirmed` is terminal and its tracker is dropped (Executor.track), so depth is never re-evaluated after it is met.
+describe('delivery finality through Executor', () => {
+  test('CAN-2893: a numeric depth d is met at head h exactly when h − b + 1 ≥ d', async () => {
+    await forDraws(DELIVERY_DRAWS, async (rng) => {
+      const depth = between(rng, 1, 6);
+      const w = await finalityWorld(chainWith(depth));
+      const txHash = await deliverOnce(w);
+      const met: boolean[] = [];
+      const heads: bigint[] = [];
+      for (let i = 0; i < depth + 3; i++) {
+        met.push(await step(w));
+        heads.push(w.dst.head);
+      }
+      const b = includedBlock(w, txHash);
+      expect(met).toEqual(heads.map((h) => h - b + 1n >= BigInt(depth)));
+      expect(tickFailures(w)).toEqual([]);
+      w.delivery.stop();
+    });
+  }, 60_000);
+
+  test.each(['safe', 'finalized'] as const)('CAN-2893: a %s tag is met exactly when the inclusion block b is at or below its block t: b = t is met, b = t + 1 is not', async (tag) => {
+    await forDraws(DELIVERY_DRAWS, async (rng) => {
+      const w = await finalityWorld(chainWith(tag));
+      w.dst[tag] = 0n;
+      const txHash = await deliverOnce(w);
+      expect(await step(w)).toBe(false);
+      const b = includedBlock(w, txHash);
+      const schedule = ascending([b - 1n, b, ...Array.from({ length: 3 }, () => b + BigInt(between(rng, -3, 3)))]);
+      const met: boolean[] = [];
+      for (const t of schedule) met.push(await step(w, () => (w.dst[tag] = t)));
+      expect(met).toEqual(schedule.map((t) => b <= t));
+      expect(tickFailures(w)).toEqual([]);
+      w.delivery.stop();
+    });
+  }, 60_000);
+
+  test.each(['safe', 'finalized'] as const)('CAN-2893: the numeric and the %s verdicts agree at t = h − d + 1, for every head and inclusion block', async (tag) => {
+    await forDraws(DELIVERY_DRAWS, async (rng) => {
+      const depth = between(rng, 1, 6);
+      const numeric = await finalityWorld(chainWith(depth));
+      const byTag = await finalityWorld(chainWith(tag));
+      const numericTx = await deliverOnce(numeric);
+      const tagTx = await deliverOnce(byTag);
+      const numericMet: boolean[] = [];
+      const tagMet: boolean[] = [];
+      for (let i = 0; i < depth + 3; i++) {
+        numericMet.push(await step(numeric));
+        tagMet.push(await step(byTag, () => (byTag.dst[tag] = byTag.dst.head - BigInt(depth) + 1n)));
+      }
+      expect(includedBlock(byTag, tagTx)).toBe(includedBlock(numeric, numericTx));
+      expect(tagMet).toEqual(numericMet);
+      expect(tickFailures(byTag)).toEqual([]);
+      numeric.delivery.stop();
+      byTag.delivery.stop();
+    });
+  }, 60_000);
 });
