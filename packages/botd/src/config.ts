@@ -56,7 +56,7 @@ const str = z.string().min(1);
 /** Strict: a misspelt key or a wrong type is an error at start, not a silently ignored pin. */
 const configSchema = z
   .object({
-    daemonUser: str, clientsGroup: str, stateDir: str, agentSocket: str, ownerSocket: str, baseUrl: z.string().url(),
+    daemonUser: str, clientsGroup: str, stateDir: str, agentSocket: str, ownerSocket: str, baseUrl: z.url(),
     ownerParty: str, venuePartyId: str, maxFeeRate: str, feeRecipientPartyId: z.union([str, z.array(str)]),
     network: z.enum(['devnet', 'testnet', 'mainnet']), maxFee: str, ordersPerHour: z.number().int().positive(),
     instrumentAdmins: z.record(str, z.array(str).min(1)), networkFeeRecipients: z.array(str).min(1),
