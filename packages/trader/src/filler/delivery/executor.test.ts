@@ -870,7 +870,7 @@ describe('fillDepth', () => {
 });
 
 describe('readAtDepth', () => {
-  test('CAN-2893: readAtDepth names N confirmations as N; the client reads head − (N − 1) for them, and at t = h − d + 1 the numeric and the tag read agree', async () => {
+  test('CAN-2893: readAtDepth names N confirmations as N and a tag as itself; the client resolves N to head − (N − 1) and a tag to the block the RPC reports for it', async () => {
     await forDraws(PURE_DRAWS, async (rng) => {
       const head = BigInt(between(rng, 30, 300));
       const depth = between(rng, 1, 20);
