@@ -914,6 +914,9 @@ async function step(w: FinalityWorld, setTag?: () => void): Promise<boolean> {
 
 const includedBlock = (w: FinalityWorld, txHash: Hex): bigint => w.dst.minedTransactions.get(txHash)!.blockNumber;
 
+/** A swallowed tick error retries and reads as "not yet", which would pass a `false` verdict for the wrong reason. */
+const tickFailures = (w: FinalityWorld) => w.logger.entries.filter((e) => e.message.startsWith('delivery: tick failed'));
+
 // No monotonicity property: `confirmed` is terminal and its tracker is dropped (Executor.track), so depth is never re-evaluated after it is met.
 describe('delivery finality through Executor', () => {
   test('CAN-2893: a numeric depth d is met at head h exactly when h − b + 1 ≥ d', async () => {
@@ -929,6 +932,7 @@ describe('delivery finality through Executor', () => {
       }
       const b = includedBlock(w, txHash);
       expect(met).toEqual(heads.map((h) => h - b + 1n >= BigInt(depth)));
+      expect(tickFailures(w)).toEqual([]);
       w.delivery.stop();
     });
   }, 60_000);
@@ -944,6 +948,7 @@ describe('delivery finality through Executor', () => {
       const met: boolean[] = [];
       for (const t of schedule) met.push(await step(w, () => (w.dst[tag] = t)));
       expect(met).toEqual(schedule.map((t) => b <= t));
+      expect(tickFailures(w)).toEqual([]);
       w.delivery.stop();
     });
   }, 60_000);
@@ -963,6 +968,7 @@ describe('delivery finality through Executor', () => {
       }
       expect(includedBlock(byTag, tagTx)).toBe(includedBlock(numeric, numericTx));
       expect(tagMet).toEqual(numericMet);
+      expect(tickFailures(byTag)).toEqual([]);
       numeric.delivery.stop();
       byTag.delivery.stop();
     });
