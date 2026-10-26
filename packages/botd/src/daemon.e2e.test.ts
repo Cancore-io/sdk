@@ -253,6 +253,26 @@ describe('cancore-botd end to end', () => {
       stderr.mockRestore();
     }
   });
+
+  it('refuses a limits.set whose limits are not an object before the daemon handles it, and keeps the limits', async () => {
+    const stored = readFileSync(paths(config).limits, 'utf8');
+    const stop = await boot();
+    try {
+      const prior = await owner('limits.get');
+      for (const limits of ['unlimited', 42, true, null, [1, 2]]) {
+        expect(await refusal(owner('limits.set', { limits }))).toMatchObject({ code: ERROR.INVALID_PARAMS });
+      }
+      expect(await owner('limits.get')).toEqual(prior);
+      expect(readFileSync(paths(config).limits, 'utf8')).toBe(stored);
+      const handled = async () => (await owner<{ entries: { method: string }[] }>('audit.tail', { n: 1000 })).entries.filter((e) => e.method === 'limits.set');
+      expect(await handled()).toEqual([]);
+      // Control: a valid limits.set does reach the handler and is audited, so the empty list above means something.
+      await owner('limits.set', { limits: LIMITS });
+      expect(await handled()).toEqual([expect.objectContaining({ decision: 'allow' })]);
+    } finally {
+      await stop();
+    }
+  });
 });
 
 describe('cancore-botd end to end: an accept whose answer was lost (F128-LOST-ACCEPT-1)', () => {
