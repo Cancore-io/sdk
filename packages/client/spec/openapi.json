@@ -1277,6 +1277,64 @@
         ],
         "type": "object"
       },
+      "BotAccountResponseDto": {
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "example": "grid-bot-1",
+            "type": "string"
+          },
+          "onboardingState": {
+            "description": "How far the bot got through its onboarding: `key-generated` — no party yet, `party-hosted` — the party exists, `preapproved` or `done` — it can receive CC",
+            "enum": [
+              "not-started",
+              "key-generated",
+              "party-hosted",
+              "preapproved",
+              "done"
+            ],
+            "nullable": true,
+            "type": "string"
+          },
+          "partyId": {
+            "description": "Canton party; null until the bot runs its onboarding",
+            "nullable": true,
+            "type": "string"
+          },
+          "publicKey": {
+            "description": "Hex Ed25519 public key the account signs in with",
+            "nullable": true,
+            "type": "string"
+          },
+          "status": {
+            "example": "ACTIVE",
+            "type": "string"
+          },
+          "stoppedAt": {
+            "description": "When the owner stopped the bot; null while it runs. A stopped bot makes and takes no orders (403 ACCOUNT_STOPPED) and can still send its funds out",
+            "format": "date-time",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "publicKey",
+          "partyId",
+          "status",
+          "onboardingState",
+          "stoppedAt",
+          "createdAt"
+        ],
+        "type": "object"
+      },
       "BridgeBurnDirectDto": {
         "properties": {
           "amount": {
@@ -2362,6 +2420,38 @@
           "appName",
           "type",
           "scopes"
+        ],
+        "type": "object"
+      },
+      "CreateBotAccountDto": {
+        "properties": {
+          "challenge": {
+            "description": "Challenge issued by POST /auth/register-challenge for this public key",
+            "minLength": 20,
+            "type": "string"
+          },
+          "name": {
+            "description": "Name of the bot account; becomes its party name",
+            "example": "grid-bot-1",
+            "type": "string"
+          },
+          "publicKey": {
+            "description": "Hex Ed25519 public key of the bot account",
+            "example": "abababababababababababababababababababababababababababababababab",
+            "minLength": 64,
+            "type": "string"
+          },
+          "signature": {
+            "description": "Hex Ed25519 signature of the challenge by the bot key",
+            "minLength": 128,
+            "type": "string"
+          }
+        },
+        "required": [
+          "publicKey",
+          "challenge",
+          "signature",
+          "name"
         ],
         "type": "object"
       },
@@ -17100,6 +17190,187 @@
           }
         ],
         "summary": "Activate Canton party after email verification",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/bots": {
+      "get": {
+        "operationId": "AuthAccountController_listBots",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BotAccountResponseDto"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Bot accounts"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "List the bot accounts the authenticated account made, oldest first",
+        "tags": [
+          "auth"
+        ]
+      },
+      "post": {
+        "description": "A bot account is an ordinary self-custody account with its own key, linked to the account that made it. The caller derives the key in their own wallet and proves it holds it: request a challenge for the bot key from POST /auth/register-challenge, sign it with that key, and send both here. The bot then signs in by itself with POST /auth/login-signature. The owner must be a self-custody account and not a bot; the number of bot accounts one account may ever make is capped.",
+        "operationId": "AuthAccountController_createBot",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBotAccountDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotAccountResponseDto"
+                }
+              }
+            },
+            "description": "Bot account created"
+          },
+          "400": {
+            "description": "Validation error, or the bot key was not proven"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "403": {
+            "description": "The caller is a bot account or not a self-custody account"
+          },
+          "409": {
+            "description": "Bot account cap reached, or the key is already registered"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Create a bot account owned by the authenticated account",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/bots/{botId}/resume": {
+      "post": {
+        "description": "Orders cancelled by the stop are not restored. Resuming a running bot changes nothing.",
+        "operationId": "AuthAccountController_resumeBot",
+        "parameters": [
+          {
+            "description": "The bot account id, from GET /auth/bots",
+            "in": "path",
+            "name": "botId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotAccountResponseDto"
+                }
+              }
+            },
+            "description": "The bot account, running"
+          },
+          "400": {
+            "description": "The bot id is not a uuid"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "404": {
+            "description": "No bot account with this id was made by the caller"
+          },
+          "409": {
+            "description": "The account is being changed by another request; try again"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Let a stopped bot account trade again",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/bots/{botId}/stop": {
+      "post": {
+        "description": "A stopped bot makes and takes no orders — with its own key or through a grant it issued (403 ACCOUNT_STOPPED) — and its open orders are cancelled. Trades already under way run to their end, and the bot can still sign in and send its funds out. Stopping a stopped bot changes nothing.",
+        "operationId": "AuthAccountController_stopBot",
+        "parameters": [
+          {
+            "description": "The bot account id, from GET /auth/bots",
+            "in": "path",
+            "name": "botId",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BotAccountResponseDto"
+                }
+              }
+            },
+            "description": "The bot account, stopped"
+          },
+          "400": {
+            "description": "The bot id is not a uuid"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "404": {
+            "description": "No bot account with this id was made by the caller"
+          },
+          "409": {
+            "description": "The account is being changed by another request; try again"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Stop a bot account the authenticated account made",
         "tags": [
           "auth"
         ]

@@ -147,6 +147,11 @@ describe('published documentation', () => {
     expect(steps.join('\n')).toBe(read('packages/client/examples/bot.ts'));
   });
 
+  // The owner's program is not a step of the bot's, so it is fenced `typescript` and kept out of the join above.
+  it('docs/run-a-bot.md carries packages/client/examples/owner-bots.ts verbatim', () => {
+    expect(read('docs/run-a-bot.md')).toContain('```typescript\n' + read('packages/client/examples/owner-bots.ts') + '```');
+  });
+
   it.each(PACKAGE_DIRS)('packages/%s/README.md installs the package it documents', (dir) => {
     // `npm install @cancore/x` installs whatever `latest` is, and the README is
     // what a reader compares it against — so the manifest name and the README's

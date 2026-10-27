@@ -1,5 +1,21 @@
 # Changelog — `@cancore/client`
 
+## 0.13.0
+
+### Added
+
+- `bots` on the self-custody account: an owner makes and manages its bot accounts from a program,
+  as **My bots** does in the wallet (CAN-3102).
+  - `bots.create({ name, botSigner })` asks `POST /auth/register-challenge` for the bot's key, has
+    `botSigner` sign the challenge (held to the login-challenge shape, as at sign-in) and posts
+    `{ publicKey, challenge, signature, name }` to `POST /auth/bots` on the owner's session.
+  - `bots.list()`, `bots.stop(botId)` and `bots.resume(botId)`.
+  - `nextBotAccount(bots, publicKeyOf)`: the wallet's rule for which key of the phrase the next bot
+    gets (the lowest index from 1 whose public key is not registered), so the wallet's **Show key**
+    shows the same key. `BOT_ACCOUNTS_MAX` is the cap of five.
+- The spec snapshot carries the four bot routes and their DTOs, from api-dev.
+- `examples/owner-bots.ts`, carried in the bot guide.
+
 ## 0.12.3
 
 ### Fixed

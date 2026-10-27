@@ -23,7 +23,6 @@
  */
 import { assertOperationLegs, signLegs, TOPOLOGY_OPERATION, type OperationLeg } from '@cancore/wallet/operations';
 import { isPartyOfKey } from '@cancore/wallet';
-
 export { UnexpectedLegError } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
@@ -35,18 +34,16 @@ import {
   verifyPreapprovalSetupPrepared, verifySelfSendPrepared,
   type DvpOperation, type DvpTerms, type Instrument, type PreparedToSign, type TokenOperation, type TrustedPackages,
 } from './dvp-verify';
-
 export { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, type TokenOperation, type TrustedPackages } from './dvp-verify';
 export { API_NETWORKS, DEFAULT_ESCROWS, DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, networkOf, type DvpNetwork } from './dvp-admins';
 import type { SdkErrorCode } from './sdk-error-codes';
 import { createSession, type AccountUser, type KeySigner, type Session, type SessionOptions } from './session';
 import { createSwapClient, TERMINAL_ORDER_STATUSES, type Order, type SwapClient } from './swap';
 import { serve, type ServeHandle, type ServeOptions, type SettleRun } from './serve';
-
 export type { ServeEvent, ServeHandle, ServeOptions } from './serve';
-
-export { createSession, expiresWithin } from './session';
-export type { AccountUser, KeySigner, RegisterInput, Session, SessionOptions } from './session';
+export { createSession, expiresWithin, type AccountUser, type KeySigner, type RegisterInput, type Session, type SessionOptions } from './session';
+import { createBots, type Bots } from './bots';
+export { BOT_ACCOUNTS_MAX, nextBotAccount, type BotAccount, type Bots, type CreateBotInput } from './bots';
 
 /** `HtlcStatus` — where a swap is between its two legs. */
 export type HtlcStatus =
@@ -621,6 +618,8 @@ export interface SelfCustodyAccount {
   balance(instrumentId: string): Promise<{ balance: string; holdingsCount?: number }>;
   /** Test CC from the dev stand's faucet (`POST /faucet/request`), with the faucet terms signed by this key. */
   faucet(): Promise<FaucetClaim>;
+  /** The bot accounts this account owns: make, list, stop and resume them. See `nextBotAccount` for the bot's key. */
+  readonly bots: Bots;
   /** Partner cashback (role `partner-bot`). */
   readonly cashback: {
     summary(): Promise<CashbackSummary>;
@@ -1627,6 +1626,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     consolidate,
     balance,
     faucet,
+    bots: createBots(http, createHttp({ baseUrl, fetchImpl: options.fetchImpl })),
     cashback: {
       summary: () => http.get<CashbackSummary>('/partner/cashback/me'),
       claims: cashbackClaims,

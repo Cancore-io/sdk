@@ -36,7 +36,7 @@ A partner running a market maker with an invite code starts with the
 - **Role `user`.** No partner role, no cashback, no fee privileges: a bot pays the platform fee
   and the CC network fee like any other account.
 - **Yours to stop, not to spend.** The API counts a bot and its owner as one person
-  ([section 10](#10-limits-and-refusals)). From the wallet the owner can stop and resume a bot,
+  ([section 10](#10-limits-and-refusals)). From the wallet, or a program of their own ([section 2](#or-make-the-bot-from-a-program)), the owner can stop and resume a bot,
   see its balances, orders and trades, and cancel its open orders — with the owner's own session,
   no bot key needed. What no owner route does is move a bot's funds: every transfer and every trade
   of a bot is signed with the bot's key.
@@ -57,6 +57,59 @@ hex characters**. That string is the bot's private key, and the only thing its p
 - **There is no key rotation.** If Cancore removes a bot, its slot is free again, and the next bot
   you make gets the very same key. A leaked key is dealt with by emptying that bot
   ([section 9](#9-withdraw-to-the-owner)) and never using it again.
+
+### Or make the bot from a program
+
+`@cancore/client` 0.13.0 does what **My bots** does, with your own sign-in: `owner.bots.create`,
+`list`, `stop` and `resume`. [`packages/client/examples/owner-bots.ts`](../packages/client/examples/owner-bots.ts)
+is the whole program, typechecked like `bot.ts`:
+
+```typescript
+// What My bots does in the wallet, from a program: list your bots, make one, stop or resume one.
+//   CANCORE_PHRASE='…' BOT_NAME=grid-bot-1 npx tsx owner-bots.ts
+import { providerFromMnemonic } from '@cancore/wallet';
+import { createSelfCustody, nextBotAccount } from '@cancore/client/selfcustody';
+
+const env = process.env;
+// The phrase opens your wallet and every bot of it. It comes from your secret store; never print it.
+if (!env.CANCORE_PHRASE) throw new Error('set CANCORE_PHRASE: the recovery phrase of your wallet');
+const phrase = env.CANCORE_PHRASE;
+const keyAt = (account: number) => providerFromMnemonic(phrase, { account }); // m/44'/6767'/{account}'/0'/0'
+const owner = createSelfCustody({ baseUrl: env.CANCORE_API ?? 'https://api-dev.cancore.app', signer: await keyAt(0) });
+await owner.session.login(); // your own sign-in: an app-session grant can neither make nor stop a bot
+
+const bots = await owner.bots.list();
+for (const b of bots) console.log(b.id, b.name, b.partyId ?? 'no party yet', b.stoppedAt ? 'stopped' : 'running');
+
+if (env.BOT_NAME) {
+  // The index the wallet would pick, so its Show key shows this bot's key.
+  const account = await nextBotAccount(bots, async (n) => (await keyAt(n)).public_key);
+  if (account === null) throw new Error('all five bot accounts are made');
+  const bot = await owner.bots.create({ name: env.BOT_NAME, botSigner: await keyAt(account) });
+  console.log('made', bot.id, bot.name, 'from account', account);
+}
+
+if (env.STOP_BOT_ID) console.log('stopped at', (await owner.bots.stop(env.STOP_BOT_ID)).stoppedAt);
+if (env.RESUME_BOT_ID) console.log('running', (await owner.bots.resume(env.RESUME_BOT_ID)).name);
+```
+
+- **The same keys as the wallet.** `nextBotAccount` is the wallet's own rule: the lowest index N
+  from 1 whose key is not a bot yet, found by comparing public keys. So **Show key** shows the key
+  this program registered, and a phrase restored anywhere arrives at the same N.
+- **What the bot's process gets** is the key the wallet would show:
+  `deriveWalletKey(phrase, 'standard', N).seedHex` (`@cancore/wallet`), 64 hex characters. Put it in
+  the bot's secret store as `CANCORE_BOT_KEY`. Never the phrase.
+- **`create` proves you hold the bot's key**: it asks the API for a sign-up challenge for that key,
+  signs it with that key, and sends both on your session. The bot's key itself is never sent.
+- **The bot has no party yet.** The wallet sets a new bot up at once; a bot made here is set up by
+  its own first `onboard()` ([section 5](#5-onboard)), and only then has an address to fund.
+- **Your own session, and only yours.** An app-session grant is refused, and so is a bot: a bot
+  account cannot make bots. The owner must be an active self-custody account. A sixth bot is
+  refused with `409`, as is a key that is already an account; both are a `CancoreApiError`.
+- **Stopping** cancels the bot's open orders, lets trades under way finish, and leaves it free to
+  send its funds out. Resuming does not restore the cancelled orders. Both are safe to repeat.
+- **This program holds the phrase**, which is more than any bot ever holds. Run it where you would
+  open your wallet, not next to the bots.
 
 ## 3. Install
 
