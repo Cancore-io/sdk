@@ -43,7 +43,7 @@ interface Operation {
 }
 const spec = JSON.parse(readFileSync(join(__dirname, '..', 'spec', 'openapi.json'), 'utf8')) as Spec;
 
-const ORDER_REPLY = { id: 'o1', status: 'completed', submissionKey: 'k', preparedTransactionHash: 'h' };
+const ORDER_REPLY = { id: 'o1', status: 'completed', submissionKey: 'k', preparedTransactionHash: 'h', balance: 0 };
 /** What the self-custody account reads off a reply to get to its next call. */
 const KEY = '00'.repeat(32);
 const SELF_CUSTODY_REPLIES: Record<string, unknown> = {
@@ -56,7 +56,6 @@ const SELF_CUSTODY_REPLIES: Record<string, unknown> = {
   '/wallet/operations/prepare': { operationId: 'op', legs: [], meta: {} },
   '/partner/cashback/claims': [],
   '/tokens/transfer-requests/incoming': [],
-  [`/tokens/balance/p::${cantonFingerprint(KEY)}/CC`]: { balance: 0, holdingsCount: 0 },
 };
 const DEVICE_REPLY = { deviceCode: 'd', userCode: 'U', verificationUri: '/w', expiresIn: 600, interval: 5, status: 'granted', token: 't' };
 

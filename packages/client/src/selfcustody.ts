@@ -30,7 +30,7 @@ import { DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_
 import { createHtlcActions, postClaimCounter, randomHex, sha256Hex, type CounterExpectation, type OpenedHtlc, type OpenHtlcInput } from './selfcustody-htlc';
 export { newPreimage, postClaimCounter, sha256Hex, type CounterExpectation, type OpenedHtlc, type OpenHtlcInput } from './selfcustody-htlc';
 import {
-  acceptCost, DEFAULT_TRUSTED_PACKAGES, feeCost, selfSendCost, sendCost, units, UnverifiedTransactionError, verifyConsolidatePrepared, verifyDvpPrepared,
+  acceptCost, decimalOf, DEFAULT_TRUSTED_PACKAGES, feeCost, selfSendCost, sendCost, units, UnverifiedTransactionError, verifyConsolidatePrepared, verifyDvpPrepared,
   verifyPreapprovalSetupPrepared, verifySelfSendPrepared,
   type DvpOperation, type DvpTerms, type Instrument, type PreparedToSign, type TokenOperation, type TrustedPackages,
 } from './dvp-verify';
@@ -977,7 +977,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         : `the API's network fee estimate ${networkFee} is above maxSplitCost ${fromUnits(ceiling)}`);
     }
     const cost = networkUnits + debtUnits;
-    const left = units(decimal(held.balance)) - fee - cost;
+    const left = units(held.balance) - fee - cost;
     // Strictly more than nothing: a self-send of the whole balance leaves one holding, not two.
     if (left <= 0n || (need !== undefined && left < need)) {
       throw cannot(`insufficient balance — ${held.balance} does not cover the fee, the send's network fee ${networkFee}` +
@@ -1553,9 +1553,10 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   }
 
   async function balance(instrumentId: string) {
-    return http.get<{ balance: string; holdingsCount?: number }>(
-      `/tokens/balance/${encodeURIComponent(await ownParty())}/${encodeURIComponent(instrumentId)}`,
-    );
+    const raw = await http.get<{ balance?: unknown; holdingsCount?: number }>(`/tokens/balance/${encodeURIComponent(await ownParty())}/${encodeURIComponent(instrumentId)}`);
+    const amount = units(decimal(raw.balance));
+    if (amount < 0n) throw new Error(`the API's ${instrumentId} balance ${String(raw.balance)} is not a non-negative decimal of at most ten places`);
+    return { ...raw, balance: decimalOf(amount) };
   }
 
   async function faucet(): Promise<FaucetClaim> {
@@ -1597,35 +1598,11 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   }
 
   const account: SelfCustodyAccount = {
-    session,
-    swap,
-    me,
-    onboard,
-    preapproval,
-    enablePreapproval,
-    legalStatus,
-    acceptTerms,
-    execute,
-    swapState,
-    swapInfo,
-    timeoutOptions,
-    feeConfig,
-    claimCounter,
-    listSwaps,
-    make,
-    take,
-    withdrawAllocation,
-    openHtlc,
-    acceptCounter,
-    refund,
-    incoming,
-    accept,
-    acceptIncoming,
-    send,
+    session, swap, me, onboard, preapproval, enablePreapproval, legalStatus, acceptTerms, execute,
+    swapState, swapInfo, timeoutOptions, feeConfig, claimCounter, listSwaps, make, take,
+    withdrawAllocation, openHtlc, acceptCounter, refund, incoming, accept, acceptIncoming, send,
     splitForFee: (tokenId, feeAmount, splitOptions) => splitFee(tokenId, feeAmount, undefined, splitOptions?.allowUnverified ?? false),
-    consolidate,
-    balance,
-    faucet,
+    consolidate, balance, faucet,
     bots: createBots(http, createHttp({ baseUrl, fetchImpl: options.fetchImpl })),
     cashback: {
       summary: () => http.get<CashbackSummary>('/partner/cashback/me'),
@@ -1646,7 +1623,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
 const fromUnits = (amount: bigint) => `${amount / 10n ** 10n}.${(amount % 10n ** 10n).toString().padStart(10, '0')}`;
 
 /** A decimal the API sends as a JSON number, as the exact text `units` reads (never exponent notation). */
-const decimal = (value: unknown) => (typeof value === 'number' ? value.toFixed(10) : String(value));
+const decimal = (value: unknown) => (typeof value === 'number' ? value.toFixed(10) : typeof value === 'string' ? value : '');
 
 /** CC under the aliases the API uses for it: it is delivered through the preapproval, never as a transfer to accept. */
 export function isCc(instrumentId: string): boolean {

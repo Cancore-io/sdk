@@ -243,6 +243,6 @@ describe('engine.balances (CAN-3087)', () => {
     ['malformed string', 'abc'],
   ] as const)('G0-CAN-3087.2: rejects %s balance', async (_, bad) => {
     const e = await engineOver({ balance: async () => ({ balance: bad }) });
-    await expect(e.balances(['CC'])).rejects.toThrow(/invalid decimal/);
+    await expect(e.balances(['CC'])).rejects.toThrow(/not a (?:non-negative )?decimal/);
   });
 });
