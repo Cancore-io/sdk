@@ -352,7 +352,7 @@ Nobody but the bot can move the bot's balance, so withdrawing is the bot's own s
   collected with a later send.
 - A send that fails with a `CeremonyError` at stage `submit` may still have gone through. Check
   `bot.balance()` before sending again
-  ([partner guide, section 9](partner-guide.md#9-errors-and-troubleshooting), "Retries").
+  ([partner guide, section 10](partner-guide.md#10-errors-and-troubleshooting), "Retries").
 
 ## 10. Limits and refusals
 
@@ -385,7 +385,7 @@ How these reach your code:
 
 Everything else `make`, `take` and `send` can throw (a fee above your ceiling, a pair not enabled
 for DvP, an expired trade and how to release its funds) is in the
-[partner guide, section 9](partner-guide.md#9-errors-and-troubleshooting).
+[partner guide, section 10](partner-guide.md#10-errors-and-troubleshooting).
 
 ## 11. Security
 
@@ -414,5 +414,5 @@ for DvP, an expired trade and how to release its funds) is in the
   cannot be read (an older gateway that sends no bytes; a token whose registry the SDK does not pin
   — add its admin with `instrumentAdmins` instead).
 - **One process per bot**, and leave the SDK's checks on. The rest of the
-  [partner guide's checklist](partner-guide.md#10-security-checklist-and-going-to-mainnet) applies
+  [partner guide's checklist](partner-guide.md#11-security-checklist-and-going-to-mainnet) applies
   to a bot as it does to a partner account.
