@@ -1,5 +1,5 @@
 import type { Http } from './http';
-import { publicKeyOf, signLoginChallenge, type KeySigner } from './session';
+import { signerPublicKey, signLoginChallenge, type KeySigner } from './session';
 
 /** How many bot accounts one owner may ever make: the API's cap, and the bot indexes 1..5 of a phrase. */
 export const BOT_ACCOUNTS_MAX = 5;
@@ -51,7 +51,7 @@ export function createBots(http: Http, anonymous: Http): Bots {
   const botPath = (botId: string, action: 'stop' | 'resume') => `/auth/bots/${encodeURIComponent(botId)}/${action}`;
   return {
     async create({ name, botSigner }) {
-      const publicKey = publicKeyOf(botSigner, 'botSigner');
+      const publicKey = signerPublicKey(botSigner, 'botSigner');
       const { challenge } = await anonymous.post<{ challenge: string }>('/auth/register-challenge', { publicKey });
       const signature = await signLoginChallenge(botSigner, challenge);
       return http.post<BotAccount>('/auth/bots', { publicKey, challenge, signature, name });

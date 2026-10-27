@@ -115,7 +115,7 @@ const LOGIN_RETRIES = 2;
 const LOGIN_RETRY_PAUSE_MS = 1_000;
 
 /** The signer's hex public key; a `deriveWalletKey` result passed by mistake is refused here, before any request. */
-export function publicKeyOf(signer: KeySigner, field = 'signer'): string {
+export function signerPublicKey(signer: KeySigner, field = 'signer'): string {
   const publicKey = signer.public_key;
   if (typeof publicKey !== 'string' || publicKey.trim() === '') {
     throw new TypeError(
@@ -141,7 +141,7 @@ export function createSession({ baseUrl, signer, fetchImpl, now = Date.now, slee
   const send: FetchLike = fetchImpl ?? ((url, init) => globalThis.fetch(url, init));
   const pause = sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const anonymous = createHttp({ baseUrl, request: send });
-  const publicKey = publicKeyOf(signer);
+  const publicKey = signerPublicKey(signer);
 
   let token: string | null = null;
   let refreshToken: string | null = null;
