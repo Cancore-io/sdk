@@ -3357,6 +3357,8 @@ describe('balance(): TokenBalanceDto.balance number normalization (CAN-3087)', (
       'GET /auth/me': () => ({ id: 'me', partyId: party }),
       [`GET /tokens/balance/${encodeURIComponent(party)}/CC`]: () => reply,
       [`GET /tokens/balance/${encodeURIComponent(party)}/CBTC`]: () => reply,
+      'GET /tokens/transfer/estimate-fee': () => ({ networkFee: 0.125 }),
+      'GET /tokens/fee-debt': () => ({ outstandingCc: '0' }),
     });
     const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
     return { acct, party };
@@ -3370,6 +3372,31 @@ describe('balance(): TokenBalanceDto.balance number normalization (CAN-3087)', (
 
     const { acct: stringAcct } = await accountWithBalance({ balance: '42.5000', holdingsCount: 1 });
     await expect(stringAcct.balance('CC')).resolves.toEqual({ balance: '42.5', holdingsCount: 1 });
+  });
+
+  test.each([
+    [1000007.31, '1000007.31'],
+    [1234567.89, '1234567.89'],
+    [123456789.123, '123456789.123'],
+  ] as const)('CAN-3126 @happy: returns numeric balance %s as the decimal the API sent, not its double expansion', async (wire, expected) => {
+    const { acct } = await accountWithBalance({ balance: wire });
+    await expect(acct.balance('CC')).resolves.toEqual({ balance: expected });
+  });
+
+  test('CAN-3126 @edge: rounds float noise to ten places', async () => {
+    const { acct } = await accountWithBalance({ balance: 0.1 + 0.2 });
+    await expect(acct.balance('CC')).resolves.toEqual({ balance: '0.3' });
+  });
+
+  test.each([
+    ['negative number', -1],
+    ['non-decimal string', 'abc'],
+    ['null', null],
+  ] as const)('CAN-3126 @negative: splitForFee refuses a %s balance with a SettleError', async (_, invalid) => {
+    const { acct } = await accountWithBalance({ balance: invalid });
+    const error = await acct.splitForFee('CC', '1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SettleError);
+    expect((error as Error).message).toMatch(/^cannot split 1 CC for the platform fee: the API's CC balance .* is not a non-negative decimal of at most ten places/);
   });
 
   test('G0-CAN-3087.3 @edge: normalizes small exponential numbers (5e-8) without exponent and 0 / -0 to "0"', async () => {
