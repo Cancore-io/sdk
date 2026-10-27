@@ -51,7 +51,7 @@ import type { Clock, Logger } from '../runtime';
 import type { FillerStore, TicketRecord } from '../store';
 import { chainsOf, identityFor, type TicketKeys } from '../tickets/terms';
 import type { DeliveryResult, FillRefusal } from './executor';
-import { awaitLedgerValidFrom } from './validFrom';
+import { awaitClock, LEDGER_CLOCK_SLACK_MS } from './validFrom';
 
 /** `FillProof.fillRef` of a Canton delivery: `keccak256(utf8(updateId))` (attestors.md, protocol §3.13). */
 export const cantonFillRef = (updateId: string): Hex => `0x${bytesToHex(keccak_256(utf8ToBytes(updateId)))}` as Hex;
@@ -174,9 +174,10 @@ export class CantonDelivery {
       return this.refuse(orderHash, attempt, 'send-guard', detail, claimedBefore ? 'failed' : undefined);
     }
     if (signedBefore) return undefined;
-    return awaitLedgerValidFrom(this.options.clock, validFrom, () => {
+    const wake = () => {
       if (!this.stopped) again();
-    });
+    };
+    return awaitClock(this.options.clock, Number(validFrom) * 1000 + LEDGER_CLOCK_SLACK_MS, wake, `validFrom not reached: the order opens at ${validFrom}`);
   }
 
   /** The committed fill: `confirmed` with its update id, or `sent` (outcome adopted at settle) without one; the ticket is filled. */

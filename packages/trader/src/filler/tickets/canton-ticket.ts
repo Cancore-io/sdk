@@ -183,13 +183,13 @@ export async function verifyCantonTicket(ctx: Context, input: TicketCheckInput, 
   pass('V-E5');
 }
 
-/** The first field of the `DeliveryOrder` that is not the ticket's and the order's; undefined when every one is. */
 /** The window field of the issued ticket that is not the offer's; `validFrom` is absent from a gateway that predates it (CAN-3026). */
 function windowMismatch(issued: TicketIssuedCanton, offer: TicketOffer): 'validUntil' | 'validFrom' | undefined {
   if (issued.validUntil !== offer.validUntil) return 'validUntil';
   return issued.validFrom !== undefined && issued.validFrom !== offer.validFrom ? 'validFrom' : undefined;
 }
 
+/** The first field of the `DeliveryOrder` that is not the ticket's and the order's; undefined when every one is. */
 export function deliveryOrderMismatch(
   order: CantonDeliveryOrder,
   issued: Pick<TicketIssuedCanton, 'orderHash' | 'attempt' | 'validUntil' | 'repayTo'>,
