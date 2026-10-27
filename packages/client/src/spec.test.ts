@@ -43,7 +43,7 @@ interface Operation {
 }
 const spec = JSON.parse(readFileSync(join(__dirname, '..', 'spec', 'openapi.json'), 'utf8')) as Spec;
 
-const ORDER_REPLY = { id: 'o1', status: 'completed', submissionKey: 'k', preparedTransactionHash: 'h', balance: 0 };
+const ORDER_REPLY = { id: 'o1', status: 'completed', submissionKey: 'k', preparedTransactionHash: 'h' };
 /** What the self-custody account reads off a reply to get to its next call. */
 const KEY = '00'.repeat(32);
 const SELF_CUSTODY_REPLIES: Record<string, unknown> = {
@@ -56,6 +56,7 @@ const SELF_CUSTODY_REPLIES: Record<string, unknown> = {
   '/wallet/operations/prepare': { operationId: 'op', legs: [], meta: {} },
   '/partner/cashback/claims': [],
   '/tokens/transfer-requests/incoming': [],
+  '/tokens/balance/{partyId}/{instrumentId}': { balance: 0 },
 };
 const DEVICE_REPLY = { deviceCode: 'd', userCode: 'U', verificationUri: '/w', expiresIn: 600, interval: 5, status: 'granted', token: 't' };
 
@@ -71,7 +72,7 @@ async function routesTheClientCalls(onBody: (route: string, body: unknown) => vo
     const route = `${(init.method ?? 'GET').toLowerCase()} ${path}`;
     seen.add(route);
     if (init.body !== undefined) onBody(route, JSON.parse(String(init.body)));
-    const reply = SELF_CUSTODY_REPLIES[raw] ?? (path.startsWith('/auth/device/') ? DEVICE_REPLY : ORDER_REPLY);
+    const reply = SELF_CUSTODY_REPLIES[raw] ?? SELF_CUSTODY_REPLIES[path] ?? (path.startsWith('/auth/device/') ? DEVICE_REPLY : ORDER_REPLY);
     return new Response(JSON.stringify(reply));
   };
   const http = createHttp({ baseUrl: 'https://api.example', request });

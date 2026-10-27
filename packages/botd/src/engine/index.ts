@@ -185,15 +185,7 @@ export function createEngine(options: EngineOptions): Engine {
       return { orderId: o.id, status: o.status, dvp: o.dvp === true, source: o.sourceTokenAddress, sourceAmount: o.sourceAmount, target: o.targetTokenAddress, targetAmount: o.targetAmount, ...(takenBySelf !== undefined && { takenBySelf }) };
     },
     async balances(instruments) {
-      return Promise.all(
-        instruments.map(async (instrument) => {
-          const { balance }: { balance: unknown } = await acct.balance(instrument);
-          const text = typeof balance === 'number' ? balance.toFixed(10) : typeof balance === 'string' ? balance : '';
-          const amount = dec(text);
-          if (amount < 0n) throw new Error(`not a non-negative decimal: ${String(balance)}`);
-          return { instrument, amount: fmt(amount) };
-        }),
-      );
+      return Promise.all(instruments.map(async (instrument) => ({ instrument, amount: (await acct.balance(instrument)).balance })));
     },
     async referencePrices() {
       const prices: Record<string, string> = {};
