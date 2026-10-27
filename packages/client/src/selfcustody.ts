@@ -1630,7 +1630,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
 const fromUnits = (amount: bigint) => `${amount / 10n ** 10n}.${(amount % 10n ** 10n).toString().padStart(10, '0')}`;
 
 /** A decimal the API sends as a JSON number, as the exact text `units` reads (never exponent notation). */
-// A double's shortest text is the decimal the API sent; toFixed(10) prints its binary expansion (1000007.31 → 1000007.3100000001).
+// A double's shortest text is the decimal the API sent (exact to ~15 significant digits; JSON.parse already rounded beyond); toFixed(10) prints its binary expansion (1000007.31 → 1000007.3100000001).
 const decimal = (value: unknown) =>
   typeof value === 'number' ? (/^\d+(\.\d{1,10})?$/.test(String(value)) ? String(value) : value.toFixed(10)) : typeof value === 'string' ? value : '';
 

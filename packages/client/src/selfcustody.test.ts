@@ -3389,6 +3389,14 @@ describe('balance(): TokenBalanceDto.balance number normalization (CAN-3087)', (
   });
 
   test.each([
+    [6e-11, '0.0000000001'],
+    [1e-11, '0'],
+  ] as const)('CAN-3126 @edge: rounds numeric balance %s with more than ten places to ten', async (wire, expected) => {
+    const { acct } = await accountWithBalance({ balance: wire });
+    await expect(acct.balance('CC')).resolves.toEqual({ balance: expected });
+  });
+
+  test.each([
     ['negative number', -1],
     ['non-decimal string', 'abc'],
     ['null', null],
