@@ -66,6 +66,7 @@ async function routesTheClientCalls(onBody: (route: string, body: unknown) => vo
     const raw = new URL(url).pathname;
     const path = raw
       .replace(/\/o1(?=\/|$)/, '/{id}')
+      .replace(/^\/auth\/bots\/\{id\}\//, '/auth/bots/{botId}/')
       .replace(/^\/tokens\/balance\/[^/]+\/[^/]+$/, '/tokens/balance/{partyId}/{instrumentId}');
     const route = `${(init.method ?? 'GET').toLowerCase()} ${path}`;
     seen.add(route);
@@ -94,6 +95,7 @@ async function routesTheClientCalls(onBody: (route: string, body: unknown) => vo
     acct.send({ receiverPartyId: 'p', amount: '1' }),
     acct.cashback.summary(), acct.cashback.claims(), acct.cashback.claim(), acct.cashback.collect(),
     acct.faucet(), acct.swap.createForPair({ tradingPairId: 'o1', sourceAmount: '1', targetAmount: '1' }),
+    acct.bots.create({ name: 'b', botSigner: signer }), acct.bots.list(), acct.bots.stop('o1'), acct.bots.resume('o1'),
   ]);
   await Promise.all([
     s.listOpen(), s.listMine(), s.get('o1'), s.create(offer),
@@ -241,6 +243,7 @@ const REQUEST_FIELDS: Record<string, string[]> = {
   QuoteDto: ['pairConfigId', 'sourceAmount'],
   ExecuteDto: ['quoteToken'],
   FaucetClaimRequestDto: ['agreementSignature', 'agreementTimestamp'],
+  CreateBotAccountDto: ['publicKey', 'challenge', 'signature', 'name'],
 };
 
 /**
@@ -314,6 +317,7 @@ const RESPONSE_FIELDS: Record<string, string[]> = {
     'hashLock', 'timeout', 'counterTimeout', 'rejectReason', 'proposalContractId', 'orderId', 'createdAt', 'updatedAt',
   ],
   FullSwapInfoDto: ['swap', 'legs', 'dvp'],
+  BotAccountResponseDto: ['id', 'name', 'publicKey', 'partyId', 'status', 'onboardingState', 'stoppedAt', 'createdAt'],
   SwapLegDto: ['role', 'sender', 'receiver', 'tokenId', 'amount', 'lockRef', 'status', 'legId', 'userActionRequired'],
   TradingPairResponseDto: [
     'id', 'baseToken', 'quoteToken', 'label', 'pricePrecision', 'amountPrecision',

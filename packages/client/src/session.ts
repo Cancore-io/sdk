@@ -114,32 +114,40 @@ const RENEW_AHEAD_MS = 60_000;
 const LOGIN_RETRIES = 2;
 const LOGIN_RETRY_PAUSE_MS = 1_000;
 
+/** The signer's hex public key; a `deriveWalletKey` result passed by mistake is refused here, before any request. */
+export function signerPublicKey(signer: KeySigner, field = 'signer'): string {
+  const publicKey = signer.public_key;
+  if (typeof publicKey !== 'string' || publicKey.trim() === '') {
+    throw new TypeError(
+      `${field}.public_key must be the hex Ed25519 public key. Pass the provider providerFromMnemonic returns ` +
+        '(@cancore/wallet), not the deriveWalletKey result, whose key is publicKeyHex.',
+    );
+  }
+  return publicKey;
+}
+
+// A signer with only `signMessage` signs whatever bytes it is handed, and the challenge is the
+// API's to choose: 32 bytes of it would be a signature over a transaction hash (CAN-2399). So the
+// shape a provider's own `signChallenge` holds a challenge to is held here for the fallback.
+export async function signLoginChallenge(signer: KeySigner, challenge: string): Promise<string> {
+  if (signer.signChallenge) return signer.signChallenge(challenge);
+  if (typeof challenge !== 'string' || !challenge.startsWith(LOGIN_CHALLENGE_PREFIX) || !/^[\x20-\x7e]+$/.test(challenge)) {
+    throw new Error('refusing to sign: the API sent something that is not a Cancore login challenge');
+  }
+  return signer.signMessage(challenge);
+}
+
 export function createSession({ baseUrl, signer, fetchImpl, now = Date.now, sleep }: SessionOptions): Session {
   const send: FetchLike = fetchImpl ?? ((url, init) => globalThis.fetch(url, init));
   const pause = sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const anonymous = createHttp({ baseUrl, request: send });
-  const publicKey = signer.public_key;
-  if (typeof publicKey !== 'string' || publicKey.trim() === '') {
-    throw new TypeError(
-      'signer.public_key must be the hex Ed25519 public key. Pass the provider providerFromMnemonic returns ' +
-        '(@cancore/wallet), not the deriveWalletKey result, whose key is publicKeyHex.',
-    );
-  }
+  const publicKey = signerPublicKey(signer);
 
   let token: string | null = null;
   let refreshToken: string | null = null;
   let renewing: Promise<unknown> | null = null;
 
-  // A signer with only `signMessage` signs whatever bytes it is handed, and the challenge is the
-  // API's to choose: 32 bytes of it would be a signature over a transaction hash (CAN-2399). So the
-  // shape a provider's own `signChallenge` holds a challenge to is held here for the fallback.
-  const signChallenge = async (challenge: string) => {
-    if (signer.signChallenge) return signer.signChallenge(challenge);
-    if (typeof challenge !== 'string' || !challenge.startsWith(LOGIN_CHALLENGE_PREFIX) || !/^[\x20-\x7e]+$/.test(challenge)) {
-      throw new Error('refusing to sign: the API sent something that is not a Cancore login challenge');
-    }
-    return signer.signMessage(challenge);
-  };
+  const signChallenge = (challenge: string) => signLoginChallenge(signer, challenge);
 
   function adopt(auth: AuthResponse): AccountUser {
     token = auth.token;

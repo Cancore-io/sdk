@@ -57,7 +57,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@cancore/client": "^0.12.2",
+    "@cancore/client": "^0.13.0",
     "@cancore/trader": "^0.1.0-rc.1",
     "@cancore/wallet": ">=0.3.0 <1.0.0",
     "zod": "^4.6.6"
