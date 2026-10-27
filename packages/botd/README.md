@@ -375,7 +375,7 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    bot's key, before the import: `onboard()` (its party and CC receipts,
    [Run a bot, section 5](../../docs/run-a-bot.md#5-onboard)) and, where the stand requires terms,
    `acceptTerms` ([section 8](../../docs/run-a-bot.md#8-first-trade)); the daemon does not accept
-   terms either. Then import its key, `deriveWalletKey(phrase, 'standard', N).seedHex`, the same
+   terms either. Then import its key, `deriveWalletKey(phrase, 'standard', N).seedHex` (`@cancore/wallet`), the same
    way:
 
    ```sh
