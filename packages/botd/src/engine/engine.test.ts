@@ -217,3 +217,32 @@ describe('engine.order', () => {
     expect(await Promise.all(['d', 'h', 'old'].map(async (id) => (await e.order(id)).dvp))).toEqual([true, false, false]);
   });
 });
+
+describe('engine.balances (CAN-3087)', () => {
+  it('G0-CAN-3087.1 & G0-CAN-3087.3: normalizes numeric, exponential (5e-8) and zero balances to canonical decimal strings', async () => {
+    const raw: Record<string, unknown> = { CC: 42.5, CBTC: 5e-8, USDCx: 0, ETHx: '10.2500' };
+    const e = await engineOver({ balance: async (instrument: string) => ({ balance: raw[instrument] }) });
+    const res = await e.balances(['CC', 'CBTC', 'USDCx', 'ETHx']);
+    expect(res).toEqual([
+      { instrument: 'CC', amount: '42.5' },
+      { instrument: 'CBTC', amount: '0.00000005' },
+      { instrument: 'USDCx', amount: '0' },
+      { instrument: 'ETHx', amount: '10.25' },
+    ]);
+    for (const item of res) {
+      expect(typeof item.amount).toBe('string');
+      expect(item.amount).not.toMatch(/[eE]/);
+    }
+  });
+
+  it.each([
+    ['negative number', -1],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['null', null],
+    ['malformed string', 'abc'],
+  ] as const)('G0-CAN-3087.2: rejects %s balance', async (_, bad) => {
+    const e = await engineOver({ balance: async () => ({ balance: bad }) });
+    await expect(e.balances(['CC'])).rejects.toThrow(/invalid decimal/);
+  });
+});

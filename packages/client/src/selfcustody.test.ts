@@ -3348,3 +3348,58 @@ describe('self-custody HTLC: Flow B, accept-counter and refund sign only what th
     expect(api.signed()).toEqual([]);
   });
 });
+
+describe('balance(): TokenBalanceDto.balance number normalization (CAN-3087)', () => {
+  async function accountWithBalance(reply: unknown) {
+    const signer = await providerFromMnemonic(PHRASE, { account: 66 });
+    const party = `party-me::${cantonFingerprint(signer.public_key)}`;
+    const api = stub({
+      'GET /auth/me': () => ({ id: 'me', partyId: party }),
+      [`GET /tokens/balance/${encodeURIComponent(party)}/CC`]: () => reply,
+      [`GET /tokens/balance/${encodeURIComponent(party)}/CBTC`]: () => reply,
+    });
+    const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
+    return { acct, party };
+  }
+
+  test('G0-CAN-3087.1 @happy: normalizes numeric TokenBalanceDto.balance to a plain decimal string', async () => {
+    const { acct } = await accountWithBalance({ balance: 42.5, holdingsCount: 3 });
+    const res = await acct.balance('CC');
+    expect(typeof res.balance).toBe('string');
+    expect(res).toEqual({ balance: '42.5', holdingsCount: 3 });
+
+    const { acct: stringAcct } = await accountWithBalance({ balance: '42.5000', holdingsCount: 1 });
+    await expect(stringAcct.balance('CC')).resolves.toEqual({ balance: '42.5', holdingsCount: 1 });
+  });
+
+  test('G0-CAN-3087.3 @edge: normalizes small exponential numbers (5e-8) without exponent and 0 / -0 to "0"', async () => {
+    const { acct: tiny } = await accountWithBalance({ balance: 5e-8, holdingsCount: 1 });
+    const tinyRes = await tiny.balance('CBTC');
+    expect(typeof tinyRes.balance).toBe('string');
+    expect(tinyRes.balance).toBe('0.00000005');
+    expect(tinyRes.balance).not.toMatch(/[eE]/);
+
+    const { acct: zero } = await accountWithBalance({ balance: 0, holdingsCount: 0 });
+    await expect(zero.balance('CC')).resolves.toEqual({ balance: '0', holdingsCount: 0 });
+
+    const { acct: negZero } = await accountWithBalance({ balance: -0 });
+    await expect(negZero.balance('CC')).resolves.toEqual({ balance: '0' });
+  });
+
+  test.each([
+    ['negative number', -1],
+    ['negative tiny number', -5e-8],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['past exponent notation', 1e21],
+    ['negative string', '-1'],
+    ['non-decimal string', 'abc'],
+    ['more than ten decimals', '0.12345678901'],
+    ['null', null],
+    ['missing', undefined],
+    ['array', ['10']],
+  ] as const)('G0-CAN-3087.2 @negative: refuses %s balance instead of passing it through', async (_, invalid) => {
+    const { acct } = await accountWithBalance({ balance: invalid });
+    await expect(acct.balance('CC')).rejects.toThrow(/balance .* is not a non-negative decimal of at most ten places/);
+  });
+});

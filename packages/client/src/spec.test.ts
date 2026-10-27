@@ -56,6 +56,7 @@ const SELF_CUSTODY_REPLIES: Record<string, unknown> = {
   '/wallet/operations/prepare': { operationId: 'op', legs: [], meta: {} },
   '/partner/cashback/claims': [],
   '/tokens/transfer-requests/incoming': [],
+  [`/tokens/balance/p::${cantonFingerprint(KEY)}/CC`]: { balance: 0, holdingsCount: 0 },
 };
 const DEVICE_REPLY = { deviceCode: 'd', userCode: 'U', verificationUri: '/w', expiresIn: 600, interval: 5, status: 'granted', token: 't' };
 
