@@ -238,7 +238,8 @@ it saw, so a truncated or broken log makes the daemon start locked **and paused*
 
 You need Linux with systemd, git, sudo, and Node.js 20+ installed system-wide (`sudo node --version`
 must work; not a Node under your home such as nvm's — the unit runs the node that ran `install`, and
-hides `/home`). In v1 you also need a bot made in the Cancore wallet, under My bots
+hides `/home`). In v1 you also need a bot that already has its Canton party: one made in the
+Cancore wallet under My bots, or one made from a program and set up once with `@cancore/client`
 ([Install](#install), step 4).
 
 ```sh
@@ -363,9 +364,19 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    file at the default path means all defaults (so withdraw is refused). The config is read once at
    start: restart the daemon (then `unlock`) after a change.
 
-4. **Create the keystore from a bot made in My bots: the v1 path.** Create the bot in the Cancore
-   wallet under **Settings → My bots**; the wallet sets up its account, its Canton party and CC
-   receipts. Then import the 64-hex key it shows:
+4. **Create the keystore from a bot made in My bots or from a program: the v1 path.** Create the
+   bot in the Cancore wallet under **Settings → My bots**; the wallet sets up its account, its
+   Canton party and CC receipts, and accepts the terms for it. Then import the 64-hex key it shows.
+
+   A bot made from a program with `owner.bots.create`
+   ([Run a bot](../../docs/run-a-bot.md#or-make-the-bot-from-a-program)) is the same account: the
+   same derivation path, and **Show key** shows the same key. It has no party yet, though, and the
+   daemon cannot create one (step 6). Set it up once with `@cancore/client`, signed in with the
+   bot's key, before the import: `onboard()` (its party and CC receipts,
+   [Run a bot, section 5](../../docs/run-a-bot.md#5-onboard)) and, where the stand requires terms,
+   `acceptTerms` ([section 8](../../docs/run-a-bot.md#8-first-trade)); the daemon does not accept
+   terms either. Then import its key, `deriveWalletKey(phrase, 'standard', N).seedHex` (`@cancore/wallet`), the same
+   way:
 
    ```sh
    sudo install -o cancore-bot -g cancore-bot -m 600 /dev/stdin /var/lib/cancore-bot/import.key  # paste, Ctrl-D
@@ -408,7 +419,7 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    sudo -u cancore-bot cancore-bot status
    ```
 
-   A bot from My bots needs no `register`: the first `unlock` finds its party in the background
+   A bot from My bots, or one set up as in step 4, needs no `register`: the first `unlock` finds its party in the background
    (`onboard()` of the SDK, with the daemon's signer; see
    [Run a bot, section 5](../../docs/run-a-bot.md#5-onboard)), and `status` shows the `partyId`
    from then on; it is the bot's address. `register` (it prompts for an invite code; Enter for none)
@@ -563,9 +574,9 @@ config (`cancore-botd --config <path>` too).
 | --- | --- |
 | `init` | new keystore from a new 24-word phrase: shown once, three random words asked back, then the passphrase twice; prints the public key. Refuses to overwrite an existing keystore. In v1 such a key cannot get a party, so it cannot trade. |
 | `init --import` | from a phrase you type (account 0 of it): use a phrase made for this bot, never your wallet's. The same v1 limit as `init`. |
-| `init --import-key <file>` | the v1 path: from the 64-hex key "My bots" shows; the file must be owned by `cancore-bot`, mode `0600` (no group/other bits), not a symlink |
+| `init --import-key <file>` | the v1 path: from the 64-hex key "My bots" shows (or a program derived for a bot it made and set up); the file must be owned by `cancore-bot`, mode `0600` (no group/other bits), not a symlink |
 | `unlock` / `lock` | decrypt the key into the daemon / wipe it (lock also stops the strategies' loop and settlement until the next unlock) |
-| `register` | register the account (invite code prompted, Enter for none) and onboard it, print `partyId`; in v1 it completes only for an account whose party already exists (a bot from My bots, which does not need it) |
+| `register` | register the account (invite code prompted, Enter for none) and onboard it, print `partyId`; in v1 it completes only for an account whose party already exists (a bot from My bots, or one set up as in step 4, which does not need it) |
 | `status` | `locked`, `paused`, `pauseReason`, `partyId`, strategies, `version` |
 | `limits show` / `limits set <file>` | read / replace the limits (`limits set /dev/stdin < limits.json`) |
 | `pause [reason]` / `resume` | stop trading (below) / lift a pause, the owner's alone |
@@ -783,8 +794,8 @@ reconnects by itself.
 
 ### Lost passphrase
 
-A bot from My bots: **Show key** in the wallet (behind your wallet password) gives the same key
-again. Move the old keystore aside and import the key once more:
+A bot from My bots, or one made from a program: **Show key** in the wallet (behind your wallet
+password) gives the same key again, as does deriving it from the phrase once more. Move the old keystore aside and import the key once more:
 
 ```sh
 sudo -u cancore-bot mv /var/lib/cancore-bot/keystore.json /var/lib/cancore-bot/keystore.json.lost
@@ -877,8 +888,8 @@ sudo userdel -r cancore-agent      # the agent's user and its home, if you no lo
 | agent gets `socket_unavailable` | the agent's user is not in `cancore-bot-clients`, or the MCP client started in a login from before the install | `id cancore-agent` must list `cancore-bot-clients`; start the MCP client in a new login of that user |
 | every make `rate_limited`, every take `no_rule` | no limits set yet (`maxCommandsPerMinute` `0`, no `allowedPairs`) | set the limits (step 8) |
 | `order.make` `rate_limited` with `maxCommandsPerMinute` set | the daemon's hourly `ordersPerHour` budget is spent, or the network's per-person hourly limit answered 429 (the audit log then has the make as `error`, reason `rate_limited`) | wait for the hour to pass; lower `ordersPerHour` to leave room for orders placed elsewhere |
-| `register` fails with `-32603 internal error` and the audit log has `verify_failed` | a key from `init` or `init --import`: v1 cannot create its party (the signer guard refuses the topology signature); retrying fails the same way | use a bot made in My bots, imported with `init --import-key` (step 4) |
-| after the first unlock, `status` shows no `partyId` and the audit log has `not registered: run cancore-bot register` | the account has no party (a key from `init` or `init --import`), or onboarding failed, for example with the API unreachable | a bot from My bots; to retry, `lock` and `unlock` again |
+| `register` fails with `-32603 internal error` and the audit log has `verify_failed` | a key from `init` or `init --import`: v1 cannot create its party (the signer guard refuses the topology signature); retrying fails the same way | use a bot made in My bots, or one made from a program and set up with `@cancore/client`, imported with `init --import-key` (step 4) |
+| after the first unlock, `status` shows no `partyId` and the audit log has `not registered: run cancore-bot register` | the account has no party (a key from `init` or `init --import`), or onboarding failed, for example with the API unreachable | a bot from My bots, or a bot made from a program after its first `onboard()` with `@cancore/client` (step 4); to retry, `lock` and `unlock` again |
 | a token other than CC sent to the bot does not show in `trade_balances` | it waits as an offer the bot has to accept, and the daemon never accepts one | **Accept incoming** on the bot's row in My bots, or trade CC into that token |
 | a trade never settles, with `<id> admin for <network> not configured` | the SDK pins no instrument admin for that token on the network ([Networks](#networks)); on testnet that includes CC | allow pairs of the pinned tokens only (step 8), or add the admin with `instrumentAdmins` |
 | paused with `pauseReason: unbooked_fill` | a trade settled on the bot account that the daemon never booked (for example one made by hand in the web app on the bot's account); the limits cannot account for it, so the bot stops placing orders (orders already resting stay on the venue and can still fill; strategies continue after `resume`) | check the audit log and the account's orders, then `cancore-bot resume`; do not trade by hand on the bot account |
@@ -899,8 +910,8 @@ sudo userdel -r cancore-agent      # the agent's user and its home, if you no lo
 - `balances` has no `locked` amount: the SDK does not list a party's allocations.
 - `quote` for a buy sizes the pool request from the market rate, so the base amount it returns is
   close to the one asked, not exact.
-- Creating a new account's party from the daemon: in v1 the bot comes from My bots
-  ([Install](#install), step 4).
+- Creating a new account's party from the daemon: in v1 the bot comes from My bots, or from a
+  program that set it up with `@cancore/client` ([Install](#install), step 4).
 - Accepting incoming transfers: fund the bot with CC; another token waits as an offer (accept it in
   My bots, or trade CC into it).
 - Other instruments than the network's pinned ones ([Networks](#networks)), unless the config adds

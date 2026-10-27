@@ -229,7 +229,8 @@ bot. The account's key signs every step that needs its authority: its sign-in, i
 party, each leg of a swap, the acceptance of a delivery or a cashback payout. Only the
 signatures leave your process; the API never holds the key.
 
-**A bot account made in the wallet ("My bots"):** [Run a bot](../../docs/run-a-bot.md) goes from
+**A bot account made in the wallet ("My bots")**, or by your own program with `bots.create`
+([Run a bot, section 2](../../docs/run-a-bot.md#or-make-the-bot-from-a-program)): [Run a bot](../../docs/run-a-bot.md) goes from
 the key the wallet shows to the first trade — sign-in, `onboard()`, funding, one trade as maker and
 as taker, withdrawing, and the limits a bot meets.
 

@@ -23,7 +23,8 @@ teaches an agent to trade through `@cancore/bot-mcp`.
 **Partners** running a trading bot or market maker on Canton with their own key: start with the
 [partner guide](docs/partner-guide.md).
 
-**Your own bot**, on a bot account made in the Cancore wallet ("My bots"):
+**Your own bot**, on a bot account made in the Cancore wallet ("My bots") or from a program of
+your own with `owner.bots.create` ([`@cancore/client`](packages/client) 0.13.0):
 [Run a bot](docs/run-a-bot.md) goes from the key the wallet shows to the first trade.
 
 The five answer five different questions. A dApp that wants a signature from
@@ -80,10 +81,14 @@ you --sudo -u cancore-bot--> cancore-bot --owner.sock-------+
 devnet, testnet and mainnet, on the network of its `baseUrl` (devnet unless the config names
 another host; what settles where: [Networks](packages/botd/README.md#networks)), on Linux with
 systemd; the agent must run on the same machine as the daemon, as a user of its own without sudo
-rights. The bot itself is made in the Cancore wallet (Settings → My bots), which gives it its
-party: v1 cannot create one for a new key.
+rights. v1 cannot create a Canton party for a new key, so the bot needs one before the daemon
+gets its key: a bot made in the Cancore wallet (Settings → My bots) gets it from the wallet; a bot
+made from a program with `owner.bots.create`
+([Run a bot](docs/run-a-bot.md#or-make-the-bot-from-a-program)) gets it from its first `onboard()`
+with `@cancore/client`, run once before the import.
 
-**Quick start:** make the bot in My bots,
+**Quick start:** make the bot in My bots or from a program
+([Install](packages/botd/README.md#install), step 4),
 [install from source](packages/botd/README.md#install-from-source-until-it-is-on-npm), follow the
 daemon's [Install](packages/botd/README.md#install) steps, then
 [connect the agent](packages/bot-mcp/README.md#setup-from-source) and
