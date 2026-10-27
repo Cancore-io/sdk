@@ -56,6 +56,7 @@ const SELF_CUSTODY_REPLIES: Record<string, unknown> = {
   '/wallet/operations/prepare': { operationId: 'op', legs: [], meta: {} },
   '/partner/cashback/claims': [],
   '/tokens/transfer-requests/incoming': [],
+  '/tokens/balance/{partyId}/{instrumentId}': { balance: 0 },
 };
 const DEVICE_REPLY = { deviceCode: 'd', userCode: 'U', verificationUri: '/w', expiresIn: 600, interval: 5, status: 'granted', token: 't' };
 
@@ -71,7 +72,7 @@ async function routesTheClientCalls(onBody: (route: string, body: unknown) => vo
     const route = `${(init.method ?? 'GET').toLowerCase()} ${path}`;
     seen.add(route);
     if (init.body !== undefined) onBody(route, JSON.parse(String(init.body)));
-    const reply = SELF_CUSTODY_REPLIES[raw] ?? (path.startsWith('/auth/device/') ? DEVICE_REPLY : ORDER_REPLY);
+    const reply = SELF_CUSTODY_REPLIES[raw] ?? SELF_CUSTODY_REPLIES[path] ?? (path.startsWith('/auth/device/') ? DEVICE_REPLY : ORDER_REPLY);
     return new Response(JSON.stringify(reply));
   };
   const http = createHttp({ baseUrl: 'https://api.example', request });

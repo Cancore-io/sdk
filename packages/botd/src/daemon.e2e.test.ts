@@ -103,7 +103,7 @@ function fakeApi() {
       if (route === 'GET /htlc/swaps') return json([]);
       // A take reads the pair from the stand before it accepts (CAN-2979).
       if (route === 'GET /htlc/dvp/instruments') return json([{ id: 'CC', admin: DEFAULT_INSTRUMENT_ADMINS.devnet.Amulet![0] }, { id: 'USDCx', admin: USDCX_ADMIN }]);
-      if (pathname.startsWith('/tokens/balance/')) return json({ balance: '42.5' });
+      if (pathname.startsWith('/tokens/balance/')) return json({ balance: 42.5 });
       if (route === 'POST /wallet/operations/prepare' && body.type === 'tokens.send') {
         const { receiverPartyId: to, amount } = body.params;
         const honest = await selfSendLeg({ party, kind: 'transfer', receiver: to, input: '100', ids: 'a', outputs: [{ owner: to, amount }, { owner: party, amount: (100 - Number(amount)).toFixed(10) }] });
