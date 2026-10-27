@@ -961,7 +961,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     const ceiling = units(options.maxSplitCost ?? DEFAULT_MAX_SPLIT_COST);
     if (ceiling < 0n) throw new RangeError(`maxSplitCost must be a decimal of at most ten places, got ${options.maxSplitCost}`);
     const [held, quote, debt] = await Promise.all([
-      balance(tokenId),
+      heldBalance(tokenId),
       http.get<{ networkFee?: number }>('/tokens/transfer/estimate-fee', { instrumentId: tokenId, amount: feeAmount }),
       // The API collects the account's fee debt on the same fee leg (CAN-538): it is part of the cost.
       http.get<{ outstandingCc?: string }>('/tokens/fee-debt'),
@@ -976,11 +976,12 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
             `${networkFee} that is above maxSplitCost ${fromUnits(ceiling)} — settle the fee debt first (an ordinary send collects it), or raise maxSplitCost`
         : `the API's network fee estimate ${networkFee} is above maxSplitCost ${fromUnits(ceiling)}`);
     }
+    if (held.malformed) throw cannot(held.malformed);
     const cost = networkUnits + debtUnits;
-    const left = units(held.balance) - fee - cost;
+    const left = held.amount - fee - cost;
     // Strictly more than nothing: a self-send of the whole balance leaves one holding, not two.
     if (left <= 0n || (need !== undefined && left < need)) {
-      throw cannot(`insufficient balance — ${held.balance} does not cover the fee, the send's network fee ${networkFee}` +
+      throw cannot(`insufficient balance — ${decimalOf(held.amount)} does not cover the fee, the send's network fee ${networkFee}` +
         `${debtUnits > 0n ? ` and fee debt ${debt.outstandingCc}` : ''}${need !== undefined ? ' and the trade leg' : ''}`);
     }
     const party = await ownParty();
@@ -1552,10 +1553,16 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     return partyId;
   }
 
-  async function balance(instrumentId: string) {
+  async function heldBalance(instrumentId: string) {
     const raw = await http.get<{ balance?: unknown; holdingsCount?: number }>(`/tokens/balance/${encodeURIComponent(await ownParty())}/${encodeURIComponent(instrumentId)}`);
     const amount = units(decimal(raw.balance));
-    if (amount < 0n) throw new Error(`the API's ${instrumentId} balance ${String(raw.balance)} is not a non-negative decimal of at most ten places`);
+    const malformed = amount < 0n ? `the API's ${instrumentId} balance ${String(raw.balance)} is not a non-negative decimal of at most ten places` : null;
+    return { raw, amount, malformed };
+  }
+
+  async function balance(instrumentId: string) {
+    const { raw, amount, malformed } = await heldBalance(instrumentId);
+    if (malformed) throw new Error(malformed);
     return { ...raw, balance: decimalOf(amount) };
   }
 
@@ -1623,7 +1630,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
 const fromUnits = (amount: bigint) => `${amount / 10n ** 10n}.${(amount % 10n ** 10n).toString().padStart(10, '0')}`;
 
 /** A decimal the API sends as a JSON number, as the exact text `units` reads (never exponent notation). */
-const decimal = (value: unknown) => (typeof value === 'number' ? value.toFixed(10) : typeof value === 'string' ? value : '');
+// A double's shortest text is the decimal the API sent; toFixed(10) prints its binary expansion (1000007.31 → 1000007.3100000001).
+const decimal = (value: unknown) =>
+  typeof value === 'number' ? (/^\d+(\.\d{1,10})?$/.test(String(value)) ? String(value) : value.toFixed(10)) : typeof value === 'string' ? value : '';
 
 /** CC under the aliases the API uses for it: it is delivered through the preapproval, never as a transfer to accept. */
 export function isCc(instrumentId: string): boolean {
