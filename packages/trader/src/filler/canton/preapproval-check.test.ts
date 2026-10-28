@@ -101,3 +101,37 @@ describe('preapproval.create: the party’s own preapproval with a pinned regist
     });
   });
 });
+
+describe('preapproval.create with a DA Utilities registry: the utility TransferPreapproval, no window (CAN-2931)', () => {
+  const CBTC_ADMIN = 'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff';
+  const OPERATOR = 'auth0_007c65f857f1c3d599cb6df73775::1220d2d732d042c281cee80f483ab80f3cbaa4782860ed5f4dc228ab03dedd2ee8f9';
+  const APP = '2293eb12e82ceaeb3ff7f8fe3346dece8578e1e9fd7d46624aeb7bb07fa31eda';
+  const TEMPLATE = `${APP}:Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval`;
+  const stated = { party: ME, admin: CBTC_ADMIN, operator: OPERATOR, instrumentAllowances: ['CBTC'], requestedAt: null, executeBefore: null };
+  const preparedOf = (over: Record<string, unknown> = {}) => ({ summary: { ...stated, ...over } }) as unknown as PreparedOf<'preapproval.create'>;
+  const utility = (over: { template?: string; arg?: Record<string, DamlValue>; signatories?: string[] } = {}): CantonTransaction => {
+    const root: TransactionNode = {
+      nodeId: '0', kind: 'create', contractId: '00util', packageName: 'utility-registry-app-v0', templateId: over.template ?? TEMPLATE,
+      argument: v.record({ operator: v.party(OPERATOR), receiver: v.party(ME), instrumentAdmin: v.party(CBTC_ADMIN), instrumentAllowances: { t: 'list', v: [v.record({ id: v.text('CBTC') })] }, ...over.arg }),
+      signatories: over.signatories ?? [ME], stakeholders: [ME, OPERATOR],
+    };
+    return { commandId: 'c', actAs: [ME], roots: ['0'], nodes: { '0': root }, inputContracts: [], synchronizerId: 's', preparationTime: '0' };
+  };
+  const checkCbtc = () => checkPreapprovalCreate({ params: { admin: CBTC_ADMIN }, publicKey: KEY, nowMs: NOW });
+
+  test('TC-SDK-2931-01: the honest create passes; dev pins CBTC’s DA Utilities preapproval', () => {
+    expect(CANTON_TRANSFER_FACTORIES[CBTC_ADMIN]?.[0]).toMatchObject({ packageId: APP, preapprovalForm: 'utility' });
+    expect(() => checkCbtc()(preparedOf(), [utility()])).not.toThrow();
+  });
+
+  test.each([
+    ['TC-SDK-2931-02: a window stated for a registry that has none', () => checkCbtc()(preparedOf({ requestedAt: REQUESTED, executeBefore: BEFORE }), [utility()]), /no validity window/],
+    ['TC-SDK-2931-03: no operator stated', () => checkCbtc()(preparedOf({ operator: undefined }), [utility()]), /operator is not stated/],
+    ['TC-SDK-2931-04: another operator in the contract than stated', () => checkCbtc()(preparedOf(), [utility({ arg: { operator: v.party('mallory::1220ee') } })]), /another operator/],
+    ['TC-SDK-2931-05: another instrument admin in the contract', () => checkCbtc()(preparedOf(), [utility({ arg: { instrumentAdmin: v.party('evil::1220ee') } })]), /another admin/],
+    ['TC-SDK-2931-06: other allowances than stated', () => checkCbtc()(preparedOf(), [utility({ arg: { instrumentAllowances: { t: 'list', v: [v.record({ id: v.text('CETH') })] } } })]), /allowances/],
+    ['TC-SDK-2931-07: co-signed by the operator', () => checkCbtc()(preparedOf(), [utility({ signatories: [ME, OPERATOR] })]), /signed by the party alone/],
+    ['TC-SDK-2931-08: the utility template of another package', () => checkCbtc()(preparedOf(), [utility({ template: `${'ee'.repeat(32)}:Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval` })]), /not the preapproval of a pinned registry/],
+    ['TC-SDK-2931-09: a CNRX-form window check is not skipped for CNRX', () => check()(prepared({ requestedAt: null as never }), [create()]), /requestedAt is not unix seconds/],
+  ])('%s: refused', (_name, run, detail) => refused(run, detail));
+});

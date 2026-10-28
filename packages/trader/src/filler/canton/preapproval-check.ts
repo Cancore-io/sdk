@@ -16,6 +16,12 @@
  *
  * What a preapproval lets in is a credit of the party: a transfer through it
  * moves value only TO the receiver, so signing it risks nothing of the party's.
+ *
+ * A DA Utilities registry (`preapprovalForm: 'utility'`, CAN-2931): the
+ * argument is `operator` (the stated one), `receiver`, `instrumentAdmin` the
+ * asked admin and `instrumentAllowances` as `{id}` records; it has no
+ * validity window, so the summary states `requestedAt` and `executeBefore`
+ * as null.
  */
 import type { CantonOpParams, Hex } from '@cancore/contracts';
 import { field, isOwnParty, party, refuse, sameSet, textOf } from './checks';
@@ -41,15 +47,10 @@ export function checkPreapprovalCreate(expect: {
     const admin = expect.params.admin;
     if (s.admin !== admin) refuse('the stated admin is not the one asked for');
     if (!isOwnParty(s.party, expect.publicKey)) refuse('the preapproval is for another party than the node key’s');
-    const requestedAt = seconds(s.requestedAt, 'requestedAt');
-    const executeBefore = seconds(s.executeBefore, 'executeBefore');
-    if (requestedAt * 1000n > BigInt(expect.nowMs + SKEW_MS)) refuse('requestedAt is ahead of the clock');
-    if (executeBefore * 1000n <= BigInt(expect.nowMs)) refuse('executeBefore has passed');
     if (!Array.isArray(s.instrumentAllowances) || !s.instrumentAllowances.every((a) => typeof a === 'string')) refuse('instrumentAllowances is not a list of instrument ids');
 
-    const registries = (expect.factories ?? CANTON_TRANSFER_FACTORIES)[admin] ?? [];
-    const templates = registries.flatMap((f) => (f.preapproval ? [`${f.packageId}:${f.preapproval}`] : []));
-    if (templates.length === 0) refuse(`no pinned registry of ${admin} has a preapproval`);
+    const registries = ((expect.factories ?? CANTON_TRANSFER_FACTORIES)[admin] ?? []).filter((f) => f.preapproval);
+    if (registries.length === 0) refuse(`no pinned registry of ${admin} has a preapproval`);
 
     if (transactions.length !== 1) refuse(`expected one transaction, got ${transactions.length}`);
     const tx = transactions[0] as CantonTransaction;
@@ -57,14 +58,27 @@ export function checkPreapprovalCreate(expect: {
     if (tx.inputContracts.length !== 0) refuse('the transaction reads contracts a create does not need');
     const root = tx.nodes[tx.roots[0] as string];
     if (root?.kind !== 'create') return refuse('the root is not a create');
-    if (!templates.includes(root.templateId)) refuse(`${root.templateId} is not the preapproval of a pinned registry of ${admin}`);
+    const registry = registries.find((f) => root.templateId === `${f.packageId}:${f.preapproval}`);
+    if (!registry) return refuse(`${root.templateId} is not the preapproval of a pinned registry of ${admin}`);
     if (!sameSet(tx.actAs, [s.party])) refuse('the transaction acts as another party');
     if (!sameSet(root.signatories, [s.party])) refuse('the preapproval is not signed by the party alone');
 
     const a = root.argument;
-    if (party(field(a, 'admin')) !== admin) refuse('the preapproval is with another admin');
     if (party(field(a, 'receiver')) !== s.party) refuse('the preapproval names another receiver');
     const allowances = field(a, 'instrumentAllowances');
+    if (registry.preapprovalForm === 'utility') {
+      if (s.requestedAt !== null || s.executeBefore !== null) refuse('a DA Utilities preapproval has no validity window: requestedAt and executeBefore are stated null');
+      if (typeof s.operator !== 'string' || s.operator.length === 0) refuse('the DA Utilities operator is not stated');
+      if (party(field(a, 'instrumentAdmin')) !== admin) refuse('the preapproval is with another admin');
+      if (party(field(a, 'operator')) !== s.operator) refuse('the preapproval names another operator than stated');
+      if (allowances.t !== 'list' || !sameSet(allowances.v.map((v) => textOf(field(v, 'id'))), s.instrumentAllowances)) refuse('the allowances are not the stated ones');
+      return;
+    }
+    const requestedAt = seconds(s.requestedAt, 'requestedAt');
+    const executeBefore = seconds(s.executeBefore, 'executeBefore');
+    if (requestedAt * 1000n > BigInt(expect.nowMs + SKEW_MS)) refuse('requestedAt is ahead of the clock');
+    if (executeBefore * 1000n <= BigInt(expect.nowMs)) refuse('executeBefore has passed');
+    if (party(field(a, 'admin')) !== admin) refuse('the preapproval is with another admin');
     if (allowances.t !== 'list' || !sameSet(allowances.v.map(textOf), s.instrumentAllowances)) refuse('the allowances are not the stated ones');
     if (micros(field(a, 'requestedAt')) !== requestedAt * 1_000_000n) refuse('requestedAt is not the stated one');
     if (micros(field(a, 'executeBefore')) !== executeBefore * 1_000_000n) refuse('executeBefore is not the stated one');

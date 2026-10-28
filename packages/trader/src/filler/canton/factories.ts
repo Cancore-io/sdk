@@ -48,6 +48,13 @@ export interface CantonTransferFactory {
    * without it gets no preapproval from the node.
    */
   preapproval?: string;
+  /**
+   * How the preapproval reads (CAN-2931): `cnrx` (default) — fields `admin`,
+   * `receiver`, `instrumentAllowances` (ids), `requestedAt`, `executeBefore`;
+   * `utility` (DA Utilities) — `operator`, `receiver`, `instrumentAdmin`,
+   * `instrumentAllowances` (`{id}`), no validity window.
+   */
+  preapprovalForm?: 'cnrx' | 'utility';
 }
 
 const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
@@ -67,10 +74,31 @@ const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
   preapproval: 'Cnrx.Transfer:CnrxTransferPreapproval',
 };
 
+/**
+ * DA Utilities `utility-registry-app-v0` 0.8.2 (meta `dars/utility/packages.json`; the version dev vets for a
+ * receiver and DA's operator, backend utility-registry-package.resolver.ts). Only the preapproval is pinned for
+ * a delivery yet: `factory`, `holding` and `offer` are the templates the stand's DA DARs carry, and a transfer
+ * through them is still refused by the holding check (the holding lives in `utility-registry-holding-v0`) until
+ * the transfer's shape is pinned from the stand spike (sdk test da-utility-transfer, CAN-2931).
+ */
+const DA_UTILITY_REGISTRY_APP_0_8_2: CantonTransferFactory = {
+  packageId: '2293eb12e82ceaeb3ff7f8fe3346dece8578e1e9fd7d46624aeb7bb07fa31eda',
+  factory: 'Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval',
+  holding: 'Utility.Registry.Holding.V0.Holding:Holding',
+  holdingView: 'holding',
+  offer: 'Utility.Registry.App.V0.Model.Transfer:TransferOffer',
+  serviceChoices: [],
+  // Signatory the receiver, observer DA's operator; transfers to the receiver complete at once.
+  preapproval: 'Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval',
+  preapprovalForm: 'utility',
+};
+
 /** By instrument admin party. */
 export const CANTON_TRANSFER_FACTORIES: Readonly<Record<string, readonly CantonTransferFactory[]>> = {
   // dev: the CNRX registrar (gitops k8s/envs/dev CNRX_REGISTRY_ADMIN_PARTY).
   'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b': [CNRX_REGISTRY_0_2_3],
+  // devnet: CBTC's registrar on DA Utilities dev (backend libs/common/src/config/cbtc.config.ts).
+  'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff': [DA_UTILITY_REGISTRY_APP_0_8_2],
 };
 
 const PACKAGE_ID = /^[0-9a-f]{64}$/;
@@ -98,6 +126,7 @@ export function registriesProblem(registries: unknown): string | undefined {
       if (f.allocation !== undefined && (typeof f.allocation !== 'string' || !QUALIFIED.test(f.allocation))) return `${at}.allocation: expected <module>:<entity>`;
       if (f.openReceipt !== undefined && typeof f.openReceipt !== 'boolean') return `${at}.openReceipt: expected a boolean`;
       if (f.preapproval !== undefined && (typeof f.preapproval !== 'string' || !QUALIFIED.test(f.preapproval))) return `${at}.preapproval: expected <module>:<entity>`;
+      if (f.preapprovalForm !== undefined && f.preapprovalForm !== 'cnrx' && f.preapprovalForm !== 'utility') return `${at}.preapprovalForm: expected cnrx or utility`;
     }
   }
   return undefined;
