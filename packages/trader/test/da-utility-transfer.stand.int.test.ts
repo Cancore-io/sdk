@@ -79,8 +79,10 @@ const fieldsOf = (v: DamlValue): string[] => (v.t === 'record' ? Object.keys(v.v
     const bootstrap = readJson<Bootstrap>('registry-bootstrap.json');
     const genesis = readJson<Genesis>('genesis.json');
     const admin = bootstrap.registryParty;
-    const holders = Object.keys(bootstrap.balances).filter((k) => k.startsWith(`${INSTRUMENT}/`)).map((k) => k.slice(INSTRUMENT.length + 1));
-    const receiverName = holders.includes('alice') ? 'alice' : holders[1];
+    // The seed's balances name `<instrument>/<party>`; any genesis party may hold CBTC after the handout, so all are tried.
+    const seeded = Object.keys(bootstrap.balances ?? {}).filter((k) => k.toUpperCase().startsWith(`${INSTRUMENT}/`)).map((k) => k.slice(INSTRUMENT.length + 1));
+    const holders = [...new Set([...seeded, ...Object.keys(genesis.parties)])];
+    const receiverName = 'alice';
     const token = await cantonToken();
     const { user } = await ledger<{ user: { id: string } }>('/v2/authenticated-user', token);
 
@@ -90,7 +92,7 @@ const fieldsOf = (v: DamlValue): string[] => (v.t === 'record' ? Object.keys(v.v
       const receiver = genesis.parties[receiverName as string];
       if (!sender || !receiver) continue;
       const inputs = await holdings(sender, admin, token).catch((e: Error) => (tried.push(`${senderName}: ${e.message.slice(0, 200)}`), [] as string[]));
-      if (inputs.length === 0) continue;
+      if (inputs.length === 0) { tried.push(`${senderName}: no unlocked ${INSTRUMENT}`); continue; }
       const transfer = {
         sender, receiver, amount: '0.0001', instrumentId: { admin, id: INSTRUMENT },
         requestedAt: new Date().toISOString(), executeBefore: new Date(Date.now() + 3_600_000).toISOString(), inputHoldingCids: inputs.slice(0, 1), meta: { values: {} },
@@ -127,6 +129,6 @@ const fieldsOf = (v: DamlValue): string[] => (v.t === 'record' ? Object.keys(v.v
       expect(tx.nodes[tx.roots[0] as string]).toMatchObject({ kind: 'exercise', choice: 'TransferFactory_Transfer' });
       return;
     }
-    throw new Error(`no CBTC holder of ${admin} could prepare a transfer to ${String(receiverName)}:\n${tried.join('\n')}`);
+    throw new Error(`no CBTC holder of ${admin} could prepare a transfer to ${receiverName} (seeded: ${seeded.join(', ') || 'none'}; balances: ${JSON.stringify(bootstrap.balances ?? {}).slice(0, 500)}):\n${tried.join('\n')}`);
   }, 180_000);
 });
