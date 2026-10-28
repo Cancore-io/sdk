@@ -465,6 +465,9 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.19` — `preapproval.create` (CAN-2931): optional `summary.provider` for a Splice (CC)
+  registry, whose party signs a `TransferPreapprovalProposal` its provider accepts and pays for;
+  such a summary states `requestedAt` and `executeBefore` null and no allowances. Additive.
 - `0.2.0-rc.17` — Canton op `preapproval.create` (CAN-2904): `params {admin}`, `summary {party,
   admin, instrumentAllowances, requestedAt, executeBefore}`, `result {preapprovalCid}` — the filler's
   external party signs its own transfer preapproval with a registry, the one way it can be credited

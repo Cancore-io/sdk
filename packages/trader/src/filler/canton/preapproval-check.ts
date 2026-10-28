@@ -23,9 +23,18 @@
  * asked admin and `instrumentAllowances` as `{id}` records; it has no
  * validity window, so the summary states `requestedAt` and `executeBefore`
  * as null.
+ *
+ * A Splice registry (CC, `preapprovalForm: 'splice'`, CAN-2931): the
+ * `TransferPreapproval` is signed by the receiver, its provider and the DSO,
+ * so the party signs only the `TransferPreapprovalProposal` — `receiver` the
+ * party, `provider` the stated one, which must be the registry's pinned
+ * `preapprovalProvider`, `expectedDso` the asked admin. The provider accepts
+ * it and pays; the window is the provider's, set on accept, so the summary
+ * states `requestedAt` and `executeBefore` as null and no allowance (a Splice
+ * preapproval admits every instrument of its DSO, which is only `Amulet`).
  */
 import type { CantonOpParams, Hex } from '@cancore/contracts';
-import { field, isOwnParty, party, refuse, sameSet, textOf } from './checks';
+import { field, isOwnParty, optionalParty, party, refuse, sameSet, textOf } from './checks';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
 import type { CantonOpCheck, PreparedOf } from './operations';
 import type { CantonTransaction, DamlValue } from './transaction';
@@ -59,12 +68,13 @@ export function checkPreapprovalCreate(expect: {
     if (tx.inputContracts.length !== 0) refuse('the transaction reads contracts a create does not need');
     const root = tx.nodes[tx.roots[0] as string];
     if (root?.kind !== 'create') return refuse('the root is not a create');
-    const registry = registries.find((f) => root.templateId === `${f.packageId}:${f.preapproval}`);
+    const registry = registries.find((f) => root.templateId === `${f.preapprovalPackageId ?? f.packageId}:${f.preapproval}`);
     if (!registry) return refuse(`${root.templateId} is not the preapproval of a pinned registry of ${admin}`);
     if (!sameSet(tx.actAs, [s.party])) refuse('the transaction acts as another party');
     if (!sameSet(root.signatories, [s.party])) refuse('the preapproval is not signed by the party alone');
 
     if (registry.preapprovalForm === 'utility') checkUtilityPreapproval(root.argument, s, admin, registry);
+    else if (registry.preapprovalForm === 'splice') checkSpliceProposal(root.argument, s, admin, registry);
     else checkCnrxPreapproval(root.argument, s, admin, expect.nowMs);
   };
 }
@@ -96,4 +106,16 @@ function checkUtilityPreapproval(a: DamlValue, s: Stated, admin: string, registr
   if (party(field(a, 'operator')) !== s.operator) refuse('the preapproval names another operator than stated');
   const allowances = field(a, 'instrumentAllowances');
   if (allowances.t !== 'list' || !sameSet(allowances.v.map((v) => textOf(field(v, 'id'))), s.instrumentAllowances)) refuse('the allowances are not the stated ones');
+}
+
+/** Splice: the proposal names the party, the stated provider — the pinned one — and the asked admin as the DSO it expects. */
+function checkSpliceProposal(a: DamlValue, s: Stated, admin: string, registry: CantonTransferFactory): void {
+  if (s.requestedAt !== null || s.executeBefore !== null) refuse('a Splice preapproval’s window is its provider’s: requestedAt and executeBefore are stated null');
+  if (s.instrumentAllowances.length !== 0) refuse('a Splice preapproval admits every instrument of its DSO: no allowances are stated');
+  if (typeof s.provider !== 'string' || s.provider.length === 0) refuse('the Splice provider is not stated');
+  if (!registry.preapprovalProvider) refuse(`the pinned registry of ${admin} pins no Splice provider`);
+  if (s.provider !== registry.preapprovalProvider) refuse('the stated provider is not the pinned Splice provider');
+  if (party(field(a, 'receiver')) !== s.party) refuse('the proposal names another receiver');
+  if (party(field(a, 'provider')) !== s.provider) refuse('the proposal names another provider than stated');
+  if (optionalParty(field(a, 'expectedDso')) !== admin) refuse('the proposal expects another DSO than the asked admin');
 }

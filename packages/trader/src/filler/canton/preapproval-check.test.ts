@@ -145,3 +145,47 @@ describe('preapproval.create with a DA Utilities registry: the utility TransferP
     expect(registriesProblem({ [CBTC_ADMIN]: [{ ...UNPINNED, preapprovalOperator: 'operator' }] })).toMatch(/preapprovalOperator/);
   });
 });
+
+describe('preapproval.create with a Splice registry (CC): the party signs only the TransferPreapprovalProposal (CAN-2931)', () => {
+  const DSO = 'DSO::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a';
+  const PROVIDER = 'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b';
+  const WALLET = '916f16ea9413ba72d9ae660c9d0741f1078fc27b82b61e4b9db6a991dc47a848';
+  const TEMPLATE = `${WALLET}:Splice.Wallet.TransferPreapproval:TransferPreapprovalProposal`;
+  const MALLORY = `mallory::1220${'ee'.repeat(32)}`;
+  const stated = { party: ME, admin: DSO, provider: PROVIDER, instrumentAllowances: [], requestedAt: null, executeBefore: null };
+  const preparedOf = (over: Record<string, unknown> = {}) => ({ summary: { ...stated, ...over } }) as unknown as PreparedOf<'preapproval.create'>;
+  const proposal = (over: { template?: string; arg?: Record<string, DamlValue>; signatories?: string[] } = {}): CantonTransaction => {
+    const root: TransactionNode = {
+      nodeId: '0', kind: 'create', contractId: '00prop', packageName: 'splice-wallet', templateId: over.template ?? TEMPLATE,
+      argument: v.record({ receiver: v.party(ME), provider: v.party(PROVIDER), expectedDso: { t: 'optional', v: v.party(DSO) }, ...over.arg }),
+      signatories: over.signatories ?? [ME], stakeholders: [ME, PROVIDER],
+    };
+    return { commandId: 'c', actAs: [ME], roots: ['0'], nodes: { '0': root }, inputContracts: [], synchronizerId: 's', preparationTime: '0' };
+  };
+  const PINNED = CANTON_TRANSFER_FACTORIES[DSO]?.[0] as CantonTransferFactory;
+  const checkCc = (factories?: Record<string, CantonTransferFactory[]>) => checkPreapprovalCreate({ params: { admin: DSO }, publicKey: KEY, nowMs: NOW, factories });
+
+  test('TC-SDK-2931-20: the honest proposal passes; dev pins the DSO’s splice-wallet proposal with the venue as provider', () => {
+    expect(PINNED).toMatchObject({ preapprovalForm: 'splice', preapprovalPackageId: WALLET, preapprovalProvider: PROVIDER });
+    expect(() => checkCc()(preparedOf(), [proposal()])).not.toThrow();
+  });
+
+  test.each([
+    ['TC-SDK-2931-21: a window stated for a provider-set window', () => checkCc()(preparedOf({ requestedAt: REQUESTED, executeBefore: BEFORE }), [proposal()]), /window is its provider/],
+    ['TC-SDK-2931-22: allowances stated', () => checkCc()(preparedOf({ instrumentAllowances: ['Amulet'] }), [proposal()]), /no allowances/],
+    ['TC-SDK-2931-23: no provider stated', () => checkCc()(preparedOf({ provider: undefined }), [proposal()]), /provider is not stated/],
+    ['TC-SDK-2931-24: another provider stated and named alike', () => checkCc()(preparedOf({ provider: MALLORY }), [proposal({ arg: { provider: v.party(MALLORY) } })]), /not the pinned Splice provider/],
+    ['TC-SDK-2931-25: another provider in the contract than stated', () => checkCc()(preparedOf(), [proposal({ arg: { provider: v.party(MALLORY) } })]), /another provider/],
+    ['TC-SDK-2931-26: another receiver', () => checkCc()(preparedOf(), [proposal({ arg: { receiver: v.party(MALLORY) } })]), /another receiver/],
+    ['TC-SDK-2931-27: no expected DSO', () => checkCc()(preparedOf(), [proposal({ arg: { expectedDso: { t: 'optional', v: undefined } } })]), /another DSO/],
+    ['TC-SDK-2931-28: the proposal of a splice-amulet package id (not the pinned wallet)', () => checkCc()(preparedOf(), [proposal({ template: `${PINNED.packageId}:Splice.Wallet.TransferPreapproval:TransferPreapprovalProposal` })]), /not the preapproval of a pinned registry/],
+    ['TC-SDK-2931-29: the TransferPreapproval itself, co-signed', () => checkCc()(preparedOf(), [proposal({ template: `${PINNED.packageId}:Splice.AmuletRules:TransferPreapproval`, signatories: [ME, PROVIDER, DSO] })]), /not the preapproval of a pinned registry/],
+    ['TC-SDK-2931-30: a Splice registry pinned without its provider', () => checkCc({ [DSO]: [{ ...PINNED, preapprovalProvider: undefined }] })(preparedOf(), [proposal()]), /pins no Splice provider/],
+  ])('%s: refused', (_name, run, detail) => refused(run, detail));
+
+  test('TC-SDK-2931-31: a splice registry entry without a party-id provider is no usable pin', () => {
+    expect(registriesProblem({ [DSO]: [PINNED] })).toBeUndefined();
+    expect(registriesProblem({ [DSO]: [{ ...PINNED, preapprovalProvider: undefined }] })).toMatch(/preapprovalProvider/);
+    expect(registriesProblem({ [DSO]: [{ ...PINNED, preapprovalPackageId: 'wallet' }] })).toMatch(/preapprovalPackageId/);
+  });
+});

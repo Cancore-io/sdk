@@ -269,3 +269,75 @@ describe('holdings.transfer: the subtree under an honest root (TC-SDK-2352)', ()
     expect(CANTON_TRANSFER_FACTORIES[ADMIN]).toEqual([expect.objectContaining({ packageId: CNRX, factory: 'Cnrx.Rules:CnrxRules', holding: 'Cnrx.Holding:CnrxHolding' })]);
   });
 });
+
+describe('holdings.transfer of CC: a Splice amulet transfer through the receiver’s preapproval (CAN-2931)', () => {
+  const DSO = 'DSO::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a';
+  const AMULET_PKG = '17b6f7c18efec9022dde39a19039783c68490a722e8a5088b22ee034678171a2';
+  const TI_V1 = '55ba4deb0ad4662c4168b39859738a0e91388d252286480c7331b3f71a517281';
+  const PROVIDER = 'validator::1220ef';
+  const asset = { admin: DSO, id: 'Amulet' };
+  const params = { asset, amount: '25', toParty: RECEIVER };
+  const executeBefore = String(NOW / 1000 + 600);
+  const AMULET = `${AMULET_PKG}:Splice.Amulet:Amulet`;
+  const amuletArg = (owner: string, amount: string) =>
+    v.record({ dso: v.party(DSO), owner: v.party(owner), amount: v.record({ initialAmount: v.numeric(amount), createdAt: v.record({ number: { t: 'int64', v: '7' } as DamlValue }), ratePerRound: v.record({ rate: v.numeric('0.0000190259') }) }) });
+  const input = (cid: string, owner: string, amount: string) => ({ contractId: cid, packageName: 'splice-amulet', templateId: AMULET, argument: amuletArg(owner, amount), signatories: [DSO, owner], stakeholders: [DSO, owner] });
+  const archive = (nodeId: string, cid: string): TransactionNode => ({
+    nodeId, kind: 'exercise', contractId: cid, packageName: 'splice-amulet', templateId: AMULET, choice: 'Archive', chosenValue: v.record({}),
+    actingParties: [DSO, ME], signatories: [DSO, ME], stakeholders: [DSO, ME], consuming: true, children: [],
+  });
+  const create = (nodeId: string, template: string, argument: DamlValue, stakeholders: string[]): TransactionNode => ({
+    nodeId, kind: 'create', contractId: `${nodeId}${'e'.repeat(67)}`, packageName: 'splice-amulet', templateId: `${AMULET_PKG}:${template}`, argument, signatories: [DSO], stakeholders,
+  });
+  const amulet = (nodeId: string, owner: string, amount: string) => create(nodeId, 'Splice.Amulet:Amulet', amuletArg(owner, amount), [DSO, owner]);
+  const marker = (nodeId: string) => create(nodeId, 'Splice.Amulet:FeaturedAppActivityMarker', v.record({ dso: v.party(DSO), provider: v.party(PROVIDER), beneficiary: v.party(PROVIDER), weight: v.numeric('1.0') }), [DSO, PROVIDER]);
+  const eventLog = (nodeId: string): TransactionNode => ({
+    nodeId, kind: 'exercise', contractId: 'fa'.repeat(34), packageName: 'splice-amulet', templateId: `${AMULET_PKG}:Splice.ExternalPartyAmuletRules:ExternalPartyAmuletRules`,
+    choice: 'EventLog_HoldingsChange', chosenValue: v.record({}), actingParties: [DSO], signatories: [DSO], stakeholders: [DSO], consuming: false, children: [],
+  });
+  /** `TransferPreapproval_SendV2` on the receiver's preapproval: everything the transfer does happens under it. */
+  const send = (children: TransactionNode[]): TransactionNode[] => [
+    {
+      nodeId: 's', kind: 'exercise', contractId: 'pa'.repeat(34), packageName: 'splice-amulet', templateId: `${AMULET_PKG}:Splice.AmuletRules:TransferPreapproval`, choice: 'TransferPreapproval_SendV2',
+      chosenValue: v.record({}), actingParties: [ME], signatories: [RECEIVER, PROVIDER, DSO], stakeholders: [RECEIVER, PROVIDER, DSO], consuming: false, children: children.map((n) => n.nodeId),
+    },
+    ...children,
+  ];
+  const transfer = (nodes: TransactionNode[], inputs = [input('h1', ME, '20'), input('h2', ME, '10')]): CantonTransaction => {
+    const root: TransactionNode = {
+      nodeId: '0', kind: 'exercise', contractId: 'fa'.repeat(34), packageName: 'splice-amulet', templateId: `${AMULET_PKG}:Splice.ExternalPartyAmuletRules:ExternalPartyAmuletRules`,
+      interfaceId: `${TI_V1}:Splice.Api.Token.TransferInstructionV1:TransferFactory`, choice: 'TransferFactory_Transfer',
+      chosenValue: v.record({
+        expectedAdmin: v.party(DSO),
+        transfer: v.record({
+          sender: v.party(ME), receiver: v.party(RECEIVER), amount: v.numeric('25.0000000000'), instrumentId: v.record({ admin: v.party(DSO), id: v.text('Amulet') }),
+          requestedAt: v.time(BigInt(NOW) * 1000n), executeBefore: v.time(BigInt(executeBefore) * 1_000_000n), inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), meta: v.record({}),
+        }),
+        extraArgs: v.record({}),
+      }),
+      actingParties: [ME], signatories: [DSO], stakeholders: [DSO], consuming: false, children: [nodes[0]!.nodeId],
+    };
+    return { ...tx([root, ...nodes]), inputContracts: inputs };
+  };
+  const prepared = { summary: { asset, amount: '25', receiver: RECEIVER, inputHoldingCids: ['h1', 'h2'], executeBefore } } as unknown as PreparedOf<'holdings.transfer'>;
+  const check = checkHoldingsTransfer({ params, publicKey: KEY, nowMs: NOW });
+
+  test('TC-SDK-2931-40: dev pins the DSO’s splice-amulet 0.1.24 with the Amulet holding form', () => {
+    expect(CANTON_TRANSFER_FACTORIES[DSO]?.[0]).toMatchObject({ packageId: AMULET_PKG, factory: 'Splice.ExternalPartyAmuletRules:ExternalPartyAmuletRules', holding: 'Splice.Amulet:Amulet', holdingForm: 'amulet' });
+  });
+
+  test('TC-SDK-2931-41: the honest direct transfer passes: inputs archived, 25 amulet to the receiver, change, the provider’s marker, the DSO’s event log', () => {
+    expect(() => check(prepared, [transfer(send([archive('1', 'h1'), archive('2', 'h2'), marker('3'), amulet('4', RECEIVER, '25'), amulet('5', ME, '5'), eventLog('6')]))])).not.toThrow();
+  });
+
+  test.each([
+    ['TC-SDK-2931-42: the receiver credited more than asked', () => send([archive('1', 'h1'), archive('2', 'h2'), amulet('4', RECEIVER, '30')]), /receiver is credited/],
+    ['TC-SDK-2931-43: an amulet created for a third party', () => send([archive('1', 'h1'), archive('2', 'h2'), amulet('4', RECEIVER, '25'), amulet('5', 'evil::1220ee', '5')]), /third party/],
+    ['TC-SDK-2931-44: the amount locked in a LockedAmulet of the sender (no preapproval: a pending transfer)', () => [archive('1', 'h1'), archive('2', 'h2'), create('4', 'Splice.Amulet:LockedAmulet', v.record({ amulet: amuletArg(ME, '25') }), [DSO, ME]), amulet('5', ME, '5')], /LockedAmulet for the sender/],
+    ['TC-SDK-2931-45: change above the inputs minus the amount', () => send([archive('1', 'h1'), archive('2', 'h2'), amulet('4', RECEIVER, '25'), amulet('5', ME, '50')]), /change/],
+  ])('%s: refused', (_name, nodes, detail) => refused(() => check(prepared, [transfer(nodes())]), detail));
+
+  test('TC-SDK-2931-46: an input that is the DSO’s amulet of another owner: refused', () => {
+    refused(() => check(prepared, [transfer(send([archive('1', 'h1'), archive('2', 'h2'), amulet('4', RECEIVER, '25')]), [input('h1', ME, '20'), input('h2', RECEIVER, '10')])]), /not an unlocked holding of the sender/);
+  });
+});
