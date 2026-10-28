@@ -76,14 +76,14 @@ const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
 
 /**
  * DA Utilities `utility-registry-app-v0` 0.8.2 (meta `dars/utility/packages.json`; the version dev vets for a
- * receiver and DA's operator, backend utility-registry-package.resolver.ts). Only the preapproval is pinned for
- * a delivery yet: `factory`, `holding` and `offer` are the templates the stand's DA DARs carry, and a transfer
- * through them is still refused by the holding check (the holding lives in `utility-registry-holding-v0`) until
- * the transfer's shape is pinned from the stand spike (sdk test da-utility-transfer, CAN-2931).
+ * receiver and DA's operator, backend utility-registry-package.resolver.ts). The factory, offer and preapproval
+ * are as the stand spike decoded a CBTC `TransferFactory_Transfer` (sdk test da-utility-transfer, CAN-2931).
+ * A transfer is still refused: its holding lives in another package (`utility-registry-holding-v0`, fields
+ * `owner`/`instrument`/`amount`/`lock`, no `holdingView`), which the holding check does not read yet.
  */
 const DA_UTILITY_REGISTRY_APP_0_8_2: CantonTransferFactory = {
   packageId: '2293eb12e82ceaeb3ff7f8fe3346dece8578e1e9fd7d46624aeb7bb07fa31eda',
-  factory: 'Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval',
+  factory: 'Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory',
   holding: 'Utility.Registry.Holding.V0.Holding:Holding',
   holdingView: 'holding',
   offer: 'Utility.Registry.App.V0.Model.Transfer:TransferOffer',
