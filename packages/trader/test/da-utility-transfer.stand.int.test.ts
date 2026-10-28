@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { decodePreparedTransaction } from '../src/filler/canton/hashing';
 import { transactionView, type DamlValue } from '../src/filler/canton/transaction';
+import { activeContracts, cantonToken, ledger } from './stand/canton-ledger';
 
 const STAND = process.env.INTENT_STAND_ENV;
 const REQUIRED = ['CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET', 'CANTON_SYNCHRONIZER_ID'] as const;
@@ -36,35 +37,13 @@ type Factory = { factoryId: string; transferKind: string; choiceContext: { choic
 const out = () => dirname(STAND as string);
 const readJson = <T>(name: string): T => JSON.parse(readFileSync(join(out(), name), 'utf8')) as T;
 
-async function cantonToken(): Promise<string> {
-  const form = new URLSearchParams({ grant_type: 'client_credentials', client_id: env('CANTON_CLIENT_ID'), client_secret: env('CANTON_CLIENT_SECRET'), scope: process.env.CANTON_TOKEN_SCOPE || 'openid' });
-  const response = await fetch(env('CANTON_TOKEN_URL'), { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form });
-  if (!response.ok) throw new Error(`Canton JSON API login: ${response.status} ${(await response.text()).slice(0, 300)}`);
-  return ((await response.json()) as { access_token: string }).access_token;
-}
-
-async function ledger<T>(path: string, token: string, body?: unknown): Promise<T> {
-  const response = await fetch(`${env('CANTON_JSON_API_URL').replace(/\/$/, '')}${path}`, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  if (!response.ok) throw new Error(`${path}: ${response.status} ${(await response.text()).slice(0, 500)}`);
-  return (await response.json()) as T;
-}
-
 /** The unlocked CBTC holdings of `party` under `admin`, read through the token standard's holding interface. */
 async function holdings(party: string, admin: string, token: string): Promise<string[]> {
-  const { offset } = await ledger<{ offset: number }>('/v2/state/ledger-end', token);
-  type Row = { contractEntry?: { JsActiveContract?: { createdEvent?: { contractId: string; interfaceViews?: Array<{ viewValue?: { owner?: string; instrumentId?: { admin?: string; id?: string }; lock?: unknown } }> } } } };
-  const rows = await ledger<Row[]>('/v2/state/active-contracts', token, {
-    activeAtOffset: offset,
-    eventFormat: { verbose: true, filtersByParty: { [party]: { cumulative: [{ identifierFilter: { InterfaceFilter: { value: { interfaceId: HOLDING_V1, includeInterfaceView: true, includeCreatedEventBlob: false } } } }] } } },
-  });
-  return rows.flatMap((r) => {
-    const event = r.contractEntry?.JsActiveContract?.createdEvent;
-    const view = event?.interfaceViews?.[0]?.viewValue;
-    return event && view?.owner === party && view.instrumentId?.admin === admin && view.instrumentId?.id === INSTRUMENT && !view.lock ? [event.contractId] : [];
+  type View = { owner?: string; instrumentId?: { admin?: string; id?: string }; lock?: unknown };
+  const events = await activeContracts(party, { InterfaceFilter: { value: { interfaceId: HOLDING_V1, includeInterfaceView: true, includeCreatedEventBlob: false } } }, token);
+  return events.flatMap((event) => {
+    const view = event.interfaceViews?.[0]?.viewValue as View | undefined;
+    return view?.owner === party && view.instrumentId?.admin === admin && view.instrumentId?.id === INSTRUMENT && !view.lock ? [event.contractId] : [];
   });
 }
 

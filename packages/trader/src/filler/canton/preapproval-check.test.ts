@@ -5,7 +5,7 @@
  */
 import type { Hex } from '@cancore/contracts';
 import { checkPreapprovalCreate } from './preapproval-check';
-import { CANTON_TRANSFER_FACTORIES } from './factories';
+import { CANTON_TRANSFER_FACTORIES, registriesProblem, type CantonTransferFactory } from './factories';
 import { NODE_KEY, OTHER_KEY, party } from './fixtures';
 import { CantonRefusal } from './legs';
 import type { PreparedOf } from './operations';
@@ -117,10 +117,12 @@ describe('preapproval.create with a DA Utilities registry: the utility TransferP
     };
     return { commandId: 'c', actAs: [ME], roots: ['0'], nodes: { '0': root }, inputContracts: [], synchronizerId: 's', preparationTime: '0' };
   };
+  const MALLORY = `mallory::1220${'ee'.repeat(32)}`;
+  const UNPINNED = CANTON_TRANSFER_FACTORIES[CBTC_ADMIN]?.[0] as CantonTransferFactory;
   const checkCbtc = () => checkPreapprovalCreate({ params: { admin: CBTC_ADMIN }, publicKey: KEY, nowMs: NOW });
 
   test('TC-SDK-2931-01: the honest create passes; dev pins CBTC’s DA Utilities preapproval', () => {
-    expect(CANTON_TRANSFER_FACTORIES[CBTC_ADMIN]?.[0]).toMatchObject({ packageId: APP, preapprovalForm: 'utility' });
+    expect(CANTON_TRANSFER_FACTORIES[CBTC_ADMIN]?.[0]).toMatchObject({ packageId: APP, preapprovalForm: 'utility', preapprovalOperator: OPERATOR });
     expect(() => checkCbtc()(preparedOf(), [utility()])).not.toThrow();
   });
 
@@ -133,5 +135,13 @@ describe('preapproval.create with a DA Utilities registry: the utility TransferP
     ['TC-SDK-2931-07: co-signed by the operator', () => checkCbtc()(preparedOf(), [utility({ signatories: [ME, OPERATOR] })]), /signed by the party alone/],
     ['TC-SDK-2931-08: the utility template of another package', () => checkCbtc()(preparedOf(), [utility({ template: `${'ee'.repeat(32)}:Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval` })]), /not the preapproval of a pinned registry/],
     ['TC-SDK-2931-09: a CNRX-form window check is not skipped for CNRX', () => check()(prepared({ requestedAt: null as never }), [create()]), /requestedAt is not unix seconds/],
+    ['TC-SDK-2931-10: another operator stated and named in the contract alike', () => checkCbtc()(preparedOf({ operator: MALLORY }), [utility({ arg: { operator: v.party(MALLORY) } })]), /not the pinned DA Utilities operator/],
+    ['TC-SDK-2931-11: a utility registry pinned without its operator', () => checkPreapprovalCreate({ params: { admin: CBTC_ADMIN }, publicKey: KEY, nowMs: NOW, factories: { [CBTC_ADMIN]: [{ ...UNPINNED, preapprovalOperator: undefined }] } })(preparedOf(), [utility()]), /pins no DA Utilities operator/],
   ])('%s: refused', (_name, run, detail) => refused(run, detail));
+
+  test('TC-SDK-2931-12: a utility registry entry without a party-id operator is no usable pin', () => {
+    expect(registriesProblem({ [CBTC_ADMIN]: [UNPINNED] })).toBeUndefined();
+    expect(registriesProblem({ [CBTC_ADMIN]: [{ ...UNPINNED, preapprovalOperator: undefined }] })).toMatch(/preapprovalOperator/);
+    expect(registriesProblem({ [CBTC_ADMIN]: [{ ...UNPINNED, preapprovalOperator: 'operator' }] })).toMatch(/preapprovalOperator/);
+  });
 });

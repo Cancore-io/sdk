@@ -18,7 +18,8 @@
  * moves value only TO the receiver, so signing it risks nothing of the party's.
  *
  * A DA Utilities registry (`preapprovalForm: 'utility'`, CAN-2931): the
- * argument is `operator` (the stated one), `receiver`, `instrumentAdmin` the
+ * argument is `operator` (the stated one, which must be the registry's pinned
+ * `preapprovalOperator`), `receiver`, `instrumentAdmin` the
  * asked admin and `instrumentAllowances` as `{id}` records; it has no
  * validity window, so the summary states `requestedAt` and `executeBefore`
  * as null.
@@ -63,7 +64,7 @@ export function checkPreapprovalCreate(expect: {
     if (!sameSet(tx.actAs, [s.party])) refuse('the transaction acts as another party');
     if (!sameSet(root.signatories, [s.party])) refuse('the preapproval is not signed by the party alone');
 
-    if (registry.preapprovalForm === 'utility') checkUtilityPreapproval(root.argument, s, admin);
+    if (registry.preapprovalForm === 'utility') checkUtilityPreapproval(root.argument, s, admin, registry);
     else checkCnrxPreapproval(root.argument, s, admin, expect.nowMs);
   };
 }
@@ -84,10 +85,12 @@ function checkCnrxPreapproval(a: DamlValue, s: Stated, admin: string, nowMs: num
   if (micros(field(a, 'executeBefore')) !== executeBefore * 1_000_000n) refuse('executeBefore is not the stated one');
 }
 
-/** DA Utilities: no window; the stated `operator`, `receiver`, `instrumentAdmin`, and the allowances as `{id}`. */
-function checkUtilityPreapproval(a: DamlValue, s: Stated, admin: string): void {
+/** DA Utilities: no window; the stated `operator` — the pinned one —, `receiver`, `instrumentAdmin`, and the allowances as `{id}`. */
+function checkUtilityPreapproval(a: DamlValue, s: Stated, admin: string, registry: CantonTransferFactory): void {
   if (s.requestedAt !== null || s.executeBefore !== null) refuse('a DA Utilities preapproval has no validity window: requestedAt and executeBefore are stated null');
   if (typeof s.operator !== 'string' || s.operator.length === 0) refuse('the DA Utilities operator is not stated');
+  if (!registry.preapprovalOperator) refuse(`the pinned registry of ${admin} pins no DA Utilities operator`);
+  if (s.operator !== registry.preapprovalOperator) refuse('the stated operator is not the pinned DA Utilities operator');
   if (party(field(a, 'instrumentAdmin')) !== admin) refuse('the preapproval is with another admin');
   if (party(field(a, 'receiver')) !== s.party) refuse('the preapproval names another receiver');
   if (party(field(a, 'operator')) !== s.operator) refuse('the preapproval names another operator than stated');
