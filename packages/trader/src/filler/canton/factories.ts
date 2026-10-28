@@ -116,19 +116,24 @@ export function registriesProblem(registries: unknown): string | undefined {
     if (!/^[^\s:]+::1220[0-9a-f]{64}$/.test(admin)) return `[${admin}]: not a party id`;
     if (!Array.isArray(entries) || entries.length === 0) return `[${admin}]: expected a non-empty list`;
     for (const [i, e] of entries.entries()) {
-      const f = e as Partial<CantonTransferFactory> | null;
-      const at = `[${admin}][${i}]`;
-      if (typeof f !== 'object' || f === null) return `${at}: expected an object`;
-      if (typeof f.packageId !== 'string' || !PACKAGE_ID.test(f.packageId)) return `${at}.packageId: expected 64 lowercase hex`;
-      for (const k of ['factory', 'holding', 'offer'] as const) if (typeof f[k] !== 'string' || !QUALIFIED.test(f[k] as string)) return `${at}.${k}: expected <module>:<entity>`;
-      if (typeof f.holdingView !== 'string' || f.holdingView.length === 0) return `${at}.holdingView: expected a field name`;
-      if (!Array.isArray(f.serviceChoices) || !f.serviceChoices.every((c) => typeof c === 'string')) return `${at}.serviceChoices: expected a list of <module>:<entity>.<choice>`;
-      if (f.allocation !== undefined && (typeof f.allocation !== 'string' || !QUALIFIED.test(f.allocation))) return `${at}.allocation: expected <module>:<entity>`;
-      if (f.openReceipt !== undefined && typeof f.openReceipt !== 'boolean') return `${at}.openReceipt: expected a boolean`;
-      if (f.preapproval !== undefined && (typeof f.preapproval !== 'string' || !QUALIFIED.test(f.preapproval))) return `${at}.preapproval: expected <module>:<entity>`;
-      if (f.preapprovalForm !== undefined && f.preapprovalForm !== 'cnrx' && f.preapprovalForm !== 'utility') return `${at}.preapprovalForm: expected cnrx or utility`;
+      const problem = entryProblem(e as Partial<CantonTransferFactory> | null, `[${admin}][${i}]`);
+      if (problem) return problem;
     }
   }
+  return undefined;
+}
+
+const optionalTemplate = (v: unknown): boolean => v === undefined || (typeof v === 'string' && QUALIFIED.test(v));
+
+function entryProblem(f: Partial<CantonTransferFactory> | null, at: string): string | undefined {
+  if (typeof f !== 'object' || f === null) return `${at}: expected an object`;
+  if (typeof f.packageId !== 'string' || !PACKAGE_ID.test(f.packageId)) return `${at}.packageId: expected 64 lowercase hex`;
+  for (const k of ['factory', 'holding', 'offer'] as const) if (typeof f[k] !== 'string' || !QUALIFIED.test(f[k] as string)) return `${at}.${k}: expected <module>:<entity>`;
+  if (typeof f.holdingView !== 'string' || f.holdingView.length === 0) return `${at}.holdingView: expected a field name`;
+  if (!Array.isArray(f.serviceChoices) || !f.serviceChoices.every((c) => typeof c === 'string')) return `${at}.serviceChoices: expected a list of <module>:<entity>.<choice>`;
+  for (const k of ['allocation', 'preapproval'] as const) if (!optionalTemplate(f[k])) return `${at}.${k}: expected <module>:<entity>`;
+  if (f.openReceipt !== undefined && typeof f.openReceipt !== 'boolean') return `${at}.openReceipt: expected a boolean`;
+  if (f.preapprovalForm !== undefined && f.preapprovalForm !== 'cnrx' && f.preapprovalForm !== 'utility') return `${at}.preapprovalForm: expected cnrx or utility`;
   return undefined;
 }
 

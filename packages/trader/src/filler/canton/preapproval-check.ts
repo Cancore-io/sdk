@@ -26,7 +26,7 @@
 import type { CantonOpParams, Hex } from '@cancore/contracts';
 import { field, isOwnParty, party, refuse, sameSet, textOf } from './checks';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
-import type { CantonOpCheck } from './operations';
+import type { CantonOpCheck, PreparedOf } from './operations';
 import type { CantonTransaction, DamlValue } from './transaction';
 
 /** How far ahead of the node's clock a stated `requestedAt` may be: the participant's clock is not the node's. */
@@ -63,24 +63,34 @@ export function checkPreapprovalCreate(expect: {
     if (!sameSet(tx.actAs, [s.party])) refuse('the transaction acts as another party');
     if (!sameSet(root.signatories, [s.party])) refuse('the preapproval is not signed by the party alone');
 
-    const a = root.argument;
-    if (party(field(a, 'receiver')) !== s.party) refuse('the preapproval names another receiver');
-    const allowances = field(a, 'instrumentAllowances');
-    if (registry.preapprovalForm === 'utility') {
-      if (s.requestedAt !== null || s.executeBefore !== null) refuse('a DA Utilities preapproval has no validity window: requestedAt and executeBefore are stated null');
-      if (typeof s.operator !== 'string' || s.operator.length === 0) refuse('the DA Utilities operator is not stated');
-      if (party(field(a, 'instrumentAdmin')) !== admin) refuse('the preapproval is with another admin');
-      if (party(field(a, 'operator')) !== s.operator) refuse('the preapproval names another operator than stated');
-      if (allowances.t !== 'list' || !sameSet(allowances.v.map((v) => textOf(field(v, 'id'))), s.instrumentAllowances)) refuse('the allowances are not the stated ones');
-      return;
-    }
-    const requestedAt = seconds(s.requestedAt, 'requestedAt');
-    const executeBefore = seconds(s.executeBefore, 'executeBefore');
-    if (requestedAt * 1000n > BigInt(expect.nowMs + SKEW_MS)) refuse('requestedAt is ahead of the clock');
-    if (executeBefore * 1000n <= BigInt(expect.nowMs)) refuse('executeBefore has passed');
-    if (party(field(a, 'admin')) !== admin) refuse('the preapproval is with another admin');
-    if (allowances.t !== 'list' || !sameSet(allowances.v.map(textOf), s.instrumentAllowances)) refuse('the allowances are not the stated ones');
-    if (micros(field(a, 'requestedAt')) !== requestedAt * 1_000_000n) refuse('requestedAt is not the stated one');
-    if (micros(field(a, 'executeBefore')) !== executeBefore * 1_000_000n) refuse('executeBefore is not the stated one');
+    if (registry.preapprovalForm === 'utility') checkUtilityPreapproval(root.argument, s, admin);
+    else checkCnrxPreapproval(root.argument, s, admin, expect.nowMs);
   };
+}
+
+type Stated = PreparedOf<'preapproval.create'>['summary'];
+
+/** CNRX: `admin`, `receiver`, the allowances as ids, and the live window exactly as stated. */
+function checkCnrxPreapproval(a: DamlValue, s: Stated, admin: string, nowMs: number): void {
+  const requestedAt = seconds(s.requestedAt, 'requestedAt');
+  const executeBefore = seconds(s.executeBefore, 'executeBefore');
+  if (requestedAt * 1000n > BigInt(nowMs + SKEW_MS)) refuse('requestedAt is ahead of the clock');
+  if (executeBefore * 1000n <= BigInt(nowMs)) refuse('executeBefore has passed');
+  if (party(field(a, 'admin')) !== admin) refuse('the preapproval is with another admin');
+  if (party(field(a, 'receiver')) !== s.party) refuse('the preapproval names another receiver');
+  const allowances = field(a, 'instrumentAllowances');
+  if (allowances.t !== 'list' || !sameSet(allowances.v.map(textOf), s.instrumentAllowances)) refuse('the allowances are not the stated ones');
+  if (micros(field(a, 'requestedAt')) !== requestedAt * 1_000_000n) refuse('requestedAt is not the stated one');
+  if (micros(field(a, 'executeBefore')) !== executeBefore * 1_000_000n) refuse('executeBefore is not the stated one');
+}
+
+/** DA Utilities: no window; the stated `operator`, `receiver`, `instrumentAdmin`, and the allowances as `{id}`. */
+function checkUtilityPreapproval(a: DamlValue, s: Stated, admin: string): void {
+  if (s.requestedAt !== null || s.executeBefore !== null) refuse('a DA Utilities preapproval has no validity window: requestedAt and executeBefore are stated null');
+  if (typeof s.operator !== 'string' || s.operator.length === 0) refuse('the DA Utilities operator is not stated');
+  if (party(field(a, 'instrumentAdmin')) !== admin) refuse('the preapproval is with another admin');
+  if (party(field(a, 'receiver')) !== s.party) refuse('the preapproval names another receiver');
+  if (party(field(a, 'operator')) !== s.operator) refuse('the preapproval names another operator than stated');
+  const allowances = field(a, 'instrumentAllowances');
+  if (allowances.t !== 'list' || !sameSet(allowances.v.map((v) => textOf(field(v, 'id'))), s.instrumentAllowances)) refuse('the allowances are not the stated ones');
 }
