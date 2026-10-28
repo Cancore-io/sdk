@@ -315,7 +315,8 @@ describe('holdings.transfer of CC: a Splice amulet transfer through the receiver
         }),
         extraArgs: v.record({}),
       }),
-      actingParties: [ME], signatories: [DSO], stakeholders: [DSO], consuming: false, children: [nodes[0]!.nodeId],
+      actingParties: [ME], signatories: [DSO], stakeholders: [DSO], consuming: false,
+      children: nodes.filter((n) => !nodes.some((m) => m.kind === 'exercise' && m.children.includes(n.nodeId))).map((n) => n.nodeId),
     };
     return { ...tx([root, ...nodes]), inputContracts: inputs };
   };
