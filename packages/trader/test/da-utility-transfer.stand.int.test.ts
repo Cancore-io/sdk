@@ -8,9 +8,9 @@
  * `TransferFactory_Transfer` is only prepared (interactive submission), and the decoded transaction — every
  * node's template, choice, signatories, stakeholders, and the created arguments — is printed between
  * `CAN-2931-DA-TRANSFER-BEGIN` / `-END` for the SDK's pin of the registry (`CantonTransferFactory`).
- * STAND-01 is a receiver without a preapproval (an offer); STAND-02 first gives its receiver a utility
- * preapproval of the stand's registrar — the one write, on the stand only — so the transfer is direct, as a
- * delivery must be.
+ * STAND-01 is a receiver without a preapproval (an offer); STAND-02 first gives the stand user's party a
+ * utility preapproval of the stand's registrar through the backend — the one write, on the stand only — so the
+ * transfer to it is direct, as a delivery must be.
  *
  * Skipped without INTENT_STAND_ENV; with it, a missing key fails naming every missing key.
  */
@@ -21,13 +21,16 @@ import { transactionView, type DamlValue } from '../src/filler/canton/transactio
 import { activeContracts, cantonToken, env, ledger } from './stand/canton-ledger';
 
 const STAND = process.env.INTENT_STAND_ENV;
-const REQUIRED = ['CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET', 'CANTON_SYNCHRONIZER_ID'] as const;
+const REQUIRED = [
+  'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET', 'CANTON_SYNCHRONIZER_ID',
+  'GATEWAY_URL', 'STAND_OWNER_PARTY', 'STAND_USER_TOKEN_URL', 'STAND_USER_CLIENT_ID', 'STAND_USER_CLIENT_SECRET', 'STAND_USER_NAME', 'STAND_USER_PASSWORD',
+] as const;
 
 const HOLDING_V1 = '#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding';
 const TRANSFER_FACTORY = '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory';
 const INSTRUMENT = 'CBTC';
 
-type Bootstrap = { registryParty: string; balances: Record<string, string>; packages?: { app?: string } };
+type Bootstrap = { registryParty: string; balances: Record<string, string> };
 type Genesis = { parties: Record<string, string>; nodes?: Record<string, string> };
 type Disclosed = { templateId: string; contractId: string; createdEventBlob: string; synchronizerId: string };
 type Factory = { factoryId: string; transferKind: string; choiceContext: { choiceContextData: { values: Record<string, unknown> }; disclosedContracts: Disclosed[] } };
@@ -129,16 +132,23 @@ async function prepareTransfer(s: Spike, receiverName: string, label: string): P
 
   it('TC-CAN-2931-STAND-02: with the receiver’s utility preapproval of the registrar the transfer is direct — the shape a delivery signs', async () => {
     const s = await spike();
-    const receiver = s.genesis.parties.charlie ?? s.genesis.parties.delta;
-    const receiverName = s.genesis.parties.charlie ? 'charlie' : 'delta';
-    if (!receiver) throw new Error('the stand genesis has neither charlie nor delta');
-    const app = s.bootstrap.packages?.app;
-    if (!app) throw new Error('registry-bootstrap.json names no utility-registry-app package');
-    // The stand's registry party is DA's operator here (meta stand-env: DA_UTILITIES_OPERATOR_PARTY_ID = parties.registry).
-    await ledger('/v2/commands/submit-and-wait', s.token, {
-      userId: s.userId, commandId: `can-2931-preapproval-${Date.now()}`, actAs: [receiver], readAs: [],
-      commands: [{ CreateCommand: { templateId: `${app}:Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval`, createArguments: { operator: s.admin, receiver, instrumentAdmin: s.admin, instrumentAllowances: [{ id: INSTRUMENT }] } } }],
+    const owner = env('STAND_OWNER_PARTY');
+    const receiverName = Object.entries(s.genesis.parties).find(([, p]) => p === owner)?.[0];
+    if (!receiverName) throw new Error(`STAND_OWNER_PARTY ${owner} is no genesis party`);
+    // The stand user's own preapproval, made the way a user makes it (backend /tokens/utility-preapprovals): the
+    // participant's validator user may act as no genesis party. Its operator is the stand's registry party.
+    const login = await fetch(env('STAND_USER_TOKEN_URL'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'password', client_id: env('STAND_USER_CLIENT_ID'), client_secret: env('STAND_USER_CLIENT_SECRET'), username: env('STAND_USER_NAME'), password: env('STAND_USER_PASSWORD') }),
     });
+    const bearer = ((await login.json()) as { access_token: string }).access_token;
+    const setup = await fetch(`${env('GATEWAY_URL')}/tokens/utility-preapprovals/setup`, {
+      method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body: JSON.stringify({ tokenId: INSTRUMENT }),
+    });
+    const answer = (await setup.json()) as { success?: boolean };
+    if (!answer.success) throw new Error(`utility preapproval setup of ${owner}: ${setup.status} ${JSON.stringify(answer).slice(0, 300)}`);
+
     const { transferKind, tx } = await prepareTransfer(s, receiverName, 'direct');
     expect(transferKind).toBe('direct');
     expect(tx.nodes[tx.roots[0] as string]).toMatchObject({ kind: 'exercise', choice: 'TransferFactory_Transfer' });
