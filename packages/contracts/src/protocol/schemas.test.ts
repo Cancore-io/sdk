@@ -500,6 +500,18 @@ describe('Canton operations of the filler party (§3.19)', () => {
       expect(errorsOf('canton.prepared', withField(prepared, 'summary', 'instrumentAllowances', []))).toEqual([]);
     });
 
+    test('CAN-2931: a DA Utilities preapproval states its operator and no window (null); the window stays required as a key', () => {
+      const prepared = example('canton.prepared', ofOp('canton.prepared'));
+      const utility = { ...prepared, summary: { ...(prepared.summary as Frame), requestedAt: null, executeBefore: null, operator: 'auth0_007c65f857f1::1220d2' } };
+      expect(errorsOf('canton.prepared', utility)).toEqual([]);
+      expect(errorsOf('canton.prepared', without(utility, 'summary', 'requestedAt'))).not.toEqual([]);
+      expect(errorsOf('canton.prepared', without(utility, 'summary', 'executeBefore'))).not.toEqual([]);
+      expect(errorsOf('canton.prepared', withField(utility, 'summary', 'operator', ''))).not.toEqual([]);
+      expect(errorsOf('canton.prepared', withField(utility, 'summary', 'operator', null))).not.toEqual([]);
+      const party = { party: 'acme::1220ab', publicKey: null, registry: { state: 'ACTIVE', proposalCid: null, entryCid: '00ef' } };
+      expect(rest('cantonParty', { ...party, preapprovals: [{ admin: 'cbtc-network::1220aa', contractId: '00pa', instrumentAllowances: ['CBTC'], executeBefore: null }] })).toBe(true);
+    });
+
     test('reads: the party lists its live preapprovals, each one checked', () => {
       const party = { party: 'acme::1220ab', publicKey: null, registry: { state: 'ACTIVE', proposalCid: null, entryCid: '00ef' } };
       const pa = { admin: 'cancore-registry::1220aa', contractId: '00pa', instrumentAllowances: ['CNRX'], executeBefore: '1821526200' };
