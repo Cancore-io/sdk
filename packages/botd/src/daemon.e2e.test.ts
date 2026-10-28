@@ -174,6 +174,22 @@ async function botDir(prefix: string, limits: object): Promise<{ dir: string; co
   return { dir, config };
 }
 
+type Deps = Awaited<ReturnType<typeof defaultDeps>>;
+
+/** The daemon's real dependencies over the fake API, as every case here runs them. */
+const depsOver = (config: BotConfig, api: ReturnType<typeof fakeApi>, reconcileMs = 3_600_000) =>
+  defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs });
+
+/** An unlocked dispatcher on the real daemon and engine; `wrap` gets the real engine factory and returns the one the daemon uses. */
+async function dispatcherOver(config: BotConfig, api: ReturnType<typeof fakeApi>, wrap: (real: Deps['createEngine']) => Deps['createEngine'] = (real) => real) {
+  const deps = await depsOver(config, api);
+  deps.createEngine = wrap(deps.createEngine);
+  const d = createDispatcher(deps);
+  const call = (method: string, params: unknown, owner: boolean) => d.handle(req(method, params), { owner });
+  await call('unlock', { passphrase: 'bot-pass-2026' }, true);
+  return { d, deps, call };
+}
+
 /** Somebody else's open Canton↔Canton DvP order: `amount` CC for `total` USDCx. */
 const openOrder = (id: string, amount: string, total: string) => ({
   id, status: 'open', sourceNetwork: 'canton', targetNetwork: 'canton', dvp: true,
@@ -186,7 +202,7 @@ describe('cancore-botd end to end', () => {
   let dir: string;
   let config: BotConfig;
   const api = fakeApi();
-  const boot = async () => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 }));
+  const boot = async () => start(config, await depsOver(config, api));
   const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
     const c = await connect(socket);
     try {
@@ -319,7 +335,7 @@ describe('cancore-botd end to end: an accept whose answer was lost (F128-LOST-AC
   let dir: string;
   let config: BotConfig;
   const api = fakeApi();
-  const boot = async () => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 }));
+  const boot = async () => start(config, await depsOver(config, api));
   const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
     const c = await connect(socket);
     try {
@@ -439,7 +455,7 @@ describe('cancore-botd end to end: a 400 after a lost accept answer (F128-ACCEPT
   let config: BotConfig;
   const api = fakeApi();
   // A short reconcile, so serve retries the take after the first lost answer.
-  const boot = async (reconcileMs = 20) => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs }));
+  const boot = async (reconcileMs = 20) => start(config, await depsOver(config, api, reconcileMs));
   const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
     const c = await connect(socket);
     try {
@@ -520,7 +536,7 @@ describe('cancore-botd end to end: an ambiguous take stays booked until the venu
   let dir: string;
   let config: BotConfig;
   const api = fakeApi();
-  const boot = async () => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 }));
+  const boot = async () => start(config, await depsOver(config, api));
   const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
     const c = await connect(socket);
     try {
@@ -659,17 +675,13 @@ describe('cancore-botd end to end: a lock between a take and its booking (N-1)',
   };
   /** The real engine over the fake API; only the step from its take to the daemon's booking write is held. */
   async function dispatcher() {
-    const deps = await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 });
     const booking = held();
     let queued!: () => void;
     const taken = new Promise<void>((r) => (queued = r));
-    const real = deps.createEngine;
-    deps.createEngine = (signer, hooks) => {
+    const { d, deps } = await dispatcherOver(config, api, (real) => (signer, hooks) => {
       const e = real(signer, hooks);
       return { ...e, take: async (p) => { const r = await e.take(p); queued(); await booking.gate; return r; } };
-    };
-    const d = createDispatcher(deps);
-    await d.handle(req('unlock', { passphrase: 'bot-pass-2026' }), { owner: true });
+    });
     return { d, deps, booking, taken };
   }
   const order = (id: string, amount: string, total: string) => ({
@@ -746,7 +758,7 @@ describe('cancore-botd end to end: owner release of a booked take (CAN-2836, F12
   let dir: string;
   let config: BotConfig;
   const api = fakeApi();
-  const boot = async () => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 }));
+  const boot = async () => start(config, await depsOver(config, api));
   const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
     const c = await connect(socket);
     try {
@@ -865,13 +877,8 @@ describe('cancore-botd end to end: a settle that lands in the lock window (CAN-2
   const audit = () => readFileSync(paths(config).audit, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { method?: string; params?: { orderId?: string; event?: string; usdValue?: string } });
   /** The real daemon and engine over the fake API; the engine's hooks are kept so a test can deliver serve's settle event. */
   async function dispatcher() {
-    const deps = await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 });
-    let hooks!: Parameters<typeof deps.createEngine>[1];
-    const real = deps.createEngine;
-    deps.createEngine = (signer, h) => ((hooks = h), real(signer, h));
-    const d = createDispatcher(deps);
-    const call = (method: string, params: unknown, owner: boolean) => d.handle(req(method, params), { owner });
-    await call('unlock', { passphrase: 'bot-pass-2026' }, true);
+    let hooks!: Parameters<Deps['createEngine']>[1];
+    const { deps, call } = await dispatcherOver(config, api, (real) => (signer, h) => ((hooks = h), real(signer, h)));
     return { deps, call, settled: (orderId: string) => hooks.onSettled(orderId) };
   }
   // Buy 1 CC at 0.15: one fill is 0.15 USD, and a 1 USD day has room for the next order — unless an unpriced fill spent it.
@@ -957,7 +964,8 @@ describe('cancore-botd end to end: a settle that lands in the lock window (CAN-2
       await call('unlock', { passphrase: 'bot-pass-2026' }, true);
       await until(() => (state().fills ?? []).length === 1);
       expect(state().fills).toEqual([{ at: expect.any(Number), instrument: 'CC', amount: '1' }]);
-      expect(audit()).toContainEqual(expect.objectContaining({ method: 'settle', params: expect.objectContaining({ orderId, usdValue: 'unpriced' }) }));
+      // The settle writes the state first and its audit line after: wait for the line rather than read it at once.
+      await until(() => audit().some((e) => e.method === 'settle' && e.params?.orderId === orderId && e.params?.usdValue === 'unpriced'));
       // Prices are back at the next unlock; the fill stays unpriced, and the rule this ticket keeps applies: it spent the day.
       api.pricesDown = false;
       await call('lock', {}, true);
@@ -985,11 +993,8 @@ describe('cancore-botd end to end: owner release once the maker\'s order complet
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
   it('@edge G0-CAN-2836.3: the maker\'s order already completed by this account: refused as may_be_trade, and reconcile books the fill', async () => {
-    const deps = await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 });
-    const d = createDispatcher(deps);
-    const call = (method: string, params: unknown, owner: boolean) => d.handle(req(method, params), { owner });
+    const { deps, call } = await dispatcherOver(config, api);
     try {
-      await call('unlock', { passphrase: 'bot-pass-2026' }, true);
       await expect(call('order.take', { orderId: 'x5', amount: '1' }, false)).resolves.toMatchObject({ result: { orderId: 'x5' } });
       await until(() => api.accepts === 1);
       // The venue applied that accept and the trade settled: the order is ours and complete.
