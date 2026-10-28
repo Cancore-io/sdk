@@ -15,15 +15,10 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { decodePreparedTransaction } from '../src/filler/canton/hashing';
 import { transactionView, type DamlValue } from '../src/filler/canton/transaction';
-import { activeContracts, cantonToken, ledger } from './stand/canton-ledger';
+import { activeContracts, cantonToken, env, ledger } from './stand/canton-ledger';
 
 const STAND = process.env.INTENT_STAND_ENV;
 const REQUIRED = ['CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET', 'CANTON_SYNCHRONIZER_ID'] as const;
-const env = (name: string): string => {
-  const value = process.env[name];
-  if (!value) throw new Error(`intent-stand env: ${name} is not set`);
-  return value;
-};
 
 const HOLDING_V1 = '#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding';
 const TRANSFER_FACTORY = '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory';

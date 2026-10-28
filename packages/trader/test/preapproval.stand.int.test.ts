@@ -21,6 +21,7 @@ import type { CantonTransferFactory } from '../src/filler/canton/factories';
 import { createCantonOperations, type CantonOperations } from '../src/filler/canton/operations';
 import { GatewayError } from '../src/filler/errors';
 import { createTestTypedDataSigner } from '../src/filler/testing';
+import { env } from './stand/canton-ledger';
 
 const STAND = process.env.INTENT_STAND_ENV;
 const REQUIRED = [
@@ -28,11 +29,6 @@ const REQUIRED = [
   'STAND_FILLER_ID', 'STAND_FILLER_MESSAGE_KEY', 'STAND_FILLER_CANTON_PARTY', 'STAND_FILLER_CANTON_PARTY_KEY',
   'STAND_FILLER2_ID', 'STAND_FILLER2_MESSAGE_KEY', 'STAND_FILLER2_CANTON_PARTY', 'STAND_FILLER2_CANTON_PARTY_KEY',
 ] as const;
-const env = (name: string): string => {
-  const value = process.env[name];
-  if (!value) throw new Error(`intent-stand env: ${name} is not set`);
-  return value;
-};
 
 /** The Canton operations of one stand filler, over its own REST login to the stand's filler-gateway. */
 function operations(prefix: 'STAND_FILLER' | 'STAND_FILLER2'): CantonOperations {

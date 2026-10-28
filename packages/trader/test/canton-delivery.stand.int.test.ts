@@ -51,7 +51,7 @@ import { createFiller, type Filler } from '../src/filler/filler';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
-import { activeContracts, cantonToken } from './stand/canton-ledger';
+import { activeContracts, cantonToken, env } from './stand/canton-ledger';
 
 const STAND = process.env.INTENT_STAND_ENV;
 /** Every key this spec reads (Cancore-io/meta docs/runbooks/intent-stand.md); TRADING_URL or GATEWAY_URL besides. */
@@ -63,11 +63,6 @@ const REQUIRED = [
   'STAND_USER_NAME', 'STAND_USER_PASSWORD', 'STAND_USER_TOKEN_URL', 'TICKET_SIGNERS', 'PERMIT2_ADDRESS',
   'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET',
 ] as const;
-const env = (name: string): string => {
-  const value = process.env[name];
-  if (!value) throw new Error(`intent-stand env: ${name} is not set (Cancore-io/meta docs/runbooks/intent-stand.md)`);
-  return value;
-};
 
 const abi = (entries: unknown) => entries as unknown as readonly AbiEntry[];
 const httpRpc = (url: string): EvmRpc => {

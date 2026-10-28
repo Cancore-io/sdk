@@ -3,7 +3,8 @@
  * filler-gateway: one login and one active-contracts read, so a change of the stand's token scope or of the
  * ACS request shape is fixed once for every spec.
  */
-const env = (name: string): string => {
+/** A stand variable the spec cannot run without; its absence fails naming it. */
+export const env = (name: string): string => {
   const value = process.env[name];
   if (!value) throw new Error(`intent-stand env: ${name} is not set (Cancore-io/meta docs/runbooks/intent-stand.md)`);
   return value;
