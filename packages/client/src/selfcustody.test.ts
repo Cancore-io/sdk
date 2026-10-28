@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519';
 import { cantonFingerprint, deriveWalletKey, LOGIN_CHALLENGE_PREFIX as WALLET_CHALLENGE_PREFIX, providerFromMnemonic } from '@cancore/wallet';
 import { acceptTransferLeg, allocationTree, DEV, factoryTransferLeg, holding, preapprovalProposalLeg, prepared, proposalAccept, proposalCreate, selfSendLeg, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
+import { refusalBody, wireLeg } from './wire.fixture';
 import type { FetchLike } from './http';
 import {
   CeremonyError,
@@ -37,8 +38,7 @@ const hex = (text: string) => new Uint8Array(Buffer.from(text, 'hex'));
 const jwt = (sub: string, exp = FAR) =>
   `h.${Buffer.from(JSON.stringify({ sub, exp })).toString('base64url')}.s`;
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-const refuse = (status: number, message: string, errorCode?: string) =>
-  json({ statusCode: status, message, ...(errorCode ? { errorCode, code: errorCode } : {}) }, status);
+const refuse = (status: number, message: string, errorCode?: string) => json(refusalBody(status, message, errorCode), status);
 
 interface Account { publicKey: string; id: string; partyId: string | null; roles: string[]; status: 'ACTIVE' | 'FAILED' }
 interface Leg { legId: string; hash: string; kind: string; preparedTransaction?: string }
@@ -241,8 +241,7 @@ function venue({
   const partyOf = (owner: Account) => `party-${owner.id}::${cantonFingerprint(owner.publicKey)}`;
   const parties = (): string[] => [...new Set(legs.flatMap((l) => [l.sender, l.receiver]))];
 
-  const asLeg = (t: { kind: string; preparedTransactionHash: string; preparedTransaction: string }): Leg =>
-    ({ legId: `leg-${++seq}`, hash: t.preparedTransactionHash, kind: t.kind, preparedTransaction: t.preparedTransaction });
+  const asLeg = (t: { kind: string; preparedTransactionHash: string; preparedTransaction: string }): Leg => wireLeg(t, `leg-${++seq}`);
   const feeLeg = (party: string) => selfSendLeg({
     party, kind: 'fee', receiver: DEV.venue, input: '10', ids: 'b', outputs: [{ owner: DEV.venue, amount: String(networkFee) }, { owner: party, amount: (10 - networkFee).toFixed(10) }],
   });
@@ -668,7 +667,7 @@ const baseUrl = 'https://api-dev.cancore.app';
 /** The accept of the incoming transfer `cid` as the participant prepares it: CBTC from the venue, to `party`. */
 async function acceptLegs(party: string, cid: string, over: Partial<Parameters<typeof acceptTransferLeg>[0]> = {}): Promise<Leg[]> {
   const t = await acceptTransferLeg({ party, sender: DEV.venue, instrument: { id: 'CBTC', admin: DEV.cbtcRegistrar }, amount: '1', offerCid: cid, ...over });
-  return [{ legId: 'l', hash: t.preparedTransactionHash, kind: t.kind, preparedTransaction: t.preparedTransaction }];
+  return [wireLeg(t, 'l')];
 }
 // Yield a macrotask per wait: an instantly-resolving sleep would starve jest's own timers.
 const fast = { pollMs: 1, sleep: () => new Promise<void>((resolve) => setImmediate(resolve)) };
@@ -2160,8 +2159,7 @@ describe('the network fee: one ceiling for a send, one budget for an inbox (CAN-
   const OWNER = 'party-owner::1220bb';
   const MALLORY = 'mallory::1220ff';
   let n = 0;
-  const L = (t: { kind: string; preparedTransactionHash: string; preparedTransaction: string }): Leg =>
-    ({ legId: `fee-${++n}`, hash: t.preparedTransactionHash, kind: t.kind, preparedTransaction: t.preparedTransaction });
+  const L = (t: { kind: string; preparedTransactionHash: string; preparedTransaction: string }): Leg => wireLeg(t, `fee-${++n}`);
   const who = async (account: number) => {
     const signer = await providerFromMnemonic(PHRASE, { account });
     return { signer, me: `party-me::${cantonFingerprint(signer.public_key)}` };
@@ -3263,7 +3261,7 @@ describe('self-custody HTLC: Flow B, accept-counter and refund sign only what th
   const CC = { id: 'Amulet', admin: DEV.dso };
   const MALLORY = 'mallory::1220ff';
   type Leg = { kind: string; preparedTransaction: string; preparedTransactionHash: string };
-  const asLegs = (legs: Leg[]) => legs.map((l, i) => ({ legId: `l${i}`, hash: l.preparedTransactionHash, kind: l.kind, preparedTransaction: l.preparedTransaction }));
+  const asLegs = (legs: Leg[]) => legs.map((l, i) => wireLeg(l, `l${i}`));
 
   async function account(seed: number, legsFor: (party: string, type: string, params: Record<string, unknown>) => Promise<Leg[]>) {
     const signer = await providerFromMnemonic(PHRASE, { account: seed });

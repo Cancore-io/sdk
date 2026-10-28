@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { cantonFingerprint, providerFromMnemonic } from '@cancore/wallet';
 import { acceptTransferLeg, DEV, selfSendLeg } from './dvp-prepared.fixture';
+import { refusalBody, wireLeg } from './wire.fixture';
 import { CeremonyError, createSelfCustody, SettleError, UnverifiedTransactionError } from './selfcustody';
 
 /**
@@ -19,8 +20,7 @@ const jwt = (sub: string) => `h.${Buffer.from(JSON.stringify({ sub, exp: FAR }))
 
 type Answer = { status: number; body: unknown };
 const answer = (status: number, body: unknown): Answer => ({ status, body });
-const refuse = (status: number, message: string, errorCode?: string) =>
-  answer(status, { statusCode: status, message, ...(errorCode ? { errorCode, code: errorCode } : {}) });
+const refuse = (status: number, message: string, errorCode?: string) => answer(status, refusalBody(status, message, errorCode));
 type Handler = (body: Record<string, unknown>) => unknown;
 
 const read = (req: IncomingMessage) =>
@@ -68,9 +68,6 @@ async function account(n: number, handlers: (me: string) => Record<string, Handl
   });
   return { api, acct, me };
 }
-
-const legOf = (t: { kind: string; preparedTransactionHash: string; preparedTransaction: string }, legId: string) =>
-  ({ legId, hash: t.preparedTransactionHash, kind: t.kind, preparedTransaction: t.preparedTransaction });
 
 describe('CAN-2400: only the DvP refusal is called a DvP refusal, over HTTP', () => {
   const OPEN = {
@@ -142,8 +139,8 @@ describe('CAN-2421: a fee split sends only through the DSO\'s own preapproval, o
         operationId: 'split',
         meta: {},
         legs: [
-          legOf(await selfSendLeg({ party: me, kind: 'transfer', receiver: me, input: '10000', ids: 'a', outputs: [{ owner: me, amount: FEE }, { owner: me, amount: '9975.1243781095' }], ...over }), 'l1'),
-          legOf(await selfSendLeg({ party: me, kind: 'fee', receiver: DEV.venue, input: '10', ids: 'b', outputs: [{ owner: DEV.venue, amount: '0.125' }, { owner: me, amount: '9.875' }] }), 'l2'),
+          wireLeg(await selfSendLeg({ party: me, kind: 'transfer', receiver: me, input: '10000', ids: 'a', outputs: [{ owner: me, amount: FEE }, { owner: me, amount: '9975.1243781095' }], ...over }), 'l1'),
+          wireLeg(await selfSendLeg({ party: me, kind: 'fee', receiver: DEV.venue, input: '10', ids: 'b', outputs: [{ owner: DEV.venue, amount: '0.125' }, { owner: me, amount: '9.875' }] }), 'l2'),
         ],
       }),
       'POST /wallet/operations/submit': () => ({ updateId: 'u1', outcome: 'committed' }),
@@ -172,7 +169,7 @@ describe('CAN-2421: a fee split sends only through the DSO\'s own preapproval, o
 describe('CAN-2423: the bot pays its own network fee, so no debt is left behind, over HTTP', () => {
   const OWNER = 'party-owner::1220bb';
   const feeLeg = async (me: string, amount: string, id: string) =>
-    legOf(await selfSendLeg({ party: me, kind: 'fee', receiver: DEV.venue, input: '100', ids: 'b', outputs: [{ owner: DEV.venue, amount }, { owner: me, amount: (100 - Number(amount)).toFixed(10) }] }), id);
+    wireLeg(await selfSendLeg({ party: me, kind: 'fee', receiver: DEV.venue, input: '100', ids: 'b', outputs: [{ owner: DEV.venue, amount }, { owner: me, amount: (100 - Number(amount)).toFixed(10) }] }), id);
   /** A gateway whose `tokens.send` defers its network fee of `deferred` CC to a `tokens.send-fee` ceremony of its own. */
   const sending = (n: number, deferred: string) => {
     const prepared: string[] = [];
@@ -180,7 +177,7 @@ describe('CAN-2423: the bot pays its own network fee, so no debt is left behind,
       'POST /wallet/operations/prepare': async (body) => {
         prepared.push(String(body.type));
         return body.type === 'tokens.send'
-          ? { operationId: 'send', meta: { feeDeferred: { amount: Number(deferred) } }, legs: [legOf(await selfSendLeg({ party: me, kind: 'transfer', receiver: OWNER, input: '10000', ids: 'a', outputs: [{ owner: OWNER, amount: '100' }, { owner: me, amount: '9900' }] }), 't')] }
+          ? { operationId: 'send', meta: { feeDeferred: { amount: Number(deferred) } }, legs: [wireLeg(await selfSendLeg({ party: me, kind: 'transfer', receiver: OWNER, input: '10000', ids: 'a', outputs: [{ owner: OWNER, amount: '100' }, { owner: me, amount: '9900' }] }), 't')] }
           : { operationId: 'fee', meta: {}, legs: [await feeLeg(me, deferred, 'f')] };
       },
       'POST /wallet/operations/submit': () => ({ updateId: 'u1', outcome: 'committed' }),
@@ -213,7 +210,7 @@ describe('CAN-2423: the bot pays its own network fee, so no debt is left behind,
         const params = body.params as { instructionCid: string; withFeeLeg?: boolean };
         asked.push(params);
         const accept = await acceptTransferLeg({ party: me, sender: DEV.venue, instrument: { id: 'CBTC', admin: DEV.cbtcRegistrar }, amount: '1', offerCid: params.instructionCid });
-        return { operationId: 'accept', meta: null, legs: [legOf(accept, 'a'), ...(params.withFeeLeg ? [await feeLeg(me, '2', 'f')] : [])] };
+        return { operationId: 'accept', meta: null, legs: [wireLeg(accept, 'a'), ...(params.withFeeLeg ? [await feeLeg(me, '2', 'f')] : [])] };
       },
       'POST /wallet/operations/submit': (body) => ((signatures += (body.signatures as unknown[]).length), { outcome: 'committed' }),
     }));
