@@ -367,6 +367,7 @@
         "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
         "attempt": 2,
         "deliveryOrderCid": "00a1b2c3d4e5f6#fixture-delivery-order",
+        "validFrom": "1790000040",
         "validUntil": "1790000400",
         "repayTo": "0x0000000000000000000000003c44cdddb6a900fa2b585dd299e03d12fa4293bc"
       }

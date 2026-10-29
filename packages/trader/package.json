@@ -53,7 +53,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@cancore/contracts": "^0.2.0-rc.19",
+    "@cancore/contracts": "^0.2.0-rc.20",
     "@canton-network/core-ledger-proto": "^1.13.0",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",

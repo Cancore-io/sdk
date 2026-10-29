@@ -32,6 +32,7 @@ import {
   type DeclineReason,
   type Hex,
   type TicketIssuedCanton,
+  type TicketOffer,
 } from '@cancore/contracts';
 import { describeDepth, readAtDepth, type FillerChains } from '../chain';
 import { erc20Blocklisted } from '../chain/erc20';
@@ -110,7 +111,8 @@ export async function verifyCantonTicket(ctx: Context, input: TicketCheckInput, 
   if (!identity) throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', 'no fill key or payee of this filler for the order');
   if (identity.deliveryKey !== ZERO_ADDRESS) throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', 'a Canton destination is delivered by the party, not a delivery key');
   if (!same(issued.orderHash, offer.orderHash) || issued.attempt !== offer.attempt) throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', 'the frame names another order or attempt than the offer');
-  if (issued.validUntil !== offer.validUntil) throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', 'ticket.validUntil differs from the offer');
+  const windowField = windowMismatch(issued, offer);
+  if (windowField) throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', `ticket.${windowField} differs from the offer`);
   if (!same(issued.repayTo, identity.repayTo)) throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', 'ticket.repayTo is not this filler’s payee');
   if (typeof issued.deliveryOrderCid !== 'string' || issued.deliveryOrderCid.length === 0) throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', 'no deliveryOrderCid');
   const amountOut = uint(offer.amountOut);
@@ -179,6 +181,12 @@ export async function verifyCantonTicket(ctx: Context, input: TicketCheckInput, 
     .reduce((sum, h) => sum + (cantonUnits(h.amount) ?? 0n), 0n);
   if (free < needed) throw new TicketRefusal('V-E5', 'NO_INVENTORY', `holdings: ${free} < ${needed} (${order.asset.id}, units of 10⁻¹⁰)`);
   pass('V-E5');
+}
+
+/** The window field of the issued ticket that is not the offer's; `validFrom` is absent from a gateway that predates it (CAN-3026). */
+function windowMismatch(issued: TicketIssuedCanton, offer: TicketOffer): 'validUntil' | 'validFrom' | undefined {
+  if (issued.validUntil !== offer.validUntil) return 'validUntil';
+  return issued.validFrom !== undefined && issued.validFrom !== offer.validFrom ? 'validFrom' : undefined;
 }
 
 /** The first field of the `DeliveryOrder` that is not the ticket's and the order's; undefined when every one is. */
