@@ -512,6 +512,14 @@ describe('Canton operations of the filler party (§3.19)', () => {
       expect(rest('cantonParty', { ...party, preapprovals: [{ admin: 'cbtc-network::1220aa', contractId: '00pa', instrumentAllowances: ['CBTC'], executeBefore: null }] })).toBe(true);
     });
 
+    test('CAN-2931: a Splice (CC) preapproval states its provider, no window and no allowances', () => {
+      const prepared = example('canton.prepared', ofOp('canton.prepared'));
+      const splice = { ...prepared, summary: { ...(prepared.summary as Frame), instrumentAllowances: [], requestedAt: null, executeBefore: null, provider: 'cancore::1220ee' } };
+      expect(errorsOf('canton.prepared', splice)).toEqual([]);
+      expect(errorsOf('canton.prepared', withField(splice, 'summary', 'provider', ''))).not.toEqual([]);
+      expect(errorsOf('canton.prepared', withField(splice, 'summary', 'provider', null))).not.toEqual([]);
+    });
+
     test('reads: the party lists its live preapprovals, each one checked', () => {
       const party = { party: 'acme::1220ab', publicKey: null, registry: { state: 'ACTIVE', proposalCid: null, entryCid: '00ef' } };
       const pa = { admin: 'cancore-registry::1220aa', contractId: '00pa', instrumentAllowances: ['CNRX'], executeBefore: '1821526200' };

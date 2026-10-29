@@ -168,6 +168,7 @@ export interface HoldingSeen {
   locked: boolean;
 }
 export function holdingOf(argument: DamlValue, f: CantonTransferFactory): HoldingSeen {
+  if (f.holdingForm === 'amulet') return amuletOf(argument, f);
   const view = field(argument, f.holdingView);
   const account = field(view, 'account');
   const instrument = field(view, 'instrumentId');
@@ -178,6 +179,20 @@ export function holdingOf(argument: DamlValue, f: CantonTransferFactory): Holdin
     id: textOf(field(instrument, 'id')),
     amount: scaled(numeric(field(view, 'amount'))),
     locked: lock !== undefined && !(lock.t === 'optional' && lock.v === undefined),
+  };
+}
+const AMULET_ID = 'Amulet';
+/**
+ * Splice's `Amulet`: no view, the instrument is the DSO's `Amulet`. Its worth is `initialAmount`: holding fees are
+ * charged only on `Amulet_Expire`, never in a transfer (splice-amulet `summarizeTransfer`, `totalHoldingFees == 0`).
+ */
+function amuletOf(argument: DamlValue, f: CantonTransferFactory): HoldingSeen {
+  return {
+    owner: party(field(argument, 'owner')),
+    admin: party(field(argument, 'dso')),
+    id: AMULET_ID,
+    amount: scaled(numeric(field(field(argument, f.holdingView), 'initialAmount'))),
+    locked: false,
   };
 }
 /** The owner of a token-standard account (V2), or a party (V1). */

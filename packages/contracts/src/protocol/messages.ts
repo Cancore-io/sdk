@@ -278,6 +278,8 @@ export interface CantonOpSummary {
     executeBefore: DecString | null;
     /** DA Utilities only: the registry operator the preapproval names. */
     operator?: string;
+    /** Splice (CC) only: the provider the proposal names; it accepts the proposal into the preapproval and pays for it. */
+    provider?: string;
   };
 }
 /** What the committed operation created, by op. */

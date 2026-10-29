@@ -842,7 +842,8 @@
                   "instrumentAllowances": { "type": "array", "maxItems": 10, "items": { "type": "string", "minLength": 1 }, "description": "instrument ids it is limited to; empty: every instrument of the admin" },
                   "requestedAt": { "oneOf": [{ "$ref": "#/$defs/timeS" }, { "type": "null" }], "description": "unix s: the Daml Time (microseconds) cut to whole seconds; null for a registry whose preapproval has no validity window (DA Utilities)" },
                   "executeBefore": { "oneOf": [{ "$ref": "#/$defs/timeS" }, { "type": "null" }], "description": "unix s, cut likewise: the preapproval expires then; null — it never lapses" },
-                  "operator": { "type": "string", "minLength": 1, "description": "DA Utilities only: the registry operator the preapproval names (its observer)" }
+                  "operator": { "type": "string", "minLength": 1, "description": "DA Utilities only: the registry operator the preapproval names (its observer)" },
+                  "provider": { "type": "string", "minLength": 1, "description": "Splice (CC) only: the provider the TransferPreapprovalProposal names; it accepts the proposal and pays for the preapproval" }
                 }
               }
             }
