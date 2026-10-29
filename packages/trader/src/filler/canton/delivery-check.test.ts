@@ -137,7 +137,7 @@ function fill(o: Over = {}): CantonTransaction {
   const extra = o.extra ?? [];
   const root: TransactionNode = {
     nodeId: '0', kind: 'exercise', contractId: ORDER_CID, packageName: 'cancore-intent', templateId: `${INTENT}:Intent.DeliveryReceipt:DeliveryOrder`, choice: 'DeliveryOrder_Fill',
-    chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}) }), actingParties: [ME],
+    chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}), transferFactory: { t: 'optional', v: v.cid(FACTORY_CID) } }), actingParties: [ME],
     signatories: [OPERATOR, GUARDIAN], stakeholders: [OPERATOR, GUARDIAN, ME, ATTESTOR], consuming: true, children: ['1', '2', '3', ...extra.map((n) => n.nodeId)],
     ...o.root,
   };
@@ -198,6 +198,10 @@ describe('delivery.fill: what the summary states (CAN-1867)', () => {
     ['TC-SDK-1867-08: another executeBefore', { executeBefore: '1' }, /executeBefore/],
   ])('%s: refused', (_name, over, detail) => refused(() => check()(prepared(over as Partial<typeof summary>), [fill()]), detail));
 
+  test('TC-SDK-3172-03: the order still pins the factory of Dispatch, the fill names the registry’s current one: passes', () => {
+    expect(() => check()(prepared(), [fill({ order: { transferFactoryCid: v.cid('00archived') } })])).not.toThrow();
+  });
+
   test('TC-SDK-1867-09: a ticket already expired by the process clock: refused', () => {
     refused(() => check({ nowMs: (Number(VALID_UNTIL) + 1) * 1000 })(prepared(), [fill()]), /expired/);
   });
@@ -216,7 +220,8 @@ describe('delivery.fill: the decoded transaction (CAN-1867)', () => {
     ['TC-SDK-1867-18: T-48 — the operator wrote another repayTo into the order', { order: { repayTo: v.bytes32(`0x${'00'.repeat(12)}${'66'.repeat(20)}`) } }, /T-48/],
     ['TC-SDK-1867-19: the order is for another attempt', { order: { attempt: v.int(3) } }, /another attempt/],
     ['TC-SDK-1867-20: the order has another validUntil', { order: { validUntil: v.time(String(Number(VALID_UNTIL) + 60)) } }, /validUntil/],
-    ['TC-SDK-1867-21: the order pins another factory', { order: { transferFactoryCid: v.cid('ff') } }, /another transfer factory/],
+    ['TC-SDK-3172-01: the fill names another factory than stated', { root: { chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}), transferFactory: { t: 'optional', v: v.cid('ff') } }) } }, /another transfer factory/],
+    ['TC-SDK-3172-02: the fill names no factory (a 0.4.2 command)', { root: { chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}) }) } }, /another transfer factory/],
     ['TC-SDK-1867-22: the transfer moves another amount', { transferAmount: '2.5' }, /another amount/],
     ['TC-SDK-1867-23: the receipt names another repayTo', { receipt: { repayTo: v.bytes32(`0x${'00'.repeat(12)}${'66'.repeat(20)}`) } }, /DeliveryReceipt names another repayTo/],
     ['TC-SDK-1867-24: the receipt not co-signed by the party', { receiptSignatories: [OPERATOR] }, /not signed by exactly/],

@@ -16,6 +16,10 @@
  *   `fillDeadline` is the order's. This is where T-48 is enforced on the
  *   ledger's own data: the operator writes `fillerId` and `repayTo` into the
  *   order, and nothing else compares them with the signed `ticket.intent`.
+ * - The factory the fill names (`transferFactory`, CAN-3172) is the stated
+ *   one: the contract no longer reads the factory pinned at Dispatch, and it
+ *   takes only a factory the registry signed; the node additionally holds the
+ *   transfer to a pinned registry template below.
  * - Under the root: `TransferFactory_Transfer` through a pinned factory, from
  *   the party to the recipient, exactly the order's amount and instrument,
  *   spending only the stated holdings, completed in this transaction (a
@@ -26,7 +30,7 @@
  * - `validUntil` has not passed by the process clock.
  */
 import { encodeCantonAmount, encodeCantonOutputAsset, encodeCantonRecipient, type Hex } from '@cancore/contracts';
-import { canonicalDecimal, checkTransferExercise, field, isOwnParty, numeric, party, qualified, refuse, sameSet, soleRoot, subtree, textOf, cids } from './checks';
+import { canonicalDecimal, checkTransferExercise, field, isOwnParty, numeric, party, qualified, refuse, requireNamedFactory, sameSet, soleRoot, subtree, textOf, cids } from './checks';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
 import type { CantonOpCheck } from './operations';
 import type { DamlValue, ExerciseNode } from './transaction';
@@ -111,6 +115,7 @@ export function checkDeliveryFill(expect: DeliveryFillExpectation): CantonOpChec
     }
     if (root.contractId !== expect.deliveryOrderCid) refuse('the fill is on another contract than the ticket’s DeliveryOrder');
     if (!sameSet(cids(field(root.chosenValue, 'inputHoldingCids')), s.inputHoldingCids)) refuse('the fill spends other holdings than stated');
+    requireNamedFactory(root.chosenValue, 'transferFactory', s.transferFactoryCid, 'the fill names another transfer factory than stated');
 
     // -- The DeliveryOrder as the transaction discloses it: the ledger's own terms --
     const order = tx.inputContracts.find((c) => c.contractId === expect.deliveryOrderCid);
@@ -129,8 +134,6 @@ export function checkDeliveryFill(expect: DeliveryFillExpectation): CantonOpChec
     const instrument = instrumentOf(field(o, 'instrumentId'));
     if (instrument.admin !== s.asset.admin || instrument.id !== s.asset.id) refuse('the DeliveryOrder has another instrument than stated');
     if (party(field(o, 'instrumentAdmin')) !== instrument.admin) refuse('the DeliveryOrder pins another instrument admin');
-    const factoryCid = field(o, 'transferFactoryCid');
-    if (factoryCid.t !== 'contractId' || factoryCid.v !== s.transferFactoryCid) refuse('the DeliveryOrder pins another transfer factory than stated');
     if (numeric(field(o, 'amount')) !== canonicalDecimal(s.amount)) refuse('the DeliveryOrder delivers another amount than stated');
     const operator = party(field(o, 'operator'));
 
@@ -141,7 +144,7 @@ export function checkDeliveryFill(expect: DeliveryFillExpectation): CantonOpChec
     for (const id of root.children) {
       const node = tx.nodes[id];
       if (node?.kind === 'exercise' && node.choice === 'TransferFactory_Transfer' && !transfer) {
-        if (node.contractId !== s.transferFactoryCid) refuse('the transfer goes through another factory than the order pins');
+        if (node.contractId !== s.transferFactoryCid) refuse('the transfer goes through another factory than the fill names');
         transfer = node;
       } else if (node?.kind === 'fetch' && qualified(node.templateId) === REGISTRY_ENTRY && node.packageName === INTENT_PACKAGE_NAME) {
         // assertRegisteredFiller: a read of the party's own registry entry, co-signed by the operator and the party.

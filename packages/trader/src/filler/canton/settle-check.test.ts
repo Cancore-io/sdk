@@ -68,6 +68,7 @@ interface Over {
   credit?: TransactionNode[];
   extra?: TransactionNode[];
   batchTemplate?: string;
+  settlementFactory?: string;
   actAs?: string[];
 }
 
@@ -89,7 +90,7 @@ function honest(o: Over = {}): CantonTransaction {
   const extra = o.extra ?? [];
   const root: ExerciseNode = {
     nodeId: '0', kind: 'exercise', contractId: intent.intentCid, packageName: 'cancore-intent', templateId: intent.templateId, choice: 'SwapIntent_SettleWithProof',
-    chosenValue: v.record({ proof: damlProof({ ...proof, ...o.proof }), bundle: v.list([]), fillerEntryCid: v.cid(o.entry ?? '00en') }),
+    chosenValue: v.record({ proof: damlProof({ ...proof, ...o.proof }), bundle: v.list([]), fillerEntryCid: v.cid(o.entry ?? '00en'), settlementFactory: { t: 'optional', v: v.cid(o.settlementFactory ?? '00sf') } }),
     actingParties: [ME], signatories: [OWNER, OPERATOR], stakeholders: [OWNER, OPERATOR, ME], consuming: true, children: ['1', '2', '3', ...extra.map((n) => n.nodeId)],
     ...o.root,
   };
@@ -118,6 +119,7 @@ describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery
     ['executeBefore past refundAfter', () => check(prepared({ executeBefore: '1790004201' }), [honest()]), /executeBefore/],
     ['acting as the operator too', () => check(prepared(), [honest({ actAs: [ME, OPERATOR] })]), /acts as another party/],
     ['another choice on the intent', () => check(prepared(), [honest({ root: { choice: 'SwapIntent_Cancel' } })]), /not SwapIntent_SettleWithProof/],
+    ['TC-SDK-3172-04: the batch runs another settlement factory than the settle names', () => check(prepared(), [honest({ settlementFactory: '00other' })]), /another settlement factory/],
     ['the intent of another package', () => check(prepared(), [honest({ root: { templateId: `${'ee'.repeat(32)}:Intent.SwapIntent:SwapIntent` } })]), /not SwapIntent_SettleWithProof/],
     ['another intent contract', () => check(prepared(), [honest({ root: { contractId: '00other' } })]), /another contract/],
     ['a proof of someone else’s fill', () => check(prepared(), [honest({ proof: { fillRef: `0x${'f2'.repeat(32)}` } })]), /proof.fillRef/],
