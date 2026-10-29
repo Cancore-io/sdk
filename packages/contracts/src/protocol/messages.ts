@@ -274,10 +274,14 @@ export interface CantonOpSummary {
     admin: string;
     /** Instrument ids the preapproval is limited to; empty: every instrument of the admin. */
     instrumentAllowances: string[];
-    /** Unix s. */
-    requestedAt: DecString;
-    /** Unix s: the preapproval expires then; renew it before. */
-    executeBefore: DecString;
+    /** Unix s; null for a registry whose preapproval has no validity window (DA Utilities). */
+    requestedAt: DecString | null;
+    /** Unix s: the preapproval expires then; renew it before. null: it never lapses. */
+    executeBefore: DecString | null;
+    /** DA Utilities only: the registry operator the preapproval names. */
+    operator?: string;
+    /** Splice (CC) only: the provider the proposal names; it accepts the proposal into the preapproval and pays for it. */
+    provider?: string;
   };
 }
 /** What the committed operation created, by op. */
@@ -367,7 +371,8 @@ export interface FillerStats { won: number; delivered: number; noShow: number; r
 export interface PenaltyRecord { violationId: string; code: string; step: PenaltyStep; orderHash?: Hex; attempt?: number; at: TimeMs; details: Record<string, unknown> }
 export type PenaltyList = Page<PenaltyRecord>;
 /** A live transfer preapproval of the party with one registry (`preapproval.create`); `executeBefore` in unix s (the Daml Time cut to seconds). */
-export interface CantonPreapproval { admin: string; contractId: string; instrumentAllowances: string[]; executeBefore: DecString }
+/** `executeBefore` null: the registry's preapproval has no validity window (DA Utilities) and never lapses. */
+export interface CantonPreapproval { admin: string; contractId: string; instrumentAllowances: string[]; executeBefore: DecString | null }
 /** `GET /v1/filler/canton/party`: the party registered for the fillerId and its `FillerRegistryEntry`. */
 export interface CantonParty {
   party: string | null;

@@ -49,6 +49,11 @@ function fakeApi() {
     readHold: undefined as undefined | { id: string; skip: number; gate: Promise<void> },
     /** GET /orders/<id> per order: a reconcile is observable by its lookup. */
     reads: {} as Record<string, number>,
+    /** When set, GET /auto-trader/pairs (the engine's USD prices) reports itself here, then waits on `pricesHold`. */
+    atPrices: undefined as undefined | (() => void),
+    pricesHold: undefined as Promise<void> | undefined,
+    /** GET /auto-trader/pairs fails: no USD price anywhere. */
+    pricesDown: false,
     orders,
     async fetch(url: string, init: RequestInit): Promise<Response> {
       const { pathname } = new URL(url);
@@ -61,7 +66,12 @@ function fakeApi() {
         return json({ token: `h.${Buffer.from(JSON.stringify({ sub: 'bot', exp: 4e9 })).toString('base64url')}.s`, user: { id: 'bot' } });
       }
       if (route === 'GET /auth/me') return json({ id: 'bot', partyId: party, publicKey, roles: ['user'], status: 'ACTIVE' });
-      if (route === 'GET /auto-trader/pairs') return json([{ id: 'p1', sourceToken: 'CC', targetToken: 'USDCx', marketRate: '0.15', sourcePriceUsd: '0.15' }]);
+      if (route === 'GET /auto-trader/pairs') {
+        api.atPrices?.();
+        await api.pricesHold;
+        if (api.pricesDown) return json({ message: 'prices unavailable' }, 503);
+        return json([{ id: 'p1', sourceToken: 'CC', targetToken: 'USDCx', marketRate: '0.15', sourcePriceUsd: '0.15' }]);
+      }
       if (route === 'POST /orders') {
         const order = { ...body, id: `o${orders.size + 1}`, status: 'open' };
         orders.set(order.id, order);
@@ -103,7 +113,7 @@ function fakeApi() {
       if (route === 'GET /htlc/swaps') return json([]);
       // A take reads the pair from the stand before it accepts (CAN-2979).
       if (route === 'GET /htlc/dvp/instruments') return json([{ id: 'CC', admin: DEFAULT_INSTRUMENT_ADMINS.devnet.Amulet![0] }, { id: 'USDCx', admin: USDCX_ADMIN }]);
-      if (pathname.startsWith('/tokens/balance/')) return json({ balance: '42.5' });
+      if (pathname.startsWith('/tokens/balance/')) return json({ balance: 42.5 });
       if (route === 'POST /wallet/operations/prepare' && body.type === 'tokens.send') {
         const { receiverPartyId: to, amount } = body.params;
         const honest = await selfSendLeg({ party, kind: 'transfer', receiver: to, input: '100', ids: 'a', outputs: [{ owner: to, amount }, { owner: party, amount: (100 - Number(amount)).toFixed(10) }] });
@@ -142,11 +152,57 @@ const LIMITS = {
   perDayUsd: '1000000',
 };
 
+/** Polls `check` for up to five seconds, then asserts it. */
+const until = async (check: () => boolean) => {
+  for (let i = 0; i < 250 && !check(); i++) await new Promise((r) => setTimeout(r, 20));
+  expect(check()).toBe(true);
+};
+const req = (method: string, params: unknown): RpcRequest => ({ jsonrpc: JSONRPC_VERSION, id: 1, method: method as never, params: params as never });
+const readState = (config: BotConfig) => JSON.parse(readFileSync(paths(config).state, 'utf8')) as BotState;
+const MAY_BE_TRADE = { code: ERROR.INVALID_PARAMS, data: { reason: 'may_be_trade' } };
+
+/** A fresh state dir with the keystore initialised and `limits` written, and the config of a daemon on it. */
+async function botDir(prefix: string, limits: object): Promise<{ dir: string; config: BotConfig }> {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const config: BotConfig = {
+    ...DEFAULTS, stateDir: dir, ownerSocket: join(dir, 'owner.sock'), agentSocket: join(dir, 'bot.sock'),
+    baseUrl: 'https://api-dev.cancore.app', network: 'devnet', instrumentAdmins: { USDCx: [USDCX_ADMIN] }, ownerParty: OWNER, maxFee: '1',
+  };
+  delete (config as Partial<BotConfig>).clientsGroup;
+  await createKeystore(paths(config).keystore).init(PHRASE, 'bot-pass-2026');
+  writeFileSync(paths(config).limits, JSON.stringify(limits), { mode: 0o600 });
+  return { dir, config };
+}
+
+type Deps = Awaited<ReturnType<typeof defaultDeps>>;
+
+/** The daemon's real dependencies over the fake API, as every case here runs them. */
+const depsOver = (config: BotConfig, api: ReturnType<typeof fakeApi>, reconcileMs = 3_600_000) =>
+  defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs });
+
+/** An unlocked dispatcher on the real daemon and engine; `wrap` gets the real engine factory and returns the one the daemon uses. */
+async function dispatcherOver(config: BotConfig, api: ReturnType<typeof fakeApi>, wrap: (real: Deps['createEngine']) => Deps['createEngine'] = (real) => real) {
+  const deps = await depsOver(config, api);
+  deps.createEngine = wrap(deps.createEngine);
+  const d = createDispatcher(deps);
+  const call = (method: string, params: unknown, owner: boolean) => d.handle(req(method, params), { owner });
+  await call('unlock', { passphrase: 'bot-pass-2026' }, true);
+  return { d, deps, call };
+}
+
+/** Somebody else's open Canton↔Canton DvP order: `amount` CC for `total` USDCx. */
+const openOrder = (id: string, amount: string, total: string) => ({
+  id, status: 'open', sourceNetwork: 'canton', targetNetwork: 'canton', dvp: true,
+  initiatorUserId: 'someone', opponentUserId: null, swapId: null,
+  sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: amount, targetTokenAddress: 'USDCx', targetTokenName: 'USDCx', targetAmount: total,
+  expiresAt: '', createdAt: '', updatedAt: '',
+});
+
 describe('cancore-botd end to end', () => {
   let dir: string;
   let config: BotConfig;
   const api = fakeApi();
-  const boot = async () => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 }));
+  const boot = async () => start(config, await depsOver(config, api));
   const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
     const c = await connect(socket);
     try {
@@ -279,7 +335,7 @@ describe('cancore-botd end to end: an accept whose answer was lost (F128-LOST-AC
   let dir: string;
   let config: BotConfig;
   const api = fakeApi();
-  const boot = async () => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 }));
+  const boot = async () => start(config, await depsOver(config, api));
   const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
     const c = await connect(socket);
     try {
@@ -399,7 +455,7 @@ describe('cancore-botd end to end: a 400 after a lost accept answer (F128-ACCEPT
   let config: BotConfig;
   const api = fakeApi();
   // A short reconcile, so serve retries the take after the first lost answer.
-  const boot = async (reconcileMs = 20) => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs }));
+  const boot = async (reconcileMs = 20) => start(config, await depsOver(config, api, reconcileMs));
   const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
     const c = await connect(socket);
     try {
@@ -480,7 +536,7 @@ describe('cancore-botd end to end: an ambiguous take stays booked until the venu
   let dir: string;
   let config: BotConfig;
   const api = fakeApi();
-  const boot = async () => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 }));
+  const boot = async () => start(config, await depsOver(config, api));
   const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
     const c = await connect(socket);
     try {
@@ -619,17 +675,13 @@ describe('cancore-botd end to end: a lock between a take and its booking (N-1)',
   };
   /** The real engine over the fake API; only the step from its take to the daemon's booking write is held. */
   async function dispatcher() {
-    const deps = await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 });
     const booking = held();
     let queued!: () => void;
     const taken = new Promise<void>((r) => (queued = r));
-    const real = deps.createEngine;
-    deps.createEngine = (signer, hooks) => {
+    const { d, deps } = await dispatcherOver(config, api, (real) => (signer, hooks) => {
       const e = real(signer, hooks);
       return { ...e, take: async (p) => { const r = await e.take(p); queued(); await booking.gate; return r; } };
-    };
-    const d = createDispatcher(deps);
-    await d.handle(req('unlock', { passphrase: 'bot-pass-2026' }), { owner: true });
+    });
     return { d, deps, booking, taken };
   }
   const order = (id: string, amount: string, total: string) => ({
@@ -653,7 +705,7 @@ describe('cancore-botd end to end: a lock between a take and its booking (N-1)',
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('an accept already sent when the lock lands keeps the take booked as a trade, not dropped', async () => {
+  it('@edge G0-CAN-2833.3: an accept already sent when the lock lands keeps the take booked as a trade, not dropped', async () => {
     const { d, deps, booking, taken } = await dispatcher();
     const accept = held();
     const atAccept = new Promise<void>((r) => (api.atAccept = r));
@@ -678,7 +730,7 @@ describe('cancore-botd end to end: a lock between a take and its booking (N-1)',
     }
   });
 
-  it('a take whose accept has not started when the lock lands is called off: LOCKED, and no accept goes out', async () => {
+  it('@edge G0-CAN-2833.3: a take whose accept has not started when the lock lands is called off: LOCKED, and no accept goes out', async () => {
     const { d, deps, booking, taken } = await dispatcher();
     const read = held();
     // The gate's read of x2 passes; serve's first look at it waits, so its accept cannot have started.
@@ -706,7 +758,7 @@ describe('cancore-botd end to end: owner release of a booked take (CAN-2836, F12
   let dir: string;
   let config: BotConfig;
   const api = fakeApi();
-  const boot = async () => start(config, await defaultDeps(config, { fetchImpl: (u, i) => api.fetch(u, i), pollMs: 10, reconcileMs: 3_600_000 }));
+  const boot = async () => start(config, await depsOver(config, api));
   const call = async <T>(socket: string, method: string, params: unknown = {}): Promise<T> => {
     const c = await connect(socket);
     try {
@@ -731,7 +783,6 @@ describe('cancore-botd end to end: owner release of a booked take (CAN-2836, F12
     sourceTokenAddress: 'CC', sourceTokenName: 'CC', sourceAmount: '1', targetTokenAddress: 'USDCx', targetTokenName: 'USDCx', targetAmount: '0.15',
     expiresAt: '', createdAt: '', updatedAt: '',
   });
-  const mayBeTrade = { code: ERROR.INVALID_PARAMS, data: { reason: 'may_be_trade' } };
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'botd-e2e-release-'));
@@ -747,7 +798,7 @@ describe('cancore-botd end to end: owner release of a booked take (CAN-2836, F12
   });
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-  it('a take whose accept the venue refused is released: no accept of ours is left that could land', async () => {
+  it('@happy G0-CAN-2836.1: a take whose accept the venue refused is released: no accept of ours is left that could land', async () => {
     const stop = await boot();
     api.acceptScript = () => 'refused';
     try {
@@ -763,7 +814,7 @@ describe('cancore-botd end to end: owner release of a booked take (CAN-2836, F12
     }
   });
 
-  it('a take refused for a fee holding it cannot split is released: that refusal comes before the venue claims the order', async () => {
+  it('@happy G0-CAN-2836.1: a take refused for a fee holding it cannot split is released: that refusal comes before the venue claims the order', async () => {
     const stop = await boot();
     api.acceptScript = () => 'fee-holding';
     try {
@@ -778,7 +829,7 @@ describe('cancore-botd end to end: owner release of a booked take (CAN-2836, F12
     }
   });
 
-  it('an accept whose answer was lost and that the venue applies only later: refused before and after its handler ends, and the reservation stops the next take', async () => {
+  it('@negative G0-CAN-2836.2: an accept whose answer was lost and that the venue applies only later: refused before and after its handler ends, and the reservation stops the next take', async () => {
     const stop = await boot();
     let answer!: () => void;
     api.acceptHold = new Promise<void>((r) => (answer = r));
@@ -790,12 +841,12 @@ describe('cancore-botd end to end: owner release of a booked take (CAN-2836, F12
       await owner('unlock', { passphrase: 'bot-pass-2026' });
       expect(await agent('order.take', { orderId: 'x1', amount: '1' })).toMatchObject({ orderId: 'x1' });
       await sent;
-      expect(await refusal(owner('order.release', { orderId: 'x1' }))).toMatchObject(mayBeTrade);
+      expect(await refusal(owner('order.release', { orderId: 'x1' }))).toMatchObject(MAY_BE_TRADE);
       answer();
       await until(() => event('x1', 'take_failed'));
       // The handler is over and the order still reads open with no taker: that accept can still claim it.
       expect(api.orders.get('x1')).toMatchObject({ status: 'open', opponentUserId: null });
-      expect(await refusal(owner('order.release', { orderId: 'x1' }))).toMatchObject(mayBeTrade);
+      expect(await refusal(owner('order.release', { orderId: 'x1' }))).toMatchObject(MAY_BE_TRADE);
       expect(state().openOrders.map((o) => o.orderId)).toEqual(['x1']);
       // Still reserved: a second 0.15 USD take does not fit the 0.2 USD day.
       expect(await refusal(agent('order.take', { orderId: 'x2', amount: '1' }))).toMatchObject({ code: ERROR.DENIED, data: { reason: 'usd_daily_exceeded' } });
@@ -814,6 +865,152 @@ describe('cancore-botd end to end: owner release of a booked take (CAN-2836, F12
       api.atAccept = undefined;
       api.acceptScript = undefined;
       await stop();
+    }
+  });
+});
+
+describe('cancore-botd end to end: a settle that lands in the lock window (CAN-2834)', () => {
+  let dir: string;
+  let config: BotConfig;
+  const api = fakeApi();
+  const state = () => readState(config);
+  const audit = () => readFileSync(paths(config).audit, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { method?: string; params?: { orderId?: string; event?: string; usdValue?: string } });
+  /** The real daemon and engine over the fake API; the engine's hooks are kept so a test can deliver serve's settle event. */
+  async function dispatcher() {
+    let hooks!: Parameters<Deps['createEngine']>[1];
+    const { deps, call } = await dispatcherOver(config, api, (real) => (signer, h) => ((hooks = h), real(signer, h)));
+    return { deps, call, settled: (orderId: string) => hooks.onSettled(orderId) };
+  }
+  // Buy 1 CC at 0.15: one fill is 0.15 USD, and a 1 USD day has room for the next order — unless an unpriced fill spent it.
+  const make = { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' };
+
+  beforeEach(async () => {
+    ({ dir, config } = await botDir('botd-e2e-2834-', { ...LIMITS, perOrderUsd: '1', perDayUsd: '1' }));
+    api.orders.clear();
+    api.atPrices = undefined;
+    api.pricesHold = undefined;
+    api.pricesDown = false;
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('@happy G0-CAN-2834.1: a settle event in the lock window is booked after unlock at its USD price, and the next order is not refused as usd_daily_exceeded', async () => {
+    const { deps, call, settled } = await dispatcher();
+    try {
+      const { result } = (await call('order.make', make, false)) as { result: { order: { orderId: string } } };
+      const orderId = result.order.orderId;
+      await call('lock', {}, true);
+      api.orders.get(orderId)!.status = 'completed';
+      settled(orderId);
+      await until(() => audit().some((e) => e.params?.orderId === orderId && e.params?.event === 'settle_deferred'));
+      // Locked: nothing booked unpriced, the order keeps its reservation until the unlock.
+      expect(state().fills ?? []).toEqual([]);
+      expect(state().openOrders.map((o) => o.orderId)).toEqual([orderId]);
+
+      await call('unlock', { passphrase: 'bot-pass-2026' }, true);
+      await until(() => (state().fills ?? []).length === 1);
+      expect(state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '1', usdValue: '0.15' })]);
+      await expect(call('order.make', make, false)).resolves.toMatchObject({ result: expect.anything() });
+    } finally {
+      // A lock stops the engine's loops, so nothing outlives the test.
+      await call('lock', {}, true);
+      await deps.audit.close();
+    }
+  });
+
+  it('@negative G0-CAN-2834.2: a lock that lands while settles wait in the background queue books none of them unpriced', async () => {
+    const { deps, call, settled } = await dispatcher();
+    try {
+      const ids: string[] = [];
+      for (let i = 0; i < 2; i++) ids.push(((await call('order.make', make, false)) as { result: { order: { orderId: string } } }).result.order.orderId);
+      for (const id of ids) api.orders.get(id)!.status = 'completed';
+      // The first settle holds the queue on its price fetch; the second waits behind it while the lock lands.
+      let release!: () => void;
+      api.pricesHold = new Promise((r) => (release = r));
+      const fetching = new Promise<void>((r) => (api.atPrices = r));
+      for (const id of ids) settled(id);
+      // The first settle is in flight — at its price fetch, with the engine it started under — before the lock lands.
+      await fetching;
+      api.atPrices = undefined;
+      const locking = call('lock', {}, true);
+      await new Promise((r) => setTimeout(r, 20));
+      api.pricesHold = undefined;
+      release();
+      await locking;
+      await until(() => audit().some((e) => e.params?.orderId === ids[1] && e.params?.event === 'settle_deferred'));
+      // The in-flight one is booked at the price it fetched; the queued one waits for the unlock.
+      expect(state().fills).toEqual([expect.objectContaining({ usdValue: '0.15' })]);
+      expect((state().fills ?? []).filter((f) => !f.usdValue)).toEqual([]);
+
+      await call('unlock', { passphrase: 'bot-pass-2026' }, true);
+      await until(() => (state().fills ?? []).length === 2);
+      expect(state().fills).toEqual([expect.objectContaining({ usdValue: '0.15' }), expect.objectContaining({ usdValue: '0.15' })]);
+      await expect(call('order.make', make, false)).resolves.toMatchObject({ result: expect.anything() });
+    } finally {
+      // A lock stops the engine's loops, so nothing outlives the test.
+      await call('lock', {}, true);
+      await deps.audit.close();
+    }
+  });
+
+  it('@edge G0-CAN-2834.3: with no USD price at unlock the fill is booked unpriced and counts as the whole day spent', async () => {
+    const { deps, call, settled } = await dispatcher();
+    try {
+      const { result } = (await call('order.make', make, false)) as { result: { order: { orderId: string } } };
+      const orderId = result.order.orderId;
+      await call('lock', {}, true);
+      api.orders.get(orderId)!.status = 'completed';
+      settled(orderId);
+      api.pricesDown = true;
+      await call('unlock', { passphrase: 'bot-pass-2026' }, true);
+      await until(() => (state().fills ?? []).length === 1);
+      expect(state().fills).toEqual([{ at: expect.any(Number), instrument: 'CC', amount: '1' }]);
+      // The settle writes the state first and its audit line after: wait for the line rather than read it at once.
+      await until(() => audit().some((e) => e.method === 'settle' && e.params?.orderId === orderId && e.params?.usdValue === 'unpriced'));
+      // Prices are back at the next unlock; the fill stays unpriced, and the rule this ticket keeps applies: it spent the day.
+      api.pricesDown = false;
+      await call('lock', {}, true);
+      await call('unlock', { passphrase: 'bot-pass-2026' }, true);
+      expect(state().fills).toEqual([{ at: expect.any(Number), instrument: 'CC', amount: '1' }]);
+      await expect(call('order.make', make, false)).rejects.toMatchObject({ code: ERROR.DENIED, data: { reason: 'usd_daily_exceeded' } });
+    } finally {
+      // A lock stops the engine's loops, so nothing outlives the test.
+      await call('lock', {}, true);
+      await deps.audit.close();
+    }
+  });
+});
+
+describe('cancore-botd end to end: owner release once the maker\'s order completed (CAN-2836)', () => {
+  let dir: string;
+  let config: BotConfig;
+  const api = fakeApi();
+  const state = () => readState(config);
+
+  beforeAll(async () => {
+    ({ dir, config } = await botDir('botd-e2e-2836-', LIMITS));
+    api.orders.set('x5', openOrder('x5', '1', '0.15'));
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('@edge G0-CAN-2836.3: the maker\'s order already completed by this account: refused as may_be_trade, and reconcile books the fill', async () => {
+    const { deps, call } = await dispatcherOver(config, api);
+    try {
+      await expect(call('order.take', { orderId: 'x5', amount: '1' }, false)).resolves.toMatchObject({ result: { orderId: 'x5' } });
+      await until(() => api.accepts === 1);
+      // The venue applied that accept and the trade settled: the order is ours and complete.
+      Object.assign(api.orders.get('x5')!, { status: 'completed', opponentUserId: 'bot' });
+
+      await expect(call('order.release', { orderId: 'x5' }, true)).rejects.toMatchObject(MAY_BE_TRADE);
+      expect(state().openOrders.map((o) => o.orderId)).toEqual(['x5']);
+
+      await call('lock', {}, true);
+      await call('unlock', { passphrase: 'bot-pass-2026' }, true);
+      await until(() => (state().fills ?? []).length === 1);
+      expect(state().fills).toEqual([expect.objectContaining({ instrument: 'CC', amount: '1', usdValue: '0.15' })]);
+      expect(state().openOrders).toEqual([]);
+    } finally {
+      await call('lock', {}, true);
+      await deps.audit.close();
     }
   });
 });

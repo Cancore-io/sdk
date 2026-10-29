@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { ed25519 } from '@noble/curves/ed25519';
 import { cantonFingerprint, deriveWalletKey, LOGIN_CHALLENGE_PREFIX as WALLET_CHALLENGE_PREFIX, providerFromMnemonic } from '@cancore/wallet';
 import { acceptTransferLeg, allocationTree, DEV, factoryTransferLeg, holding, preapprovalProposalLeg, prepared, proposalAccept, proposalCreate, selfSendLeg, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
+import { refusalBody, wireLeg } from './wire.fixture';
 import type { FetchLike } from './http';
 import {
   CeremonyError,
@@ -37,8 +38,7 @@ const hex = (text: string) => new Uint8Array(Buffer.from(text, 'hex'));
 const jwt = (sub: string, exp = FAR) =>
   `h.${Buffer.from(JSON.stringify({ sub, exp })).toString('base64url')}.s`;
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-const refuse = (status: number, message: string, errorCode?: string) =>
-  json({ statusCode: status, message, ...(errorCode ? { errorCode, code: errorCode } : {}) }, status);
+const refuse = (status: number, message: string, errorCode?: string) => json(refusalBody(status, message, errorCode), status);
 
 interface Account { publicKey: string; id: string; partyId: string | null; roles: string[]; status: 'ACTIVE' | 'FAILED' }
 interface Leg { legId: string; hash: string; kind: string; preparedTransaction?: string }
@@ -241,8 +241,7 @@ function venue({
   const partyOf = (owner: Account) => `party-${owner.id}::${cantonFingerprint(owner.publicKey)}`;
   const parties = (): string[] => [...new Set(legs.flatMap((l) => [l.sender, l.receiver]))];
 
-  const asLeg = (t: { kind: string; preparedTransactionHash: string; preparedTransaction: string }): Leg =>
-    ({ legId: `leg-${++seq}`, hash: t.preparedTransactionHash, kind: t.kind, preparedTransaction: t.preparedTransaction });
+  const asLeg = (t: { kind: string; preparedTransactionHash: string; preparedTransaction: string }): Leg => wireLeg(t, `leg-${++seq}`);
   const feeLeg = (party: string) => selfSendLeg({
     party, kind: 'fee', receiver: DEV.venue, input: '10', ids: 'b', outputs: [{ owner: DEV.venue, amount: String(networkFee) }, { owner: party, amount: (10 - networkFee).toFixed(10) }],
   });
@@ -668,7 +667,7 @@ const baseUrl = 'https://api-dev.cancore.app';
 /** The accept of the incoming transfer `cid` as the participant prepares it: CBTC from the venue, to `party`. */
 async function acceptLegs(party: string, cid: string, over: Partial<Parameters<typeof acceptTransferLeg>[0]> = {}): Promise<Leg[]> {
   const t = await acceptTransferLeg({ party, sender: DEV.venue, instrument: { id: 'CBTC', admin: DEV.cbtcRegistrar }, amount: '1', offerCid: cid, ...over });
-  return [{ legId: 'l', hash: t.preparedTransactionHash, kind: t.kind, preparedTransaction: t.preparedTransaction }];
+  return [wireLeg(t, 'l')];
 }
 // Yield a macrotask per wait: an instantly-resolving sleep would starve jest's own timers.
 const fast = { pollMs: 1, sleep: () => new Promise<void>((resolve) => setImmediate(resolve)) };
@@ -2160,8 +2159,7 @@ describe('the network fee: one ceiling for a send, one budget for an inbox (CAN-
   const OWNER = 'party-owner::1220bb';
   const MALLORY = 'mallory::1220ff';
   let n = 0;
-  const L = (t: { kind: string; preparedTransactionHash: string; preparedTransaction: string }): Leg =>
-    ({ legId: `fee-${++n}`, hash: t.preparedTransactionHash, kind: t.kind, preparedTransaction: t.preparedTransaction });
+  const L = (t: { kind: string; preparedTransactionHash: string; preparedTransaction: string }): Leg => wireLeg(t, `fee-${++n}`);
   const who = async (account: number) => {
     const signer = await providerFromMnemonic(PHRASE, { account });
     return { signer, me: `party-me::${cantonFingerprint(signer.public_key)}` };
@@ -3263,7 +3261,7 @@ describe('self-custody HTLC: Flow B, accept-counter and refund sign only what th
   const CC = { id: 'Amulet', admin: DEV.dso };
   const MALLORY = 'mallory::1220ff';
   type Leg = { kind: string; preparedTransaction: string; preparedTransactionHash: string };
-  const asLegs = (legs: Leg[]) => legs.map((l, i) => ({ legId: `l${i}`, hash: l.preparedTransactionHash, kind: l.kind, preparedTransaction: l.preparedTransaction }));
+  const asLegs = (legs: Leg[]) => legs.map((l, i) => wireLeg(l, `l${i}`));
 
   async function account(seed: number, legsFor: (party: string, type: string, params: Record<string, unknown>) => Promise<Leg[]>) {
     const signer = await providerFromMnemonic(PHRASE, { account: seed });
@@ -3346,5 +3344,95 @@ describe('self-custody HTLC: Flow B, accept-counter and refund sign only what th
     await expect(acct.refund('s1')).resolves.toMatchObject({ id: 's1', status: 'htlc_refunded' });
 
     expect(api.signed()).toEqual([]);
+  });
+});
+
+describe('balance(): TokenBalanceDto.balance number normalization (CAN-3087)', () => {
+  async function accountWithBalance(reply: unknown) {
+    const signer = await providerFromMnemonic(PHRASE, { account: 66 });
+    const party = `party-me::${cantonFingerprint(signer.public_key)}`;
+    const api = stub({
+      'GET /auth/me': () => ({ id: 'me', partyId: party }),
+      [`GET /tokens/balance/${encodeURIComponent(party)}/CC`]: () => reply,
+      [`GET /tokens/balance/${encodeURIComponent(party)}/CBTC`]: () => reply,
+      'GET /tokens/transfer/estimate-fee': () => ({ networkFee: 0.125 }),
+      'GET /tokens/fee-debt': () => ({ outstandingCc: '0' }),
+    });
+    const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
+    return { acct, party };
+  }
+
+  test('G0-CAN-3087.1 @happy: normalizes numeric TokenBalanceDto.balance to a plain decimal string', async () => {
+    const { acct } = await accountWithBalance({ balance: 42.5, holdingsCount: 3 });
+    const res = await acct.balance('CC');
+    expect(typeof res.balance).toBe('string');
+    expect(res).toEqual({ balance: '42.5', holdingsCount: 3 });
+
+    const { acct: stringAcct } = await accountWithBalance({ balance: '42.5000', holdingsCount: 1 });
+    await expect(stringAcct.balance('CC')).resolves.toEqual({ balance: '42.5', holdingsCount: 1 });
+  });
+
+  test.each([
+    [1000007.31, '1000007.31'],
+    [1234567.89, '1234567.89'],
+    [123456789.123, '123456789.123'],
+  ] as const)('CAN-3126 @happy: returns numeric balance %s as the decimal the API sent, not its double expansion', async (wire, expected) => {
+    const { acct } = await accountWithBalance({ balance: wire });
+    await expect(acct.balance('CC')).resolves.toEqual({ balance: expected });
+  });
+
+  test('CAN-3126 @edge: rounds float noise to ten places', async () => {
+    const { acct } = await accountWithBalance({ balance: 0.1 + 0.2 });
+    await expect(acct.balance('CC')).resolves.toEqual({ balance: '0.3' });
+  });
+
+  test.each([
+    [6e-11, '0.0000000001'],
+    [1e-11, '0'],
+  ] as const)('CAN-3126 @edge: rounds numeric balance %s with more than ten places to ten', async (wire, expected) => {
+    const { acct } = await accountWithBalance({ balance: wire });
+    await expect(acct.balance('CC')).resolves.toEqual({ balance: expected });
+  });
+
+  test.each([
+    ['negative number', -1],
+    ['non-decimal string', 'abc'],
+    ['null', null],
+  ] as const)('CAN-3126 @negative: splitForFee refuses a %s balance with a SettleError', async (_, invalid) => {
+    const { acct } = await accountWithBalance({ balance: invalid });
+    const error = await acct.splitForFee('CC', '1').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(SettleError);
+    expect((error as Error).message).toMatch(/^cannot split 1 CC for the platform fee: the API's CC balance .* is not a non-negative decimal of at most ten places/);
+  });
+
+  test('G0-CAN-3087.3 @edge: normalizes small exponential numbers (5e-8) without exponent and 0 / -0 to "0"', async () => {
+    const { acct: tiny } = await accountWithBalance({ balance: 5e-8, holdingsCount: 1 });
+    const tinyRes = await tiny.balance('CBTC');
+    expect(typeof tinyRes.balance).toBe('string');
+    expect(tinyRes.balance).toBe('0.00000005');
+    expect(tinyRes.balance).not.toMatch(/[eE]/);
+
+    const { acct: zero } = await accountWithBalance({ balance: 0, holdingsCount: 0 });
+    await expect(zero.balance('CC')).resolves.toEqual({ balance: '0', holdingsCount: 0 });
+
+    const { acct: negZero } = await accountWithBalance({ balance: -0 });
+    await expect(negZero.balance('CC')).resolves.toEqual({ balance: '0' });
+  });
+
+  test.each([
+    ['negative number', -1],
+    ['negative tiny number', -5e-8],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['past exponent notation', 1e21],
+    ['negative string', '-1'],
+    ['non-decimal string', 'abc'],
+    ['more than ten decimals', '0.12345678901'],
+    ['null', null],
+    ['missing', undefined],
+    ['array', ['10']],
+  ] as const)('G0-CAN-3087.2 @negative: refuses %s balance instead of passing it through', async (_, invalid) => {
+    const { acct } = await accountWithBalance({ balance: invalid });
+    await expect(acct.balance('CC')).rejects.toThrow(/balance .* is not a non-negative decimal of at most ten places/);
   });
 });

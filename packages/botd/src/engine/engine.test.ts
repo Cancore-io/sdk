@@ -217,3 +217,10 @@ describe('engine.order', () => {
     expect(await Promise.all(['d', 'h', 'old'].map(async (id) => (await e.order(id)).dvp))).toEqual([true, false, false]);
   });
 });
+
+describe('engine.balances (CAN-3087)', () => {
+  it('passes the client-normalized balance string through unchanged', async () => {
+    const e = await engineOver({ balance: async () => ({ balance: '0.00000005' }) });
+    expect(await e.balances(['CBTC'])).toEqual([{ instrument: 'CBTC', amount: '0.00000005' }]);
+  });
+});

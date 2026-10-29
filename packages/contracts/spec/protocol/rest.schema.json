@@ -164,7 +164,10 @@
               "admin": { "type": "string", "minLength": 1 },
               "contractId": { "type": "string", "minLength": 1 },
               "instrumentAllowances": { "type": "array", "maxItems": 10, "items": { "type": "string", "minLength": 1 } },
-              "executeBefore": { "$ref": "messages.schema.json#/$defs/timeS", "description": "unix s: the Daml Time (microseconds) cut to whole seconds; the preapproval expires then" }
+              "executeBefore": {
+                "oneOf": [{ "$ref": "messages.schema.json#/$defs/timeS" }, { "type": "null" }],
+                "description": "unix s: the Daml Time (microseconds) cut to whole seconds; the preapproval expires then. null: the registry's preapproval has no validity window (DA Utilities) and never lapses"
+              }
             }
           }
         }

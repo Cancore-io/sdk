@@ -51,6 +51,7 @@ import { createFiller, type Filler } from '../src/filler/filler';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
+import { activeContracts, cantonToken, env } from './stand/canton-ledger';
 
 const STAND = process.env.INTENT_STAND_ENV;
 /** Every key this spec reads (Cancore-io/meta docs/runbooks/intent-stand.md); TRADING_URL or GATEWAY_URL besides. */
@@ -62,11 +63,6 @@ const REQUIRED = [
   'STAND_USER_NAME', 'STAND_USER_PASSWORD', 'STAND_USER_TOKEN_URL', 'TICKET_SIGNERS', 'PERMIT2_ADDRESS',
   'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET',
 ] as const;
-const env = (name: string): string => {
-  const value = process.env[name];
-  if (!value) throw new Error(`intent-stand env: ${name} is not set (Cancore-io/meta docs/runbooks/intent-stand.md)`);
-  return value;
-};
 
 const abi = (entries: unknown) => entries as unknown as readonly AbiEntry[];
 const httpRpc = (url: string): EvmRpc => {
@@ -117,42 +113,16 @@ async function userToken(): Promise<string> {
 }
 
 /**
- * A bearer token of the stand's Canton JSON API (client credentials). The stand's Keycloak issues ledger tokens
- * under `openid` (as its own scripts ask); `CANTON_TOKEN_SCOPE` names another scope where the issuer wants one.
- */
-async function cantonToken(): Promise<string> {
-  const scope = process.env.CANTON_TOKEN_SCOPE || 'openid';
-  const form = new URLSearchParams({ grant_type: 'client_credentials', client_id: env('CANTON_CLIENT_ID'), client_secret: env('CANTON_CLIENT_SECRET'), scope });
-  const response = await fetch(env('CANTON_TOKEN_URL'), { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form });
-  if (!response.ok) throw new Error(`Canton JSON API login: ${response.status} ${(await response.text()).slice(0, 300)}`);
-  return ((await response.json()) as { access_token: string }).access_token;
-}
-
-/**
  * The unlocked holdings of `party` in `asset` on the ledger itself (JSON Ledger API v2, the active contracts of
  * the registry's holding template), Numeric 10 × 10¹⁰ — read independently of the SDK and of filler-gateway.
  */
 async function ledgerHoldings(party: string, asset: { admin: string; id: string }, registry: CantonTransferFactory): Promise<bigint> {
-  const base = env('CANTON_JSON_API_URL').replace(/\/$/, '');
-  const headers = { 'content-type': 'application/json', authorization: `Bearer ${await cantonToken()}` };
-  const end = (await (await fetch(`${base}/v2/state/ledger-end`, { headers })).json()) as { offset: number };
-  // A filter names the template by package name (`#name:Module:Entity`); a package id is refused there.
   const templateId = `#${process.env.CANTON_REGISTRY_PACKAGE_NAME || 'cnrx-registry'}:${registry.holding}`;
-  const response = await fetch(`${base}/v2/state/active-contracts`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      // eventFormat alone: the participant refuses it beside the older top-level verbose/filter.
-      activeAtOffset: end.offset,
-      eventFormat: { verbose: true, filtersByParty: { [party]: { cumulative: [{ identifierFilter: { TemplateFilter: { value: { templateId, includeCreatedEventBlob: false } } } }] } } },
-    }),
-  });
-  if (!response.ok) throw new Error(`active contracts of ${party}: ${response.status} ${(await response.text()).slice(0, 300)}`);
+  const events = await activeContracts(party, { TemplateFilter: { value: { templateId, includeCreatedEventBlob: false } } }, await cantonToken());
   type View = { account?: { owner?: string | null }; instrumentId?: { admin?: string; id?: string }; amount?: string; lock?: unknown };
-  const rows = (await response.json()) as Array<{ contractEntry?: { JsActiveContract?: { createdEvent?: { createArgument?: Record<string, View> } } } }>;
   let total = 0n;
-  for (const row of rows) {
-    const view = row.contractEntry?.JsActiveContract?.createdEvent?.createArgument?.[registry.holdingView];
+  for (const event of events) {
+    const view = event.createArgument?.[registry.holdingView] as View | undefined;
     if (!view || view.account?.owner !== party || view.lock) continue;
     if (view.instrumentId?.admin !== asset.admin || view.instrumentId?.id !== asset.id || typeof view.amount !== 'string') continue;
     total += encodeCantonAmount(view.amount);

@@ -1,5 +1,26 @@
 # Changelog — `@cancore/client`
 
+## 0.13.2
+
+### Fixed
+
+- `balance(instrumentId)` returns a numeric balance as the decimal the API wrote
+  (`1000007.31` → `'1000007.31'`, not its binary expansion `'1000007.3100000001'`), exact up to
+  ~15 significant digits: a JSON number with more is already rounded by `JSON.parse` before the
+  client sees it (CAN-3126). Exponent notation and float noise are rounded to ten places
+  (`5e-8` → `'0.00000005'`, `6e-11` → `'0.0000000001'`).
+- `splitForFee` refuses a negative, non-decimal, over-ten-places, `null` or missing balance with a
+  `SettleError`, as it refuses an insufficient one; 0.13.1 threw a plain `Error` there (CAN-3126).
+
+## 0.13.1
+
+### Fixed
+
+- `balance(instrumentId)` returns the balance as a canonical decimal string whatever form the API
+  sends it in, and throws an `Error` on a negative value, a non-decimal, more than ten places,
+  `null` or a missing balance (CAN-3087). `botd` passes the string on unchanged and depends on
+  `^0.13.1`.
+
 ## 0.13.0
 
 ### Added

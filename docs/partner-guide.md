@@ -4,7 +4,7 @@ For a partner who runs a trading bot or a market maker on Canton through Cancore
 **self-custody** account. Your program holds the key. Cancore never sees it.
 
 Written against `@cancore/client` **0.9.0** and `@cancore/wallet` **0.3.0**. Every snippet uses
-the published API. The full examples in [section 11](#11-full-examples) are in this repository and
+the published API. The full examples in [section 12](#12-full-examples) are in this repository and
 typechecked in CI (`packages/client/examples/`).
 
 1. [Overview](#1-overview)
@@ -15,9 +15,10 @@ typechecked in CI (`packages/client/examples/`).
 6. [Orders](#6-orders)
 7. [Settling trades](#7-settling-trades)
 8. [Cashback](#8-cashback)
-9. [Errors and troubleshooting](#9-errors-and-troubleshooting)
-10. [Security checklist and going to mainnet](#10-security-checklist-and-going-to-mainnet)
-11. [Full examples](#11-full-examples)
+9. [Bot accounts of a partner](#9-bot-accounts-of-a-partner)
+10. [Errors and troubleshooting](#10-errors-and-troubleshooting)
+11. [Security checklist and going to mainnet](#11-security-checklist-and-going-to-mainnet)
+12. [Full examples](#12-full-examples)
 
 ## 1. Overview
 
@@ -289,7 +290,7 @@ const pair = pairs.find((p) => p.baseToken.symbol === 'CC' && p.quoteToken.symbo
 Which pairs settle through DvP is configured per stand, and testnet and mainnet may enable fewer
 pairs than dev. Ask Cancore which pairs are enabled where you trade. Pick a pair whose base and
 quote are both on `canton`: the list also has cross-chain pairs. If a pair is not enabled for DvP,
-`make` refuses before anything is recorded ([section 9](#9-errors-and-troubleshooting)).
+`make` refuses before anything is recorded ([section 10](#10-errors-and-troubleshooting)).
 
 `acct.swap.pairs()` and `quote()` / `execute()` are a different product: instant trades against
 Cancore's pool, with no counterparty. A market maker does not need them.
@@ -446,7 +447,74 @@ A CC payout lands directly. A registry-token payout is a transfer that only your
 `collect()` accepts it, and so does `serve({ acceptIncoming: true })`. The API refuses a new claim
 while `hasPendingClaim` is true.
 
-## 9. Errors and troubleshooting
+## 9. Bot accounts of a partner
+
+A partner account can make up to five **bot accounts** from its own recovery phrase: separate
+accounts, each with its own key, party and balance, that your program makes, funds, runs, stops
+and empties. They need `@cancore/client` **0.13.0** or later. Bot accounts are being opened in
+stages.
+
+**A bot is not a second partner account.** Read this before you plan volume on bots:
+
+| | Your partner account | A bot account it made |
+| --- | --- | --- |
+| Role | `partner-bot`, from your invite code | `user`. A bot is made without an invite code and gets nothing a partner code grants. |
+| Network fee | none ([section 1](#1-overview)) | paid, as by any regular account |
+| Platform fee | the partner fee on a trade between two automated accounts, at least one of them `partner-bot` | the bot is a regular account, so every trade it is a side of is charged the retail fee, including a trade with another partner |
+| Cashback | accrues on the qualifying trades it takes ([section 8](#8-cashback)) | none: the bot is not a partner, and a trade with a bot on one side is not a trade between two automated accounts |
+| Pool trades (a quote, then execute) | a spread set for partners, where the stand sets one | the pair's own spread |
+
+Everything else that applies to a regular account applies to a bot too, the regional access rules
+included. If you need more accounts on partner terms, register each one as an account of its own
+([section 4](#4-registration-and-onboarding): another `account` index, another invite code), not as
+a bot. Use an index above 5 for it: indexes 1 to 5 of your phrase are where your bots' keys come
+from, and a key that is already an account cannot become a bot (`409`).
+
+**Making them.** [`packages/client/examples/owner-bots.ts`](../packages/client/examples/owner-bots.ts)
+lists, makes, stops and resumes bots, and [Run a bot](run-a-bot.md#or-make-the-bot-from-a-program)
+explains each step. In short:
+
+- **Your own sign-in.** `bots.create`, `bots.list`, `bots.stop` and `bots.resume` run on your
+  account's session token. An app-session grant is refused, and so is a bot: a bot cannot make
+  bots. The owner must be an active self-custody account.
+- **The key comes from your phrase.** `nextBotAccount` picks the index the web wallet would pick,
+  the lowest of 1 to 5 whose key is not a bot yet, so the wallet's **Show key** shows the same key.
+  The bot's process gets that one key (`deriveWalletKey(phrase, 'standard', N).seedHex`,
+  `@cancore/wallet`), never the phrase.
+- **Five per owner, for life.** A sixth is refused with `409`. A bot cannot be deleted or given
+  back, and its key cannot be rotated: a leaked key is dealt with by emptying that bot and not
+  using it again.
+
+**One person, one set of limits.** The API counts you and your bots as one person: one cap on
+orders placed per hour and on orders accepted per 24 hours where the stand sets them, and one
+request pool for all your bots (your own account keeps its allowance). **You cannot trade with
+your own bots**, nor one bot with another: such an accept or proposal is refused with `403`. The
+whole table: [Run a bot, section 10](run-a-bot.md#10-limits-and-refusals).
+
+**Running them.** Each bot is an account of its own and is set up by its own key, once:
+`onboard()` for its party and CC receipts, then `acceptTerms` where the stand requires it (the
+terms you accepted do not cover the bot). A bot made from a program has neither yet; the wallet
+does both for a bot made in **My bots**. Then run it either way:
+
+- **Your own program:** `createSelfCustody` with the bot's key, and `serve()` as in
+  [section 7](#7-settling-trades), one process per bot.
+- **[`@cancore/botd`](../packages/botd/README.md)**, the bot daemon, which signs within limits you
+  set and lets an AI agent trade through `@cancore/bot-mcp`. A release candidate built from source;
+  it cannot create a party or accept terms, so do both with `@cancore/client` before you import
+  the key ([botd, Install, step 4](../packages/botd/README.md#install)).
+
+**Funding and withdrawing.** Fund a bot with an ordinary `send` from your account to the bot's
+`partyId` ([section 5](#5-funding-and-wallet-management)). Only the bot's key moves the bot's
+balance: withdrawing is the bot's own `send` back to you, and the bot pays its CC network fee
+([Run a bot, section 9](run-a-bot.md#9-withdraw-to-the-owner)). What you can do from your own
+session is see, stop and resume: stopping cancels the bot's open orders, lets trades under way
+finish, and leaves it free to send its funds out.
+
+**From the web app.** If your partner account's phrase is in the Cancore wallet in your browser,
+**Wallet → Settings → My bots** shows the same bots, made here or there, and stops, resumes, funds
+and empties them too. That section is being opened in stages as well.
+
+## 10. Errors and troubleshooting
 
 | Error | Thrown by | Means |
 | --- | --- | --- |
@@ -539,7 +607,7 @@ If you still cannot tell, contact Cancore support with the error before you send
 everything else, retry `5xx` and network errors with backoff, and treat `4xx` as final until you
 change something.
 
-## 10. Security checklist and going to mainnet
+## 11. Security checklist and going to mainnet
 
 - [ ] The phrase or seed lives in a secret manager. It is injected at runtime, never in git, an
       image, a log or a crash report.
@@ -563,7 +631,7 @@ change something.
       (testnet and mainnet may enable fewer pairs than dev, or none). Rehearse a full maker/taker
       round on a stand where your pair is enabled, then start mainnet with small sizes.
 
-## 11. Full examples
+## 12. Full examples
 
 Three files in [`packages/client/examples`](../packages/client/examples). CI typechecks them with
 the package (`npm run typecheck`), and a test keeps the copies below identical to them.
