@@ -222,6 +222,7 @@ describe('delivery.fill: the decoded transaction (CAN-1867)', () => {
     ['TC-SDK-1867-20: the order has another validUntil', { order: { validUntil: v.time(String(Number(VALID_UNTIL) + 60)) } }, /validUntil/],
     ['TC-SDK-3172-01: the fill names another factory than stated', { root: { chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}), transferFactory: { t: 'optional', v: v.cid('ff') } }) } }, /another transfer factory/],
     ['TC-SDK-3172-02: the fill names no factory (a 0.4.2 command)', { root: { chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}) }) } }, /another transfer factory/],
+    ['TC-SDK-3172-07: the fill names None for the factory', { root: { chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}), transferFactory: { t: 'optional' } }) } }, /another transfer factory/],
     ['TC-SDK-1867-22: the transfer moves another amount', { transferAmount: '2.5' }, /another amount/],
     ['TC-SDK-1867-23: the receipt names another repayTo', { receipt: { repayTo: v.bytes32(`0x${'00'.repeat(12)}${'66'.repeat(20)}`) } }, /DeliveryReceipt names another repayTo/],
     ['TC-SDK-1867-24: the receipt not co-signed by the party', { receiptSignatories: [OPERATOR] }, /not signed by exactly/],

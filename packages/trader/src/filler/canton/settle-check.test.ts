@@ -69,7 +69,14 @@ interface Over {
   extra?: TransactionNode[];
   batchTemplate?: string;
   settlementFactory?: string;
+  /** The settle names no settlement factory: the field is left out (a 0.4.2 command) or None. */
+  unnamedFactory?: 'missing' | 'none';
   actAs?: string[];
+}
+
+function namedSettlementFactory(o: Over): Record<string, DamlValue> {
+  if (o.unnamedFactory === 'missing') return {};
+  return { settlementFactory: o.unnamedFactory === 'none' ? { t: 'optional' } : { t: 'optional', v: v.cid(o.settlementFactory ?? '00sf') } };
 }
 
 function honest(o: Over = {}): CantonTransaction {
@@ -90,7 +97,7 @@ function honest(o: Over = {}): CantonTransaction {
   const extra = o.extra ?? [];
   const root: ExerciseNode = {
     nodeId: '0', kind: 'exercise', contractId: intent.intentCid, packageName: 'cancore-intent', templateId: intent.templateId, choice: 'SwapIntent_SettleWithProof',
-    chosenValue: v.record({ proof: damlProof({ ...proof, ...o.proof }), bundle: v.list([]), fillerEntryCid: v.cid(o.entry ?? '00en'), settlementFactory: { t: 'optional', v: v.cid(o.settlementFactory ?? '00sf') } }),
+    chosenValue: v.record({ proof: damlProof({ ...proof, ...o.proof }), bundle: v.list([]), fillerEntryCid: v.cid(o.entry ?? '00en'), ...namedSettlementFactory(o) }),
     actingParties: [ME], signatories: [OWNER, OPERATOR], stakeholders: [OWNER, OPERATOR, ME], consuming: true, children: ['1', '2', '3', ...extra.map((n) => n.nodeId)],
     ...o.root,
   };
@@ -120,6 +127,8 @@ describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery
     ['acting as the operator too', () => check(prepared(), [honest({ actAs: [ME, OPERATOR] })]), /acts as another party/],
     ['another choice on the intent', () => check(prepared(), [honest({ root: { choice: 'SwapIntent_Cancel' } })]), /not SwapIntent_SettleWithProof/],
     ['TC-SDK-3172-04: the batch runs another settlement factory than the settle names', () => check(prepared(), [honest({ settlementFactory: '00other' })]), /another settlement factory/],
+    ['TC-SDK-3172-05: the settle names no settlement factory (a 0.4.2 command)', () => check(prepared(), [honest({ unnamedFactory: 'missing' })]), /another settlement factory/],
+    ['TC-SDK-3172-06: the settle names None for the settlement factory', () => check(prepared(), [honest({ unnamedFactory: 'none' })]), /another settlement factory/],
     ['the intent of another package', () => check(prepared(), [honest({ root: { templateId: `${'ee'.repeat(32)}:Intent.SwapIntent:SwapIntent` } })]), /not SwapIntent_SettleWithProof/],
     ['another intent contract', () => check(prepared(), [honest({ root: { contractId: '00other' } })]), /another contract/],
     ['a proof of someone else’s fill', () => check(prepared(), [honest({ proof: { fillRef: `0x${'f2'.repeat(32)}` } })]), /proof.fillRef/],

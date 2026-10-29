@@ -62,8 +62,8 @@ export const textOf = (v: DamlValue): string => (v.t === 'text' ? v.v : refuse('
 export const numeric = (v: DamlValue): string => (v.t === 'numeric' ? canonicalDecimal(v.v) : refuse('expected a decimal'));
 /** The factory a choice names in its trailing `Optional (ContractId …)` argument (CAN-3172) must be `cid`. */
 export function requireNamedFactory(chosen: DamlValue, label: string, cid: string, what: string): void {
-  const named = field(chosen, label);
-  if (named.t !== 'optional' || named.v?.t !== 'contractId' || named.v.v !== cid) refuse(what);
+  const named = chosen.t === 'record' ? chosen.v[label] : undefined;
+  if (named?.t !== 'optional' || named.v?.t !== 'contractId' || named.v.v !== cid) refuse(what);
 }
 
 export const optionalParty = (v: DamlValue | undefined): string | undefined => (v?.t === 'optional' ? (v.v ? party(v.v) : undefined) : v ? party(v) : undefined);
