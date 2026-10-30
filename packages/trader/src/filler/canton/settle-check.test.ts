@@ -126,6 +126,10 @@ describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery
     expect(() => check(prepared(), [honest()])).not.toThrow();
   });
 
+  test('TC-SDK-3172-05: a 0.4.2 settle names no pin and runs the factory stored at Open: passes', () => {
+    expect(() => check(prepared(), [honest({ unnamedPin: 'missing', pin: null })])).not.toThrow();
+  });
+
   test.each<[string, () => unknown, RegExp]>([
     ['a summary for another intent', () => check(prepared({ intentCid: '00xx' }), [honest()]), /another intent/],
     ['a stated payee other than the party', () => check(prepared({ payee: 'other::1220' }), [honest()]), /payee/],
@@ -135,7 +139,7 @@ describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery
     ['acting as the operator too', () => check(prepared(), [honest({ actAs: [ME, OPERATOR] })]), /acts as another party/],
     ['another choice on the intent', () => check(prepared(), [honest({ root: { choice: 'SwapIntent_Cancel' } })]), /not SwapIntent_SettleWithProof/],
     ['TC-SDK-3172-04: the batch runs another settlement factory than the settle’s pin holds', () => check(prepared(), [honest({ pin: { settlementFactory: v.some(v.cid('00other')) } })]), /another settlement factory/],
-    ['TC-SDK-3172-05: the settle names no factory pin (a 0.4.2 command)', () => check(prepared(), [honest({ unnamedPin: 'missing' })]), /names no registry factory pin/],
+    ['TC-SDK-3172-05: a 0.4.2 settle (no pin) whose batch is not of a pinned registry', () => check(prepared(), [honest({ unnamedPin: 'missing', pin: null, batchTemplate: `${'ee'.repeat(32)}:Cnrx.Allocation:CnrxAllocationRules` })]), /not of a pinned registry/],
     ['TC-SDK-3172-06: the settle names None for the factory pin', () => check(prepared(), [honest({ unnamedPin: 'none' })]), /names no registry factory pin/],
     ['TC-SDK-3172-11: the settle’s pin holds no settlement factory', () => check(prepared(), [honest({ pin: { settlementFactory: v.none() } })]), /another settlement factory/],
     ['TC-SDK-3172-12: the settle names a pin of another party than the intent’s operator', () => check(prepared(), [honest({ pin: { operator: v.party(OWNER) } })]), /not the operator’s/],

@@ -16,11 +16,12 @@
  *   `fillDeadline` is the order's. This is where T-48 is enforced on the
  *   ledger's own data: the operator writes `fillerId` and `repayTo` into the
  *   order, and nothing else compares them with the signed `ticket.intent`.
- * - The fill names the operator's factory pin (`factoryPin`, CAN-3172),
+ * - A 0.5.0 fill names the operator's factory pin (`factoryPin`, CAN-3172),
  *   disclosed with the transaction, and its transfer factory is the stated
  *   one: the contract runs the factory the pin holds, not the one stored at
- *   Dispatch; the node additionally holds the transfer to a pinned registry
- *   template below.
+ *   Dispatch. A 0.4.2 fill names no pin: the order's factory pinned at
+ *   Dispatch is the stated one. Either way the node additionally holds the
+ *   transfer to a pinned registry template below.
  * - Under the root: `TransferFactory_Transfer` through a pinned factory, from
  *   the party to the recipient, exactly the order's amount and instrument,
  *   spending only the stated holdings, completed in this transaction (a
@@ -31,7 +32,7 @@
  * - `validUntil` has not passed by the process clock.
  */
 import { encodeCantonAmount, encodeCantonOutputAsset, encodeCantonRecipient, type Hex } from '@cancore/contracts';
-import { canonicalDecimal, checkTransferExercise, field, isOwnParty, numeric, party, qualified, refuse, requirePinnedFactory, sameSet, soleRoot, subtree, textOf, cids } from './checks';
+import { canonicalDecimal, checkTransferExercise, field, isOwnParty, namesFactoryPin, numeric, party, qualified, refuse, requirePinnedFactory, sameSet, soleRoot, subtree, textOf, cids } from './checks';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
 import type { CantonOpCheck } from './operations';
 import type { DamlValue, ExerciseNode } from './transaction';
@@ -136,7 +137,12 @@ export function checkDeliveryFill(expect: DeliveryFillExpectation): CantonOpChec
     if (party(field(o, 'instrumentAdmin')) !== instrument.admin) refuse('the DeliveryOrder pins another instrument admin');
     if (numeric(field(o, 'amount')) !== canonicalDecimal(s.amount)) refuse('the DeliveryOrder delivers another amount than stated');
     const operator = party(field(o, 'operator'));
-    requirePinnedFactory(tx, root.chosenValue, operator, 'transferFactory', s.transferFactoryCid, 'the fill’s factory pin holds another transfer factory than stated');
+    if (namesFactoryPin(root.chosenValue)) {
+      requirePinnedFactory(tx, root.chosenValue, operator, 'transferFactory', s.transferFactoryCid, 'the fill’s factory pin holds another transfer factory than stated');
+    } else {
+      const pinnedAtDispatch = field(o, 'transferFactoryCid');
+      if (pinnedAtDispatch.t !== 'contractId' || pinnedAtDispatch.v !== s.transferFactoryCid) refuse('the DeliveryOrder pins another transfer factory than stated');
+    }
 
     // -- Under the root: the transfer, the registry fetch, the receipt; nothing else --
     if (subtree(tx, root.nodeId).length !== Object.keys(tx.nodes).length) refuse('the transaction holds nodes outside the fill');
