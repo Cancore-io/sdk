@@ -64,8 +64,15 @@ const FACTORY_PIN = 'Intent.RegistryFactoryPin:RegistryFactoryPin';
 const someCid = (value: DamlValue | undefined): string | undefined => (value?.t === 'optional' && value.v?.t === 'contractId' ? value.v.v : undefined);
 
 /**
+ * Whether the choice carries the trailing `factoryPin` of cancore-intent 0.5.0 (CAN-3172). Without it the command is
+ * the 0.4.2 form, checked as 0.4.2 runs it: a 0.5.0 ledger refuses a command without `factoryPin`
+ * ("Registry factory pin is required"), so dropping the field cannot skip the pin check.
+ */
+export const namesFactoryPin = (chosen: DamlValue): boolean => chosen.t === 'record' && 'factoryPin' in chosen.v;
+
+/**
  * The choice's trailing `factoryPin` (CAN-3172): the operator's `RegistryFactoryPin`, disclosed with the transaction,
- * whose `role` factory is `cid` — the factory the transaction runs. A command without it (0.4.2) or naming None is refused.
+ * whose `role` factory is `cid` — the factory the transaction runs. A pin of None is refused.
  */
 export function requirePinnedFactory(tx: CantonTransaction, chosen: DamlValue, operator: string, role: string, cid: string, what: string): void {
   const pinCid = someCid(chosen.t === 'record' ? chosen.v.factoryPin : undefined);

@@ -209,6 +209,12 @@ describe('delivery.fill: what the summary states (CAN-1867)', () => {
     expect(() => check()(prepared(), [fill({ order: { transferFactoryCid: v.cid('00archived') } })])).not.toThrow();
   });
 
+  test('TC-SDK-3172-02: a 0.4.2 fill names no pin and goes through the factory the order pinned at Dispatch: passes; through another: refused', () => {
+    const unpinned = { root: { chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}) }) }, pin: null };
+    expect(() => check()(prepared(), [fill(unpinned)])).not.toThrow();
+    refused(() => check()(prepared(), [fill({ ...unpinned, order: { transferFactoryCid: v.cid('00archived') } })]), /pins another transfer factory/);
+  });
+
   test('TC-SDK-1867-09: a ticket already expired by the process clock: refused', () => {
     refused(() => check({ nowMs: (Number(VALID_UNTIL) + 1) * 1000 })(prepared(), [fill()]), /expired/);
   });
@@ -228,7 +234,6 @@ describe('delivery.fill: the decoded transaction (CAN-1867)', () => {
     ['TC-SDK-1867-19: the order is for another attempt', { order: { attempt: v.int(3) } }, /another attempt/],
     ['TC-SDK-1867-20: the order has another validUntil', { order: { validUntil: v.time(String(Number(VALID_UNTIL) + 60)) } }, /validUntil/],
     ['TC-SDK-3172-01: the fill’s pin holds another transfer factory than stated', { pin: { transferFactory: { t: 'optional', v: v.cid('ff') } } }, /another transfer factory/],
-    ['TC-SDK-3172-02: the fill names no factory pin (a 0.4.2 command)', { root: { chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}) }) } }, /names no registry factory pin/],
     ['TC-SDK-3172-07: the fill names None for the factory pin', { root: { chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}), factoryPin: { t: 'optional' } }) } }, /names no registry factory pin/],
     ['TC-SDK-3172-08: the fill’s pin holds no transfer factory', { pin: { transferFactory: { t: 'optional' } } }, /another transfer factory/],
     ['TC-SDK-3172-09: the fill names a pin of another party than the order’s operator', { pin: { operator: v.party('mallory::1220ee') } }, /not the operator’s/],
