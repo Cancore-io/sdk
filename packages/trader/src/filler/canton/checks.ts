@@ -60,10 +60,20 @@ export function field(value: DamlValue | undefined, name: string): DamlValue {
 export const party = (v: DamlValue): string => (v.t === 'party' ? v.v : refuse('expected a party'));
 export const textOf = (v: DamlValue): string => (v.t === 'text' ? v.v : refuse('expected text'));
 export const numeric = (v: DamlValue): string => (v.t === 'numeric' ? canonicalDecimal(v.v) : refuse('expected a decimal'));
-/** The factory a choice names in its trailing `Optional (ContractId …)` argument (CAN-3172) must be `cid`. */
-export function requireNamedFactory(chosen: DamlValue, label: string, cid: string, what: string): void {
-  const named = chosen.t === 'record' ? chosen.v[label] : undefined;
-  if (named?.t !== 'optional' || named.v?.t !== 'contractId' || named.v.v !== cid) refuse(what);
+const FACTORY_PIN = 'Intent.RegistryFactoryPin:RegistryFactoryPin';
+const someCid = (value: DamlValue | undefined): string | undefined => (value?.t === 'optional' && value.v?.t === 'contractId' ? value.v.v : undefined);
+
+/**
+ * The choice's trailing `factoryPin` (CAN-3172): the operator's `RegistryFactoryPin`, disclosed with the transaction,
+ * whose `role` factory is `cid` — the factory the transaction runs. A command without it (0.4.2) or naming None is refused.
+ */
+export function requirePinnedFactory(tx: CantonTransaction, chosen: DamlValue, operator: string, role: string, cid: string, what: string): void {
+  const pinCid = someCid(chosen.t === 'record' ? chosen.v.factoryPin : undefined);
+  if (!pinCid) return refuse('the choice names no registry factory pin');
+  const pin = tx.inputContracts.find((c) => c.contractId === pinCid);
+  if (!pin || pin.packageName !== 'cancore-intent' || qualified(pin.templateId) !== FACTORY_PIN) return refuse('the registry factory pin is not disclosed with the transaction');
+  if (party(field(pin.argument, 'operator')) !== operator) refuse('the registry factory pin is not the operator’s');
+  if (someCid(pin.argument.t === 'record' ? pin.argument.v[role] : undefined) !== cid) refuse(what);
 }
 
 export const optionalParty = (v: DamlValue | undefined): string | undefined => (v?.t === 'optional' ? (v.v ? party(v.v) : undefined) : v ? party(v) : undefined);
