@@ -16,6 +16,11 @@
  *   `fillDeadline` is the order's. This is where T-48 is enforced on the
  *   ledger's own data: the operator writes `fillerId` and `repayTo` into the
  *   order, and nothing else compares them with the signed `ticket.intent`.
+ * - The fill names the operator's factory pin (`factoryPin`, CAN-3172),
+ *   disclosed with the transaction, and its transfer factory is the stated
+ *   one: the contract runs the factory the pin holds, not the one stored at
+ *   Dispatch; the node additionally holds the transfer to a pinned registry
+ *   template below.
  * - Under the root: `TransferFactory_Transfer` through a pinned factory, from
  *   the party to the recipient, exactly the order's amount and instrument,
  *   spending only the stated holdings, completed in this transaction (a
@@ -26,7 +31,7 @@
  * - `validUntil` has not passed by the process clock.
  */
 import { encodeCantonAmount, encodeCantonOutputAsset, encodeCantonRecipient, type Hex } from '@cancore/contracts';
-import { canonicalDecimal, checkTransferExercise, field, isOwnParty, numeric, party, qualified, refuse, sameSet, soleRoot, subtree, textOf, cids } from './checks';
+import { canonicalDecimal, checkTransferExercise, field, isOwnParty, numeric, party, qualified, refuse, requirePinnedFactory, sameSet, soleRoot, subtree, textOf, cids } from './checks';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
 import type { CantonOpCheck } from './operations';
 import type { DamlValue, ExerciseNode } from './transaction';
@@ -129,10 +134,9 @@ export function checkDeliveryFill(expect: DeliveryFillExpectation): CantonOpChec
     const instrument = instrumentOf(field(o, 'instrumentId'));
     if (instrument.admin !== s.asset.admin || instrument.id !== s.asset.id) refuse('the DeliveryOrder has another instrument than stated');
     if (party(field(o, 'instrumentAdmin')) !== instrument.admin) refuse('the DeliveryOrder pins another instrument admin');
-    const factoryCid = field(o, 'transferFactoryCid');
-    if (factoryCid.t !== 'contractId' || factoryCid.v !== s.transferFactoryCid) refuse('the DeliveryOrder pins another transfer factory than stated');
     if (numeric(field(o, 'amount')) !== canonicalDecimal(s.amount)) refuse('the DeliveryOrder delivers another amount than stated');
     const operator = party(field(o, 'operator'));
+    requirePinnedFactory(tx, root.chosenValue, operator, 'transferFactory', s.transferFactoryCid, 'the fill’s factory pin holds another transfer factory than stated');
 
     // -- Under the root: the transfer, the registry fetch, the receipt; nothing else --
     if (subtree(tx, root.nodeId).length !== Object.keys(tx.nodes).length) refuse('the transaction holds nodes outside the fill');
@@ -141,7 +145,7 @@ export function checkDeliveryFill(expect: DeliveryFillExpectation): CantonOpChec
     for (const id of root.children) {
       const node = tx.nodes[id];
       if (node?.kind === 'exercise' && node.choice === 'TransferFactory_Transfer' && !transfer) {
-        if (node.contractId !== s.transferFactoryCid) refuse('the transfer goes through another factory than the order pins');
+        if (node.contractId !== s.transferFactoryCid) refuse('the transfer goes through another factory than the fill names');
         transfer = node;
       } else if (node?.kind === 'fetch' && qualified(node.templateId) === REGISTRY_ENTRY && node.packageName === INTENT_PACKAGE_NAME) {
         // assertRegisteredFiller: a read of the party's own registry entry, co-signed by the operator and the party.

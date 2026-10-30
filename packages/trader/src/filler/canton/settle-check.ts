@@ -12,7 +12,9 @@
  *   `fillerEntryCid` is the party's own ACTIVE registry entry;
  * - nothing the party already signed is consumed: the settlement spends none
  *   of its holdings;
- * - one `SettlementFactory_SettleBatch` of a pinned registry, whose transfer
+ * - one `SettlementFactory_SettleBatch` of a pinned registry, on the
+ *   settlement factory the operator's factory pin the choice names holds
+ *   (CAN-3172: the registry's current one, not the one stored at Open), whose transfer
  *   legs are exactly `payout` from the owner to the party and, when there is a
  *   fee, `fee` from the owner to the operator, split as the ledger splits;
  * - the party is credited exactly the payout in unlocked holdings of the
@@ -22,7 +24,7 @@
  */
 import { cantonInclusiveFeeSplit, type CantonIntent, type FillProofJson, type Hex } from '@cancore/contracts';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
-import { canonicalDecimal, decimal, field, holdingOf, isOwnParty, optionalParty, qualified, refuse, sameSet, scaled, soleRoot, subtree, textOf } from './checks';
+import { canonicalDecimal, decimal, field, holdingOf, isOwnParty, optionalParty, qualified, refuse, requirePinnedFactory, sameSet, scaled, soleRoot, subtree, textOf } from './checks';
 import type { CantonOpCheck } from './operations';
 import type { DamlValue, ExerciseNode } from './transaction';
 
@@ -113,6 +115,7 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
     const batch = batches[0] as ExerciseNode;
     const registry = factories.find((f) => batch.templateId.startsWith(`${f.packageId}:`));
     if (!registry) return refuse(`the settlement factory ${batch.templateId} is not of a pinned registry of ${intent.asset.admin}`);
+    requirePinnedFactory(tx, root.chosenValue, intent.operator, 'settlementFactory', batch.contractId, 'the batch runs another settlement factory than the settle’s factory pin holds');
     checkLegs(field(batch.chosenValue, 'transferLegs'), intent, payee, payout, fee);
 
     // What the party ends up with: unlocked holdings of the instrument, exactly the payout.
