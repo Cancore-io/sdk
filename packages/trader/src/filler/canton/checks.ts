@@ -215,13 +215,14 @@ function amuletOf(argument: DamlValue, f: CantonTransferFactory): HoldingSeen {
 /** DA Utilities' `Holding`: no view; the instrument's `source` is its admin. */
 function utilityHoldingOf(argument: DamlValue): HoldingSeen {
   const instrument = field(argument, 'instrument');
-  const lock = field(argument, 'lock');
+  // An optional field holding None is left out of the decoded record: a holding with no lock has no `lock`.
+  const lock = argument.t === 'record' ? argument.v.lock : undefined;
   return {
     owner: party(field(argument, 'owner')),
     admin: party(field(instrument, 'source')),
     id: textOf(field(instrument, 'id')),
     amount: scaled(numeric(field(argument, 'amount'))),
-    locked: !(lock.t === 'optional' && lock.v === undefined),
+    locked: lock !== undefined && !(lock.t === 'optional' && lock.v === undefined),
   };
 }
 /** The owner of a token-standard account (V2), or a party (V1). */
@@ -318,6 +319,8 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
       else refuse(`the transfer creates a holding owned by a third party (${String(h.owner)})`);
     } else if (pinned(node.templateId, f.offer)) {
       offers.push(node.argument);
+    } else if (f.transferRecords?.includes(node.templateId) && !node.signatories.includes(sender)) {
+      // The registry's record of the executed transfer: shown to the sender, binding it to nothing.
     } else if (node.stakeholders.includes(sender)) {
       refuse(`the transfer creates ${qualified(node.templateId)} for the sender`);
     } else if (node.argument.t === 'record' && 'owner' in node.argument.v && optionalParty(node.argument.v.owner) !== asked.toParty) {

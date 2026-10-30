@@ -353,11 +353,12 @@ describe('holdings.transfer of CBTC: a DA Utilities transfer through the receive
   const asset = { admin: CBTC, id: 'CBTC' };
   const params = { asset, amount: '0.05', toParty: RECEIVER };
   const executeBefore = String(NOW / 1000 + 600);
-  const none: DamlValue = { t: 'optional' } as DamlValue;
-  const holdingArg = (owner: string, amount: string, lock: DamlValue = none) =>
-    v.record({ operator: v.party(DA_OPERATOR), provider: v.party(CBTC), registrar: v.party(CBTC), owner: v.party(owner), instrument: v.record({ source: v.party(CBTC), id: v.text('CBTC'), scheme: v.text('RegistrarInternalScheme') }), label: v.text(''), amount: v.numeric(amount), lock });
+  const REGISTRY_V0_PKG = '1f80e086e9ce218cf93fdeed80943793e902ac35c521733d7373a5ba58813150';
+  // As the stand decoded them (sdk STAND-02): an unlocked holding has no `lock` field at all.
+  const holdingArg = (owner: string, amount: string, lock?: DamlValue) =>
+    v.record({ operator: v.party(DA_OPERATOR), provider: v.party(CBTC), registrar: v.party(CBTC), owner: v.party(owner), instrument: v.record({ source: v.party(CBTC), id: v.text('CBTC'), scheme: v.text('RegistrarInternalScheme') }), label: v.text(''), amount: v.numeric(amount), ...(lock ? { lock } : {}) });
   const holdingTemplate = (pkg: string) => `${pkg}:Utility.Registry.Holding.V0.Holding:Holding`;
-  const input = (cid: string, owner: string, amount: string, pkg = HOLDING_PKG, lock: DamlValue = none) => ({
+  const input = (cid: string, owner: string, amount: string, pkg = HOLDING_PKG, lock?: DamlValue) => ({
     contractId: cid, packageName: 'utility-registry-holding-v0', templateId: holdingTemplate(pkg), argument: holdingArg(owner, amount, lock), signatories: [DA_OPERATOR, CBTC, owner], stakeholders: [DA_OPERATOR, CBTC, owner],
   });
   const archive = (nodeId: string, cid: string): TransactionNode => ({
@@ -384,11 +385,15 @@ describe('holdings.transfer of CBTC: a DA Utilities transfer through the receive
     };
     return { ...tx([root, ...nodes]), inputContracts: inputs };
   };
-  const honest = () => [archive('1', 'h1'), archive('2', 'h2'), holding('3', RECEIVER, '0.05'), holding('4', ME, '0.01')];
+  const executed = (nodeId: string, signatories = [DA_OPERATOR]): TransactionNode => ({
+    nodeId, kind: 'create', contractId: `${nodeId}${'e'.repeat(67)}`, packageName: 'utility-registry-v0', templateId: `${REGISTRY_V0_PKG}:Utility.Registry.V0.Holding.Transfer:ExecutedTransfer`,
+    argument: v.record({ transfer: v.record({ sender: v.party(ME), receiver: v.party(RECEIVER) }) }), signatories, stakeholders: [DA_OPERATOR, ME, RECEIVER],
+  });
+  const honest = () => [archive('1', 'h1'), archive('2', 'h2'), holding('3', RECEIVER, '0.05'), holding('4', ME, '0.01'), executed('5')];
   const prepared = { summary: { asset, amount: '0.05', receiver: RECEIVER, inputHoldingCids: ['h1', 'h2'], executeBefore } } as unknown as PreparedOf<'holdings.transfer'>;
   const check = checkHoldingsTransfer({ params, publicKey: KEY, nowMs: NOW });
 
-  test('TC-SDK-2931-50: the honest direct transfer through the receiver’s preapproval passes: inputs archived, 0.05 to the receiver, the change', () => {
+  test('TC-SDK-2931-50: the honest direct transfer through the receiver’s preapproval passes: inputs archived, 0.05 to the receiver, the change, the operator’s ExecutedTransfer', () => {
     expect(() => check(prepared, [transfer(honest())])).not.toThrow();
   });
 
@@ -396,5 +401,6 @@ describe('holdings.transfer of CBTC: a DA Utilities transfer through the receive
     ['TC-SDK-2931-51: an input of the factory’s package, not utility-registry-holding-v0', () => transfer(honest(), [input('h1', ME, '0.04', APP_PKG), input('h2', ME, '0.02')]), /not a holding of the pinned registry/],
     ['TC-SDK-2931-52: a locked input', () => transfer(honest(), [input('h1', ME, '0.04', HOLDING_PKG, { t: 'optional', v: v.record({}) } as DamlValue), input('h2', ME, '0.02')]), /not an unlocked holding of the sender/],
     ['TC-SDK-2931-53: the transfer exercised on a template the pin does not name', () => transfer(honest(), undefined, `${APP_PKG}:Utility.Registry.App.V0.Model.Transfer:TransferOffer`), /not a pinned factory/],
+    ['TC-SDK-2931-54: an ExecutedTransfer the sender signs', () => transfer([...honest().slice(0, 4), executed('5', [DA_OPERATOR, ME])]), /creates Utility.Registry.V0.Holding.Transfer:ExecutedTransfer for the sender/],
   ])('%s: refused', (_name, build, detail) => refused(() => check(prepared, [build()]), detail));
 });
