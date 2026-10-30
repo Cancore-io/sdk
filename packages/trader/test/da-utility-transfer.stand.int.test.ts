@@ -17,7 +17,9 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { decodePreparedTransaction } from '../src/filler/canton/hashing';
-import { transactionView, type DamlValue } from '../src/filler/canton/transaction';
+import { checkTransferExercise } from '../src/filler/canton/checks';
+import { CANTON_TRANSFER_FACTORIES } from '../src/filler/canton/factories';
+import { transactionView, type DamlValue, type ExerciseNode } from '../src/filler/canton/transaction';
 import { activeContracts, cantonToken, env, ledger } from './stand/canton-ledger';
 
 const STAND = process.env.INTENT_STAND_ENV;
@@ -28,6 +30,7 @@ const REQUIRED = [
 
 const HOLDING_V1 = '#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding';
 const TRANSFER_FACTORY = '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory';
+const UTILITY_PREAPPROVAL = '#utility-registry-app-v0:Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval';
 const INSTRUMENT = 'CBTC';
 
 type Bootstrap = { registryParty: string; balances: Record<string, string> };
@@ -70,7 +73,9 @@ async function spike(): Promise<Spike> {
  * first genesis party holding unlocked CBTC: the seed's balances name `<instrument>/<party>`, and any party may
  * hold CBTC after the handout, so all are tried. Printed between the spike's markers under `label`.
  */
-async function prepareTransfer(s: Spike, receiverName: string, label: string): Promise<{ transferKind: string; tx: ReturnType<typeof transactionView> }> {
+type Prepared = { transferKind: string; tx: ReturnType<typeof transactionView>; sender: string; receiver: string; amount: string; inputs: string[]; executeBefore: string };
+
+async function prepareTransfer(s: Spike, receiverName: string, label: string): Promise<Prepared> {
   const { bootstrap, genesis, admin, token } = s;
   const seeded = Object.keys(bootstrap.balances ?? {}).filter((k) => k.toUpperCase().startsWith(`${INSTRUMENT}/`)).map((k) => k.slice(INSTRUMENT.length + 1));
   const holders = [...new Set([...seeded, ...Object.keys(genesis.parties)])];
@@ -81,9 +86,10 @@ async function prepareTransfer(s: Spike, receiverName: string, label: string): P
     if (!sender || !receiver) continue;
     const inputs = await holdings(sender, admin, token).catch((e: Error) => (tried.push(`${senderName}: ${e.message.slice(0, 200)}`), [] as string[]));
     if (inputs.length === 0) { tried.push(`${senderName}: no unlocked ${INSTRUMENT}`); continue; }
+    const executeBeforeSec = Math.floor(Date.now() / 1000) + 3600;
     const transfer = {
       sender, receiver, amount: '0.0001', instrumentId: { admin, id: INSTRUMENT },
-      requestedAt: new Date().toISOString(), executeBefore: new Date(Date.now() + 3_600_000).toISOString(), inputHoldingCids: inputs.slice(0, 1), meta: { values: {} },
+      requestedAt: new Date().toISOString(), executeBefore: new Date(executeBeforeSec * 1000).toISOString(), inputHoldingCids: inputs.slice(0, 1), meta: { values: {} },
     };
     const shim = (process.env.REGISTRY_SHIM_URL || 'http://127.0.0.1:8090').replace(/\/$/, '');
     const factoryResponse = await fetch(`${shim}/${encodeURIComponent(admin)}/registry/transfer-instruction/v1/transfer-factory`, {
@@ -114,7 +120,7 @@ async function prepareTransfer(s: Spike, receiverName: string, label: string): P
       inputContracts: tx.inputContracts.map((c) => ({ contractId: c.contractId, templateId: c.templateId, stakeholders: c.stakeholders, fields: fieldsOf(c.argument), argument: c.argument })),
     };
     console.log(`CAN-2931-DA-TRANSFER-BEGIN\n${JSON.stringify(report, null, 2)}\nCAN-2931-DA-TRANSFER-END`);
-    return { transferKind: factory.transferKind, tx };
+    return { transferKind: factory.transferKind, tx, sender, receiver, amount: transfer.amount, inputs: transfer.inputHoldingCids, executeBefore: String(executeBeforeSec) };
   }
   throw new Error(`no CBTC holder of ${admin} could prepare a transfer to ${receiverName}:\n${tried.join('\n')}`);
 }
@@ -149,8 +155,20 @@ async function prepareTransfer(s: Spike, receiverName: string, label: string): P
     const answer = (await setup.json()) as { success?: boolean };
     if (!answer.success) throw new Error(`utility preapproval setup of ${owner}: ${setup.status} ${JSON.stringify(answer).slice(0, 300)}`);
 
-    const { transferKind, tx } = await prepareTransfer(s, receiverName, 'direct');
-    expect(transferKind).toBe('direct');
-    expect(tx.nodes[tx.roots[0] as string]).toMatchObject({ kind: 'exercise', choice: 'TransferFactory_Transfer' });
+    // What registry-shim's find_preapproval sees: the registry party's utility preapprovals of this receiver.
+    const seen = await activeContracts(s.admin, { TemplateFilter: { value: { templateId: UTILITY_PREAPPROVAL, includeCreatedEventBlob: false } } }, s.token);
+    console.log(`CAN-2931-DA-PREAPPROVALS ${JSON.stringify({ admin: s.admin, receiver: owner, preapprovals: seen.map((e) => e.createArgument) })}`);
+
+    const p = await prepareTransfer(s, receiverName, 'direct');
+    expect(p.transferKind).toBe('direct');
+    const root = p.tx.nodes[p.tx.roots[0] as string] as ExerciseNode;
+    expect(root).toMatchObject({ kind: 'exercise', choice: 'TransferFactory_Transfer' });
+    // The node's own check of a delivery (`completedOnly`) over the registry's real direct transfer: the pin of
+    // DA Utilities is what the registry builds, with the stand's registrar as the CBTC admin.
+    const pin = CANTON_TRANSFER_FACTORIES['cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff'] ?? [];
+    expect(() => checkTransferExercise(p.tx, root, {
+      sender: p.sender, asked: { asset: { admin: s.admin, id: INSTRUMENT }, amount: p.amount, toParty: p.receiver }, stated: p.inputs,
+      executeBefore: p.executeBefore, factories: { [s.admin]: pin }, completedOnly: true,
+    })).not.toThrow();
   }, 180_000);
 });

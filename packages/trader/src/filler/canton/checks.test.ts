@@ -342,3 +342,59 @@ describe('holdings.transfer of CC: a Splice amulet transfer through the receiver
     refused(() => check(prepared, [transfer(send([archive('1', 'h1'), archive('2', 'h2'), amulet('4', RECEIVER, '25')]), [input('h1', ME, '20'), input('h2', RECEIVER, '10')])]), /not an unlocked holding of the sender/);
   });
 });
+
+describe('holdings.transfer of CBTC: a DA Utilities transfer through the receiver’s preapproval (CAN-2931)', () => {
+  const CBTC = 'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff';
+  const APP_PKG = '2293eb12e82ceaeb3ff7f8fe3346dece8578e1e9fd7d46624aeb7bb07fa31eda';
+  const HOLDING_PKG = '71fbaea211f07a65666892748498bd4a0d7462a9d75bbb215ba9fbdbba78efa7';
+  const TI_V1 = '55ba4deb0ad4662c4168b39859738a0e91388d252286480c7331b3f71a517281';
+  const DA_OPERATOR = 'auth0_007c65f857f1c3d599cb6df73775::1220d2d732d042c281cee80f483ab80f3cbaa4782860ed5f4dc228ab03dedd2ee8f9';
+  const PREAPPROVAL = `${APP_PKG}:Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval`;
+  const asset = { admin: CBTC, id: 'CBTC' };
+  const params = { asset, amount: '0.05', toParty: RECEIVER };
+  const executeBefore = String(NOW / 1000 + 600);
+  const none: DamlValue = { t: 'optional' } as DamlValue;
+  const holdingArg = (owner: string, amount: string, lock: DamlValue = none) =>
+    v.record({ operator: v.party(DA_OPERATOR), provider: v.party(CBTC), registrar: v.party(CBTC), owner: v.party(owner), instrument: v.record({ source: v.party(CBTC), id: v.text('CBTC'), scheme: v.text('RegistrarInternalScheme') }), label: v.text(''), amount: v.numeric(amount), lock });
+  const holdingTemplate = (pkg: string) => `${pkg}:Utility.Registry.Holding.V0.Holding:Holding`;
+  const input = (cid: string, owner: string, amount: string, pkg = HOLDING_PKG, lock: DamlValue = none) => ({
+    contractId: cid, packageName: 'utility-registry-holding-v0', templateId: holdingTemplate(pkg), argument: holdingArg(owner, amount, lock), signatories: [DA_OPERATOR, CBTC, owner], stakeholders: [DA_OPERATOR, CBTC, owner],
+  });
+  const archive = (nodeId: string, cid: string): TransactionNode => ({
+    nodeId, kind: 'exercise', contractId: cid, packageName: 'utility-registry-holding-v0', templateId: holdingTemplate(HOLDING_PKG), choice: 'Archive', chosenValue: v.record({}),
+    actingParties: [ME], signatories: [DA_OPERATOR, CBTC, ME], stakeholders: [DA_OPERATOR, CBTC, ME], consuming: true, children: [],
+  });
+  const holding = (nodeId: string, owner: string, amount: string): TransactionNode => ({
+    nodeId, kind: 'create', contractId: `${nodeId}${'e'.repeat(67)}`, packageName: 'utility-registry-holding-v0', templateId: holdingTemplate(HOLDING_PKG), argument: holdingArg(owner, amount),
+    signatories: [DA_OPERATOR, CBTC, owner], stakeholders: [DA_OPERATOR, CBTC, owner],
+  });
+  const transfer = (nodes: TransactionNode[], inputs = [input('h1', ME, '0.04'), input('h2', ME, '0.02')], factory = PREAPPROVAL): CantonTransaction => {
+    const root: TransactionNode = {
+      nodeId: '0', kind: 'exercise', contractId: 'pa'.repeat(34), packageName: 'utility-registry-app-v0', templateId: factory,
+      interfaceId: `${TI_V1}:Splice.Api.Token.TransferInstructionV1:TransferFactory`, choice: 'TransferFactory_Transfer',
+      chosenValue: v.record({
+        expectedAdmin: v.party(CBTC),
+        transfer: v.record({
+          sender: v.party(ME), receiver: v.party(RECEIVER), amount: v.numeric('0.0500000000'), instrumentId: v.record({ admin: v.party(CBTC), id: v.text('CBTC') }),
+          requestedAt: v.time(BigInt(NOW) * 1000n), executeBefore: v.time(BigInt(executeBefore) * 1_000_000n), inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), meta: v.record({}),
+        }),
+        extraArgs: v.record({}),
+      }),
+      actingParties: [ME], signatories: [RECEIVER, DA_OPERATOR], stakeholders: [RECEIVER, DA_OPERATOR], consuming: false, children: nodes.map((n) => n.nodeId),
+    };
+    return { ...tx([root, ...nodes]), inputContracts: inputs };
+  };
+  const honest = () => [archive('1', 'h1'), archive('2', 'h2'), holding('3', RECEIVER, '0.05'), holding('4', ME, '0.01')];
+  const prepared = { summary: { asset, amount: '0.05', receiver: RECEIVER, inputHoldingCids: ['h1', 'h2'], executeBefore } } as unknown as PreparedOf<'holdings.transfer'>;
+  const check = checkHoldingsTransfer({ params, publicKey: KEY, nowMs: NOW });
+
+  test('TC-SDK-2931-50: the honest direct transfer through the receiver’s preapproval passes: inputs archived, 0.05 to the receiver, the change', () => {
+    expect(() => check(prepared, [transfer(honest())])).not.toThrow();
+  });
+
+  test.each([
+    ['TC-SDK-2931-51: an input of the factory’s package, not utility-registry-holding-v0', () => transfer(honest(), [input('h1', ME, '0.04', APP_PKG), input('h2', ME, '0.02')]), /not a holding of the pinned registry/],
+    ['TC-SDK-2931-52: a locked input', () => transfer(honest(), [input('h1', ME, '0.04', HOLDING_PKG, { t: 'optional', v: v.record({}) } as DamlValue), input('h2', ME, '0.02')]), /not an unlocked holding of the sender/],
+    ['TC-SDK-2931-53: the transfer exercised on a template the pin does not name', () => transfer(honest(), undefined, `${APP_PKG}:Utility.Registry.App.V0.Model.Transfer:TransferOffer`), /not a pinned factory/],
+  ])('%s: refused', (_name, build, detail) => refused(() => check(prepared, [build()]), detail));
+});

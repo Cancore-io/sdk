@@ -185,6 +185,7 @@ export interface HoldingSeen {
 }
 export function holdingOf(argument: DamlValue, f: CantonTransferFactory): HoldingSeen {
   if (f.holdingForm === 'amulet') return amuletOf(argument, f);
+  if (f.holdingForm === 'utility') return utilityHoldingOf(argument);
   const view = field(argument, f.holdingView);
   const account = field(view, 'account');
   const instrument = field(view, 'instrumentId');
@@ -209,6 +210,18 @@ function amuletOf(argument: DamlValue, f: CantonTransferFactory): HoldingSeen {
     id: AMULET_ID,
     amount: scaled(numeric(field(field(argument, f.holdingView), 'initialAmount'))),
     locked: false,
+  };
+}
+/** DA Utilities' `Holding`: no view; the instrument's `source` is its admin. */
+function utilityHoldingOf(argument: DamlValue): HoldingSeen {
+  const instrument = field(argument, 'instrument');
+  const lock = field(argument, 'lock');
+  return {
+    owner: party(field(argument, 'owner')),
+    admin: party(field(instrument, 'source')),
+    id: textOf(field(instrument, 'id')),
+    amount: scaled(numeric(field(argument, 'amount'))),
+    locked: !(lock.t === 'optional' && lock.v === undefined),
   };
 }
 /** The owner of a token-standard account (V2), or a party (V1). */
@@ -256,9 +269,12 @@ export function checkTransferExercise(tx: CantonTransaction, node: ExerciseNode,
  */
 function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: TransferExpectation): void {
   const { sender, asked } = o;
-  const f = (o.factories[asked.asset.admin] ?? []).find((e) => root.templateId === `${e.packageId}:${e.factory}`);
+  const f = (o.factories[asked.asset.admin] ?? []).find((e) =>
+    [e.factory, e.directFactory].some((factory) => factory !== undefined && root.templateId === `${e.packageId}:${factory}`),
+  );
   if (!f) return refuse(`the transfer factory ${root.templateId} is not a pinned factory of the admin ${asked.asset.admin}`);
   const pinned = (t: string, entity: string) => t === `${f.packageId}:${entity}`;
+  const isHolding = (t: string) => t === `${f.holdingPackageId ?? f.packageId}:${f.holding}`;
   const sameInstrument = (h: HoldingSeen) => h.admin === asked.asset.admin && h.id === asked.asset.id;
   const amount = scaled(asked.amount);
 
@@ -267,7 +283,7 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
   for (const cid of o.stated) {
     const disclosed = tx.inputContracts.find((c) => c.contractId === cid);
     if (!disclosed) return refuse(`the stated input ${cid} is not disclosed with the transaction`);
-    if (!pinned(disclosed.templateId, f.holding)) refuse(`the stated input ${cid} is not a holding of the pinned registry`);
+    if (!isHolding(disclosed.templateId)) refuse(`the stated input ${cid} is not a holding of the pinned registry`);
     const h = holdingOf(disclosed.argument, f);
     if (h.owner !== sender || !sameInstrument(h) || h.locked) refuse(`the stated input ${cid} is not an unlocked holding of the sender in the instrument`);
     inputs += h.amount;
@@ -285,7 +301,7 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
     if (node.kind === 'rollback') return refuse('a rollback node inside the transfer');
     if (node.kind === 'exercise' && node.stakeholders.includes(sender)) {
       const name = `${qualified(node.templateId)}.${node.choice}`;
-      if (node.consuming && node.choice === 'Archive' && pinned(node.templateId, f.holding) && o.stated.includes(node.contractId)) {
+      if (node.consuming && node.choice === 'Archive' && isHolding(node.templateId) && o.stated.includes(node.contractId)) {
         if (archived.has(node.contractId)) refuse(`the stated input ${node.contractId} is archived twice`);
         archived.add(node.contractId);
       } else if (!f.serviceChoices.includes(name)) {
@@ -293,7 +309,7 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
       }
     }
     if (node.kind !== 'create') continue;
-    if (pinned(node.templateId, f.holding)) {
+    if (isHolding(node.templateId)) {
       const h = holdingOf(node.argument, f);
       if (!sameInstrument(h)) refuse(`the transfer creates a holding of another instrument (${h.admin} ${h.id})`);
       if (h.owner === asked.toParty && !h.locked) receiver += h.amount;
