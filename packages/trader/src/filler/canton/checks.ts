@@ -26,7 +26,7 @@ import type { CantonOpParams, Hex } from '@cancore/contracts';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
 import { CantonRefusal, cantonFingerprint } from './legs';
 import type { CantonOpCheck } from './operations';
-import type { CantonTransaction, DamlValue, ExerciseNode, TransactionNode } from './transaction';
+import type { CantonTransaction, CreateNode, DamlValue, ExerciseNode, TransactionNode } from './transaction';
 
 const REGISTRY_MODULE = 'Intent.FillerRegistry';
 const TRANSFER_FACTORY = 'Splice.Api.Token.TransferInstructionV1:TransferFactory';
@@ -268,11 +268,24 @@ export function checkTransferExercise(tx: CantonTransaction, node: ExerciseNode,
  * review): pinned factory, only the stated inputs consumed, every holding
  * accounted for, the receiver credited exactly the amount, the change bounded.
  */
+/** The pinned entry of `admin` whose factory, or direct factory, is the root's template. */
+function pinnedFactoryOf(factories: TransferExpectation['factories'], admin: string, templateId: string): CantonTransferFactory | undefined {
+  return (factories[admin] ?? []).find((e) => [e.factory, e.directFactory].some((factory) => factory !== undefined && templateId === `${e.packageId}:${factory}`));
+}
+
+/** A contract the transfer creates that is neither a holding nor its pending transfer: never the sender's, never a third party's. */
+function checkOtherCreate(node: CreateNode, f: CantonTransferFactory, sender: string, receiver: string): void {
+  // The registry's record of the executed transfer: shown to the sender, binding it to nothing.
+  if (f.transferRecords?.includes(node.templateId) && !node.signatories.includes(sender)) return;
+  if (node.stakeholders.includes(sender)) refuse(`the transfer creates ${qualified(node.templateId)} for the sender`);
+  if (node.argument.t === 'record' && 'owner' in node.argument.v && optionalParty(node.argument.v.owner) !== receiver) {
+    refuse(`the transfer creates a contract owned by a third party (${qualified(node.templateId)})`);
+  }
+}
+
 function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: TransferExpectation): void {
   const { sender, asked } = o;
-  const f = (o.factories[asked.asset.admin] ?? []).find((e) =>
-    [e.factory, e.directFactory].some((factory) => factory !== undefined && root.templateId === `${e.packageId}:${factory}`),
-  );
+  const f = pinnedFactoryOf(o.factories, asked.asset.admin, root.templateId);
   if (!f) return refuse(`the transfer factory ${root.templateId} is not a pinned factory of the admin ${asked.asset.admin}`);
   const pinned = (t: string, entity: string) => t === `${f.packageId}:${entity}`;
   const isHolding = (t: string) => t === `${f.holdingPackageId ?? f.packageId}:${f.holding}`;
@@ -319,12 +332,8 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
       else refuse(`the transfer creates a holding owned by a third party (${String(h.owner)})`);
     } else if (pinned(node.templateId, f.offer)) {
       offers.push(node.argument);
-    } else if (f.transferRecords?.includes(node.templateId) && !node.signatories.includes(sender)) {
-      // The registry's record of the executed transfer: shown to the sender, binding it to nothing.
-    } else if (node.stakeholders.includes(sender)) {
-      refuse(`the transfer creates ${qualified(node.templateId)} for the sender`);
-    } else if (node.argument.t === 'record' && 'owner' in node.argument.v && optionalParty(node.argument.v.owner) !== asked.toParty) {
-      refuse(`the transfer creates a contract owned by a third party (${qualified(node.templateId)})`);
+    } else {
+      checkOtherCreate(node, f, sender, asked.toParty);
     }
   }
   const unspent = o.stated.filter((cid) => !archived.has(cid));
