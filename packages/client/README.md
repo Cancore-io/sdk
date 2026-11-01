@@ -678,6 +678,9 @@ abort rather than resolving, with the signal's own reason. An order that was alr
 terminal before you subscribed sends no further update; `swap.get(id)` answers that, this
 waits for a transition.
 
+If a custom `isTerminal` predicate throws, the wait rejects with that same reason and
+releases its subscription and timer. Other waits on the socket continue normally.
+
 The event name and the payload fields this entry reads are pinned in
 `contract/realtime-events.contract.json` with the backend file:line each came from, and a
 test holds them to `spec/openapi.json`.
