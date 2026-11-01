@@ -87,7 +87,7 @@ function namedPin(o: Over): Record<string, DamlValue> {
 /** The operator's `RegistryFactoryPin` of the give instrument holding the registry's current factories (CAN-3172). */
 const pinContract = (over: Record<string, DamlValue> = {}) => ({
   contractId: PIN_CID, packageName: 'cancore-intent', templateId: `${INTENT_PKG}:Intent.RegistryFactoryPin:RegistryFactoryPin`,
-  argument: v.record({ operator: v.party(OPERATOR), instrumentId: v.record({ admin: v.party(ADMIN), id: v.text('CNRX') }), allocationFactory: v.some(v.cid('00af')), settlementFactory: v.some(v.cid('00sf')), transferFactory: v.none(), ...over }),
+  argument: v.record({ operator: v.party(OPERATOR), instrumentId: v.record({ admin: v.party(ADMIN), id: v.text('CNRX') }), allocationFactory: v.some(v.cid('00af')), settlementFactory: v.some(v.cid('00sf')), transfer: v.none(), ...over }),
   signatories: [OPERATOR], stakeholders: [OPERATOR],
 });
 

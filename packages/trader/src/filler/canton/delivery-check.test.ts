@@ -81,9 +81,11 @@ const orderArg = (over: Record<string, DamlValue> = {}) =>
     fillDeadline: v.time(FILL_DEADLINE), attempt: v.int(2), validUntil: v.time(VALID_UNTIL),
     ...over,
   });
-/** The operator's `RegistryFactoryPin` of the instrument holding the registry's current transfer factory (CAN-3172). */
+/** A `TransferRoute` of the pin, held (CAN-3172). */
+const route = (constructor: string, value: DamlValue = { t: 'unit' }): DamlValue => ({ t: 'optional', v: { t: 'variant', constructor, v: value } });
+/** The operator's `RegistryFactoryPin` of the instrument routing the fill through the registry's current transfer factory (CAN-3172). */
 const pinArg = (over: Record<string, DamlValue> = {}) =>
-  v.record({ operator: v.party(OPERATOR), instrumentId: instrument(), allocationFactory: { t: 'optional' }, settlementFactory: { t: 'optional' }, transferFactory: { t: 'optional', v: v.cid(FACTORY_CID) }, ...over });
+  v.record({ operator: v.party(OPERATOR), instrumentId: instrument(), allocationFactory: { t: 'optional' }, settlementFactory: { t: 'optional' }, transfer: route('ThroughFactory', v.cid(FACTORY_CID)), ...over });
 const receiptArg = (over: Record<string, DamlValue> = {}) =>
   v.record({
     operator: v.party(OPERATOR), filler: v.party(ME), fillerId: v.text('cancore-dev-1'), repayTo: v.bytes32(REPAY_TO), attestors: v.list([v.party(ATTESTOR)]),
@@ -209,10 +211,18 @@ describe('delivery.fill: what the summary states (CAN-1867)', () => {
     expect(() => check()(prepared(), [fill({ order: { transferFactoryCid: v.cid('00archived') } })])).not.toThrow();
   });
 
+  test('TC-SDK-3172-17: a per-receiver registry — the pin routes ThroughOrderFactory and the fill runs the order’s factory: passes', () => {
+    expect(() => check()(prepared(), [fill({ pin: { transfer: route('ThroughOrderFactory') } })])).not.toThrow();
+  });
+
+  test('TC-SDK-3172-18: ThroughOrderFactory — a fill running a factory the operator did not write into the order: refused', () => {
+    refused(() => check()(prepared(), [fill({ pin: { transfer: route('ThroughOrderFactory') }, order: { transferFactoryCid: v.cid('00operators') } })]), /another transfer factory than stated/);
+  });
+
   test('TC-SDK-3172-02: a 0.4.2 fill names no pin and goes through the factory the order pinned at Dispatch: passes; through another: refused', () => {
     const unpinned = { root: { chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}) }) }, pin: null };
     expect(() => check()(prepared(), [fill(unpinned)])).not.toThrow();
-    refused(() => check()(prepared(), [fill({ ...unpinned, order: { transferFactoryCid: v.cid('00archived') } })]), /pins another transfer factory/);
+    refused(() => check()(prepared(), [fill({ ...unpinned, order: { transferFactoryCid: v.cid('00archived') } })]), /another transfer factory than stated/);
   });
 
   test('TC-SDK-3172-14: both packages vetted — a 0.4.2-form fill run under another package than the one that created the order: refused', () => {
@@ -238,9 +248,10 @@ describe('delivery.fill: the decoded transaction (CAN-1867)', () => {
     ['TC-SDK-1867-18: T-48 — the operator wrote another repayTo into the order', { order: { repayTo: v.bytes32(`0x${'00'.repeat(12)}${'66'.repeat(20)}`) } }, /T-48/],
     ['TC-SDK-1867-19: the order is for another attempt', { order: { attempt: v.int(3) } }, /another attempt/],
     ['TC-SDK-1867-20: the order has another validUntil', { order: { validUntil: v.time(String(Number(VALID_UNTIL) + 60)) } }, /validUntil/],
-    ['TC-SDK-3172-01: the fill’s pin holds another transfer factory than stated', { pin: { transferFactory: { t: 'optional', v: v.cid('ff') } } }, /another transfer factory/],
+    ['TC-SDK-3172-01: the fill’s pin holds another transfer factory than stated', { pin: { transfer: route('ThroughFactory', v.cid('ff')) } }, /another transfer factory than stated/],
     ['TC-SDK-3172-07: the fill names None for the factory pin', { root: { chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}), factoryPin: { t: 'optional' } }) } }, /names no registry factory pin/],
-    ['TC-SDK-3172-08: the fill’s pin holds no transfer factory', { pin: { transferFactory: { t: 'optional' } } }, /another transfer factory/],
+    ['TC-SDK-3172-08: the fill’s pin holds no transfer route', { pin: { transfer: { t: 'optional' } } }, /holds no transfer route/],
+    ['TC-SDK-3172-19: the fill’s pin holds a route this node does not know', { pin: { transfer: route('ThroughAnyFactory', v.cid(FACTORY_CID)) } }, /unknown transfer route/],
     ['TC-SDK-3172-09: the fill names a pin of another party than the order’s operator', { pin: { operator: v.party('mallory::1220ee') } }, /not the operator’s/],
     ['TC-SDK-3172-10: the fill’s pin is not disclosed with the transaction', { pin: null }, /factory pin is not disclosed/],
     ['TC-SDK-1867-22: the transfer moves another amount', { transferAmount: '2.5' }, /another amount/],

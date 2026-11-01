@@ -32,7 +32,7 @@
  * - `validUntil` has not passed by the process clock.
  */
 import { encodeCantonAmount, encodeCantonOutputAsset, encodeCantonRecipient, type Hex } from '@cancore/contracts';
-import { canonicalDecimal, checkTransferExercise, field, isOwnParty, namesFactoryPin, numeric, party, qualified, refuse, requirePinnedFactory, sameSet, soleRoot, subtree, textOf, cids } from './checks';
+import { canonicalDecimal, checkTransferExercise, field, isOwnParty, namesFactoryPin, numeric, party, qualified, refuse, pinnedTransferFactory, sameSet, soleRoot, subtree, textOf, cids } from './checks';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
 import type { CantonOpCheck } from './operations';
 import type { CantonTransaction, DamlValue, ExerciseNode } from './transaction';
@@ -193,7 +193,8 @@ function checkReceipt(
  * the package that created the order (checked above), so a 0.5.0 order is never filled through 0.4.2 code.
  */
 function checkFillFactory(tx: CantonTransaction, chosen: DamlValue, order: DamlValue, operator: string, stated: string): void {
-  if (namesFactoryPin(chosen)) return requirePinnedFactory(tx, chosen, operator, 'transferFactory', stated, 'the fill’s factory pin holds another transfer factory than stated');
-  const pinnedAtDispatch = field(order, 'transferFactoryCid');
-  if (pinnedAtDispatch.t !== 'contractId' || pinnedAtDispatch.v !== stated) refuse('the DeliveryOrder pins another transfer factory than stated');
+  const orderFactory = field(order, 'transferFactoryCid');
+  if (orderFactory.t !== 'contractId') return refuse('the DeliveryOrder names no transfer factory');
+  const runs = namesFactoryPin(chosen) ? pinnedTransferFactory(tx, chosen, operator, orderFactory.v) : orderFactory.v;
+  if (runs !== stated) refuse('the fill runs another transfer factory than stated');
 }
