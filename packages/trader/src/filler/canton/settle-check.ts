@@ -25,7 +25,7 @@
  */
 import { cantonInclusiveFeeSplit, type CantonIntent, type FillProofJson, type Hex } from '@cancore/contracts';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
-import { canonicalDecimal, decimal, field, holdingOf, isOwnParty, namesFactoryPin, optionalParty, qualified, refuse, requirePinnedFactory, sameSet, scaled, soleRoot, subtree, textOf } from './checks';
+import { canonicalDecimal, decimal, field, holdingOf, isOwnParty, namesFactoryPin, optionalParty, qualified, refuse, requireCreatingPackage, requirePinnedFactory, sameSet, scaled, soleRoot, subtree, textOf } from './checks';
 import type { CantonOpCheck } from './operations';
 import type { CantonTransaction, DamlValue, ExerciseNode } from './transaction';
 
@@ -75,7 +75,8 @@ function checkProof(chosen: DamlValue, own: FillProofJson): void {
 /**
  * The settlement factory the batch runs (CAN-3172): on 0.5.0 the operator's pin the choice names holds it; a 0.4.2
  * settle names no pin and runs the factory stored at Open, held to a pinned registry by the caller. The root runs
- * under the intent's own package (checked by the caller), so a 0.5.0 intent is never settled through 0.4.2 code.
+ * under the package that created the intent (`requireCreatingPackage`), so a 0.5.0 intent is never settled through
+ * 0.4.2 code.
  */
 function checkSettleFactory(tx: CantonTransaction, chosen: DamlValue, operator: string, batchFactory: string): void {
   if (!namesFactoryPin(chosen)) return;
@@ -104,6 +105,7 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
       refuse(`the root is ${qualified(root.templateId)}.${root.choice}, not ${SETTLE_WITH_PROOF} of the intent`);
     }
     if (root.contractId !== intent.intentCid) refuse('the settle is on another contract than the intent');
+    requireCreatingPackage(tx, root, 'the settle runs under another package than the one that created the intent');
     if (!root.consuming || !sameSet(root.actingParties, [payee])) refuse('the settle does not consume the intent as the party alone');
     checkProof(root.chosenValue, expect.proof);
     const entry = field(root.chosenValue, 'fillerEntryCid');

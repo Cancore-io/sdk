@@ -64,6 +64,15 @@ const FACTORY_PIN = 'Intent.RegistryFactoryPin:RegistryFactoryPin';
 const someCid = (value: DamlValue | undefined): string | undefined => (value?.t === 'optional' && value.v?.t === 'contractId' ? value.v.v : undefined);
 
 /**
+ * The root runs under the package that created its contract, as the transaction discloses it (CAN-3172): with
+ * cancore-intent 0.4.2 and 0.5.0 both vetted, a contract is never exercised through another version's code.
+ */
+export function requireCreatingPackage(tx: CantonTransaction, root: ExerciseNode, what: string): void {
+  const contract = tx.inputContracts.find((c) => c.contractId === root.contractId);
+  if (!contract || contract.templateId !== root.templateId) refuse(what);
+}
+
+/**
  * Whether the choice carries the trailing `factoryPin` of cancore-intent 0.5.0 (CAN-3172). Without it the command is
  * the 0.4.2 form, checked as 0.4.2 runs it: a 0.5.0 ledger refuses a command without `factoryPin`
  * ("Registry factory pin is required"), so dropping the field cannot skip the pin check.

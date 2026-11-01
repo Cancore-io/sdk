@@ -72,10 +72,14 @@ interface Over {
   pin?: Record<string, DamlValue> | null;
   /** The settle names no factory pin: the field is left out (a 0.4.2 command) or None. */
   unnamedPin?: 'missing' | 'none';
+  /** The SwapIntent as the transaction discloses it: left out, or created under another package. */
+  noIntent?: boolean;
+  intentPackage?: string;
   actAs?: string[];
 }
 
 const PIN_CID = '00pin';
+const intentContract = (pkg = INTENT_PKG) => ({ contractId: intent.intentCid, packageName: 'cancore-intent', templateId: `${pkg}:Intent.SwapIntent:SwapIntent`, argument: v.record({}), signatories: [OWNER, OPERATOR], stakeholders: [OWNER, OPERATOR, ME] });
 function namedPin(o: Over): Record<string, DamlValue> {
   if (o.unnamedPin === 'missing') return {};
   return { factoryPin: o.unnamedPin === 'none' ? v.none() : v.some(v.cid(PIN_CID)) };
@@ -110,7 +114,7 @@ function honest(o: Over = {}): CantonTransaction {
     ...o.root,
   };
   const nodes = [root, fetchEntry, receipt, batch, give, ...credit, ...extra];
-  return { commandId: 'c', actAs: o.actAs ?? [ME], roots: ['0'], nodes: Object.fromEntries(nodes.map((n) => [n.nodeId, n])), inputContracts: o.pin === null ? [] : [pinContract(o.pin)], synchronizerId: 's', preparationTime: '0' };
+  return { commandId: 'c', actAs: o.actAs ?? [ME], roots: ['0'], nodes: Object.fromEntries(nodes.map((n) => [n.nodeId, n])), inputContracts: [...(o.noIntent ? [] : [intentContract(o.intentPackage)]), ...(o.pin === null ? [] : [pinContract(o.pin)])], synchronizerId: 's', preparationTime: '0' };
 }
 
 const summary = { orderHash: ORDER_HASH, intentCid: '00si', asset: { admin: ADMIN, id: 'CNRX' }, amount: PAYOUT, executeBefore: '1790004200', payee: ME, giveAmount: '100.0', fee: { receiver: OPERATOR, amount: FEE } };
@@ -139,7 +143,8 @@ describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery
     ['acting as the operator too', () => check(prepared(), [honest({ actAs: [ME, OPERATOR] })]), /acts as another party/],
     ['another choice on the intent', () => check(prepared(), [honest({ root: { choice: 'SwapIntent_Cancel' } })]), /not SwapIntent_SettleWithProof/],
     ['TC-SDK-3172-04: the batch runs another settlement factory than the settle’s pin holds', () => check(prepared(), [honest({ pin: { settlementFactory: v.some(v.cid('00other')) } })]), /another settlement factory/],
-    ['TC-SDK-3172-15: both packages vetted — a 0.4.2-form settle run under another package than the intent’s', () => check(prepared(), [honest({ unnamedPin: 'missing', pin: null, root: { templateId: `${'ee'.repeat(32)}:Intent.SwapIntent:SwapIntent` } })]), /not SwapIntent_SettleWithProof/],
+    ['TC-SDK-3172-15: both packages vetted — a 0.4.2-form settle on an intent another package created', () => check(prepared(), [honest({ unnamedPin: 'missing', pin: null, intentPackage: 'ee'.repeat(32) })]), /another package than the one that created the intent/],
+    ['TC-SDK-3172-16: the intent is not disclosed with the transaction', () => check(prepared(), [honest({ noIntent: true })]), /another package than the one that created the intent/],
     ['TC-SDK-3172-05: a 0.4.2 settle (no pin) whose batch is not of a pinned registry', () => check(prepared(), [honest({ unnamedPin: 'missing', pin: null, batchTemplate: `${'ee'.repeat(32)}:Cnrx.Allocation:CnrxAllocationRules` })]), /not of a pinned registry/],
     ['TC-SDK-3172-06: the settle names None for the factory pin', () => check(prepared(), [honest({ unnamedPin: 'none' })]), /names no registry factory pin/],
     ['TC-SDK-3172-11: the settle’s pin holds no settlement factory', () => check(prepared(), [honest({ pin: { settlementFactory: v.none() } })]), /another settlement factory/],
