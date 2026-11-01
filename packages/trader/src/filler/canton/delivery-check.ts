@@ -35,7 +35,7 @@ import { encodeCantonAmount, encodeCantonOutputAsset, encodeCantonRecipient, typ
 import { canonicalDecimal, checkTransferExercise, field, isOwnParty, namesFactoryPin, numeric, party, qualified, refuse, requirePinnedFactory, sameSet, soleRoot, subtree, textOf, cids } from './checks';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
 import type { CantonOpCheck } from './operations';
-import type { DamlValue, ExerciseNode } from './transaction';
+import type { CantonTransaction, DamlValue, ExerciseNode } from './transaction';
 
 /** The Daml package the delivery templates come from (`canton-contracts` `intent/daml.yaml`). */
 export const INTENT_PACKAGE_NAME = 'cancore-intent';
@@ -137,12 +137,7 @@ export function checkDeliveryFill(expect: DeliveryFillExpectation): CantonOpChec
     if (party(field(o, 'instrumentAdmin')) !== instrument.admin) refuse('the DeliveryOrder pins another instrument admin');
     if (numeric(field(o, 'amount')) !== canonicalDecimal(s.amount)) refuse('the DeliveryOrder delivers another amount than stated');
     const operator = party(field(o, 'operator'));
-    if (namesFactoryPin(root.chosenValue)) {
-      requirePinnedFactory(tx, root.chosenValue, operator, 'transferFactory', s.transferFactoryCid, 'the fill’s factory pin holds another transfer factory than stated');
-    } else {
-      const pinnedAtDispatch = field(o, 'transferFactoryCid');
-      if (pinnedAtDispatch.t !== 'contractId' || pinnedAtDispatch.v !== s.transferFactoryCid) refuse('the DeliveryOrder pins another transfer factory than stated');
-    }
+    checkFillFactory(tx, root.chosenValue, o, operator, s.transferFactoryCid);
 
     // -- Under the root: the transfer, the registry fetch, the receipt; nothing else --
     if (subtree(tx, root.nodeId).length !== Object.keys(tx.nodes).length) refuse('the transaction holds nodes outside the fill');
@@ -192,3 +187,13 @@ function checkReceipt(
   if (numeric(field(r, 'amount')) !== canonicalDecimal(e.amount)) refuse('the DeliveryReceipt records another amount');
 }
 
+/**
+ * The transfer factory of the fill is the stated one (CAN-3172): on 0.5.0 the operator's pin the choice names holds
+ * it; a 0.4.2 fill names no pin, and the order's factory pinned at Dispatch is the one 0.4.2 runs. The root runs under
+ * the package that created the order (checked above), so a 0.5.0 order is never filled through 0.4.2 code.
+ */
+function checkFillFactory(tx: CantonTransaction, chosen: DamlValue, order: DamlValue, operator: string, stated: string): void {
+  if (namesFactoryPin(chosen)) return requirePinnedFactory(tx, chosen, operator, 'transferFactory', stated, 'the fill’s factory pin holds another transfer factory than stated');
+  const pinnedAtDispatch = field(order, 'transferFactoryCid');
+  if (pinnedAtDispatch.t !== 'contractId' || pinnedAtDispatch.v !== stated) refuse('the DeliveryOrder pins another transfer factory than stated');
+}

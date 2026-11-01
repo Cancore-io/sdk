@@ -215,6 +215,11 @@ describe('delivery.fill: what the summary states (CAN-1867)', () => {
     refused(() => check()(prepared(), [fill({ ...unpinned, order: { transferFactoryCid: v.cid('00archived') } })]), /pins another transfer factory/);
   });
 
+  test('TC-SDK-3172-14: both packages vetted — a 0.4.2-form fill run under another package than the one that created the order: refused', () => {
+    const downgraded = { root: { chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}) }), templateId: `${'ee'.repeat(32)}:Intent.DeliveryReceipt:DeliveryOrder` }, pin: null };
+    refused(() => check()(prepared(), [fill(downgraded)]), /another template/);
+  });
+
   test('TC-SDK-1867-09: a ticket already expired by the process clock: refused', () => {
     refused(() => check({ nowMs: (Number(VALID_UNTIL) + 1) * 1000 })(prepared(), [fill()]), /expired/);
   });

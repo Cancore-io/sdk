@@ -139,6 +139,7 @@ describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery
     ['acting as the operator too', () => check(prepared(), [honest({ actAs: [ME, OPERATOR] })]), /acts as another party/],
     ['another choice on the intent', () => check(prepared(), [honest({ root: { choice: 'SwapIntent_Cancel' } })]), /not SwapIntent_SettleWithProof/],
     ['TC-SDK-3172-04: the batch runs another settlement factory than the settle’s pin holds', () => check(prepared(), [honest({ pin: { settlementFactory: v.some(v.cid('00other')) } })]), /another settlement factory/],
+    ['TC-SDK-3172-15: both packages vetted — a 0.4.2-form settle run under another package than the intent’s', () => check(prepared(), [honest({ unnamedPin: 'missing', pin: null, root: { templateId: `${'ee'.repeat(32)}:Intent.SwapIntent:SwapIntent` } })]), /not SwapIntent_SettleWithProof/],
     ['TC-SDK-3172-05: a 0.4.2 settle (no pin) whose batch is not of a pinned registry', () => check(prepared(), [honest({ unnamedPin: 'missing', pin: null, batchTemplate: `${'ee'.repeat(32)}:Cnrx.Allocation:CnrxAllocationRules` })]), /not of a pinned registry/],
     ['TC-SDK-3172-06: the settle names None for the factory pin', () => check(prepared(), [honest({ unnamedPin: 'none' })]), /names no registry factory pin/],
     ['TC-SDK-3172-11: the settle’s pin holds no settlement factory', () => check(prepared(), [honest({ pin: { settlementFactory: v.none() } })]), /another settlement factory/],
