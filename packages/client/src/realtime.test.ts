@@ -84,6 +84,57 @@ describe('waitForOrder', () => {
     await expect(waiting).resolves.toEqual({ id: 'o1', status: 'accepted' });
   });
 
+  test.each([new Error('cannot inspect order'), 'cannot inspect order'])(
+    'rejects and releases the subscription when isTerminal throws %p',
+    async (reason) => {
+      jest.useFakeTimers();
+      try {
+        const socket = fakeSocket();
+        const controller = new AbortController();
+        const removeAbortListener = jest.spyOn(controller.signal, 'removeEventListener');
+        const waiting = waitForOrder(socket, 'o1', {
+          signal: controller.signal,
+          isTerminal: () => {
+            throw reason;
+          },
+        });
+        const rejection = expect(waiting).rejects.toBe(reason);
+
+        expect(() => socket.push(ORDER_UPDATED_EVENT, order('o1', 'accepted'))).not.toThrow();
+
+        await rejection;
+        expect(socket.listeners(ORDER_UPDATED_EVENT)).toBe(0);
+        expect(jest.getTimerCount()).toBe(0);
+        expect(removeAbortListener).toHaveBeenCalledWith('abort', expect.any(Function));
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
+  test('a failed predicate does not interrupt another wait on the socket', async () => {
+    jest.useFakeTimers();
+    try {
+      const socket = fakeSocket();
+      const reason = new Error('cannot inspect order');
+      const failed = waitForOrder(socket, 'o1', {
+        isTerminal: () => {
+          throw reason;
+        },
+      });
+      const healthy = waitForOrder(socket, 'o1');
+      const rejection = expect(failed).rejects.toBe(reason);
+
+      socket.push(ORDER_UPDATED_EVENT, order('o1', 'completed'));
+
+      await rejection;
+      await expect(healthy).resolves.toEqual({ id: 'o1', status: 'completed' });
+      expect(socket.listeners(ORDER_UPDATED_EVENT)).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('the timeout carries the last update it saw for that order', async () => {
     const socket = fakeSocket();
     const waiting = waitForOrder(socket, 'o1', { timeoutMs: 1 });
