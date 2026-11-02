@@ -64,16 +64,52 @@ const FACTORY_PIN = 'Intent.RegistryFactoryPin:RegistryFactoryPin';
 const someCid = (value: DamlValue | undefined): string | undefined => (value?.t === 'optional' && value.v?.t === 'contractId' ? value.v.v : undefined);
 
 /**
+ * The root runs under the package that created its contract, as the transaction discloses it (CAN-3172): with
+ * cancore-intent 0.4.2 and 0.5.0 both vetted, a contract is never exercised through another version's code.
+ */
+export function requireCreatingPackage(tx: CantonTransaction, root: ExerciseNode, what: string): void {
+  const contract = tx.inputContracts.find((c) => c.contractId === root.contractId);
+  if (!contract || contract.templateId !== root.templateId) refuse(what);
+}
+
+/**
+ * Whether the choice carries the trailing `factoryPin` of cancore-intent 0.5.0 (CAN-3172). Without it the command is
+ * the 0.4.2 form, checked as 0.4.2 runs it: a 0.5.0 ledger refuses a command without `factoryPin`
+ * ("Registry factory pin is required"), so dropping the field cannot skip the pin check.
+ */
+export const namesFactoryPin = (chosen: DamlValue): boolean => chosen.t === 'record' && 'factoryPin' in chosen.v;
+
+/**
  * The choice's trailing `factoryPin` (CAN-3172): the operator's `RegistryFactoryPin`, disclosed with the transaction,
- * whose `role` factory is `cid` — the factory the transaction runs. A command without it (0.4.2) or naming None is refused.
+ * whose `role` factory is `cid` — the factory the transaction runs. A pin of None is refused.
  */
 export function requirePinnedFactory(tx: CantonTransaction, chosen: DamlValue, operator: string, role: string, cid: string, what: string): void {
+  const pin = operatorPin(tx, chosen, operator);
+  if (someCid(pin.t === 'record' ? pin.v[role] : undefined) !== cid) refuse(what);
+}
+
+/**
+ * The transfer factory the pin's `transfer` route runs (CAN-3172): `ThroughFactory cid` runs `cid`; `ThroughOrderFactory`
+ * runs `orderFactory`, the DeliveryOrder's own, which the operator wrote at Dispatch. A pin without a route is refused.
+ */
+export function pinnedTransferFactory(tx: CantonTransaction, chosen: DamlValue, operator: string, orderFactory: string): string {
+  const pin = operatorPin(tx, chosen, operator);
+  const route = pin.t === 'record' ? pin.v.transfer : undefined;
+  const held = route?.t === 'optional' ? route.v : undefined;
+  if (held?.t !== 'variant') return refuse('the registry factory pin holds no transfer route');
+  if (held.constructor === 'ThroughOrderFactory') return orderFactory;
+  if (held.constructor === 'ThroughFactory' && held.v.t === 'contractId') return held.v.v;
+  return refuse(`the registry factory pin holds an unknown transfer route ${held.constructor}`);
+}
+
+/** The argument of the choice's `factoryPin`: the operator's `RegistryFactoryPin`, disclosed with the transaction. */
+function operatorPin(tx: CantonTransaction, chosen: DamlValue, operator: string): DamlValue {
   const pinCid = someCid(chosen.t === 'record' ? chosen.v.factoryPin : undefined);
   if (!pinCid) return refuse('the choice names no registry factory pin');
   const pin = tx.inputContracts.find((c) => c.contractId === pinCid);
   if (!pin || pin.packageName !== 'cancore-intent' || qualified(pin.templateId) !== FACTORY_PIN) return refuse('the registry factory pin is not disclosed with the transaction');
   if (party(field(pin.argument, 'operator')) !== operator) refuse('the registry factory pin is not the operator’s');
-  if (someCid(pin.argument.t === 'record' ? pin.argument.v[role] : undefined) !== cid) refuse(what);
+  return pin.argument;
 }
 
 export const optionalParty = (v: DamlValue | undefined): string | undefined => (v?.t === 'optional' ? (v.v ? party(v.v) : undefined) : v ? party(v) : undefined);

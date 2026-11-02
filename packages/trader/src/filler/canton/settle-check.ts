@@ -14,7 +14,8 @@
  *   of its holdings;
  * - one `SettlementFactory_SettleBatch` of a pinned registry, on the
  *   settlement factory the operator's factory pin the choice names holds
- *   (CAN-3172: the registry's current one, not the one stored at Open), whose transfer
+ *   (CAN-3172: the registry's current one, not the one stored at Open; a 0.4.2
+ *   settle names no pin and runs the factory stored at Open), whose transfer
  *   legs are exactly `payout` from the owner to the party and, when there is a
  *   fee, `fee` from the owner to the operator, split as the ledger splits;
  * - the party is credited exactly the payout in unlocked holdings of the
@@ -24,9 +25,9 @@
  */
 import { cantonInclusiveFeeSplit, type CantonIntent, type FillProofJson, type Hex } from '@cancore/contracts';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
-import { canonicalDecimal, decimal, field, holdingOf, isOwnParty, optionalParty, qualified, refuse, requirePinnedFactory, sameSet, scaled, soleRoot, subtree, textOf } from './checks';
+import { canonicalDecimal, decimal, field, holdingOf, isOwnParty, namesFactoryPin, optionalParty, qualified, refuse, requireCreatingPackage, requirePinnedFactory, sameSet, scaled, soleRoot, subtree, textOf } from './checks';
 import type { CantonOpCheck } from './operations';
-import type { DamlValue, ExerciseNode } from './transaction';
+import type { CantonTransaction, DamlValue, ExerciseNode } from './transaction';
 
 const SWAP_INTENT = 'Intent.SwapIntent:SwapIntent';
 const SETTLE_WITH_PROOF = 'SwapIntent_SettleWithProof';
@@ -71,6 +72,17 @@ function checkProof(chosen: DamlValue, own: FillProofJson): void {
   if (int(field(p, 'setId')) !== String(own.setId)) refuse('proof.setId is not the set of the attestations');
 }
 
+/**
+ * The settlement factory the batch runs (CAN-3172): on 0.5.0 the operator's pin the choice names holds it; a 0.4.2
+ * settle names no pin and runs the factory stored at Open, held to a pinned registry by the caller. The root runs
+ * under the package that created the intent (`requireCreatingPackage`), so a 0.5.0 intent is never settled through
+ * 0.4.2 code.
+ */
+function checkSettleFactory(tx: CantonTransaction, chosen: DamlValue, operator: string, batchFactory: string): void {
+  if (!namesFactoryPin(chosen)) return;
+  requirePinnedFactory(tx, chosen, operator, 'settlementFactory', batchFactory, 'the batch runs another settlement factory than the settle’s factory pin holds');
+}
+
 /** `intent.settle`: exactly the payout of the node's own delivery, to its own party. */
 export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpCheck<'intent.settle'> {
   return (prepared, transactions) => {
@@ -93,6 +105,7 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
       refuse(`the root is ${qualified(root.templateId)}.${root.choice}, not ${SETTLE_WITH_PROOF} of the intent`);
     }
     if (root.contractId !== intent.intentCid) refuse('the settle is on another contract than the intent');
+    requireCreatingPackage(tx, root, 'the settle runs under another package than the one that created the intent');
     if (!root.consuming || !sameSet(root.actingParties, [payee])) refuse('the settle does not consume the intent as the party alone');
     checkProof(root.chosenValue, expect.proof);
     const entry = field(root.chosenValue, 'fillerEntryCid');
@@ -115,7 +128,7 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
     const batch = batches[0] as ExerciseNode;
     const registry = factories.find((f) => batch.templateId.startsWith(`${f.packageId}:`));
     if (!registry) return refuse(`the settlement factory ${batch.templateId} is not of a pinned registry of ${intent.asset.admin}`);
-    requirePinnedFactory(tx, root.chosenValue, intent.operator, 'settlementFactory', batch.contractId, 'the batch runs another settlement factory than the settle’s factory pin holds');
+    checkSettleFactory(tx, root.chosenValue, intent.operator, batch.contractId);
     checkLegs(field(batch.chosenValue, 'transferLegs'), intent, payee, payout, fee);
 
     // What the party ends up with: unlocked holdings of the instrument, exactly the payout.

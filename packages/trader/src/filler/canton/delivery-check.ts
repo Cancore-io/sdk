@@ -16,11 +16,12 @@
  *   `fillDeadline` is the order's. This is where T-48 is enforced on the
  *   ledger's own data: the operator writes `fillerId` and `repayTo` into the
  *   order, and nothing else compares them with the signed `ticket.intent`.
- * - The fill names the operator's factory pin (`factoryPin`, CAN-3172),
+ * - A 0.5.0 fill names the operator's factory pin (`factoryPin`, CAN-3172),
  *   disclosed with the transaction, and its transfer factory is the stated
  *   one: the contract runs the factory the pin holds, not the one stored at
- *   Dispatch; the node additionally holds the transfer to a pinned registry
- *   template below.
+ *   Dispatch. A 0.4.2 fill names no pin: the order's factory pinned at
+ *   Dispatch is the stated one. Either way the node additionally holds the
+ *   transfer to a pinned registry template below.
  * - Under the root: `TransferFactory_Transfer` through a pinned factory, from
  *   the party to the recipient, exactly the order's amount and instrument,
  *   spending only the stated holdings, completed in this transaction (a
@@ -31,10 +32,10 @@
  * - `validUntil` has not passed by the process clock.
  */
 import { encodeCantonAmount, encodeCantonOutputAsset, encodeCantonRecipient, type Hex } from '@cancore/contracts';
-import { canonicalDecimal, checkTransferExercise, field, isOwnParty, numeric, party, qualified, refuse, requirePinnedFactory, sameSet, soleRoot, subtree, textOf, cids } from './checks';
+import { canonicalDecimal, checkTransferExercise, field, isOwnParty, namesFactoryPin, numeric, party, qualified, refuse, pinnedTransferFactory, sameSet, soleRoot, subtree, textOf, cids } from './checks';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
 import type { CantonOpCheck } from './operations';
-import type { DamlValue, ExerciseNode } from './transaction';
+import type { CantonTransaction, DamlValue, ExerciseNode } from './transaction';
 
 /** The Daml package the delivery templates come from (`canton-contracts` `intent/daml.yaml`). */
 export const INTENT_PACKAGE_NAME = 'cancore-intent';
@@ -136,7 +137,7 @@ export function checkDeliveryFill(expect: DeliveryFillExpectation): CantonOpChec
     if (party(field(o, 'instrumentAdmin')) !== instrument.admin) refuse('the DeliveryOrder pins another instrument admin');
     if (numeric(field(o, 'amount')) !== canonicalDecimal(s.amount)) refuse('the DeliveryOrder delivers another amount than stated');
     const operator = party(field(o, 'operator'));
-    requirePinnedFactory(tx, root.chosenValue, operator, 'transferFactory', s.transferFactoryCid, 'the fill’s factory pin holds another transfer factory than stated');
+    checkFillFactory(tx, root.chosenValue, o, operator, s.transferFactoryCid);
 
     // -- Under the root: the transfer, the registry fetch, the receipt; nothing else --
     if (subtree(tx, root.nodeId).length !== Object.keys(tx.nodes).length) refuse('the transaction holds nodes outside the fill');
@@ -186,3 +187,14 @@ function checkReceipt(
   if (numeric(field(r, 'amount')) !== canonicalDecimal(e.amount)) refuse('the DeliveryReceipt records another amount');
 }
 
+/**
+ * The transfer factory of the fill is the stated one (CAN-3172): on 0.5.0 the operator's pin the choice names holds
+ * it; a 0.4.2 fill names no pin, and the order's factory pinned at Dispatch is the one 0.4.2 runs. The root runs under
+ * the package that created the order (checked above), so a 0.5.0 order is never filled through 0.4.2 code.
+ */
+function checkFillFactory(tx: CantonTransaction, chosen: DamlValue, order: DamlValue, operator: string, stated: string): void {
+  const orderFactory = field(order, 'transferFactoryCid');
+  if (orderFactory.t !== 'contractId') return refuse('the DeliveryOrder names no transfer factory');
+  const runs = namesFactoryPin(chosen) ? pinnedTransferFactory(tx, chosen, operator, orderFactory.v) : orderFactory.v;
+  if (runs !== stated) refuse('the fill runs another transfer factory than stated');
+}
