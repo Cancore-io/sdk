@@ -43,6 +43,7 @@ import { isEvmChainId, type EvmChainId } from './chains';
 import type { EventSink, FillerStage } from './events';
 import type { Delivery, FillerProtocolClient } from './protocol/client';
 import type { Unsealed } from './protocol/envelope';
+import { QuoteTimings } from './quote-timings';
 import type { Clock, Logger } from './runtime';
 import { signTypedDataChecked, type FillSigner, type QuoteSigner } from './signer';
 import type { FillerStore, StoredQuote } from './store';
@@ -205,41 +206,6 @@ export interface ReconcileReport {
   unknownToStore: number;
 }
 
-/**
- * Where the time of one `quote.request` went, for the log: the whole path from
- * filler-gateway to the filler and back must fit in the auction window
- * (`windowCloseAt`), so a late quote is only explained by its steps.
- */
-class QuoteTimings {
-  private readonly receivedAtMs: number;
-  private readonly steps: Record<string, number> = {};
-
-  constructor(
-    private readonly clock: Clock,
-    private readonly windowCloseAt: unknown,
-  ) {
-    this.receivedAtMs = clock.now();
-  }
-
-  async measure<T>(step: string, run: () => Promise<T>): Promise<T> {
-    const startedAtMs = this.clock.now();
-    try {
-      return await run();
-    } finally {
-      this.steps[step] = this.clock.now() - startedAtMs;
-    }
-  }
-
-  fields(): Record<string, number> {
-    const closeAt = millis(this.windowCloseAt);
-    return {
-      ...(closeAt !== undefined ? { windowLeftAtReceiptMs: closeAt - this.receivedAtMs } : {}),
-      ...this.steps,
-      elapsedMs: this.clock.now() - this.receivedAtMs,
-    };
-  }
-}
-
 export class QuoteDesk {
   constructor(private readonly options: QuoteDeskOptions) {}
 
@@ -260,7 +226,7 @@ export class QuoteDesk {
   async onRequest(delivery: Delivery): Promise<{ sent: StoredQuote } | { skipped: QuoteSkipReason }> {
     const request = delivery.frame as unknown as QuoteRequest;
     const requestId = typeof request.requestId === 'string' ? request.requestId : '';
-    const timings = new QuoteTimings(this.options.clock, request.windowCloseAt);
+    const timings = new QuoteTimings(this.options.clock, millis(request.windowCloseAt));
     const skip = (reason: QuoteSkipReason, fields: Record<string, string | number | boolean> = {}) => {
       this.stage('quote.skipped', requestId, { reason, ...fields });
       if (reason !== 'declined' && reason !== 'redelivered') this.options.logger.info('quotes: request not quoted', { requestId, reason, ...fields, ...timings.fields() });
