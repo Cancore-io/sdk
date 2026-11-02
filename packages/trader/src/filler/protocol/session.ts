@@ -29,6 +29,13 @@ export const CLOSE_HEARTBEAT = 4500;
 export const CLOSE_LOGIN_TIMEOUT = 4501;
 /** The protocol version is not served; not retried. */
 export const CLOSE_UNSUPPORTED_VERSION = 4502;
+/**
+ * The socket reported an error. 1006 is what such a close looks like on the
+ * wire, but a WHATWG WebSocket refuses to send it (`InvalidAccessError`: only
+ * 1000 and 3000–4999), which left the socket unclosed on an adapter that
+ * reports no close of its own.
+ */
+export const CLOSE_SOCKET_ERROR = 4503;
 
 export interface ReconnectPolicy {
   /** First retry delay before jitter. Default 500 ms. */
@@ -375,8 +382,8 @@ export class GatewaySession {
 
   private onError(error: unknown): void {
     // The adapter reports the close next; closing here covers an adapter that does not.
-    this.options.logger.warn('filler-gateway: socket error', { error: this.redact(error) });
-    this.closeSocket(1006, 'socket error');
+    this.options.logger.warn('filler-gateway: socket error', { error: this.redact(socketErrorText(error)) });
+    this.closeSocket(CLOSE_SOCKET_ERROR, 'socket error');
   }
 
   private forgetOfferedToken(): void {
@@ -386,7 +393,7 @@ export class GatewaySession {
 
   /** An error as text for the log, with the bearer token cut out should an adapter have put it in. */
   private redact(error: unknown): string {
-    const text = String(error);
+    const text = typeof error === 'string' ? error : String(error);
     const token = this.offeredToken;
     return token ? text.split(token).join('<token>') : text;
   }
@@ -427,4 +434,12 @@ export class GatewaySession {
   private clearTimers(): void {
     for (const cancel of this.timers.splice(0)) cancel();
   }
+}
+
+/** A WHATWG `ErrorEvent` prints as `[object ErrorEvent]`: its message and cause say what failed. */
+function socketErrorText(error: unknown): string {
+  if (error instanceof Error || typeof error !== 'object' || error === null) return String(error);
+  const event = error as { message?: unknown; error?: unknown };
+  const parts = [event.message, event.error].filter((part) => part !== undefined && part !== '').map(String);
+  return parts.length > 0 ? parts.join(': ') : String(error);
 }

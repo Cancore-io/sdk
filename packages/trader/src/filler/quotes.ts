@@ -205,6 +205,41 @@ export interface ReconcileReport {
   unknownToStore: number;
 }
 
+/**
+ * Where the time of one `quote.request` went, for the log: the whole path from
+ * filler-gateway to the filler and back must fit in the auction window
+ * (`windowCloseAt`), so a late quote is only explained by its steps.
+ */
+class QuoteTimings {
+  private readonly receivedAtMs: number;
+  private readonly steps: Record<string, number> = {};
+
+  constructor(
+    private readonly clock: Clock,
+    private readonly windowCloseAt: unknown,
+  ) {
+    this.receivedAtMs = clock.now();
+  }
+
+  async measure<T>(step: string, run: () => Promise<T>): Promise<T> {
+    const startedAtMs = this.clock.now();
+    try {
+      return await run();
+    } finally {
+      this.steps[step] = this.clock.now() - startedAtMs;
+    }
+  }
+
+  fields(): Record<string, number> {
+    const closeAt = millis(this.windowCloseAt);
+    return {
+      ...(closeAt !== undefined ? { windowLeftAtReceiptMs: closeAt - this.receivedAtMs } : {}),
+      ...this.steps,
+      elapsedMs: this.clock.now() - this.receivedAtMs,
+    };
+  }
+}
+
 export class QuoteDesk {
   constructor(private readonly options: QuoteDeskOptions) {}
 
@@ -225,9 +260,10 @@ export class QuoteDesk {
   async onRequest(delivery: Delivery): Promise<{ sent: StoredQuote } | { skipped: QuoteSkipReason }> {
     const request = delivery.frame as unknown as QuoteRequest;
     const requestId = typeof request.requestId === 'string' ? request.requestId : '';
+    const timings = new QuoteTimings(this.options.clock, request.windowCloseAt);
     const skip = (reason: QuoteSkipReason, fields: Record<string, string | number | boolean> = {}) => {
       this.stage('quote.skipped', requestId, { reason, ...fields });
-      if (reason !== 'declined' && reason !== 'redelivered') this.options.logger.info('quotes: request not quoted', { requestId, reason, ...fields });
+      if (reason !== 'declined' && reason !== 'redelivered') this.options.logger.info('quotes: request not quoted', { requestId, reason, ...fields, ...timings.fields() });
       return { skipped: reason };
     };
     this.stage('quote.requested', requestId, { channel: delivery.channel });
@@ -242,7 +278,7 @@ export class QuoteDesk {
 
     let minInput: bigint | undefined;
     try {
-      minInput = await this.options.minInput(request.route.src, request.inputToken);
+      minInput = await timings.measure('minInputMs', () => this.options.minInput(request.route.src, request.inputToken));
     } catch (error) {
       return skip('chain-unavailable', { error: String(error) });
     }
@@ -253,7 +289,7 @@ export class QuoteDesk {
     const payout = payoutOf(total, request.feeBps);
     let decision: QuoteDecisionInput | null;
     try {
-      decision = await hook({ ...request, payout, fee: total - payout, shownToUser: true });
+      decision = await timings.measure('hookMs', () => hook({ ...request, payout, fee: total - payout, shownToUser: true }));
     } catch (error) {
       this.options.logger.error('quotes: onQuoteRequest threw', { requestId, error: String(error) });
       return skip('hook-failed');
@@ -266,23 +302,27 @@ export class QuoteDesk {
     if (this.options.clock.now() >= windowCloseAt) return skip('late', { after: 'hook' });
     if (!this.options.protocol.connected) return skip('disconnected');
 
-    const nonce = await this.options.store.quotes.nextNonce(requestId, this.options.quoteSigner.address.toLowerCase() as Hex);
-    const { message, quoteHash } = await this.sign(requestId, amountOut, validUntil, nonce);
-    const quote = await this.options.protocol.seal<QuoteMessage>({
-      type: 'quote',
-      id: this.options.nextId(),
-      requestId,
-      amountOut: amountOut.toString(),
-      validUntil: validUntil.toString(),
-      nonce: nonce.toString(),
-      sig: message.sig,
+    const { nonce, quoteHash, quote } = await timings.measure('signingMs', async () => {
+      const nonce = await this.options.store.quotes.nextNonce(requestId, this.options.quoteSigner.address.toLowerCase() as Hex);
+      const { message, quoteHash } = await this.sign(requestId, amountOut, validUntil, nonce);
+      const quote = await this.options.protocol.seal<QuoteMessage>({
+        type: 'quote',
+        id: this.options.nextId(),
+        requestId,
+        amountOut: amountOut.toString(),
+        validUntil: validUntil.toString(),
+        nonce: nonce.toString(),
+        sig: message.sig,
+      });
+      return { nonce, quoteHash, quote };
     });
     if (this.options.clock.now() >= windowCloseAt) return skip('late', { after: 'signing' });
 
     const stored: StoredQuote = { requestId, quoteHash, quote, sentAtMs: this.options.clock.now() };
-    await this.options.store.quotes.recordQuote(stored);
+    await timings.measure('recordMs', () => this.options.store.quotes.recordQuote(stored));
     if (!this.options.protocol.send(quote)) return skip('disconnected', { stored: true });
     this.stage('quote.sent', requestId, { nonce: Number(nonce) });
+    this.options.logger.info('quotes: quote sent', { requestId, nonce: Number(nonce), ...timings.fields() });
     return { sent: stored };
   }
 

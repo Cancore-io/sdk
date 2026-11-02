@@ -264,6 +264,32 @@ describe('quote.request → onQuoteRequest → FillerQuote', () => {
     });
     await expect(h.desk.onRequest(delivery(request(h.clock)))).resolves.toEqual({ skipped: 'late' });
     expect(h.protocol.sent).toHaveLength(0);
+    expect(h.logger.entries).toContainEqual(
+      expect.objectContaining({
+        message: 'quotes: request not quoted',
+        fields: expect.objectContaining({ reason: 'late', after: 'hook', windowLeftAtReceiptMs: 500, hookMs: 600, elapsedMs: 600 }),
+      }),
+    );
+  });
+
+  test('CAN-3238: a sent quote is logged with where its time went', async () => {
+    const h = desk({
+      minInput: async () => {
+        h.clock.advance(40);
+        return undefined;
+      },
+      hook: async () => {
+        h.clock.advance(120);
+        return { amountOut: 99n, validUntil: '1800000000' };
+      },
+    });
+    await expect(h.desk.onRequest(delivery(request(h.clock)))).resolves.toHaveProperty('sent');
+    expect(h.logger.entries).toContainEqual(
+      expect.objectContaining({
+        message: 'quotes: quote sent',
+        fields: expect.objectContaining({ windowLeftAtReceiptMs: 500, minInputMs: 40, hookMs: 120, signingMs: expect.any(Number), elapsedMs: expect.any(Number) }),
+      }),
+    );
   });
 
   test('not quoted: inputAmount below the source router minInput (T-16)', async () => {

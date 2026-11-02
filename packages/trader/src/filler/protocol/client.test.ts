@@ -34,7 +34,7 @@ import { FillerProtocolClient, type Delivery } from './client';
 import { createSealer } from './envelope';
 import { keccakHex } from './frames';
 import { GatewayRest } from './rest';
-import { backoffDelay, CLOSE_HEARTBEAT, CLOSE_LOGIN_TIMEOUT, CLOSE_UNSUPPORTED_VERSION, GatewaySession } from './session';
+import { backoffDelay, CLOSE_HEARTBEAT, CLOSE_LOGIN_TIMEOUT, CLOSE_SOCKET_ERROR, CLOSE_UNSUPPORTED_VERSION, GatewaySession } from './session';
 
 const GATEWAY_KEY: Hex = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
 const OTHER_KEY: Hex = '0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6';
@@ -550,7 +550,17 @@ describe('rate limits per fillerId (RATE_LIMITED, retryAfterMs)', () => {
 
 describe('heartbeat and reconnect', () => {
   test('SDK close codes cannot be read as gateway supersession or key revocation', () => {
-    for (const code of [CLOSE_HEARTBEAT, CLOSE_LOGIN_TIMEOUT, CLOSE_UNSUPPORTED_VERSION]) expect(Object.values(FILLER_CLOSE_CODES)).not.toContain(code);
+    for (const code of [CLOSE_HEARTBEAT, CLOSE_LOGIN_TIMEOUT, CLOSE_UNSUPPORTED_VERSION, CLOSE_SOCKET_ERROR]) expect(Object.values(FILLER_CLOSE_CODES)).not.toContain(code);
+  });
+
+  test('CAN-3238: a socket error closes with a code a WHATWG WebSocket accepts and logs what the error event says', async () => {
+    const h = harness({ heartbeatIntervalMs: 600_000 });
+    void h.client.start();
+    const socket = await h.login();
+    socket.error({ type: 'error', message: 'read ECONNRESET' });
+    expect(socket.closed?.code).toBe(CLOSE_SOCKET_ERROR);
+    expect(h.logger.entries).toContainEqual(expect.objectContaining({ message: 'filler-gateway: socket error', fields: { error: 'read ECONNRESET' } }));
+    expect(h.logger.entries).not.toContainEqual(expect.objectContaining({ message: 'filler-gateway: close failed' }));
   });
 
   test.each([0, 0.999_999])('superseded sessions warn and wait at least 30 seconds before reconnect, even after auth.ok resets backoff (jitter %s)', async (random) => {
