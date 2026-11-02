@@ -2,7 +2,10 @@
  * CAN-2931, spike Д0 on the full intent stand: the shape of a CBTC transfer through the DA Utilities registry,
  * as the node would have to check it before its party key signs one (`delivery.fill`, `holdings.transfer`). The
  * stand runs DA's own registry DARs (meta `dars/utility`) behind the local registry stand-in (registry-shim,
- * meta docs/intents/local-stand.md step 3); `registry-seed` hands CBTC to the genesis parties.
+ * meta docs/intents/local-stand.md step 3); `registry-seed` hands CBTC and USDCx to the genesis parties.
+ *
+ * CAN-3222: USDCx is issued through the same DA Utilities packages as CBTC, so its cases are CBTC's, run for
+ * USDCx under the same pin. Canton → EVM waits for the registry's V2 allocation routes (CAN-3134, CAN-3133).
  *
  * No transfer is committed: the transfer factory and its context come from the stand's registry, the
  * `TransferFactory_Transfer` is only prepared (interactive submission), and the decoded transaction — every
@@ -31,7 +34,16 @@ const REQUIRED = [
 const HOLDING_V1 = '#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding';
 const TRANSFER_FACTORY = '#splice-api-token-transfer-instruction-v1:Splice.Api.Token.TransferInstructionV1:TransferFactory';
 const UTILITY_PREAPPROVAL = '#utility-registry-app-v0:Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval';
-const INSTRUMENT = 'CBTC';
+/** The DA Utilities instruments of the stand's registry, each with the ticket its cases trace to. */
+const CASES = [
+  { instrument: 'CBTC', ticket: 'CAN-2931' },
+  { instrument: 'USDCx', ticket: 'CAN-3222' },
+] as const;
+/**
+ * The pin of DA Utilities the node holds, under the admin it is pinned for. USDCx has no pinned admin yet — it is
+ * not on DevNet, and its TestNet pin comes with the TestNet catalog (CAN-3222) — so both run under this one.
+ */
+const DA_UTILITY_PIN = CANTON_TRANSFER_FACTORIES['cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff'] ?? [];
 
 type Bootstrap = { registryParty: string; balances: Record<string, string> };
 type Genesis = { parties: Record<string, string>; nodes?: Record<string, string> };
@@ -41,19 +53,21 @@ type Factory = { factoryId: string; transferKind: string; choiceContext: { choic
 const out = () => dirname(STAND as string);
 const readJson = <T>(name: string): T => JSON.parse(readFileSync(join(out(), name), 'utf8')) as T;
 
-/** The unlocked CBTC holdings of `party` under `admin`, read through the token standard's holding interface. */
-async function holdings(party: string, admin: string, token: string): Promise<string[]> {
+/** The unlocked `instrument` holdings of `party` under `admin`, read through the token standard's holding interface. */
+async function holdings(party: string, admin: string, instrument: string, token: string): Promise<string[]> {
   type View = { owner?: string; instrumentId?: { admin?: string; id?: string }; lock?: unknown };
   const events = await activeContracts(party, { InterfaceFilter: { value: { interfaceId: HOLDING_V1, includeInterfaceView: true, includeCreatedEventBlob: false } } }, token);
   return events.flatMap((event) => {
     const view = event.interfaceViews?.[0]?.viewValue as View | undefined;
-    return view?.owner === party && view.instrumentId?.admin === admin && view.instrumentId?.id === INSTRUMENT && !view.lock ? [event.contractId] : [];
+    return view?.owner === party && view.instrumentId?.admin === admin && view.instrumentId?.id === instrument && !view.lock ? [event.contractId] : [];
   });
 }
 
 const fieldsOf = (v: DamlValue): string[] => (v.t === 'record' ? Object.keys(v.v) : [v.t]);
 
 interface Spike {
+  instrument: string;
+  ticket: string;
   bootstrap: Bootstrap;
   genesis: Genesis;
   admin: string;
@@ -61,34 +75,34 @@ interface Spike {
   userId: string;
 }
 
-async function spike(): Promise<Spike> {
+async function spike(instrument: string, ticket: string): Promise<Spike> {
   const bootstrap = readJson<Bootstrap>('registry-bootstrap.json');
   const token = await cantonToken();
   const { user } = await ledger<{ user: { id: string } }>('/v2/authenticated-user', token);
-  return { bootstrap, genesis: readJson<Genesis>('genesis.json'), admin: bootstrap.registryParty, token, userId: user.id };
+  return { instrument, ticket, bootstrap, genesis: readJson<Genesis>('genesis.json'), admin: bootstrap.registryParty, token, userId: user.id };
 }
 
 /**
- * One `TransferFactory_Transfer` of CBTC to `receiverName`, prepared and decoded — never submitted — from the
- * first genesis party holding unlocked CBTC: the seed's balances name `<instrument>/<party>`, and any party may
- * hold CBTC after the handout, so all are tried. Printed between the spike's markers under `label`.
+ * One `TransferFactory_Transfer` of the spike's instrument to `receiverName`, prepared and decoded — never
+ * submitted — from the first genesis party holding it unlocked: the seed's balances name `<instrument>/<party>`,
+ * and any party may hold it after the handout, so all are tried. Printed between the spike's markers under `label`.
  */
 type Prepared = { transferKind: string; tx: ReturnType<typeof transactionView>; sender: string; receiver: string; amount: string; inputs: string[]; executeBefore: string };
 
 async function prepareTransfer(s: Spike, receiverName: string, label: string): Promise<Prepared> {
-  const { bootstrap, genesis, admin, token } = s;
-  const seeded = Object.keys(bootstrap.balances ?? {}).filter((k) => k.toUpperCase().startsWith(`${INSTRUMENT}/`)).map((k) => k.slice(INSTRUMENT.length + 1));
+  const { instrument, bootstrap, genesis, admin, token } = s;
+  const seeded = Object.keys(bootstrap.balances ?? {}).filter((k) => k.toUpperCase().startsWith(`${instrument.toUpperCase()}/`)).map((k) => k.slice(instrument.length + 1));
   const holders = [...new Set([...seeded, ...Object.keys(genesis.parties)])];
   const tried: string[] = [];
   for (const senderName of holders.filter((n) => n !== receiverName)) {
     const sender = genesis.parties[senderName];
     const receiver = genesis.parties[receiverName];
     if (!sender || !receiver) continue;
-    const inputs = await holdings(sender, admin, token).catch((e: Error) => (tried.push(`${senderName}: ${e.message.slice(0, 200)}`), [] as string[]));
-    if (inputs.length === 0) { tried.push(`${senderName}: no unlocked ${INSTRUMENT}`); continue; }
+    const inputs = await holdings(sender, admin, instrument, token).catch((e: Error) => (tried.push(`${senderName}: ${e.message.slice(0, 200)}`), [] as string[]));
+    if (inputs.length === 0) { tried.push(`${senderName}: no unlocked ${instrument}`); continue; }
     const executeBeforeSec = Math.floor(Date.now() / 1000) + 3600;
     const transfer = {
-      sender, receiver, amount: '0.0001', instrumentId: { admin, id: INSTRUMENT },
+      sender, receiver, amount: '0.0001', instrumentId: { admin, id: instrument },
       requestedAt: new Date().toISOString(), executeBefore: new Date(executeBeforeSec * 1000).toISOString(), inputHoldingCids: inputs.slice(0, 1), meta: { values: {} },
     };
     const shim = (process.env.REGISTRY_SHIM_URL || 'http://127.0.0.1:8090').replace(/\/$/, '');
@@ -99,7 +113,7 @@ async function prepareTransfer(s: Spike, receiverName: string, label: string): P
     if (!factoryResponse.ok) { tried.push(`${senderName}: factory ${factoryResponse.status} ${(await factoryResponse.text()).slice(0, 300)}`); continue; }
     const factory = (await factoryResponse.json()) as Factory;
     const prepared = await ledger<{ preparedTransaction: string }>('/v2/interactive-submission/prepare', token, {
-      userId: s.userId, commandId: `can-2931-spike-${Date.now()}`, actAs: [sender], readAs: [], synchronizerId: env('CANTON_SYNCHRONIZER_ID'), packageIdSelectionPreference: [],
+      userId: s.userId, commandId: `${s.ticket.toLowerCase()}-spike-${Date.now()}`, actAs: [sender], readAs: [], synchronizerId: env('CANTON_SYNCHRONIZER_ID'), packageIdSelectionPreference: [],
       commands: [{ ExerciseCommand: { templateId: TRANSFER_FACTORY, contractId: factory.factoryId, choice: 'TransferFactory_Transfer', choiceArgument: { expectedAdmin: admin, transfer, extraArgs: { context: factory.choiceContext.choiceContextData, meta: { values: {} } } } } }],
       disclosedContracts: factory.choiceContext.disclosedContracts,
     }).catch((e: Error) => (tried.push(`${senderName}: prepare ${e.message.slice(0, 400)}`), null));
@@ -107,7 +121,7 @@ async function prepareTransfer(s: Spike, receiverName: string, label: string): P
 
     const tx = transactionView(decodePreparedTransaction(prepared.preparedTransaction));
     const report = {
-      label, admin, sender, receiver, transferKind: factory.transferKind, factoryId: factory.factoryId,
+      label, instrument, admin, sender, receiver, transferKind: factory.transferKind, factoryId: factory.factoryId,
       contextKeys: Object.keys(factory.choiceContext.choiceContextData.values),
       disclosed: factory.choiceContext.disclosedContracts.map((d) => d.templateId),
       roots: tx.roots,
@@ -122,22 +136,22 @@ async function prepareTransfer(s: Spike, receiverName: string, label: string): P
     console.log(`CAN-2931-DA-TRANSFER-BEGIN\n${JSON.stringify(report, null, 2)}\nCAN-2931-DA-TRANSFER-END`);
     return { transferKind: factory.transferKind, tx, sender, receiver, amount: transfer.amount, inputs: transfer.inputHoldingCids, executeBefore: String(executeBeforeSec) };
   }
-  throw new Error(`no CBTC holder of ${admin} could prepare a transfer to ${receiverName}:\n${tried.join('\n')}`);
+  throw new Error(`no ${instrument} holder of ${admin} could prepare a transfer to ${receiverName}:\n${tried.join('\n')}`);
 }
 
-(STAND ? describe : describe.skip)('CAN-2931 spike Д0: a CBTC transfer through the DA Utilities registry on the intent stand', () => {
+(STAND ? describe.each(CASES) : describe.skip.each(CASES))('$ticket: a $instrument transfer through the DA Utilities registry on the intent stand', ({ instrument, ticket }) => {
   it('env: every key the spike reads is set', () => {
     expect(REQUIRED.filter((k) => !process.env[k])).toEqual([]);
   });
 
-  it('TC-CAN-2931-STAND-01: TransferFactory_Transfer of CBTC to a receiver without a preapproval — an offer, nothing committed', async () => {
-    const { tx } = await prepareTransfer(await spike(), 'alice', 'offer');
+  it(`TC-${ticket}-STAND-01: TransferFactory_Transfer of ${instrument} to a receiver without a preapproval — an offer, nothing committed`, async () => {
+    const { tx } = await prepareTransfer(await spike(instrument, ticket), 'alice', 'offer');
     expect(tx.roots).toHaveLength(1);
     expect(tx.nodes[tx.roots[0] as string]).toMatchObject({ kind: 'exercise', choice: 'TransferFactory_Transfer' });
   }, 180_000);
 
-  it('TC-CAN-2931-STAND-02: with the receiver’s utility preapproval of the registrar the transfer is direct — the shape a delivery signs', async () => {
-    const s = await spike();
+  it(`TC-${ticket}-STAND-02: with the receiver’s utility preapproval of the registrar the ${instrument} transfer is direct — the shape a delivery signs`, async () => {
+    const s = await spike(instrument, ticket);
     const owner = env('STAND_OWNER_PARTY');
     const receiverName = Object.entries(s.genesis.parties).find(([, p]) => p === owner)?.[0];
     if (!receiverName) throw new Error(`STAND_OWNER_PARTY ${owner} is no genesis party`);
@@ -150,25 +164,28 @@ async function prepareTransfer(s: Spike, receiverName: string, label: string): P
     });
     const bearer = ((await login.json()) as { access_token: string }).access_token;
     const setup = await fetch(`${env('GATEWAY_URL')}/tokens/utility-preapprovals/setup`, {
-      method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body: JSON.stringify({ tokenId: INSTRUMENT }),
+      method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body: JSON.stringify({ tokenId: instrument }),
     });
     const answer = (await setup.json()) as { success?: boolean };
-    if (!answer.success) throw new Error(`utility preapproval setup of ${owner}: ${setup.status} ${JSON.stringify(answer).slice(0, 300)}`);
+    if (!answer.success) throw new Error(`${instrument} utility preapproval setup of ${owner}: ${setup.status} ${JSON.stringify(answer).slice(0, 300)}`);
 
     // What registry-shim's find_preapproval sees: the registry party's utility preapprovals of this receiver.
     const seen = await activeContracts(s.admin, { TemplateFilter: { value: { templateId: UTILITY_PREAPPROVAL, includeCreatedEventBlob: false } } }, s.token);
-    console.log(`CAN-2931-DA-PREAPPROVALS ${JSON.stringify({ admin: s.admin, receiver: owner, preapprovals: seen.map((e) => e.createArgument) })}`);
+    console.log(`CAN-2931-DA-PREAPPROVALS ${JSON.stringify({ instrument, admin: s.admin, receiver: owner, preapprovals: seen.map((e) => e.createArgument) })}`);
 
     const p = await prepareTransfer(s, receiverName, 'direct');
     expect(p.transferKind).toBe('direct');
     const root = p.tx.nodes[p.tx.roots[0] as string] as ExerciseNode;
     expect(root).toMatchObject({ kind: 'exercise', choice: 'TransferFactory_Transfer' });
     // The node's own check of a delivery (`completedOnly`) over the registry's real direct transfer: the pin of
-    // DA Utilities is what the registry builds, with the stand's registrar as the CBTC admin.
-    const pin = CANTON_TRANSFER_FACTORIES['cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff'] ?? [];
+    // DA Utilities is what the registry builds, with the stand's registrar as the instrument's admin.
     expect(() => checkTransferExercise(p.tx, root, {
-      sender: p.sender, asked: { asset: { admin: s.admin, id: INSTRUMENT }, amount: p.amount, toParty: p.receiver }, stated: p.inputs,
-      executeBefore: p.executeBefore, factories: { [s.admin]: pin }, completedOnly: true,
+      sender: p.sender, asked: { asset: { admin: s.admin, id: instrument }, amount: p.amount, toParty: p.receiver }, stated: p.inputs,
+      executeBefore: p.executeBefore, factories: { [s.admin]: DA_UTILITY_PIN }, completedOnly: true,
     })).not.toThrow();
   }, 180_000);
+});
+
+(STAND ? describe : describe.skip)('CAN-3222: USDCx Canton → EVM through the DA Utilities registry on the intent stand', () => {
+  it.todo('TC-CAN-3222-STAND-03: the owner commits a V2 allocation of USDCx, the filler\'s receipt allocation settles it — needs registry-shim V2 routes (CAN-3134) and full V2 factory arguments (CAN-3133)');
 });
