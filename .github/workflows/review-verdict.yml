@@ -1,0 +1,37 @@
+name: Review verdict receiver
+
+# BUG-1260. A review verdict (approved / changes_requested) on a ring PR goes to
+# Slack #tickets with the ticket — the GitHub-side half of the review loop that only
+# CAEF had (CAN-1386). The logic lives in Cancore-io/.github/actions/
+# review-verdict-notify, pinned below; this file is only the wiring.
+# The action reads the event payload only: no checkout, no PR-head code runs.
+# CAN-2055: the Slack token comes from Vault (secret/devops/ci/ring-slack-bot) via
+# GitHub OIDC; the Vault role review-verdict-notify is bound to this file's path —
+# do not rename it. No continue-on-error: Vault down must turn the run red.
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  notify:
+    runs-on: cancore-runners
+    timeout-minutes: 3
+    steps:
+      - id: vault
+        uses: hashicorp/vault-action@892a26828f195e65540a40b4768ae4571f51ebfc # v4.0.0
+        with:
+          url: http://vault.vault.svc.cluster.local:8200
+          method: jwt
+          path: github-actions
+          role: review-verdict-notify
+          jwtGithubAudience: https://github.com/Cancore-io
+          exportEnv: false
+          secrets: secret/data/devops/ci/ring-slack-bot SLACK_BOT_TOKEN
+      - uses: Cancore-io/.github/actions/review-verdict-notify@11e12a63de77cfe394c46454e2b20194e90b07fe
+        with:
+          slack-bot-token: ${{ steps.vault.outputs.SLACK_BOT_TOKEN }}
+          channel: C0CASHH7X2R
