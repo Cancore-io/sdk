@@ -26,7 +26,7 @@ import type { CantonOpParams, Hex } from '@cancore/contracts';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
 import { CantonRefusal, cantonFingerprint } from './legs';
 import type { CantonOpCheck } from './operations';
-import type { CantonTransaction, DamlValue, ExerciseNode, TransactionNode } from './transaction';
+import type { CantonTransaction, CreateNode, DamlValue, ExerciseNode, TransactionNode } from './transaction';
 
 const REGISTRY_MODULE = 'Intent.FillerRegistry';
 const TRANSFER_FACTORY = 'Splice.Api.Token.TransferInstructionV1:TransferFactory';
@@ -221,6 +221,7 @@ export interface HoldingSeen {
 }
 export function holdingOf(argument: DamlValue, f: CantonTransferFactory): HoldingSeen {
   if (f.holdingForm === 'amulet') return amuletOf(argument, f);
+  if (f.holdingForm === 'utility') return utilityHoldingOf(argument);
   const view = field(argument, f.holdingView);
   const account = field(view, 'account');
   const instrument = field(view, 'instrumentId');
@@ -245,6 +246,19 @@ function amuletOf(argument: DamlValue, f: CantonTransferFactory): HoldingSeen {
     id: AMULET_ID,
     amount: scaled(numeric(field(field(argument, f.holdingView), 'initialAmount'))),
     locked: false,
+  };
+}
+/** DA Utilities' `Holding`: no view; the instrument's `source` is its admin. */
+function utilityHoldingOf(argument: DamlValue): HoldingSeen {
+  const instrument = field(argument, 'instrument');
+  // An optional field holding None is left out of the decoded record: a holding with no lock has no `lock`.
+  const lock = argument.t === 'record' ? argument.v.lock : undefined;
+  return {
+    owner: party(field(argument, 'owner')),
+    admin: party(field(instrument, 'source')),
+    id: textOf(field(instrument, 'id')),
+    amount: scaled(numeric(field(argument, 'amount'))),
+    locked: lock !== undefined && !(lock.t === 'optional' && lock.v === undefined),
   };
 }
 /** The owner of a token-standard account (V2), or a party (V1). */
@@ -290,11 +304,27 @@ export function checkTransferExercise(tx: CantonTransaction, node: ExerciseNode,
  * review): pinned factory, only the stated inputs consumed, every holding
  * accounted for, the receiver credited exactly the amount, the change bounded.
  */
+/** The pinned entry of `admin` whose factory, or direct factory, is the root's template. */
+function pinnedFactoryOf(factories: TransferExpectation['factories'], admin: string, templateId: string): CantonTransferFactory | undefined {
+  return (factories[admin] ?? []).find((e) => [e.factory, e.directFactory].some((factory) => factory !== undefined && templateId === `${e.packageId}:${factory}`));
+}
+
+/** A contract the transfer creates that is neither a holding nor its pending transfer: never the sender's, never a third party's. */
+function checkOtherCreate(node: CreateNode, f: CantonTransferFactory, sender: string, receiver: string): void {
+  // The registry's record of the executed transfer: shown to the sender, binding it to nothing.
+  if (f.transferRecords?.includes(node.templateId) && !node.signatories.includes(sender)) return;
+  if (node.stakeholders.includes(sender)) refuse(`the transfer creates ${qualified(node.templateId)} for the sender`);
+  if (node.argument.t === 'record' && 'owner' in node.argument.v && optionalParty(node.argument.v.owner) !== receiver) {
+    refuse(`the transfer creates a contract owned by a third party (${qualified(node.templateId)})`);
+  }
+}
+
 function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: TransferExpectation): void {
   const { sender, asked } = o;
-  const f = (o.factories[asked.asset.admin] ?? []).find((e) => root.templateId === `${e.packageId}:${e.factory}`);
+  const f = pinnedFactoryOf(o.factories, asked.asset.admin, root.templateId);
   if (!f) return refuse(`the transfer factory ${root.templateId} is not a pinned factory of the admin ${asked.asset.admin}`);
   const pinned = (t: string, entity: string) => t === `${f.packageId}:${entity}`;
+  const isHolding = (t: string) => t === `${f.holdingPackageId ?? f.packageId}:${f.holding}`;
   const sameInstrument = (h: HoldingSeen) => h.admin === asked.asset.admin && h.id === asked.asset.id;
   const amount = scaled(asked.amount);
 
@@ -303,7 +333,7 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
   for (const cid of o.stated) {
     const disclosed = tx.inputContracts.find((c) => c.contractId === cid);
     if (!disclosed) return refuse(`the stated input ${cid} is not disclosed with the transaction`);
-    if (!pinned(disclosed.templateId, f.holding)) refuse(`the stated input ${cid} is not a holding of the pinned registry`);
+    if (!isHolding(disclosed.templateId)) refuse(`the stated input ${cid} is not a holding of the pinned registry`);
     const h = holdingOf(disclosed.argument, f);
     if (h.owner !== sender || !sameInstrument(h) || h.locked) refuse(`the stated input ${cid} is not an unlocked holding of the sender in the instrument`);
     inputs += h.amount;
@@ -321,7 +351,7 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
     if (node.kind === 'rollback') return refuse('a rollback node inside the transfer');
     if (node.kind === 'exercise' && node.stakeholders.includes(sender)) {
       const name = `${qualified(node.templateId)}.${node.choice}`;
-      if (node.consuming && node.choice === 'Archive' && pinned(node.templateId, f.holding) && o.stated.includes(node.contractId)) {
+      if (node.consuming && node.choice === 'Archive' && isHolding(node.templateId) && o.stated.includes(node.contractId)) {
         if (archived.has(node.contractId)) refuse(`the stated input ${node.contractId} is archived twice`);
         archived.add(node.contractId);
       } else if (!f.serviceChoices.includes(name)) {
@@ -329,7 +359,7 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
       }
     }
     if (node.kind !== 'create') continue;
-    if (pinned(node.templateId, f.holding)) {
+    if (isHolding(node.templateId)) {
       const h = holdingOf(node.argument, f);
       if (!sameInstrument(h)) refuse(`the transfer creates a holding of another instrument (${h.admin} ${h.id})`);
       if (h.owner === asked.toParty && !h.locked) receiver += h.amount;
@@ -338,10 +368,8 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
       else refuse(`the transfer creates a holding owned by a third party (${String(h.owner)})`);
     } else if (pinned(node.templateId, f.offer)) {
       offers.push(node.argument);
-    } else if (node.stakeholders.includes(sender)) {
-      refuse(`the transfer creates ${qualified(node.templateId)} for the sender`);
-    } else if (node.argument.t === 'record' && 'owner' in node.argument.v && optionalParty(node.argument.v.owner) !== asked.toParty) {
-      refuse(`the transfer creates a contract owned by a third party (${qualified(node.templateId)})`);
+    } else {
+      checkOtherCreate(node, f, sender, asked.toParty);
     }
   }
   const unspent = o.stated.filter((cid) => !archived.has(cid));

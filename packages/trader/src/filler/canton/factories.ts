@@ -27,9 +27,24 @@ export interface CantonTransferFactory {
   /**
    * How the holding reads (CAN-2931): `view` (default) — the token standard's `HoldingView` under `holdingView`;
    * `amulet` — Splice's `Amulet`: `dso`, `owner`, `initialAmount` of the record under `holdingView` (`amount`),
-   * instrument `{dso, "Amulet"}`, never locked (a locked one is another template, `LockedAmulet`).
+   * instrument `{dso, "Amulet"}`, never locked (a locked one is another template, `LockedAmulet`);
+   * `utility` — DA Utilities' `Holding`, no view: `owner`, `instrument` `{source, id}` (`source` the admin),
+   * `amount`, `lock` (optional).
    */
-  holdingForm?: 'view' | 'amulet';
+  holdingForm?: 'view' | 'amulet' | 'utility';
+  /** The package of `holding` when it is not `packageId` (DA Utilities: `utility-registry-holding-v0`). */
+  holdingPackageId?: string;
+  /**
+   * A template of `packageId` the transfer is exercised on besides `factory`: DA Utilities answers a transfer to a
+   * receiver with its preapproval by naming that `TransferPreapproval` as the factory, and only that path credits
+   * the receiver at once — the `AllocationFactory` path always leaves an offer.
+   */
+  directFactory?: string;
+  /**
+   * Records the transfer creates with the sender as an observer, never as a signatory — `<packageId>:<module>:<entity>`,
+   * of any package: DA Utilities keeps an `ExecutedTransfer` in `utility-registry-v0` for each transfer.
+   */
+  transferRecords?: readonly string[];
   /** The pending transfer created when the receiver has no preapproval; its argument holds the transfer under `transfer`. */
   offer: string;
   /**
@@ -99,14 +114,18 @@ const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
  * DA Utilities `utility-registry-app-v0` 0.8.2 (meta `dars/utility/packages.json`; the version dev vets for a
  * receiver and DA's operator, backend utility-registry-package.resolver.ts). The factory, offer and preapproval
  * are as the stand spike decoded a CBTC `TransferFactory_Transfer` (sdk test da-utility-transfer, CAN-2931).
- * A transfer is still refused: its holding lives in another package (`utility-registry-holding-v0`, fields
- * `owner`/`instrument`/`amount`/`lock`, no `holdingView`), which the holding check does not read yet.
+ * The holding lives in `utility-registry-holding-v0` 0.8.2 (meta `dars/utility/packages.json`).
  */
 const DA_UTILITY_REGISTRY_APP_0_8_2: CantonTransferFactory = {
   packageId: '2293eb12e82ceaeb3ff7f8fe3346dece8578e1e9fd7d46624aeb7bb07fa31eda',
   factory: 'Utility.Registry.App.V0.Service.AllocationFactory:AllocationFactory',
   holding: 'Utility.Registry.Holding.V0.Holding:Holding',
   holdingView: 'holding',
+  holdingForm: 'utility',
+  holdingPackageId: '71fbaea211f07a65666892748498bd4a0d7462a9d75bbb215ba9fbdbba78efa7',
+  directFactory: 'Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval',
+  // utility-registry-v0 0.7.1 (meta `dars/utility/packages.json`); signatory DA's operator, observers the two parties.
+  transferRecords: ['1f80e086e9ce218cf93fdeed80943793e902ac35c521733d7373a5ba58813150:Utility.Registry.V0.Holding.Transfer:ExecutedTransfer'],
   offer: 'Utility.Registry.App.V0.Model.Transfer:TransferOffer',
   serviceChoices: [],
   // Signatory the receiver, observer DA's operator; transfers to the receiver complete at once.
@@ -162,6 +181,7 @@ export const CANTON_TRANSFER_FACTORIES: Readonly<Record<string, readonly CantonT
 const PACKAGE_ID = /^[0-9a-f]{64}$/;
 const PARTY_ID = /^[^\s:]+::1220[0-9a-f]{64}$/;
 const QUALIFIED = /^[A-Za-z0-9_.]+:[A-Za-z0-9_]+$/;
+const FULL_TEMPLATE = /^[0-9a-f]{64}:[A-Za-z0-9_.]+:[A-Za-z0-9_]+$/;
 
 /**
  * Why `registries` is not a usable registry pin — `field: problem` — or
@@ -190,9 +210,11 @@ function entryProblem(f: Partial<CantonTransferFactory> | null, at: string): str
   for (const k of ['factory', 'holding', 'offer'] as const) if (typeof f[k] !== 'string' || !QUALIFIED.test(f[k] as string)) return `${at}.${k}: expected <module>:<entity>`;
   if (typeof f.holdingView !== 'string' || f.holdingView.length === 0) return `${at}.holdingView: expected a field name`;
   if (!Array.isArray(f.serviceChoices) || !f.serviceChoices.every((c) => typeof c === 'string')) return `${at}.serviceChoices: expected a list of <module>:<entity>.<choice>`;
-  for (const k of ['allocation', 'preapproval'] as const) if (!optionalTemplate(f[k])) return `${at}.${k}: expected <module>:<entity>`;
+  for (const k of ['allocation', 'preapproval', 'directFactory'] as const) if (!optionalTemplate(f[k])) return `${at}.${k}: expected <module>:<entity>`;
+  if (f.transferRecords !== undefined && (!Array.isArray(f.transferRecords) || !f.transferRecords.every((t) => typeof t === 'string' && FULL_TEMPLATE.test(t)))) return `${at}.transferRecords: expected a list of <packageId>:<module>:<entity>`;
   if (f.openReceipt !== undefined && typeof f.openReceipt !== 'boolean') return `${at}.openReceipt: expected a boolean`;
-  if (f.holdingForm !== undefined && f.holdingForm !== 'view' && f.holdingForm !== 'amulet') return `${at}.holdingForm: expected view or amulet`;
+  if (f.holdingForm !== undefined && f.holdingForm !== 'view' && f.holdingForm !== 'amulet' && f.holdingForm !== 'utility') return `${at}.holdingForm: expected view, amulet or utility`;
+  if (f.holdingPackageId !== undefined && (typeof f.holdingPackageId !== 'string' || !PACKAGE_ID.test(f.holdingPackageId))) return `${at}.holdingPackageId: expected 64 lowercase hex`;
   if (f.preapprovalForm !== undefined && f.preapprovalForm !== 'cnrx' && f.preapprovalForm !== 'utility' && f.preapprovalForm !== 'splice') return `${at}.preapprovalForm: expected cnrx, utility or splice`;
   if (f.preapprovalPackageId !== undefined && (typeof f.preapprovalPackageId !== 'string' || !PACKAGE_ID.test(f.preapprovalPackageId))) return `${at}.preapprovalPackageId: expected 64 lowercase hex`;
   if (f.preapprovalForm === 'utility' && (typeof f.preapprovalOperator !== 'string' || !PARTY_ID.test(f.preapprovalOperator))) return `${at}.preapprovalOperator: expected the DA operator's party id`;
