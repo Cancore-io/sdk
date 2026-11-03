@@ -87,7 +87,7 @@ A suite that skips itself without the stand is green in the check job's `npm run
 
 ### 8.2 No unit-test reports in Linear tickets (CAN-3253)
 
-Do not write unit-test results into a Linear ticket: no unit counts, unit runs or unit coverage numbers; they go in the PR description (section 8). A ticket that is entirely about unit tests or a refactor is the exception. Integration, e2e and stand evidence stays allowed in the ticket.
+Do not write unit-test results into a Linear ticket: no unit counts, unit runs or unit coverage numbers; they go in the PR description (section 8). A ticket that is entirely about unit tests or a refactor is the exception. Integration, e2e and stand run results are required in the ticket: which specs ran, on which stand, the result and the cause of every skip.
 
 ## 9. The local stand
 
