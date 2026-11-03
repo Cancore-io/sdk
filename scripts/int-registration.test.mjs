@@ -32,7 +32,8 @@ export function intSuites(root) {
 }
 
 const liveWorkflow = (text) => text.split('\n').map((l) => l.replace(/(^|\s)#.*$/, '')).join('\n');
-const canSkip = (source) => /\b(describe|it|test)\.skip\b|\.skipIf\b|\btest\.skip\(/.test(source);
+// Any env read counts as a skip path: a suite gated by `if (!process.env.X) return` skips without the word "skip".
+const canSkip = (source) => /\.skip(If)?\b|\bx(describe|it|test)\b|\.todo\b|process\.env\b/.test(source);
 
 export function unregistered(suites, workflow, read, allowlist) {
   const ci = liveWorkflow(workflow);
@@ -49,9 +50,15 @@ test('a skippable suite named nowhere is reported; named, stand-suffixed or alwa
     'packages/a/named.int.test.ts': 'describe.skip',
     'packages/a/y.stand.int.test.ts': 'describe.skip',
     'packages/a/inproc.int.test.ts': 'describe("real", () => {})',
+    'packages/a/envgate.int.test.ts': 'if (!process.env.STAND) return;\ndescribe("real", () => {})',
+    'packages/a/xd.int.test.ts': 'xdescribe("parked", () => {})',
   };
   const ci = '      - run: npm run test:int\n        npx jest packages/a/named.int.test.ts\n';
-  assert.deepEqual(unregistered(Object.keys(files), ci, (s) => files[s], {}), ['packages/a/x.int.test.ts']);
+  assert.deepEqual(unregistered(Object.keys(files), ci, (s) => files[s], {}), [
+    'packages/a/x.int.test.ts',
+    'packages/a/envgate.int.test.ts',
+    'packages/a/xd.int.test.ts',
+  ]);
   assert.deepEqual(unregistered(['packages/a/inproc.int.test.ts'], '# npm run test:int\n', (s) => files[s], {}), ['packages/a/inproc.int.test.ts']);
 });
 
