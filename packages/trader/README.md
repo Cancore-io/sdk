@@ -112,8 +112,8 @@ It connects only after logging in.
   Gateway close `4001` (`SUPERSEDED`) warns that another instance is using this fillerId and waits at
   least 30 s before reconnecting, without jitter shortening that wait, even after a successful login.
   Only one local session per fillerId is active in gateway V1; run one filler node instance per fillerId
-  to avoid repeated supersession. SDK-local heartbeat/login-timeout/unsupported-version closes use
-  `4500`/`4501`/`4502`, distinct from the gateway's close codes.
+  to avoid repeated supersession. SDK-local heartbeat/login-timeout/unsupported-version/socket-error
+  closes use `4500`/`4501`/`4502`/`4503`, distinct from the gateway's close codes.
 - **Rate limits** (per `fillerId`, shared by REST and every session). An `error RATE_LIMITED` with
   `retryAfterMs` — on REST a 429 (unsigned, decided by the status), with `retryAfterMs` in the body or
   `Retry-After` — pauses the rate class
@@ -390,6 +390,9 @@ its settlement adopts the attested `fillRef` of a proof that is otherwise exactl
   be read, `chain-unavailable`); the hook returned
   `null`, threw, or returned a zero or out-of-range amount; the kill-switch is on; the session is down (a quote
   has no REST route); a byte-identical redelivery of a request already handled.
+- **Timings.** `quotes: quote sent` and `quotes: request not quoted` carry where the request's time went, in ms:
+  `windowLeftAtReceiptMs` (what was left of the window when the frame arrived), `minInputMs`, `hookMs`,
+  `signingMs` (nonce, signature, envelope), `recordMs` and `elapsedMs` — a step not reached is absent.
 - **Nonce.** `store.quotes.nextNonce(requestId, quoteKey)`: strictly increasing per request across replicas
   and restarts, so a later quote in the window replaces the earlier one.
 - **Firm price.** Each sent quote is stored before it goes out and stays there as the firm price until its

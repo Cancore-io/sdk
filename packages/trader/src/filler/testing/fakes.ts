@@ -125,7 +125,7 @@ export class FakeSocket implements FillerSocket {
   refuse(status: number): void {
     if (this.closed) throw new Error('FakeSocket: refuse after close');
     this.handlers.onError(new Error(`Unexpected server response: ${status}`));
-    this.close(1006, '');
+    this.closeWith(1006, '');
   }
 
   send(text: string): void {
@@ -133,7 +133,13 @@ export class FakeSocket implements FillerSocket {
     this.sent.push(text);
   }
 
+  /** The SDK closes: refused like a WHATWG WebSocket does any code but 1000 and 3000–4999. */
   close(code = 1000, reason = ''): void {
+    if (code !== 1000 && (code < 3000 || code > 4999)) throw new Error(`InvalidAccessError: invalid code ${code}`);
+    this.closeWith(code, reason);
+  }
+
+  private closeWith(code: number, reason: string): void {
     if (this.closed) return;
     this.closed = { code, reason };
     this.handlers.onClose(code, reason);
@@ -156,7 +162,7 @@ export class FakeSocket implements FillerSocket {
 
   /** The server or the network drops the connection. */
   drop(code = 1006, reason = 'dropped'): void {
-    this.close(code, reason);
+    this.closeWith(code, reason);
   }
 
   error(error: unknown): void {
