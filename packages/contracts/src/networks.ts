@@ -61,6 +61,14 @@ export const NETWORKS: Readonly<Record<string, Network>> = {
     id: 'robinhood_testnet', kind: 'evm', name: 'Robinhood Testnet', chainId: 46630, explorerUrl: 'https://explorer.testnet.chain.robinhood.com',
     nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, testnet: true,
   },
+  base: {
+    id: 'base', kind: 'evm', name: 'Base', chainId: 8453, explorerUrl: 'https://basescan.org',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, testnet: false,
+  },
+  base_sepolia: {
+    id: 'base_sepolia', kind: 'evm', name: 'Base Sepolia', chainId: 84532, explorerUrl: 'https://sepolia.basescan.org',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, testnet: true,
+  },
   tron_nile: { id: 'tron_nile', kind: 'tron', name: 'Tron Nile', explorerUrl: 'https://nile.tronscan.org', testnet: true },
   tron_shasta: { id: 'tron_shasta', kind: 'tron', name: 'Tron Shasta', explorerUrl: 'https://shasta.tronscan.org', testnet: true },
 };
