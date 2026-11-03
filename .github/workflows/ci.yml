@@ -60,6 +60,9 @@ jobs:
         run: npm run vectors -w @cancore/contracts && git diff --exit-code packages/contracts/spec
       # Suites against a local stand skip themselves without its artifacts here; the `stand` job runs the anvil ones.
       - run: npm run test:int
+      # CAN-3253: a suite that can skip itself must be named in a lane below (or be a .stand suite).
+      - name: Every integration suite is registered in a lane
+        run: node --test scripts/int-registration.test.mjs
 
       # The check unit tests cannot do: pack the tarball and import it from a
       # project that is not this repository. A broken `exports` map, a file left

@@ -13,6 +13,7 @@
 - [ ] Type safety (no any): 0 new explicit any, no @ts-ignore (npm run any:check)
 - [ ] Algebraic Data Types (ADT): fixed variant sets modeled as discriminated unions with exhaustive default: return assertNever(x)
 - [ ] Local stand verification: end-to-end verified on local compose stand before review
+- [ ] Integration suites registered in a lane (CAN-3253): every new or renamed `*.int.test.ts` is named in `ci.yml`, is `*.stand.int.test.ts`, or runs in `npm run test:int` with no skip path (`node --test scripts/int-registration.test.mjs`) — or `n/a`
 - [ ] Allure & Docs-as-Code RTM traceability: scenarios linked in `docs/rtm/rtm.yaml` (`REQ-<DOMAIN>-<NNN>`) and verified in Allure via `scripts/ci/allure-rtm-sync.ts` (no Qase.io)
 
 ## Local & Nx Blast-Radius Mutation Report
