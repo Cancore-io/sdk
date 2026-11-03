@@ -73,6 +73,22 @@ Attach these results, from the PR's head commit, to the PR description. CI repea
 - **Mutation.** Mutants are verified locally on changed files and their `nx`/blast-radius affected scope. A survivor on logic the PR adds or changes is a blocker.
 - **Integration.** The `int` project skips its suites when stand artifacts are absent; a skip is not a pass. Run them against a stand and report the count, as CI's `stand` job does.
 
+### 8.1 Register a new integration suite in a lane (CAN-3253)
+
+A suite that skips itself without the stand is green in the check job's `npm run test:int` and runs for real nowhere. A PR that adds or renames a `*.int.test.ts` registers it in the same PR:
+
+| Suite | Lane | How it is registered |
+| --- | --- | --- |
+| needs the local anvil / router stand | `ci.yml` jobs `stand`, `anvil`, `deployments` (every PR and push to `main`) | its path in the `npx jest --selectProjects int …` list of the job, and the job's `numTotalTestSuites` pin raised by one |
+| needs the full intent stand | backend `sdk-stand-specs.yml` (cron `17 2` UTC) | the `.stand.int.test.ts` suffix |
+| in-process, no skip path | `ci.yml` job `check`, `npm run test:int` | nothing: the glob runs it |
+
+`scripts/int-registration.test.mjs` (`node --test`, job `check`) fails and names the suite otherwise. Its `ALLOWLIST` holds suites no lane can run yet, each with a ticket, the reason and the date.
+
+### 8.2 No unit-test reports in Linear tickets (CAN-3253)
+
+Do not write unit-test results into a Linear ticket: no unit counts, unit runs or unit coverage numbers; they go in the PR description (section 8). A ticket that is entirely about unit tests or a refactor is the exception. Integration, e2e and stand run results are required in the ticket: which specs ran, on which stand, the result and the cause of every skip.
+
 ## 9. The local stand
 
 **This repository's CI stand** (anvil, the router and test tokens from `packages/trader/test/stand/artifacts.json`):
@@ -117,4 +133,5 @@ Copy and check off every item in the PR description (`.github/pull_request_templ
 - [ ] Type safety (no any): 0 new explicit any, no @ts-ignore (npm run any:check)
 - [ ] Algebraic Data Types (ADT): fixed variant sets modeled as discriminated unions with exhaustive default: return assertNever(x)
 - [ ] Local stand verification: end-to-end verified on local compose stand before review
+- [ ] Integration suites registered in a lane (CAN-3253): every new or renamed `*.int.test.ts` is named in `ci.yml`, is `*.stand.int.test.ts`, or runs in `npm run test:int` with no skip path (`node --test scripts/int-registration.test.mjs`) — or `n/a`
 - [ ] Allure & Docs-as-Code RTM traceability: scenarios linked in `docs/rtm/rtm.yaml` (`REQ-<DOMAIN>-<NNN>`) and verified in Allure via `scripts/ci/allure-rtm-sync.ts` (no Qase.io)
