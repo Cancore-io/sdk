@@ -135,6 +135,11 @@ describe('networks', () => {
     expect(networkKindOf('canton')).toBe('canton');
     expect(networkKindOf('nope')).toBeUndefined();
     expect(networkByChainId(11155111)?.id).toBe('sepolia');
+    // CAN-3261: Base is registered before any deployment row exists, so a wallet
+    // on Base resolves to an EVM network the API names.
+    expect(networkByChainId(8453)?.id).toBe('base');
+    expect(networkByChainId(84532)?.id).toBe('base_sepolia');
+    expect(networkKindOf('base_sepolia')).toBe('evm');
     for (const alias of Object.keys(NETWORK_ALIASES)) expect(networkOf(alias)).toBeDefined();
   });
 });
