@@ -361,12 +361,12 @@ describe('holdings.transfer of CBTC: a DA Utilities transfer through the receive
   const input = (cid: string, owner: string, amount: string, pkg = HOLDING_PKG, lock?: DamlValue) => ({
     contractId: cid, packageName: 'utility-registry-holding-v0', templateId: holdingTemplate(pkg), argument: holdingArg(owner, amount, lock), signatories: [DA_OPERATOR, CBTC, owner], stakeholders: [DA_OPERATOR, CBTC, owner],
   });
-  const archive = (nodeId: string, cid: string): TransactionNode => ({
-    nodeId, kind: 'exercise', contractId: cid, packageName: 'utility-registry-holding-v0', templateId: holdingTemplate(HOLDING_PKG), choice: 'Archive', chosenValue: v.record({}),
+  const archive = (nodeId: string, cid: string, pkg = HOLDING_PKG): TransactionNode => ({
+    nodeId, kind: 'exercise', contractId: cid, packageName: 'utility-registry-holding-v0', templateId: holdingTemplate(pkg), choice: 'Archive', chosenValue: v.record({}),
     actingParties: [ME], signatories: [DA_OPERATOR, CBTC, ME], stakeholders: [DA_OPERATOR, CBTC, ME], consuming: true, children: [],
   });
-  const holding = (nodeId: string, owner: string, amount: string): TransactionNode => ({
-    nodeId, kind: 'create', contractId: `${nodeId}${'e'.repeat(67)}`, packageName: 'utility-registry-holding-v0', templateId: holdingTemplate(HOLDING_PKG), argument: holdingArg(owner, amount),
+  const holding = (nodeId: string, owner: string, amount: string, pkg = HOLDING_PKG): TransactionNode => ({
+    nodeId, kind: 'create', contractId: `${nodeId}${'e'.repeat(67)}`, packageName: 'utility-registry-holding-v0', templateId: holdingTemplate(pkg), argument: holdingArg(owner, amount),
     signatories: [DA_OPERATOR, CBTC, owner], stakeholders: [DA_OPERATOR, CBTC, owner],
   });
   const transfer = (nodes: TransactionNode[], inputs = [input('h1', ME, '0.04'), input('h2', ME, '0.02')], factory = PREAPPROVAL): CantonTransaction => {
@@ -385,8 +385,8 @@ describe('holdings.transfer of CBTC: a DA Utilities transfer through the receive
     };
     return { ...tx([root, ...nodes]), inputContracts: inputs };
   };
-  const executed = (nodeId: string, signatories = [DA_OPERATOR]): TransactionNode => ({
-    nodeId, kind: 'create', contractId: `${nodeId}${'e'.repeat(67)}`, packageName: 'utility-registry-v0', templateId: `${REGISTRY_V0_PKG}:Utility.Registry.V0.Holding.Transfer:ExecutedTransfer`,
+  const executed = (nodeId: string, signatories = [DA_OPERATOR], pkg = REGISTRY_V0_PKG): TransactionNode => ({
+    nodeId, kind: 'create', contractId: `${nodeId}${'e'.repeat(67)}`, packageName: 'utility-registry-v0', templateId: `${pkg}:Utility.Registry.V0.Holding.Transfer:ExecutedTransfer`,
     argument: v.record({ transfer: v.record({ sender: v.party(ME), receiver: v.party(RECEIVER) }) }), signatories, stakeholders: [DA_OPERATOR, ME, RECEIVER],
   });
   const honest = () => [archive('1', 'h1'), archive('2', 'h2'), holding('3', RECEIVER, '0.05'), holding('4', ME, '0.01'), executed('5')];
@@ -403,4 +403,24 @@ describe('holdings.transfer of CBTC: a DA Utilities transfer through the receive
     ['TC-SDK-2931-53: the transfer exercised on a template the pin does not name', () => transfer(honest(), undefined, `${APP_PKG}:Utility.Registry.App.V0.Model.Transfer:TransferOffer`), /not a pinned factory/],
     ['TC-SDK-2931-54: an ExecutedTransfer the sender signs', () => transfer([...honest().slice(0, 4), executed('5', [DA_OPERATOR, ME])]), /creates Utility.Registry.V0.Holding.Transfer:ExecutedTransfer for the sender/],
   ])('%s: refused', (_name, build, detail) => refused(() => check(prepared, [build()]), detail));
+
+  describe('devnet’s 0.9.2: utility-registry-app-v0 0.9.2, holding-v0 0.3.2, registry-v0 0.8.2 (CAN-2931)', () => {
+    const APP_0_9_2 = '1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b274b8c0';
+    const HOLDING_0_3_2 = '415a1ec96a9e2839453e9aa1c5c71b6511c008c79511cb6f873e0b7393fe3b92';
+    const REGISTRY_V0_0_8_2 = '8c654487d9f5fb195fbcdd7b44cd8e365b1ea39c15ae62ce6c7a48343f1210dd';
+    const PREAPPROVAL_0_9_2 = `${APP_0_9_2}:Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval`;
+    const inputs = (pkg: string) => [input('h1', ME, '0.04', pkg), input('h2', ME, '0.02', pkg)];
+    const honest092 = (holdingPkg = HOLDING_0_3_2) => [
+      archive('1', 'h1', holdingPkg), archive('2', 'h2', holdingPkg), holding('3', RECEIVER, '0.05', holdingPkg), holding('4', ME, '0.01', holdingPkg), executed('5', [DA_OPERATOR], REGISTRY_V0_0_8_2),
+    ];
+
+    test('TC-SDK-2931-55: the direct transfer through a 0.9.2 preapproval passes with the holdings and the record of its own release', () => {
+      expect(() => check(prepared, [transfer(honest092(), inputs(HOLDING_0_3_2), PREAPPROVAL_0_9_2)])).not.toThrow();
+    });
+
+    test.each([
+      ['TC-SDK-2931-56: a 0.9.2 transfer spending holdings of 0.8.2’s holding package', () => transfer(honest092(), inputs(HOLDING_PKG), PREAPPROVAL_0_9_2), /not a holding of the pinned registry/],
+      ['TC-SDK-2931-57: a 0.9.2 transfer booking the record of utility-registry-v0 0.7.1, which the sender observes', () => transfer([...honest092().slice(0, 4), executed('5', [DA_OPERATOR])], inputs(HOLDING_0_3_2), PREAPPROVAL_0_9_2), /creates Utility.Registry.V0.Holding.Transfer:ExecutedTransfer for the sender/],
+    ])('%s: refused', (_name, build, detail) => refused(() => check(prepared, [build()]), detail));
+  });
 });
