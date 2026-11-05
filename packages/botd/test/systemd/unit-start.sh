@@ -4,7 +4,7 @@
 # the sandbox (SystemCallFilter, ProtectSystem …), so a unit that kills the daemon passes them.
 # Runs as root inside a disposable container whose PID 1 is systemd; skips otherwise.
 #   docker run -d --name sd --privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock \
-#     -v "$PWD":/src:ro <image with node 22 + systemd> /sbin/init
+#     -v "$PWD":/src:ro <image with node 26 + systemd> /sbin/init
 #   docker exec sd bash /src/packages/botd/test/systemd/unit-start.sh
 set -euo pipefail
 

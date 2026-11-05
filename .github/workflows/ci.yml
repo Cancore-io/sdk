@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - run: echo "c73ebcc36053239efac406ce148ec8ac28349fabd4f856eda094314f8c048725  scripts/quality-gates.ts" | sha256sum -c -
@@ -127,7 +127,7 @@ jobs:
             npm init -y >/dev/null
             npm install "${TARBALL[$name]}" "${siblings[@]}" --no-audit --no-fund
             node --input-type=module -e "
-              import { readFileSync } from 'node:fs';
+              import { readFileSync } from 'fs';
               const manifest = JSON.parse(readFileSync('node_modules/$name/package.json', 'utf8'));
               for (const subpath of Object.keys(manifest.exports ?? { '.': {} })) {
                 // a pattern such as ./spec/* names files, not a module: checked below
@@ -140,7 +140,7 @@ jobs:
             "
             if [ "$name" = "@cancore/contracts" ]; then
               node --input-type=module -e "
-                import { deepStrictEqual } from 'node:assert/strict';
+                import { deepStrictEqual } from 'assert/strict';
                 const events = {
                   Filled: [
                     ['orderHash', 'bytes32', true], ['fillerId', 'bytes32', true],
@@ -176,7 +176,7 @@ jobs:
             # Every subpath ships its declarations — not just a root entry, which
             # a package such as @cancore/trader (subpaths only) does not have.
             node --input-type=module -e "
-              import { existsSync, readFileSync } from 'node:fs';
+              import { existsSync, readFileSync } from 'fs';
               const manifest = JSON.parse(readFileSync('node_modules/$name/package.json', 'utf8'));
               const targets = Object.entries(manifest.exports ?? {}).filter(([subpath]) => !subpath.includes('*'));
               if (targets.length === 0) targets.push(['.', { types: manifest.types }]);
@@ -233,7 +233,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       # anvil from the foundry release tarball, pinned by its sha256 (the release asset digest): no installer script.
@@ -282,7 +282,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       # anvil from the foundry release tarball, pinned by its sha256 (the release asset digest): no installer script.
@@ -323,7 +323,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - name: Install @cancore/contracts from the registry
@@ -351,7 +351,7 @@ jobs:
   botd-root:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    container: node:22@sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384
+    container: node:26-bookworm-slim@sha256:c3aea913c1a6c89c0daf1e94867118e4aae4846b2c58c8cb9b33b80c5c695b8d
     env:
       # Makes root.sh fail instead of skipping, so this job can never be a false green.
       CANCORE_ROOT_TESTS: '1'
@@ -372,7 +372,7 @@ jobs:
       - name: Start a container with systemd as PID 1
         run: |
           docker build -t botd-systemd - <<'DOCKERFILE'
-          FROM node:22@sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8
+          FROM node:26-bookworm-slim@sha256:c3aea913c1a6c89c0daf1e94867118e4aae4846b2c58c8cb9b33b80c5c695b8d
           RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus \
             && rm -rf /var/lib/apt/lists/*
           STOPSIGNAL SIGRTMIN+3

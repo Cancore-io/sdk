@@ -46,6 +46,6 @@
     "prepublishOnly": "npm run build"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=26"
   }
 }
