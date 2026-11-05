@@ -265,8 +265,12 @@ describe('holdings.transfer: the subtree under an honest root (TC-SDK-2352)', ()
     refused(() => check(prepared(), [transfer({ children: [archive('1', 'h1'), archive('2', 'h2'), mint('3', ME, '25', true), mint('4', ME, '5'), offer('5', '30')] })]), /another amount/);
   });
 
-  test('TC-SDK-2352-11: the dev CNRX registrar is pinned to cnrx-registry 0.2.3', () => {
-    expect(CANTON_TRANSFER_FACTORIES[ADMIN]).toEqual([expect.objectContaining({ packageId: CNRX, factory: 'Cnrx.Rules:CnrxRules', holding: 'Cnrx.Holding:CnrxHolding' })]);
+  test('TC-SDK-2352-11: the dev CNRX registrar is pinned to cnrx-registry 0.2.6 and, until dev un-vets it, 0.2.3 (CAN-3304)', () => {
+    const cnrx = { factory: 'Cnrx.Rules:CnrxRules', holding: 'Cnrx.Holding:CnrxHolding' };
+    expect(CANTON_TRANSFER_FACTORIES[ADMIN]).toEqual([
+      expect.objectContaining({ ...cnrx, packageId: '643a728658256e42fe69f8bb5202a4466da5d8564e628af5d5534d8b416c9dc8' }),
+      expect.objectContaining({ ...cnrx, packageId: CNRX }),
+    ]);
   });
 });
 

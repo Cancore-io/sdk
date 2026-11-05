@@ -245,8 +245,10 @@ describe('V-C1…V-C6 on the golden Canton-source order (CAN-1863)', () => {
 
   test('V-C5 (T-9): the pinned dev CNRX registry pays any party; DA Utilities (CBTC) is not pinned as one', () => {
     const pinned = (admin: string) => CANTON_TRANSFER_FACTORIES[admin]?.map((f) => f.openReceipt === true);
-    expect(pinned('cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b')).toEqual([true]);
-    expect(pinned('cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff')).toEqual([false]);
+    // cnrx-registry 0.2.6 and 0.2.3 (CAN-3304) both pay any party.
+    expect(pinned('cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b')).toEqual([true, true]);
+    // DA Utilities 0.9.2 and 0.8.2 (CAN-2931) — neither opens a receipt to any party.
+    expect(pinned('cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff')).toEqual([false, false]);
   });
 
   test('the read is shape-checked before any check: a non-string field is BAD_RESPONSE, not a TypeError', () => {

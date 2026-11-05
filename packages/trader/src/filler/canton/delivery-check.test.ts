@@ -176,7 +176,8 @@ describe('delivery.fill: the honest delivery of the node’s own ticket (CAN-186
 });
 
 describe('delivery.fill: the registries of a network with its own registrar (CAN-1863, stand)', () => {
-  const entry = CANTON_TRANSFER_FACTORIES[ADMIN]![0]!;
+  // The fixture's holdings are cnrx-registry 0.2.3; since CAN-3304 the admin also pins 0.2.6, listed first.
+  const entry = CANTON_TRANSFER_FACTORIES[ADMIN]!.find((f) => f.packageId === CNRX)!;
   const STAND_ADMIN = `stand-registrar::1220${'5'.repeat(64)}`;
 
   test('the admin passes only with an entry of its own: pinned under its party it passes, pinned under another it is refused', () => {
