@@ -41,6 +41,8 @@ export const DEPLOYMENTS: Readonly<Record<DeploymentEnv, readonly EvmDeployment[
     { network: 'bnb_testnet', chainId: 97, htlc: '0x36D7BEBDB5f93b7b926D621E412132dF89628810', htlcBlock: 92435953, multiBalanceChecker: '0x079bDc94B34EC0e905DcfDB516bdE2f292Efcef2' },
     { network: 'arbitrum_sepolia', chainId: 421614, htlc: '0x07a6ccF1f0113e2329Bb2460b28eC0d169f5080E', htlcBlock: 245190705, multiBalanceChecker: '0x555Bef5d2f89Fc81c77b930AB6c0D6734bDE569e' },
     { network: 'robinhood_testnet', chainId: 46630, htlc: '0x5eBf3faAf3a86c37dDf6a46075b8366Ed4D8021A', htlcBlock: 96742769, multiBalanceChecker: '0x9548fd6fA8A3869b215E9D86F6a2628Bf2BEFB74' },
+    // Base Sepolia stage stand (CAN-3263), deployed 2026-11-05 — its own set, not the dev stand's.
+    { network: 'base_sepolia', chainId: 84532, htlc: '0xfE77AE800F14c0D5cEF242960b3a720035E7aF12', htlcBlock: 54786694, multiBalanceChecker: '0xC649d578FD0122E2Ce3Bcf6b89E3ef2564d1a30D' },
   ],
   devnet: [
     // Routers: evm-contracts deployments/router/dev/*.json (#120, CAN-2327), verified on chain 2026-10-14.
