@@ -48,6 +48,8 @@ export const DEPLOYMENTS: Readonly<Record<DeploymentEnv, readonly EvmDeployment[
     { network: 'bnb_testnet', chainId: 97, htlc: '0xC649d578FD0122E2Ce3Bcf6b89E3ef2564d1a30D', htlcBlock: 96439032, router: '0x57A8ad8392C5fF21aF52Fc3Cf246C1a464aCc6B1', routerBlock: 136752813 },
     { network: 'arbitrum_sepolia', chainId: 421614, htlc: '0xE23A046Df3542C4C548162adab4397956b136031', htlcBlock: 251260393, router: '0x7e27831316F7Ee8E44B96056F4354A6D1a22953a', routerBlock: 319105856 },
     { network: 'robinhood_testnet', chainId: 46630, htlc: '0x58D154441Fd7efEd22E49Eda369909DdbE54cC0a', htlcBlock: 96651438, multiBalanceChecker: '0x1b2A32A976F904a1fca87D427239635Ccd97FaFb', router: '0xF833A980ae858fe3cD14a79a9f610525AbB95BF9', routerBlock: 135089078 },
+    // Base Sepolia dev stand (CAN-3262), deployed 2026-11-04; no intent router on Base yet.
+    { network: 'base_sepolia', chainId: 84532, htlc: '0xdA2bbf80d1F3e5689eDbF56488201bB05bCCBc5E', htlcBlock: 54546199, multiBalanceChecker: '0x5eBf3faAf3a86c37dDf6a46075b8366Ed4D8021A' },
   ],
 };
 
