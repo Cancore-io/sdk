@@ -49,4 +49,6 @@ mk; sed -i 's/runs-on: ubuntu-latest/runs-on: ${{ vars.R || '"'"'cancore-runners
 mk; sed -i 's/runs-on: ubuntu-latest/runs-on: cancore-runners/; s|uses: actions/setup-node@v4|uses: ./.github/actions/setup-node26|' .github/workflows/ci.yml; expect_pass "self-hosted job through setup-node26"
 mk; sed -i 's/runs-on: ubuntu-latest/runs-on: cancore-runners\n    container: node:26-bookworm-slim@sha256:0/' .github/workflows/ci.yml; expect_pass "container job is exempt"
 mk; sed -i 's/runs-on: ubuntu-latest/runs-on: cancore-runners/; s|uses: actions/setup-node@v4|uses: actions/setup-node@v4 # node-pin: ignore|' .github/workflows/ci.yml; expect_pass "ignore marker on setup-node"
+mk; printf '      - run: docker run --rm node:lts node -v\n' >> .github/workflows/ci.yml; expect_fail "floating tag in docker run" "floating node tag"
+mk; printf 'ARG NODE_IMAGE=node:lts\nFROM ${NODE_IMAGE}\n' > Dockerfile; expect_fail "floating tag in NODE_IMAGE" "floating node tag"
 echo "check-node-pins self-test: all ok"
