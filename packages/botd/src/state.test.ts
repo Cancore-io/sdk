@@ -1,12 +1,23 @@
 import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { openAuditLog } from './audit';
+import { openAuditLog as openUntracked } from './audit';
 import { applyFill, auditIntact, createStateStore, fillUsdValue, initialState } from './state';
 
 const dir = mkdtempSync(join(tmpdir(), 'botd-state-'));
 let n = 0;
 const fresh = () => join(dir, `f${n++}`);
+
+// Node 26 turns a FileHandle closed by the garbage collector into an error, so every log opened here is closed explicitly.
+const opened: Awaited<ReturnType<typeof openUntracked>>[] = [];
+const openAuditLog: typeof openUntracked = async (path) => {
+  const log = await openUntracked(path);
+  opened.push(log);
+  return log;
+};
+afterEach(async () => {
+  await Promise.all(opened.splice(0).map((log) => log.close()));
+});
 
 async function logWith(entries: number) {
   const log = await openAuditLog(fresh());
