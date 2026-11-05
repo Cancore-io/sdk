@@ -118,12 +118,21 @@ describe('preapproval.create with a DA Utilities registry: the utility TransferP
     return { commandId: 'c', actAs: [ME], roots: ['0'], nodes: { '0': root }, inputContracts: [], synchronizerId: 's', preparationTime: '0' };
   };
   const MALLORY = `mallory::1220${'ee'.repeat(32)}`;
-  const UNPINNED = CANTON_TRANSFER_FACTORIES[CBTC_ADMIN]?.[0] as CantonTransferFactory;
+  const UNPINNED = CANTON_TRANSFER_FACTORIES[CBTC_ADMIN]?.find((f) => f.packageId === APP) as CantonTransferFactory;
   const checkCbtc = () => checkPreapprovalCreate({ params: { admin: CBTC_ADMIN }, publicKey: KEY, nowMs: NOW });
 
   test('TC-SDK-2931-01: the honest create passes; dev pins CBTC’s DA Utilities preapproval', () => {
-    expect(CANTON_TRANSFER_FACTORIES[CBTC_ADMIN]?.[0]).toMatchObject({ packageId: APP, preapprovalForm: 'utility', preapprovalOperator: OPERATOR });
+    expect(CANTON_TRANSFER_FACTORIES[CBTC_ADMIN]).toContainEqual(expect.objectContaining({ packageId: APP, preapprovalForm: 'utility', preapprovalOperator: OPERATOR }));
     expect(() => checkCbtc()(preparedOf(), [utility()])).not.toThrow();
+  });
+
+  test('TC-SDK-2931-13: the create of the 0.9.2 preapproval devnet vets now passes — filler-node-1 refused it under the 0.8.2 pin alone', () => {
+    const APP_0_9_2 = '1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b274b8c0';
+    expect(CANTON_TRANSFER_FACTORIES[CBTC_ADMIN]).toContainEqual(expect.objectContaining({ packageId: APP_0_9_2, preapprovalForm: 'utility', preapprovalOperator: OPERATOR }));
+    const created = utility({ template: `${APP_0_9_2}:Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval` });
+    expect(() => checkCbtc()(preparedOf(), [created])).not.toThrow();
+    const onlyPinned082 = checkPreapprovalCreate({ params: { admin: CBTC_ADMIN }, publicKey: KEY, nowMs: NOW, factories: { [CBTC_ADMIN]: (CANTON_TRANSFER_FACTORIES[CBTC_ADMIN] ?? []).filter((f) => f.packageId === APP) } });
+    refused(() => onlyPinned082(preparedOf(), [created]), /is not the preapproval of a pinned registry of cbtc-network::/);
   });
 
   test.each([

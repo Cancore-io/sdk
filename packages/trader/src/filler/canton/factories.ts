@@ -114,7 +114,7 @@ const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
  * DA Utilities `utility-registry-app-v0` 0.8.2 (meta `dars/utility/packages.json`; the version dev vets for a
  * receiver and DA's operator, backend utility-registry-package.resolver.ts). The factory, offer and preapproval
  * are as the stand spike decoded a CBTC `TransferFactory_Transfer` (sdk test da-utility-transfer, CAN-2931).
- * The holding lives in `utility-registry-holding-v0` 0.8.2 (meta `dars/utility/packages.json`).
+ * The holding lives in `utility-registry-holding-v0` 0.2.2 (meta `dars/utility/packages.json`).
  */
 const DA_UTILITY_REGISTRY_APP_0_8_2: CantonTransferFactory = {
   packageId: '2293eb12e82ceaeb3ff7f8fe3346dece8578e1e9fd7d46624aeb7bb07fa31eda',
@@ -133,11 +133,23 @@ const DA_UTILITY_REGISTRY_APP_0_8_2: CantonTransferFactory = {
   preapprovalForm: 'utility',
 };
 
-/** devnet: DA's operator decoded from the devnet CBTC registrar's AllocationFactory (backend utility-preapproval.constants.ts). */
-const DA_UTILITY_REGISTRY_APP_0_8_2_DEVNET: CantonTransferFactory = {
+/**
+ * DA Utilities `utility-registry-app-v0` 0.9.2, the version devnet vets for a receiver and DA's operator since
+ * 2026-11-03 (ledger `preferred-packages` by package name, backend run 41889764925): its preapproval, transfer offer
+ * and holding keep the 0.8.2 module paths and fields. The holding lives in `utility-registry-holding-v0` 0.3.2, the
+ * executed-transfer record in `utility-registry-v0` 0.8.2 — the same answer names both.
+ */
+const DA_UTILITY_REGISTRY_APP_0_9_2: CantonTransferFactory = {
   ...DA_UTILITY_REGISTRY_APP_0_8_2,
-  preapprovalOperator: 'auth0_007c65f857f1c3d599cb6df73775::1220d2d732d042c281cee80f483ab80f3cbaa4782860ed5f4dc228ab03dedd2ee8f9',
+  packageId: '1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b274b8c0',
+  holdingPackageId: '415a1ec96a9e2839453e9aa1c5c71b6511c008c79511cb6f873e0b7393fe3b92',
+  transferRecords: ['8c654487d9f5fb195fbcdd7b44cd8e365b1ea39c15ae62ce6c7a48343f1210dd:Utility.Registry.V0.Holding.Transfer:ExecutedTransfer'],
 };
+
+/** devnet: DA's operator decoded from the devnet CBTC registrar's AllocationFactory (backend utility-preapproval.constants.ts). */
+const DA_DEVNET_OPERATOR = 'auth0_007c65f857f1c3d599cb6df73775::1220d2d732d042c281cee80f483ab80f3cbaa4782860ed5f4dc228ab03dedd2ee8f9';
+const DA_UTILITY_REGISTRY_APP_0_8_2_DEVNET: CantonTransferFactory = { ...DA_UTILITY_REGISTRY_APP_0_8_2, preapprovalOperator: DA_DEVNET_OPERATOR };
+const DA_UTILITY_REGISTRY_APP_0_9_2_DEVNET: CantonTransferFactory = { ...DA_UTILITY_REGISTRY_APP_0_9_2, preapprovalOperator: DA_DEVNET_OPERATOR };
 
 /**
  * Splice `splice-amulet` 0.1.24, the version of Splice 0.9.x that DevNet runs (canton-network/splice
@@ -173,7 +185,8 @@ export const CANTON_TRANSFER_FACTORIES: Readonly<Record<string, readonly CantonT
   // dev: the CNRX registrar (gitops k8s/envs/dev CNRX_REGISTRY_ADMIN_PARTY).
   'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b': [CNRX_REGISTRY_0_2_3],
   // devnet: CBTC's registrar on DA Utilities dev (backend libs/common/src/config/cbtc.config.ts).
-  'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff': [DA_UTILITY_REGISTRY_APP_0_8_2_DEVNET],
+  // 0.8.2 stays: contracts created under it remain on the ledger after devnet moved to 0.9.2.
+  'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff': [DA_UTILITY_REGISTRY_APP_0_9_2_DEVNET, DA_UTILITY_REGISTRY_APP_0_8_2_DEVNET],
   // devnet: the DSO, CC's admin (DevNet scan `registry/metadata/v1/info`).
   'DSO::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a': [SPLICE_AMULET_0_1_24_DEVNET],
 };
