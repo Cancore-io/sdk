@@ -26,6 +26,26 @@ permissions:
   contents: read
 
 jobs:
+  # Node pin consistency (CAN-3315): .nvmrc is the single source; the checker names every stale pin.
+  node-pins:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash scripts/ci/check-node-pins.test.sh
+      - run: bash scripts/ci/check-node-pins.sh .
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24 # node-pin: ignore
+      # Negative: a Node 24 consumer must be refused by engines, not merely warned.
+      - name: engines >=26 rejects Node 24 under engine-strict
+        run: |
+          if out="$(npm ci --engine-strict --ignore-scripts 2>&1)"; then
+            echo "npm ci passed on Node 24: engines does not require >=26"; exit 1
+          fi
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -F '>=26'
+
   check:
     # ubuntu-latest, NOT the cancore-runners standard (CAN-1120). This is the
     # organization's only PUBLIC repository, and this workflow's `pull_request`
