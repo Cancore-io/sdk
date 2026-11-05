@@ -10,7 +10,7 @@
  *   <out>/local-actors.env   CANCORE_ACTORS_ENV — <ROLE>_EVM_PRIVATE_KEY / _EVM_ADDRESS
  *
  *   anvil --chain-id 11155111 &
- *   npm run build -w @cancore/contracts
+ *   pnpm --filter @cancore/contracts run build
  *   node packages/trader/test/stand/up.mjs <out> [rpc url, default http://127.0.0.1:8545]
  *
  * Every key is derived from anvil's public test mnemonic: test values only.

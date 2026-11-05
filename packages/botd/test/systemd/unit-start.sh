@@ -26,14 +26,15 @@ fail() { echo "FAIL $1"; fails=$((fails + 1)); }
 check() { if "${@:2}" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
 
 # The install recipe of packages/botd/README.md, from a copy: the checkout is mounted read-only, and
-# npm ci and the build write into the tree.
+# pnpm install and the build write into the tree.
 tar -C "$SRC" --exclude=./node_modules --exclude='./packages/*/node_modules' --exclude='./packages/*/dist' -cf - . | tar -C "$BUILD" -xf -
 cd "$BUILD"
-npm ci --ignore-scripts --no-audit --no-fund >/dev/null
+pnpm() { npx --yes "pnpm@$(node -p "require('./package.json').packageManager.split('@')[1]")" "$@"; }
+pnpm install --frozen-lockfile --ignore-scripts >/dev/null
 mkdir packs
-npm pack --silent --pack-destination packs \
-  -w @cancore/contracts -w @cancore/wallet -w @cancore/client \
-  -w @cancore/trader -w @cancore/botd -w @cancore/bot-mcp >/dev/null
+pnpm --filter @cancore/contracts --filter @cancore/wallet --filter @cancore/client \
+  --filter @cancore/trader --filter @cancore/botd --filter @cancore/bot-mcp \
+  pack --silent --pack-destination packs >/dev/null
 npm install --ignore-scripts --no-audit --no-fund --prefix /opt/cancore-bot ./packs/*.tgz >/dev/null
 ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
 

@@ -2,7 +2,7 @@
 # OS-level isolation checks for cancore-botd that need root: separate users, the clients group,
 # socket and state-dir permissions, process isolation between users, and the systemd unit.
 # Opt-in: runs only as root inside a disposable container (it creates users and groups), skips otherwise.
-#   docker run --rm -v "$PWD":/sdk -w /sdk node:22 bash -c 'npm ci && npm run build && npm run test:security:root'
+#   docker run --rm -v "$PWD":/sdk -w /sdk node:22 bash -c 'npm install -g pnpm@12.15.0 && pnpm install --frozen-lockfile && pnpm run build && pnpm run test:security:root'
 set -euo pipefail
 
 # CI sets CANCORE_ROOT_TESTS: there a skip would be a false green, so not being root fails.
@@ -17,7 +17,7 @@ fi
 
 ROOT=$(cd "$(dirname "$0")/../../../.." && pwd)
 DIST="$ROOT/packages/botd/dist"
-[[ -f "$DIST/daemon.js" ]] || { echo "build first: npm run build"; exit 1; }
+[[ -f "$DIST/daemon.js" ]] || { echo "build first: pnpm run build"; exit 1; }
 NODE=$(command -v node)
 W=$(mktemp -d /tmp/cbsec.XXXXXX)
 chmod 0755 "$W"

@@ -12,10 +12,10 @@ Name code and tests after what they do or prove: `refuseExpiredQuote`, not `chec
 
 ## 2. Unit Test Coverage (`>= 90%` — Local-Only Gate)
 
-- **No unit tests in CI during the current phase:** running unit tests (`npm test` / `jest`) and `npm run coverage:check` via CI is **prohibited** during the current phase. Unit tests and the coverage ratchet are mandatory **local pre-PR gates** executed by the author before opening or updating a PR, with the results attached to the PR description.
+- **No unit tests in CI during the current phase:** running unit tests (`pnpm test` / `jest`) and `pnpm run coverage:check` via CI is **prohibited** during the current phase. Unit tests and the coverage ratchet are mandatory **local pre-PR gates** executed by the author before opening or updating a PR, with the results attached to the PR description.
 - Every new or changed production file must achieve **`>= 90%` line coverage** in unit tests, and must cover all happy, negative, and boundary/edge branches.
-- Package and global floors are enforced locally by `npm run coverage:check` against `scripts/coverage-floors.json`.
-- `npm run coverage:check:update` only ratchets existing floors upward when coverage improves; it never lowers an existing floor or adds new unapproved baseline keys.
+- Package and global floors are enforced locally by `pnpm run coverage:check` against `scripts/coverage-floors.json`.
+- `pnpm run coverage:check:update` only ratchets existing floors upward when coverage improves; it never lowers an existing floor or adds new unapproved baseline keys.
 
 ## 3. Mutation Testing (Local & Nx Blast-Radius Gate)
 
@@ -29,19 +29,19 @@ Name code and tests after what they do or prove: `refuseExpiredQuote`, not `chec
 
 ## 4. File Size (`<= 500 LOC` Hard Cap, `< 300 LOC` Target)
 
-- Target **under 300 LOC** per production `.ts` file; **500 LOC** is the hard blocking ceiling (`npm run loc:check`).
+- Target **under 300 LOC** per production `.ts` file; **500 LOC** is the hard blocking ceiling (`pnpm run loc:check`).
 - Generated artifacts (`packages/contracts/src/generated/**`, `packages/client/spec/openapi.json`) are excluded from the ratchet.
-- Legacy files above 500 LOC are pinned in `scripts/loc-baseline.json` (`file -> maxLines`). They may not grow by even 1 line (`GREW`); once split to `<= 500 LOC`, `npm run loc:check:update` removes them from the baseline.
+- Legacy files above 500 LOC are pinned in `scripts/loc-baseline.json` (`file -> maxLines`). They may not grow by even 1 line (`GREW`); once split to `<= 500 LOC`, `pnpm run loc:check:update` removes them from the baseline.
 
 ## 5. Cognitive Complexity (`CC <= 12`)
 
-- Every function, method, or arrow callback must keep **cognitive complexity `<= 12`** (`npm run complexity:check`).
+- Every function, method, or arrow callback must keep **cognitive complexity `<= 12`** (`pnpm run complexity:check`).
 - Keep control flow flat with guard clauses, early returns, and focused helpers.
-- Legacy functions above 12 are pinned in `scripts/cc-baseline.json` (`file -> maxCC`) and cannot grow (`GREW`). Run `npm run complexity:check:update` when refactoring reduces complexity.
+- Legacy functions above 12 are pinned in `scripts/cc-baseline.json` (`file -> maxCC`) and cannot grow (`GREW`). Run `pnpm run complexity:check:update` when refactoring reduces complexity.
 
 ## 6. Type Safety (`No any`)
 
-- **Zero new explicit `any`** in production TypeScript (`npm run any:check` against `scripts/any-baseline.json`).
+- **Zero new explicit `any`** in production TypeScript (`pnpm run any:check` against `scripts/any-baseline.json`).
 - Banned forms: `: any`, `as any`, `<any>`, `any[]`, `Array<any>`, `Record<..., any>`, `Promise<any>`, and `@ts-ignore` (`@ts-expect-error` requires a linked ticket).
 - Parse untrusted inputs (`JSON.parse`, RPC/HTTP payloads, IPC frames, CLI args) as `unknown` and narrow with schemas or type guards.
 
@@ -62,12 +62,12 @@ Attach these results, from the PR's head commit, to the PR description. CI repea
 
 | Run | Command | Attach |
 | --- | --- | --- |
-| Typecheck | `npm run typecheck` | exit code (Local + CI) |
-| Quality gates | `npm run loc:check && npm run complexity:check && npm run any:check` | exit code (Local + CI) |
-| Unit tests with coverage (**local-only — prohibited in CI during current phase**) | `npx jest --selectProjects node web --coverage --coverageReporters=json-summary && npm run coverage:check` | suites/tests passed, coverage of the changed files (`collectCoverageFrom` in `jest.config.mjs`) |
+| Typecheck | `pnpm run typecheck` | exit code (Local + CI) |
+| Quality gates | `pnpm run loc:check && pnpm run complexity:check && pnpm run any:check` | exit code (Local + CI) |
+| Unit tests with coverage (**local-only — prohibited in CI during current phase**) | `npx jest --selectProjects node web --coverage --coverageReporters=json-summary && pnpm run coverage:check` | suites/tests passed, coverage of the changed files (`collectCoverageFrom` in `jest.config.mjs`) |
 | Mutation tests (local + `nx`/blast-radius) | revert or flip each changed condition and rerun unit tests across changed files and affected `packages/*` consumers | blast-radius scope + table: mutant → killed / survived, with the killing test |
-| Integration tests | `npm run test:int` against a stand (section 9) | suites/tests passed, **none skipped** |
-| Build | `npm run build` | exit code |
+| Integration tests | `pnpm run test:int` against a stand (section 9) | suites/tests passed, **none skipped** |
+| Build | `pnpm run build` | exit code |
 
 - **Coverage.** Every new branch and refusal path has a test that fails if the change is reverted; name the assertion that observes the new behaviour.
 - **Mutation.** Mutants are verified locally on changed files and their `nx`/blast-radius affected scope. A survivor on logic the PR adds or changes is a blocker.
@@ -95,7 +95,7 @@ Do not write unit-test results into a Linear ticket: no unit counts, unit runs o
 
 ```bash
 anvil --chain-id 11155111 --port 8545 &
-npm run build -w @cancore/contracts
+pnpm --filter @cancore/contracts run build
 node packages/trader/test/stand/up.mjs /tmp/stand
 CANCORE_INTENT_JSON=/tmp/stand/intent.json \
 CANCORE_ACTORS_ENV=/tmp/stand/local-actors.env \
@@ -112,7 +112,7 @@ make intent-all        # the whole intent rail
 make stop              # stop the application
 ```
 
-Point `CANCORE_INTENT_JSON` and `CANCORE_ACTORS_ENV` at the files meta's genesis writes (`docker/modules/genesis/out/`) and run `npm run test:int`. Every test that can run on a local stand runs there before review; the PR names the stand.
+Point `CANCORE_INTENT_JSON` and `CANCORE_ACTORS_ENV` at the files meta's genesis writes (`docker/modules/genesis/out/`) and run `pnpm run test:int`. Every test that can run on a local stand runs there before review; the PR names the stand.
 
 ## 10. Allure & Docs-as-Code RTM Traceability (`docs/rtm/rtm.yaml`, No Qase.io)
 
@@ -126,11 +126,11 @@ Traceability lives in [Cancore-io/meta](https://github.com/Cancore-io/meta): can
 Copy and check off every item in the PR description (`.github/pull_request_template.md`):
 
 - [ ] Comments: why-only in English (CAN-2777) — no "what the code does" comments, existing comments preserved, no license headers
-- [ ] Unit tests & coverage (local-only — running unit tests in CI is prohibited during the current phase): ≥ 90% line coverage on new/changed code; coverage-floors.json ratcheted locally (npm test && npm run coverage:check)
+- [ ] Unit tests & coverage (local-only — running unit tests in CI is prohibited during the current phase): ≥ 90% line coverage on new/changed code; coverage-floors.json ratcheted locally (pnpm test && pnpm run coverage:check)
 - [ ] Local + nx/blast-radius mutation testing: executed locally over changed files and their nx/blast-radius affected scope; 0 surviving mutants on new/changed logic; report attached to PR body
-- [ ] File size (LOC): target < 300 LOC, hard cap ≤ 500 LOC (npm run loc:check)
-- [ ] Cognitive complexity: CC ≤ 12 per function (npm run complexity:check)
-- [ ] Type safety (no any): 0 new explicit any, no @ts-ignore (npm run any:check)
+- [ ] File size (LOC): target < 300 LOC, hard cap ≤ 500 LOC (pnpm run loc:check)
+- [ ] Cognitive complexity: CC ≤ 12 per function (pnpm run complexity:check)
+- [ ] Type safety (no any): 0 new explicit any, no @ts-ignore (pnpm run any:check)
 - [ ] Algebraic Data Types (ADT): fixed variant sets modeled as discriminated unions with exhaustive default: return assertNever(x)
 - [ ] Local stand verification: end-to-end verified on local compose stand before review
 - [ ] Integration suites registered in a lane (CAN-3253): every new or renamed `*.int.test.ts` is named in `ci.yml`, is `*.stand.int.test.ts`, or runs in `npm run test:int` with no skip path (`node --test scripts/int-registration.test.mjs`) — or `n/a`

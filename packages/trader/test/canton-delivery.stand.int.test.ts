@@ -23,7 +23,7 @@
  * also exports every key). Run by the shared stand job:
  *
  *   gh workflow run intent-stand-dispatch.yml -R Cancore-io/.github -f test-repo=sdk -f test-ref=<branch> \
- *     -f test-command='npm ci && npm run build -w @cancore/contracts && npx jest --selectProjects int --runInBand packages/trader/test/canton-delivery.stand.int.test.ts'
+ *     -f test-command='pnpm install --frozen-lockfile && pnpm --filter @cancore/contracts run build && npx jest --selectProjects int --runInBand packages/trader/test/canton-delivery.stand.int.test.ts'
  */
 import {
   CANCORE_ROUTER_ABI,
