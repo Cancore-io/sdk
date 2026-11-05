@@ -37,7 +37,7 @@
   "keywords": ["canton", "cancore", "abi", "htlc", "evm", "eip-712", "contracts", "filler-protocol", "asyncapi", "json-schema"],
   "files": ["dist", "spec", "README.md", "LICENSE"],
   "publishConfig": { "access": "public" },
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=26" },
   "scripts": {
     "build": "tsup",
     "prepack": "tsup --silent",

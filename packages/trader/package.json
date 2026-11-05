@@ -60,7 +60,7 @@
     "@protobuf-ts/runtime": "^2.11.1"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=26"
   },
   "devDependencies": {
     "@canton-network/core-tx-visualizer": "^1.13.0"

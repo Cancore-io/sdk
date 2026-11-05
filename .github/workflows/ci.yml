@@ -26,6 +26,26 @@ permissions:
   contents: read
 
 jobs:
+  # Node pin consistency (CAN-3315): .nvmrc is the single source; the checker names every stale pin.
+  node-pins:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash scripts/ci/check-node-pins.test.sh
+      - run: bash scripts/ci/check-node-pins.sh .
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24 # node-pin: ignore
+      # Negative: a Node 24 consumer must be refused by engines, not merely warned.
+      - name: engines >=26 rejects Node 24 under engine-strict
+        run: |
+          if out="$(npm ci --engine-strict --ignore-scripts 2>&1)"; then
+            echo "npm ci passed on Node 24: engines does not require >=26"; exit 1
+          fi
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -F '>=26'
+
   check:
     # ubuntu-latest, NOT the cancore-runners standard (CAN-1120). This is the
     # organization's only PUBLIC repository, and this workflow's `pull_request`
@@ -43,7 +63,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - run: echo "c73ebcc36053239efac406ce148ec8ac28349fabd4f856eda094314f8c048725  scripts/quality-gates.ts" | sha256sum -c -
@@ -213,7 +233,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       # anvil from the foundry release tarball, pinned by its sha256 (the release asset digest): no installer script.
@@ -262,7 +282,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       # anvil from the foundry release tarball, pinned by its sha256 (the release asset digest): no installer script.
@@ -303,7 +323,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
       - name: Install @cancore/contracts from the registry
@@ -331,7 +351,7 @@ jobs:
   botd-root:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    container: node:22@sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384
+    container: node:26-bookworm-slim@sha256:c3aea913c1a6c89c0daf1e94867118e4aae4846b2c58c8cb9b33b80c5c695b8d
     env:
       # Makes root.sh fail instead of skipping, so this job can never be a false green.
       CANCORE_ROOT_TESTS: '1'
@@ -352,7 +372,7 @@ jobs:
       - name: Start a container with systemd as PID 1
         run: |
           docker build -t botd-systemd - <<'DOCKERFILE'
-          FROM node:22@sha256:0e5f906573693feaa1e21057ebdcfdb5bd5021f050b2dc7c9deceb629c7da2a8
+          FROM node:26-bookworm-slim@sha256:c3aea913c1a6c89c0daf1e94867118e4aae4846b2c58c8cb9b33b80c5c695b8d
           RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus \
             && rm -rf /var/lib/apt/lists/*
           STOPSIGNAL SIGRTMIN+3

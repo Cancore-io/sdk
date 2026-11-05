@@ -101,7 +101,7 @@ owner actions), what to check before an order, and what each refusal means.
 ## Working in this repository
 
 ```bash
-npm install          # npm workspaces, Node >= 20
+npm install          # npm workspaces, Node >= 26
 npm test             # jest: plain node, plus jsdom for the wallet's ./web entry
 npm run typecheck    # tsc, strict; each package also has its own tsconfig
 npm run build        # tsup: ESM + .d.ts per package

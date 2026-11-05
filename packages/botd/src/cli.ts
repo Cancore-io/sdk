@@ -163,7 +163,8 @@ export async function main(argv: string[]): Promise<number> {
       }
       case 'audit':
         if (sub === 'verify') {
-          const result = await (await openAuditLog(paths(config).audit)).verify();
+          const log = await openAuditLog(paths(config).audit);
+          const result = await log.verify().finally(() => log.close());
           print(result);
           return result.ok ? 0 : 3;
         }
