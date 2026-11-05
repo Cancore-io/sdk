@@ -2,7 +2,7 @@
 # OS-level isolation checks for cancore-botd that need root: separate users, the clients group,
 # socket and state-dir permissions, process isolation between users, and the systemd unit.
 # Opt-in: runs only as root inside a disposable container (it creates users and groups), skips otherwise.
-#   docker run --rm -v "$PWD":/sdk -w /sdk node:22 bash -c 'npm install -g pnpm@12.15.0 && pnpm install --frozen-lockfile && pnpm run build && pnpm run test:security:root'
+#   docker run --rm -v "$PWD":/sdk -w /sdk node:26-bookworm-slim bash -c 'npm install -g pnpm@12.15.0 && pnpm install --frozen-lockfile && pnpm run build && pnpm run test:security:root'
 set -euo pipefail
 
 # CI sets CANCORE_ROOT_TESTS: there a skip would be a false green, so not being root fails.

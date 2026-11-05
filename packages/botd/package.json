@@ -66,6 +66,6 @@
     "@noble/curves": "^1.9.7"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=26"
   }
 }

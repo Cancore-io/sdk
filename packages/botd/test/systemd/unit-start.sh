@@ -4,15 +4,15 @@
 # the sandbox (SystemCallFilter, ProtectSystem …), so a unit that kills the daemon passes them.
 # Runs as root inside a disposable container whose PID 1 is systemd; skips otherwise.
 #   docker run -d --name sd --privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock \
-#     -v "$PWD":/src:ro <image with node 22 + systemd> /sbin/init
+#     -v "$PWD":/src:ro <image with node 26 + systemd> /sbin/init
 #   docker exec sd bash /src/packages/botd/test/systemd/unit-start.sh
 set -euo pipefail
 
-if [[ -n "${CANCORE_SYSTEMD_TESTS:-}" && ( $EUID -ne 0 || "$(ps -p 1 -o comm=)" != systemd ) ]]; then
+if [[ -n "${CANCORE_SYSTEMD_TESTS:-}" && ( $EUID -ne 0 || "$(cat /proc/1/comm)" != systemd ) ]]; then
   echo "CANCORE_SYSTEMD_TESTS is set but this is not root under systemd"
   exit 1
 fi
-if [[ $EUID -ne 0 || "$(ps -p 1 -o comm=)" != systemd || ! ( -f /.dockerenv || -f /run/.containerenv || -n "${CANCORE_SYSTEMD_TESTS:-}" ) ]]; then
+if [[ $EUID -ne 0 || "$(cat /proc/1/comm)" != systemd || ! ( -f /.dockerenv || -f /run/.containerenv || -n "${CANCORE_SYSTEMD_TESTS:-}" ) ]]; then
   echo "skip: test:systemd needs root in a disposable container whose PID 1 is systemd (or CANCORE_SYSTEMD_TESTS=1)"
   exit 0
 fi

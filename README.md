@@ -101,7 +101,7 @@ owner actions), what to check before an order, and what each refusal means.
 ## Working in this repository
 
 ```bash
-pnpm install         # pnpm workspace (pnpm-workspace.yaml), Node >= 20
+pnpm install         # pnpm workspace (pnpm-workspace.yaml), Node >= 26
 pnpm test            # jest: plain node, plus jsdom for the wallet's ./web entry
 pnpm run typecheck   # tsc, strict; each package also has its own tsconfig
 pnpm run build       # tsup: ESM + .d.ts per package

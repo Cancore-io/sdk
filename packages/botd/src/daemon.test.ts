@@ -443,6 +443,7 @@ describe('the network comes from the API host (CAN-2979)', () => {
     try {
       const fetchImpl = jest.fn();
       const deps = await defaultDeps({ ...DEFAULTS, stateDir, baseUrl, ...(network && { network }) }, { fetchImpl });
+      await deps.audit.close();
       expect(deps.createEngine).toEqual(expect.any(Function));
       expect(fetchImpl).not.toHaveBeenCalled();
     } finally {
@@ -458,8 +459,12 @@ describe('the network comes from the API host (CAN-2979)', () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'botd-pins-'));
     try {
       const pins = { network: 'testnet' as const, instrumentAdmins: { Amulet: ['DSO::1220aa'] }, networkFeeRecipients: ['op::1220bb'] };
-      (await withFakeEngine({ ...DEFAULTS, stateDir, baseUrl: 'https://api-testnet.cancore.app', ...pins })).createEngine({} as never, {} as never);
-      (await withFakeEngine({ ...DEFAULTS, stateDir, baseUrl: 'https://api.cancore.io' })).createEngine({} as never, {} as never);
+      const testnet = await withFakeEngine({ ...DEFAULTS, stateDir, baseUrl: 'https://api-testnet.cancore.app', ...pins });
+      testnet.createEngine({} as never, {} as never);
+      await testnet.audit.close();
+      const mainnet = await withFakeEngine({ ...DEFAULTS, stateDir, baseUrl: 'https://api.cancore.io' });
+      mainnet.createEngine({} as never, {} as never);
+      await mainnet.audit.close();
       expect(seen[0]).toMatchObject({ baseUrl: 'https://api-testnet.cancore.app', ...pins });
       expect(seen[1]).toMatchObject({ baseUrl: 'https://api.cancore.io' });
       expect(seen[1]).not.toHaveProperty('instrumentAdmins');
