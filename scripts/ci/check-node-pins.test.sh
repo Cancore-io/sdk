@@ -51,4 +51,15 @@ mk; sed -i 's/runs-on: ubuntu-latest/runs-on: cancore-runners\n    container: no
 mk; sed -i 's/runs-on: ubuntu-latest/runs-on: cancore-runners/; s|uses: actions/setup-node@v4|uses: actions/setup-node@v4 # node-pin: ignore|' .github/workflows/ci.yml; expect_pass "ignore marker on setup-node"
 mk; printf '      - run: docker run --rm node:lts node -v\n' >> .github/workflows/ci.yml; expect_fail "floating tag in docker run" "floating node tag"
 mk; printf 'ARG NODE_IMAGE=node:lts\nFROM ${NODE_IMAGE}\n' > Dockerfile; expect_fail "floating tag in NODE_IMAGE" "floating node tag"
+wf() { printf '%b' "$1" > .github/workflows/ci.yml; }
+SN='    steps:\n      - uses: actions/setup-node@v4\n'
+mk; wf "jobs:\n  a:\n    runs-on: [self-hosted, ubuntu-22.04]\n$SN"; expect_fail "mixed self-hosted labels" "setup-node26"
+mk; wf "jobs:\n  a:\n    runs-on: ubuntu-latest\n$SN  b:\n    runs-on: cancore-runners\n$SN"; expect_fail "hosted job then self-hosted job" ":9:"
+mk; wf "jobs:\n  a:\n    runs-on: cancore-runners\n    container: node:26-bookworm-slim\n$SN  b:\n    runs-on: cancore-runners\n$SN"; expect_fail "container job then self-hosted job" ":10:"
+mk; wf "jobs:\n  a:\n    runs-on: cancore-runners\n$SN  b:\n    runs-on: ubuntu-latest\n$SN"; expect_fail "self-hosted job then hosted job" ":5:"
+mk; wf "jobs:\n  a:\n    runs-on: cancore-runners\n$SN  b:\n    runs-on: ubuntu-latest\n$SN"; out="$("$here/check-node-pins.sh" "$t/r" 2>&1 || true)"; grep -q ':9:' <<<"$out" && { echo "FAIL hosted job b flagged"; exit 1; }; echo "ok hosted job after self-hosted job is not flagged"
+mk; wf "jobs:\n    a:\n        runs-on: cancore-runners\n        steps:\n            - uses: actions/setup-node@v4\n"; expect_fail "4-space indented jobs" "setup-node26"
+mk; wf "jobs:\n  a: # build\n    runs-on: cancore-runners\n$SN"; expect_fail "job header with a comment" "setup-node26"
+mk; wf "jobs:\n  a:\n    runs-on: cancore-runners\n$SN  b:\n    runs-on: cancore-runners\n$SN"; n="$("$here/check-node-pins.sh" "$t/r" 2>&1 | grep -c 'setup-node26' || true)"; [ "$n" = 2 ] || { echo "FAIL two self-hosted jobs: $n reports, want 2"; exit 1; }; echo "ok each self-hosted job reported once"
+mk; wf "jobs:\n  a:\n    runs-on: macos-latest\n$SN  b:\n    runs-on: windows-latest\n$SN"; expect_pass "macos and windows runners are hosted"
 echo "check-node-pins self-test: all ok"
