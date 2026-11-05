@@ -134,7 +134,7 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
     // What the party ends up with: unlocked holdings of the instrument, exactly the payout.
     let credited = 0n;
     for (const n of nodes) {
-      if (n.kind !== 'create' || n.templateId !== `${registry.packageId}:${registry.holding}`) continue;
+      if (n.kind !== 'create' || n.templateId !== holdingTemplateOf(registry)) continue;
       const h = holdingOf(n.argument, registry);
       if (h.owner !== payee) continue;
       if (h.admin !== intent.asset.admin || h.id !== intent.asset.id || h.locked) refuse('the party is credited a locked holding or another instrument');
@@ -143,6 +143,9 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
     if (credited !== payout) refuse(`the party is credited ${decimal(credited)}, not ${decimal(payout)}`);
   };
 }
+
+/** A registry's holding template: DA Utilities keeps `Holding` in a package of its own (`holdingPackageId`). */
+const holdingTemplateOf = (f: CantonTransferFactory): string => `${f.holdingPackageId ?? f.packageId}:${f.holding}`;
 
 /** The batch's transfer legs: exactly `payout` owner → party and `fee` owner → operator (when non-zero). */
 function checkLegs(legs: DamlValue, intent: CantonIntent, payee: string, payout: bigint, fee: bigint): void {
