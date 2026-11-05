@@ -7,7 +7,7 @@ mk() { rm -rf "$t/r"; mkdir -p "$t/r/.github/workflows"; cd "$t/r"
   echo 26.13.0 > .nvmrc
   echo '{"engines":{"node":">=26"},"devDependencies":{"@types/node":"^26.6.6"}}' > package.json
   printf 'FROM node:26-bookworm-slim@sha256:%064d\n' 0 > Dockerfile
-  printf 'steps:\n  - uses: actions/setup-node@v4\n    with:\n      node-version-file: .nvmrc\n' > .github/workflows/ci.yml; }
+  printf 'jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/setup-node@v4\n        with:\n          node-version-file: .nvmrc\n' > .github/workflows/ci.yml; }
 expect_fail() { local name="$1" needle="$2" out
   if out="$("$here/check-node-pins.sh" "$t/r" 2>&1)"; then echo "FAIL $name: passed on drift"; exit 1; fi
   grep -qF -- "$needle" <<<"$out" || { echo "FAIL $name: output lacks $needle"; echo "$out"; exit 1; }
@@ -44,4 +44,9 @@ mk; printf '[tools]\nnode = "26.13.0"\n' > mise.toml; expect_pass "current mise.
 mk; printf '      - run: node -e "require(\x27node:fs\x27)"\n' >> .github/workflows/ci.yml; expect_pass "node:fs import is not an image"
 mk; printf '          build-contexts: node:lts=docker-image://x/node:lts\n' >> .github/workflows/ci.yml; expect_fail "floating tag in docker-image://" "floating node tag"
 mk; printf 'services:\n  app:\n    image: ghcr.io/x/my-node:latest\n' > compose.yaml; expect_pass "my-node:latest image is not a node image"
+mk; sed -i 's/runs-on: ubuntu-latest/runs-on: cancore-runners/' .github/workflows/ci.yml; expect_fail "self-hosted job with bare setup-node" "use ./.github/actions/setup-node26"
+mk; sed -i 's/runs-on: ubuntu-latest/runs-on: ${{ vars.R || '"'"'cancore-runners'"'"' }}/' .github/workflows/ci.yml; expect_fail "expression runner counts as self-hosted" "setup-node26"
+mk; sed -i 's/runs-on: ubuntu-latest/runs-on: cancore-runners/; s|uses: actions/setup-node@v4|uses: ./.github/actions/setup-node26|' .github/workflows/ci.yml; expect_pass "self-hosted job through setup-node26"
+mk; sed -i 's/runs-on: ubuntu-latest/runs-on: cancore-runners\n    container: node:26-bookworm-slim@sha256:0/' .github/workflows/ci.yml; expect_pass "container job is exempt"
+mk; sed -i 's/runs-on: ubuntu-latest/runs-on: cancore-runners/; s|uses: actions/setup-node@v4|uses: actions/setup-node@v4 # node-pin: ignore|' .github/workflows/ci.yml; expect_pass "ignore marker on setup-node"
 echo "check-node-pins self-test: all ok"

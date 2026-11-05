@@ -39,5 +39,20 @@ for f in "${files[@]}"; do
     fi
   done < <(grep -nE 'node:[0-9a-z]|^FROM[[:space:]]+node([[:space:]]|$)|image:[[:space:]]*node[[:space:]]*$|"node": *"|"@types/node"|^[[:space:]]*node-version:|^[[:space:]]*node *=|^nodejs |NODE_VERSION=[0-9]' -- "$f" || true)
 done
+# Self-hosted runners lack libatomic.so.1, which the Node 26 binary needs: a job there
+# gets Node through ./.github/actions/setup-node26, never actions/setup-node directly.
+# GitHub-hosted (ubuntu-/macos-/windows-) and `container:` jobs are exempt.
+while IFS= read -r hit; do report "$hit (self-hosted job: use ./.github/actions/setup-node26)"; done < <(
+  for f in "${files[@]}"; do
+    case "$f" in ./.github/workflows/*) ;; *) continue ;; esac
+    awk -v f="$f" '
+      function flush() { if (job != "" && !hosted && !boxed) for (i = 1; i <= n; i++) print hits[i]; n = 0 }
+      /^jobs:/ { injobs = 1; next }
+      injobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { flush(); job = $1; hosted = 0; boxed = 0; next }
+      injobs && /^    runs-on:/ { if ($0 ~ /(ubuntu|macos|windows)-/ && $0 !~ /cancore|self-hosted/) hosted = 1 }
+      injobs && /^    container:/ { boxed = 1 }
+      injobs && /uses:[[:space:]]*actions\/setup-node@/ && !/# node-pin: ignore/ { hits[++n] = f ":" NR ":" $0 }
+      END { flush() }' "$f"
+  done)
 [ "$stale" = 0 ] && echo "check-node-pins: every pin resolves to Node $major (${#files[@]} files)"
 exit "$stale"
