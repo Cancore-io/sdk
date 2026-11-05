@@ -27,15 +27,17 @@ for f in "${files[@]}"; do
     case "$line" in *'# node-pin: ignore'*) continue ;; esac
     # whole-line comments (YAML, Dockerfile) describe pins, they do not set one
     printf '%s\n' "$line" | grep -qE '^[[:space:]]*#' && continue
-    found="$(printf '%s\n' "$line" | grep -oE '(node:|"node": *"[^0-9"]*|"@types/node": *"[^0-9"]*|^[[:space:]]*node *= *"?|^nodejs +|NODE_VERSION=)[0-9]+' | grep -oE '[0-9]+$' || true)"
-    if printf '%s\n' "$line" | grep -qE '(^|[[:space:]"'"'"'=/])node:[a-z]'; then
+    found="$(printf '%s\n' "$line" | grep -oE '(^|[[:space:]"'"'"'=/])node:[0-9]+|("node": *"[^0-9"]*|"@types/node": *"[^0-9"]*|^[[:space:]]*node *= *"?|^nodejs +|NODE_VERSION=)[0-9]+' | grep -oE '[0-9]+$' || true)"
+    # floating tags only where an image is named; `node:fs` imports are not images
+    if printf '%s\n' "$line" | grep -qE '^[[:space:]]*FROM[[:space:]]|image:|docker-image://|docker (run|pull)|NODE_IMAGE=' &&
+       printf '%s\n' "$line" | grep -qE '(^|[[:space:]"'"'"'=/])node:[a-z]|^[[:space:]]*FROM[[:space:]]+node([[:space:]]|$)|image:[[:space:]]*node[[:space:]]*$'; then
       report "$f:$hit (floating node tag, pin the major)"
     fi
     for n in $found; do [ "$n" = "$major" ] || report "$f:$hit"; done
     if printf '%s\n' "$line" | grep -qE '^[[:space:]]*node-version:'; then
       report "$f:$hit (setup-node must use node-version-file: .nvmrc)"
     fi
-  done < <(grep -nE 'node:[0-9a-z]|"node": *"|"@types/node"|^[[:space:]]*node-version:|^[[:space:]]*node *=|^nodejs |NODE_VERSION=[0-9]' -- "$f" || true)
+  done < <(grep -nE 'node:[0-9a-z]|^FROM[[:space:]]+node([[:space:]]|$)|image:[[:space:]]*node[[:space:]]*$|"node": *"|"@types/node"|^[[:space:]]*node-version:|^[[:space:]]*node *=|^nodejs |NODE_VERSION=[0-9]' -- "$f" || true)
 done
 [ "$stale" = 0 ] && echo "check-node-pins: every pin resolves to Node $major (${#files[@]} files)"
 exit "$stale"

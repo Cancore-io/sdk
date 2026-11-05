@@ -127,7 +127,7 @@ jobs:
             npm init -y >/dev/null
             npm install "${TARBALL[$name]}" "${siblings[@]}" --no-audit --no-fund
             node --input-type=module -e "
-              import { readFileSync } from 'fs';
+              import { readFileSync } from 'node:fs';
               const manifest = JSON.parse(readFileSync('node_modules/$name/package.json', 'utf8'));
               for (const subpath of Object.keys(manifest.exports ?? { '.': {} })) {
                 // a pattern such as ./spec/* names files, not a module: checked below
@@ -140,7 +140,7 @@ jobs:
             "
             if [ "$name" = "@cancore/contracts" ]; then
               node --input-type=module -e "
-                import { deepStrictEqual } from 'assert/strict';
+                import { deepStrictEqual } from 'node:assert/strict';
                 const events = {
                   Filled: [
                     ['orderHash', 'bytes32', true], ['fillerId', 'bytes32', true],
@@ -176,7 +176,7 @@ jobs:
             # Every subpath ships its declarations — not just a root entry, which
             # a package such as @cancore/trader (subpaths only) does not have.
             node --input-type=module -e "
-              import { existsSync, readFileSync } from 'fs';
+              import { existsSync, readFileSync } from 'node:fs';
               const manifest = JSON.parse(readFileSync('node_modules/$name/package.json', 'utf8'));
               const targets = Object.entries(manifest.exports ?? {}).filter(([subpath]) => !subpath.includes('*'));
               if (targets.length === 0) targets.push(['.', { types: manifest.types }]);
