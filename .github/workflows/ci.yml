@@ -373,7 +373,7 @@ jobs:
         run: |
           docker build -t botd-systemd - <<'DOCKERFILE'
           FROM node:26-bookworm-slim@sha256:c3aea913c1a6c89c0daf1e94867118e4aae4846b2c58c8cb9b33b80c5c695b8d
-          RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus \
+          RUN apt-get update && apt-get install -y --no-install-recommends systemd systemd-sysv dbus procps \
             && rm -rf /var/lib/apt/lists/*
           STOPSIGNAL SIGRTMIN+3
           CMD ["/sbin/init"]
