@@ -467,7 +467,8 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 - `0.2.0-rc.21` — Base (CAN-3260): `NETWORKS.base` (8453) and `NETWORKS.base_sepolia` (84532),
   and the Base Sepolia HTLC and MultiBalanceChecker of the dev stand in `DEPLOYMENTS.devnet` and
-  of the stage stand in `DEPLOYMENTS.testnet` (two independent deploys). Additive.
+  of the stage stand in `DEPLOYMENTS.testnet` (two independent deploys), and the Base mainnet HTLC
+  and MultiBalanceChecker in `DEPLOYMENTS.mainnet`. Additive.
 - `0.2.0-rc.20` — Canton-form `ticket.issued` gains optional `validFrom` (CAN-3026): the order's
   `DeliveryOrder.validFrom`, before which `DeliveryOrder_Fill` is refused — the EVM source repays
   only `filledAt >= openedAt`. A gateway that predates it omits the field; the offered `validFrom`

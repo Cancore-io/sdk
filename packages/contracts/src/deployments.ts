@@ -35,6 +35,8 @@ export const DEPLOYMENTS: Readonly<Record<DeploymentEnv, readonly EvmDeployment[
     { network: 'bnb', chainId: 56, htlc: '0xB3f8BD762fa2a895Ba8Cd35142b7b82b8b413F76', htlcBlock: 87710517, multiBalanceChecker: '0xe025CcCDf82F4165633C6033B7F13690B16c8a84' },
     { network: 'arbitrum', chainId: 42161, htlc: '0x1794fe17eB780619FAD46BAf80F7628F7495378b', htlcBlock: 443810007, multiBalanceChecker: '0x9ed2e0220e8d069C515972AE369C3FCE3bB29239' },
     { network: 'robinhood', chainId: 4663, htlc: '0xB3f8BD762fa2a895Ba8Cd35142b7b82b8b413F76', htlcBlock: 26837336, multiBalanceChecker: '0x1794fe17eB780619FAD46BAf80F7628F7495378b' },
+    // Base (CAN-3264), deployed 2026-11-05 — same nonce-derived addresses as Ethereum/BNB/Arbitrum, different contracts.
+    { network: 'base', chainId: 8453, htlc: '0xB3f8BD762fa2a895Ba8Cd35142b7b82b8b413F76', htlcBlock: 53546156, multiBalanceChecker: '0xe025CcCDf82F4165633C6033B7F13690B16c8a84' },
   ],
   testnet: [
     { network: 'sepolia', chainId: 11155111, htlc: '0xc705C735278AEeF773acb6d1028D8A241D8a9556', htlcBlock: 10334457, multiBalanceChecker: '0x99182E3F18555CFB08e6443e68a11982eF686522' },
