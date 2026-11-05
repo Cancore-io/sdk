@@ -49,10 +49,10 @@ while IFS= read -r hit; do report "$hit (self-hosted job: use ./.github/actions/
       function flush() { if (job != "" && !hosted && !boxed) for (i = 1; i <= n; i++) print hits[i]; n = 0 }
       function indent(l) { match(l, /^ */); return RLENGTH }
       /^jobs:/ { injobs = 1; jind = -1; next }
-      injobs && /^[^ #]/ { flush(); injobs = 0; job = "" }
+      injobs && /^[^ #]/ { flush(); injobs = 0 }
       !injobs || /^[[:space:]]*(#|$)/ { next }
       jind < 0 { jind = indent($0) }
-      indent($0) == jind && /^ *[A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ { flush(); job = $1; hosted = 0; boxed = 0; next }
+      indent($0) == jind && /^ *("[^"]+"|[A-Za-z0-9_-]+):[[:space:]]*(#.*)?$/ { flush(); job = $1; hosted = 0; boxed = 0; next }
       indent($0) == jind + 2 && /^ *runs-on:/ { if ($0 ~ /(ubuntu|macos|windows)-/ && $0 !~ /cancore|self-hosted/) hosted = 1 }
       indent($0) == jind + 2 && /^ *container:/ { boxed = 1 }
       /uses:[[:space:]]*actions\/setup-node@/ && !/# node-pin: ignore/ { hits[++n] = f ":" NR ":" $0 }
