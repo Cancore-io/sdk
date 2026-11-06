@@ -62,7 +62,7 @@ standSuite('CAN-2151: the signed envelope against the real filler-gateway', GATE
       await sleep(10_000);
       expect(asked).toBe(0);
       expect(await stand.store.withOrder(o.orderHash, (tx) => tx.getTicket(0))).toBeUndefined();
-      expect(stand.logger.entries.some((l) => /verif/i.test(`${l.message} ${JSON.stringify(l.fields ?? {})}`))).toBe(true);
+      expect(stand.logger.entries.some((l) => /wrong-signer/.test(`${l.message} ${JSON.stringify(l.fields ?? {})}`))).toBe(true);
     } finally {
       await stand.filler.stop();
     }

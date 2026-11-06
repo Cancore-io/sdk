@@ -30,6 +30,7 @@ import type { StageEvent } from '../src/filler/events';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { Clock } from '../src/filler/runtime';
 import type { FillRecord, TicketRecord } from '../src/filler/store';
+import { isBoundToDeliver } from '../src/filler/tickets/desk';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, decodeSignedTransaction, InMemoryFillerStore } from '../src/filler/testing';
 
 const INTENT = process.env.CANCORE_INTENT_JSON;
@@ -168,7 +169,7 @@ live('Executor against the stand router (make intent-genesis)', () => {
     // TicketDesk.receipted: the delivery may fill only an attempt whose receipt went out (T-22).
     const receipted = async (hash: Hex, attempt: number) => {
       const r = await store.withOrder(hash, (tx) => tx.getTicket(attempt));
-      return r?.state === 'receipted' && r.sentAtMs !== undefined && !r.unsent && r.receipt ? r : undefined;
+      return r && isBoundToDeliver(r) ? r : undefined;
     };
     const executor = track(new Executor({
       store,

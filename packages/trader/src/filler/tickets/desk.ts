@@ -107,6 +107,11 @@ function validUntilMs(issued: TicketIssued | undefined): number {
   return Number.isSafeInteger(ms) && ms > 0 ? ms : 0;
 }
 
+/** Receipted with the receipt handed to filler-gateway: the only attempt a delivery may fill (T-22). */
+export function isBoundToDeliver(record: TicketRecord): boolean {
+  return record.state === 'receipted' && record.sentAtMs !== undefined && !record.unsent && Boolean(record.receipt);
+}
+
 export class TicketDesk {
   /** The worker of each attempt this process is moving; `again` asks it for one more step. */
   private readonly busy = new Map<string, Promise<void>>();
@@ -132,7 +137,7 @@ export class TicketDesk {
    */
   async receipted(orderHash: Hex, attempt: number): Promise<TicketRecord | undefined> {
     const record = await this.options.store.withOrder(orderHash.toLowerCase() as Hex, (tx) => tx.getTicket(attempt));
-    return record?.state === 'receipted' && record.sentAtMs !== undefined && !record.unsent && record.receipt ? record : undefined;
+    return record && isBoundToDeliver(record) ? record : undefined;
   }
 
   // -- frames ------------------------------------------------------------------
