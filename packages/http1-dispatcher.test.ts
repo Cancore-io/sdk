@@ -54,6 +54,20 @@ describe('global fetch protocol in daemon processes', () => {
   });
 });
 
+describe('installer startup line', () => {
+  it.each(DAEMON_PACKAGES)('%s names the undici version Node runs fetch on', (pkg) => {
+    const write = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      jest.isolateModules(() => {
+        (require(installer(pkg)) as { installHttp1GlobalDispatcher: () => void }).installHttp1GlobalDispatcher();
+      });
+      expect(write).toHaveBeenCalledWith(expect.stringContaining(`undici ${process.versions.undici}`));
+    } finally {
+      write.mockRestore();
+    }
+  });
+});
+
 describe('daemon entrypoints install the dispatcher first', () => {
   it.each(ENTRYPOINTS)('%s', (entry) => {
     const source = fs.readFileSync(path.join(PACKAGES, entry), 'utf8');

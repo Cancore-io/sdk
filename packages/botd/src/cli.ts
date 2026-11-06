@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /** cancore-bot: the owner CLI. Talks to the owner socket, so run it as the daemon user: `sudo -u cancore-bot cancore-bot …`. */
+import './install-http1-dispatcher';
 import { randomInt } from 'crypto';
 import { closeSync, constants, fstatSync, openSync, readFileSync } from 'fs';
 import { createInterface } from 'readline';

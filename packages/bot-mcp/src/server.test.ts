@@ -154,6 +154,6 @@ describe('built bundle', () => {
     }
     const packages = [...specs].filter((s) => !s.startsWith('.') && !s.startsWith('node:') && !builtinModules.includes(s));
     expect(packages.filter((s) => s.startsWith('@cancore/')).sort()).toEqual(['@cancore/botd/ipc/client', '@cancore/botd/protocol']);
-    expect(packages.filter((s) => !s.startsWith('@cancore/') && !s.startsWith('@modelcontextprotocol/sdk/'))).toEqual([]);
+    expect(packages.filter((s) => !s.startsWith('@cancore/') && !s.startsWith('@modelcontextprotocol/sdk/'))).toEqual(['undici']);
   });
 });
