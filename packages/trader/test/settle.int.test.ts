@@ -167,7 +167,10 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
     await send(key('FILLER1'), token, approve(router));
   });
 
+  // Every executor is stopped after its test, passed or not: no timer outlives the suite.
+  const built: Executor[] = [];
   afterEach(async () => {
+    for (const e of built.splice(0)) e.stop();
     await rpc.request({ method: 'evm_setAutomine', params: [true] });
   });
 
@@ -221,8 +224,11 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
     );
     const events = createRecordingEventSink();
     const chains = new FillerChains({ [chain]: [rpc] }, { [chain]: policy }, logger);
-    const executorFor = (instanceId: string) =>
-      new Executor({ store, chains, fillSigners: { [chain]: delivery }, fillerId: FILLER, receipted: async (h, a) => store.withOrder(h, (tx) => tx.getTicket(a)), instanceId, clock, logger, events, delivery: { pollIntervalMs: 200, nonceLeaseTtlMs: 1_000 } });
+    const executorFor = (instanceId: string) => {
+      const e = new Executor({ store, chains, fillSigners: { [chain]: delivery }, fillerId: FILLER, receipted: async (h, a) => store.withOrder(h, (tx) => tx.getTicket(a)), instanceId, clock, logger, events, delivery: { pollIntervalMs: 200, nonceLeaseTtlMs: 1_000 } });
+      built.push(e);
+      return e;
+    };
     const executor = executorFor('int-settle');
     await executor.start();
     expect(await executor.deliver(orderHash, 0)).toMatchObject({ status: 'sent' });
@@ -336,7 +342,7 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
     d.executor.stop();
   }, 60_000);
 
-  test('TC-SDK-1856-INT-03: a revoked attestor, a duplicate and a high-s twin are dropped before sending — nothing goes below k, the settle goes once k are valid', async () => {
+  test('TC-SDK-1856-INT-03: a duplicate signer refuses the frame whole; a revoked attestor and a high-s twin are dropped before sending — nothing goes below k, the settle goes once k are valid', async () => {
     await onSnapshot(async () => {
       const d = await delivered();
       const [a1, a2, a3] = attestorKeys() as [Hex, Hex, Hex];
@@ -345,11 +351,17 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
       const [one, two, three] = d.signed([a1, a2, a3]) as [AttestationEvm, AttestationEvm, AttestationEvm];
       const { settler, serve } = d.settlerFor();
 
-      // a3 revoked, a1 twice, a2 only as its high-s twin: one valid signature, below k = 2.
-      serve(await d.frameOf([one, one, { signer: two.signer, signature: highS(two.signature) }, three]));
+      // A duplicate signer breaks the strictly ascending order of the set: the frame is refused whole.
+      serve(await d.frameOf([one, one, two]));
+      await expectNothingSent(d, settler.selfSettle(d.orderHash), 'mismatch');
+      expect(d.stages('settle.refused').map((e) => String((e.detail as { detail: string }).detail)).join(' ')).toContain('ascending');
+
+      // a3 revoked, a2 only as its high-s twin, ascending: one valid signature, below k = 2.
+      const ascending = (sigs: AttestationEvm[]) => [...sigs].sort((x, y) => (BigInt(x.signer) < BigInt(y.signer) ? -1 : 1));
+      serve(await d.frameOf(ascending([one, { signer: two.signer, signature: highS(two.signature) }, three])));
       await expectNothingSent(d, settler.selfSettle(d.orderHash), 'insufficient-signatures');
       const refused = d.stages('settle.refused').map((e) => String((e.detail as { detail: string }).detail)).join(' ');
-      for (const reason of ['revoked', 'duplicate', 'high-s']) expect(refused).toContain(reason);
+      for (const reason of ['revoked', 'high-s']) expect(refused).toContain(reason);
 
       // A frame that failed verification is replaced by the next one: a2's low-s signature makes k.
       serve(await d.frameOf([one, two, three]));
@@ -493,9 +505,10 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
     serve(await d.frameOf(d.signed(attestorKeys())));
     const nonceBefore = await pendingNonce(d.delivery.address);
     const record = d.store.nonces.recordTransaction.bind(d.store.nonces);
-    let failures = 1;
+    // Down until lifted: the settle the arriving frame starts and the selfSettle below both meet it.
+    let journalDown = true;
     d.store.nonces.recordTransaction = async (...args) => {
-      if (failures-- > 0) throw new Error('journal unavailable (injected)');
+      if (journalDown) throw new Error('journal unavailable (injected)');
       return record(...args);
     };
     await expect(settler.selfSettle(d.orderHash)).rejects.toBeInstanceOf(SettleError);
@@ -504,6 +517,7 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
     expect(failed?.state).not.toBe('sent');
     expect(await pendingNonce(d.delivery.address)).toBe(nonceBefore);
 
+    journalDown = false;
     const { txHash } = await settler.selfSettle(d.orderHash);
     await waitFor(async () => ((await d.settlement())?.state === 'confirmed' ? true : undefined), 'the settle confirmed');
     expect(await d.status()).toBe(INTENT_STATUS.Settled);

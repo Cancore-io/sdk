@@ -291,7 +291,7 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
     60_000,
   );
 
-  test('TC-SDK-1846-INT-03 CAN-1846: an offer naming another router R\' with the same code — every read goes to the configured router, none to R\'', async () => {
+  test('TC-SDK-1846-INT-03 CAN-1846: an offer naming another router R\' with the same code — every router read goes to the configured router, none to R\'', async () => {
     const elsewhere: Hex = '0x0000000000000000000000000000000000001846';
     const code = await rpc.request<Hex>({ method: 'eth_getCode', params: [router, 'latest'] });
     await rpc.request({ method: 'anvil_setCode', params: [elsewhere, code] });
@@ -302,7 +302,10 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
     expect(escrowCheck(result)).toMatchObject({ status: 'passed' });
     const readTargets = calls.filter((c) => c.method === 'eth_call').map((c) => (c.params![0] as { to: Hex }).to.toLowerCase());
     expect(readTargets.length).toBeGreaterThan(0);
-    expect(new Set(readTargets)).toEqual(new Set([router]));
+    // The router's reads go to the configured router; the only other target is the order's input token (V-E4).
+    expect(readTargets).toContain(router);
+    expect(readTargets.every((to) => to === router || to === intent.order.inputToken.toLowerCase())).toBe(true);
+    expect(readTargets).not.toContain(elsewhere);
     expect(calls.some((c) => JSON.stringify(c.params ?? []).toLowerCase().includes(elsewhere.slice(2)))).toBe(false);
   }, 60_000);
 

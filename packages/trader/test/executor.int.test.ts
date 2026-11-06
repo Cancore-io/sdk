@@ -117,6 +117,9 @@ live('Executor against the stand router (make intent-genesis)', () => {
    * An EVM → EVM order on the stand's one network, its ticket issued to FILLER1 and — unless `receiptSent` is false —
    * receipted in a fresh store; `outputToken` is the asset delivered (the stand's first test token by default).
    */
+  // Every executor is stopped after its test, passed or not: no timer outlives the suite.
+  const built: Executor[] = [];
+  const track = (e: Executor) => (built.push(e), e);
   async function scenario(options: { ttlS?: number; validUntil?: bigint; clockAt?: () => number; delivery?: DeliveryOptions; chain?: Partial<ChainConfig>; instanceId?: string; outputToken?: Hex; receiptSent?: boolean } = {}) {
     const now = await chainTime();
     const offset = Number(now) * 1000 - Date.now();
@@ -167,7 +170,7 @@ live('Executor against the stand router (make intent-genesis)', () => {
       const r = await store.withOrder(hash, (tx) => tx.getTicket(attempt));
       return r?.state === 'receipted' && r.sentAtMs !== undefined && !r.unsent && r.receipt ? r : undefined;
     };
-    const executor = new Executor({
+    const executor = track(new Executor({
       store,
       chains,
       fillSigners: { [chain]: delivery },
@@ -178,13 +181,13 @@ live('Executor against the stand router (make intent-genesis)', () => {
       logger,
       events,
       delivery: { pollIntervalMs: 200, replaceAfterMs: 1_500, nonceLeaseTtlMs: 1_000, ...options.delivery },
-    });
+    }));
     const fill = () => store.withOrder(orderHash, (tx) => tx.getFill(0));
     const state = (want: FillRecord['state']) => waitFor(async () => ((await fill())?.state === want ? (await fill())! : undefined), `fill ${want}`);
     const stages = (name: string) => events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === name);
     const filled = async () => (await chains.get(chain)!.router.filled(orderHash)) as boolean;
     const executorFor = (instanceId: string) =>
-      new Executor({ store, chains, fillSigners: { [chain]: delivery }, fillerId: FILLER, receipted, instanceId, clock, logger, events, delivery: { pollIntervalMs: 200, replaceAfterMs: 1_500, nonceLeaseTtlMs: 1_000, ...options.delivery } });
+      track(new Executor({ store, chains, fillSigners: { [chain]: delivery }, fillerId: FILLER, receipted, instanceId, clock, logger, events, delivery: { pollIntervalMs: 200, replaceAfterMs: 1_500, nonceLeaseTtlMs: 1_000, ...options.delivery } }));
     return { clock, store, order, orderHash, ticket, ticketSig, executor, executorFor, events, fill, state, stages, filled, chains };
   }
 
@@ -196,6 +199,7 @@ live('Executor against the stand router (make intent-genesis)', () => {
   });
 
   afterEach(async () => {
+    for (const e of built.splice(0)) e.stop();
     await rpc.request({ method: 'evm_setAutomine', params: [true] });
   });
 
@@ -306,9 +310,9 @@ live('Executor against the stand router (make intent-genesis)', () => {
     const grossUp = (net: bigint) => (net * 10_000n + BigInt(10_000 - fot.feeBps) - 1n) / BigInt(10_000 - fot.feeBps);
 
     const bare = await scenario({ outputToken: asset, instanceId: 'int-fot-bare' });
-    const nonce = await pendingNonce();
     expect(await bare.executor.deliver(bare.orderHash, 0)).toMatchObject({ status: 'refused', reason: 'reverted', detail: expect.stringContaining('BelowMinReceived') });
-    expect(await pendingNonce()).toBe(nonce);
+    // eth_estimateGas refused it: no fill went out (the executor may still top up its allowance, T-25).
+    expect(bare.stages('fill.sent')).toHaveLength(0);
     expect(await bare.filled()).toBe(false);
 
     const s = await scenario({ outputToken: asset, instanceId: 'int-fot', delivery: { fillAmount: ({ order }) => grossUp(BigInt(order.minReceived)) } });
