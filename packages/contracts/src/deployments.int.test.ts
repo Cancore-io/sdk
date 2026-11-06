@@ -31,6 +31,9 @@ const RPCS: Record<string, readonly string[]> = {
   base_sepolia: ['https://sepolia.base.org', 'https://base-sepolia-rpc.publicnode.com'],
 };
 
+// base_sepolia is on devnet with its HTLC only: evm-contracts deployments/router/dev has no router there (CAN-3364).
+const ROUTER_NETWORKS = ['sepolia', 'bnb_testnet', 'arbitrum_sepolia', 'robinhood_testnet'];
+
 interface Installed {
   version: string;
   devnet: EvmDeployment[];
@@ -79,10 +82,11 @@ live('CAN-2331: dev routers of the installed @cancore/contracts on their chains'
   jest.setTimeout(120_000);
   const installed = INSTALLED ? readInstalled(INSTALLED) : ({} as Installed);
   const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as { version: string };
+  const routed = (): EvmDeployment[] => installed.devnet.filter((d) => d.router !== undefined);
 
-  test('TC-SDK-2331-01: the installed package names a router for every devnet chain; deploymentOf(devnet, sepolia).router answers', () => {
-    expect(installed.devnet.length).toBeGreaterThan(0);
-    for (const d of installed.devnet) {
+  test('TC-SDK-2331-01: the installed package names a router for every devnet chain that has one; deploymentOf(devnet, sepolia).router answers', () => {
+    expect(routed().map((d) => d.network)).toEqual(expect.arrayContaining(ROUTER_NETWORKS));
+    for (const d of routed()) {
       expect(d.router).toMatch(/^0x[0-9a-fA-F]{40}$/);
       expect(Number.isSafeInteger(d.routerBlock)).toBe(true);
     }
@@ -101,9 +105,9 @@ live('CAN-2331: dev routers of the installed @cancore/contracts on their chains'
   });
 
   test('TC-SDK-2331-03: every RPC is on the chain the deployment names, and every router has code there', async () => {
+    for (const d of installed.devnet) expect(BigInt(await rpc<string>(d.network, 'eth_chainId', []))).toBe(BigInt(d.chainId));
     const lengths: number[] = [];
-    for (const d of installed.devnet) {
-      expect(BigInt(await rpc<string>(d.network, 'eth_chainId', []))).toBe(BigInt(d.chainId));
+    for (const d of routed()) {
       const code = await rpc<string>(d.network, 'eth_getCode', [d.router, 'latest']);
       expect(code.length).toBeGreaterThan(2);
       lengths.push((code.length - 2) / 2);
@@ -115,7 +119,7 @@ live('CAN-2331: dev routers of the installed @cancore/contracts on their chains'
   test("TC-SDK-2331-04: the environment's ticket signers are ticket signers of every devnet router", async () => {
     expect(CANCORE_ROUTER_ABI.some((e) => e.type === 'function' && e.name === 'ticketSigners')).toBe(true);
     expect(installed.ticketSigners.length).toBeGreaterThan(0);
-    for (const d of installed.devnet) {
+    for (const d of routed()) {
       for (const signer of installed.ticketSigners) {
         const data = `${selector('ticketSigners(address)')}${signer.slice(2).toLowerCase().padStart(64, '0')}`;
         const answer = await rpc<string>(d.network, 'eth_call', [{ to: d.router, data }, 'latest']);
