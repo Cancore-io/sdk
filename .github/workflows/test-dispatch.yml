@@ -98,4 +98,5 @@ jobs:
             if [[ -f "$RUNNER_TEMP/time.txt" ]]; then
               grep -E 'Elapsed \(wall clock\)|Maximum resident set size' "$RUNNER_TEMP/time.txt" | sed 's/^\s*/- /'
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          # Also in the log: the job summary has no API, the log does.
+          } | tee -a "$GITHUB_STEP_SUMMARY"
