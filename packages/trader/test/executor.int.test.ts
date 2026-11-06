@@ -30,7 +30,7 @@ import type { StageEvent } from '../src/filler/events';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { Clock } from '../src/filler/runtime';
 import type { FillRecord, TicketRecord } from '../src/filler/store';
-import { isBoundToDeliver } from '../src/filler/tickets/desk';
+import { isBoundToDeliver } from '../src/filler/tickets/terms';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, decodeSignedTransaction, InMemoryFillerStore } from '../src/filler/testing';
 
 const INTENT = process.env.CANCORE_INTENT_JSON;

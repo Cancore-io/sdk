@@ -51,7 +51,7 @@ import type { FillSigner, QuoteSigner } from '../signer';
 import type { FillerStore, TicketRecord, TicketState } from '../store';
 import { GatewayError } from '../errors';
 import type { TicketVerifier } from './checks';
-import { chainsOf, identityFor, signCantonTicketReceipt, signTicketIntent, signTicketReceipt } from './terms';
+import { chainsOf, identityFor, isBoundToDeliver, signCantonTicketReceipt, signTicketIntent, signTicketReceipt } from './terms';
 
 /** The reasons a filler may give for not taking an offered ticket (protocol §3.5, stage «offer»). */
 export const OFFER_DECLINE_REASONS = ['NO_INVENTORY', 'RISK_LIMIT', 'PRICE_MOVED', 'PAUSED', 'OTHER'] as const;
@@ -105,11 +105,6 @@ function validUntilMs(issued: TicketIssued | undefined): number {
   const raw = issued?.form === 'evm' ? issued.ticket?.validUntil : (issued as { validUntil?: unknown } | undefined)?.validUntil;
   const ms = Number(raw) * 1000;
   return Number.isSafeInteger(ms) && ms > 0 ? ms : 0;
-}
-
-/** Receipted with the receipt handed to filler-gateway: the only attempt a delivery may fill (T-22). */
-export function isBoundToDeliver(record: TicketRecord): boolean {
-  return record.state === 'receipted' && record.sentAtMs !== undefined && !record.unsent && Boolean(record.receipt);
 }
 
 export class TicketDesk {
