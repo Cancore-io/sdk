@@ -25,7 +25,7 @@ const ENTRYPOINTS = DAEMON_PACKAGES.flatMap((pkg) => {
   const { bin } = JSON.parse(fs.readFileSync(path.join(PACKAGES, pkg, 'package.json'), 'utf8')) as { bin: Record<string, string> };
   return Object.entries(bin).filter(([name]) => !IPC_CLIENT_BINS.has(name)).map(([, distPath]) => sourceOfBin(pkg, distPath));
 });
-const nodeUndiciMajor = Number(process.versions.undici.split('.')[0]);
+const nodeUndiciMajor = Number(process.versions.undici?.split('.')[0] ?? 0);
 const LIBRARY_ENTRIES = ['client/src/index.ts', 'botd/src/index.ts', 'mcp/src/index.ts', 'bot-mcp/src/index.ts'];
 const resolveUndici = (subpath: string) => require.resolve(`undici${subpath}`, { paths: [path.join(PACKAGES, 'mcp')] });
 const npmUndiciVersion = (JSON.parse(fs.readFileSync(resolveUndici('/package.json'), 'utf8')) as { version: string }).version;
@@ -76,6 +76,14 @@ describe('daemon entrypoints install the dispatcher first', () => {
     const source = fs.readFileSync(path.join(PACKAGES, entry), 'utf8');
     const firstImport = /^import\s.*$/m.exec(source)?.[0];
     expect(firstImport).toBe("import './install-http1-dispatcher';");
+  });
+});
+
+describe('the installer has one implementation', () => {
+  it.each(DAEMON_PACKAGES)('%s: the per-package installer only delegates to the shared module', (pkg) => {
+    const shim = fs.readFileSync(installer(pkg), 'utf8');
+    expect(shim).toContain("from '../../../scripts/http1-dispatcher'");
+    expect(shim).not.toMatch(/setGlobalDispatcher|new Agent|from 'undici/);
   });
 });
 

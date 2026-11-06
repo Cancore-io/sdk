@@ -208,6 +208,9 @@ importers:
       typescript:
         specifier: ^5.9.0
         version: 5.9.3
+      undici:
+        specifier: ^8.12.4
+        version: 8.12.4
 
   packages/bot-mcp:
     dependencies:
