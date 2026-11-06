@@ -25,7 +25,7 @@ registerHooks({
   load(url, context, nextLoad) {
     if (!url.endsWith('.ts')) return nextLoad(url, context);
     const source = readFileSync(fileURLToPath(url), 'utf8');
-    const { code } = transformSync(source, { filename: fileURLToPath(url), jsc: { parser: { syntax: 'typescript' }, target: 'es2022' }, module: { type: 'es6' } });
+    const { code } = transformSync(source, { filename: fileURLToPath(url), jsc: { parser: { syntax: 'typescript' }, target: 'es2022', experimental: { keepImportAttributes: true } }, module: { type: 'es6' } });
     return { format: 'module', source: code, shortCircuit: true };
   },
 });

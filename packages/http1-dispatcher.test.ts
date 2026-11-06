@@ -18,8 +18,17 @@ const PACKAGES = __dirname;
 const HOOKS = path.join(PACKAGES, 'ts-source-hooks.mjs');
 const DISPATCHER_SYMBOL = "Symbol.for('undici.globalDispatcher.2')";
 const DAEMON_PACKAGES = ['botd', 'mcp', 'bot-mcp'];
-const ENTRYPOINTS = ['botd/src/daemon.ts', 'botd/src/cli.ts', 'mcp/src/bin.ts', 'bot-mcp/src/bin.ts'];
+// cancore-bot is an IPC client of the daemon socket and never fetches.
+const IPC_CLIENT_BINS = new Set(['cancore-bot']);
+const sourceOfBin = (pkg: string, distPath: string) => path.join(pkg, 'src', path.basename(distPath).replace(/\.js$/, '.ts'));
+const ENTRYPOINTS = DAEMON_PACKAGES.flatMap((pkg) => {
+  const { bin } = JSON.parse(fs.readFileSync(path.join(PACKAGES, pkg, 'package.json'), 'utf8')) as { bin: Record<string, string> };
+  return Object.entries(bin).filter(([name]) => !IPC_CLIENT_BINS.has(name)).map(([, distPath]) => sourceOfBin(pkg, distPath));
+});
+const nodeUndiciMajor = Number(process.versions.undici.split('.')[0]);
 const LIBRARY_ENTRIES = ['client/src/index.ts', 'botd/src/index.ts', 'mcp/src/index.ts', 'bot-mcp/src/index.ts'];
+const resolveUndici = (subpath: string) => require.resolve(`undici${subpath}`, { paths: [path.join(PACKAGES, 'mcp')] });
+const npmUndiciVersion = (JSON.parse(fs.readFileSync(resolveUndici('/package.json'), 'utf8')) as { version: string }).version;
 const installer = (pkg: string) => path.join(PACKAGES, pkg, 'src', 'install-http1-dispatcher.ts');
 
 const runChild = (script: string) =>
@@ -42,29 +51,23 @@ describe('global fetch protocol in daemon processes', () => {
 
   afterAll(() => new Promise<void>((resolve) => server.close(() => resolve())));
 
-  it('negotiates HTTP/2 without the installer, so the probe can tell the protocols apart', async () => {
+  it('negotiates HTTP/2 through an h2-enabled npm undici Agent, so the probe can tell the protocols apart', async () => {
+    const { stdout } = await runChild(
+      `const { Agent, setGlobalDispatcher } = await import(${JSON.stringify(resolveUndici(''))}); setGlobalDispatcher(new Agent({ allowH2: true })); console.log(await (await fetch('${url}')).text())`,
+    );
+    expect(stdout.trim()).toBe('2.0');
+  });
+
+  (nodeUndiciMajor < 8 ? it.skip : it)('bare Node fetch negotiates HTTP/2, the hazard the installer exists for', async () => {
     const { stdout } = await runChild(`console.log(await (await fetch('${url}')).text())`);
     expect(stdout.trim()).toBe('2.0');
   });
 
-  it.each(DAEMON_PACKAGES)('%s: importing the installer pins global fetch to HTTP/1.1 and logs the undici version', async (pkg) => {
+  it.each(DAEMON_PACKAGES)('%s: importing the installer pins global fetch to HTTP/1.1 and logs both undici versions once', async (pkg) => {
     const { stdout, stderr } = await runChild(`await import(${JSON.stringify(installer(pkg))}); console.log(await (await fetch('${url}')).text())`);
     expect(stdout.trim()).toBe('1.1');
-    expect(stderr).toContain(`undici ${process.versions.undici}`);
-  });
-});
-
-describe('installer startup line', () => {
-  it.each(DAEMON_PACKAGES)('%s names the undici version Node runs fetch on', (pkg) => {
-    const write = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    try {
-      jest.isolateModules(() => {
-        (require(installer(pkg)) as { installHttp1GlobalDispatcher: () => void }).installHttp1GlobalDispatcher();
-      });
-      expect(write).toHaveBeenCalledWith(expect.stringContaining(`undici ${process.versions.undici}`));
-    } finally {
-      write.mockRestore();
-    }
+    expect(stderr.match(/global fetch pinned/g)).toHaveLength(1);
+    expect(stderr).toContain(`(npm undici ${npmUndiciVersion}, node undici ${process.versions.undici})`);
   });
 });
 

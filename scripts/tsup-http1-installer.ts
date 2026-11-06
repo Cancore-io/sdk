@@ -21,7 +21,9 @@ export function daemonBinConfig(bins: Record<string, string>): Options {
     sourcemap: true,
     clean: false,
     splitting: false,
-    treeshake: true,
+    // rollup's treeshake pass rewrites import attributes to the removed `assert` syntax; esbuild already drops dead code.
+    treeshake: false,
+    target: 'node26',
     esbuildPlugins: [keepInstallerSeparate],
   };
 }

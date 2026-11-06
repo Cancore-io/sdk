@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 import { cleanExceptBins, daemonBinConfig } from '../../scripts/tsup-http1-installer';
 
-const BINS = { daemon: 'src/daemon.ts', cli: 'src/cli.ts' };
+const BINS = { daemon: 'src/daemon.ts' };
 
 /**
  * Named entries keep the subpath layout (`dist/protocol/index.js`). The
@@ -13,6 +13,7 @@ export default defineConfig([{
     index: 'src/index.ts',
     'protocol/index': 'src/protocol/index.ts',
     'ipc/client': 'src/ipc/client.ts',
+    cli: 'src/cli.ts',
   },
   format: ['esm'],
   dts: { entry: { index: 'src/index.ts', 'protocol/index': 'src/protocol/index.ts', 'ipc/client': 'src/ipc/client.ts' } },
