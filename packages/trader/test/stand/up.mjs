@@ -6,7 +6,8 @@
  * integration suites read (`npm run test:int`):
  *
  *   <out>/intent.json        CANCORE_INTENT_JSON — router, attestors, destinations
- *   <out>/evm.json           the test tokens (read next to intent.json)
+ *   <out>/evm.json           the test tokens (read next to intent.json), and under `fixtures`
+ *                            the fee-on-transfer token of CAN-1855 — never a route asset
  *   <out>/local-actors.env   CANCORE_ACTORS_ENV — <ROLE>_EVM_PRIVATE_KEY / _EVM_ADDRESS
  *
  *   anvil --chain-id 11155111 &
@@ -85,6 +86,8 @@ await send(router.addTicketSigner(keys.TICKETSIGNER.address));
 await send(router.setSourceRouter(CANTON_ORIGIN_ID.devnet, CANTON_SOURCE_ANCHOR));
 // One EVM network: an EVM → EVM intent opens and fills on this router, which must be its own registered source.
 await send(router.setSourceRouter(chainId, routerAddress));
+// Deployed after the router, so the router keeps the address it has always had on this stand.
+const FOT = await deploy('FeeOnTransferToken');
 
 // One intent open → fill → settle, as meta's intentSmokeLocal.ts: the suites read its logs and its settled escrow.
 const as = (role, c) => c.connect(signer(role));
@@ -182,7 +185,10 @@ const intent = {
   smoke: { orderHash, fill: fillReceipt.hash },
 };
 writeFileSync(join(out, 'intent.json'), `${JSON.stringify(intent, null, 2)}\n`);
-writeFileSync(join(out, 'evm.json'), `${JSON.stringify({ chainId, tokens: { USDC: { address: USDC.address }, BTC: { address: BTC.address } } }, null, 2)}\n`);
+writeFileSync(
+  join(out, 'evm.json'),
+  `${JSON.stringify({ chainId, tokens: { USDC: { address: USDC.address }, BTC: { address: BTC.address } }, fixtures: { feeOnTransfer: { address: FOT.address, feeBps: 100 } } }, null, 2)}\n`,
+);
 writeFileSync(
   join(out, 'local-actors.env'),
   `${ROLES.flatMap((r) => [`${r}_EVM_PRIVATE_KEY=${keys[r].privateKey}`, `${r}_EVM_ADDRESS=${keys[r].address}`]).join('\n')}\n`,

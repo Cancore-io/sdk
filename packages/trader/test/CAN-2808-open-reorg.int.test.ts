@@ -143,11 +143,11 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
 
   let opened = 0;
   /** An EVM → EVM order on the stand's one network, opened by FRANK with a Permit2 witness and a QUOTESIGNER quote. */
-  async function openIntent(): Promise<OpenedIntent> {
+  async function openIntent(again?: OrderJson): Promise<OpenedIntent> {
     const user = createTestFillSigner(key('FRANK'));
     const now = BigInt((await block('latest')).timestamp);
     opened += 1;
-    const order: OrderJson = {
+    const order: OrderJson = again ?? {
       user: user.address.toLowerCase() as Hex,
       originChainId: String(stand.chainId),
       inputToken: token,
@@ -171,7 +171,7 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
   }
 
   /** The checks before a receipt for `intent`, with the source's `openConfirmations`; every RPC request recorded. */
-  async function verify(intent: OpenedIntent, openConfirmations: OpenDepth): Promise<{ result: EscrowVerification; escrowReadAt: Hex[] }> {
+  async function verify(intent: OpenedIntent, openConfirmations: OpenDepth, offerExtra: Record<string, unknown> = {}): Promise<{ result: EscrowVerification; escrowReadAt: Hex[]; calls: EvmRpcRequest[] }> {
     const fill = createTestFillSigner(key('FILLER1'));
     const ticketSigner = createTestTypedDataSigner(key('TICKETSIGNER'));
     const clock = new FakeClock(intent.nowMs);
@@ -179,6 +179,7 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
     const offer: TicketOffer = {
       type: 'ticket.offer', id: 'g-2808', fillerId: FILLER, sentAt: clock.now(), sig: '0x', orderHash: intent.orderHash, attempt: 0, order: intent.order,
       amountOut: intent.order.minReceived, validFrom: String(nowS), validUntil: String(nowS + 600n), acceptBy: clock.now() + 5_000,
+      ...offerExtra,
     };
     const ticket = { orderHash: intent.orderHash, fillerId: fillerIdHash(FILLER), deliveryKey: fill.address.toLowerCase(), repayTo: repayToFromEvm(fill.address), attempt: 0, validFrom: offer.validFrom, validUntil: offer.validUntil };
     const ticketSig = await ticketSigner.signTypedData({ domain: FILL_TICKET_DOMAIN, types: FILL_TICKET_TYPES, primaryType: 'FillTicket', message: ticket });
@@ -190,7 +191,7 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
     const escrowReadAt = recorded.calls
       .filter((c) => c.method === 'eth_call' && (c.params![0] as { data: Hex }).data === intentsCall(intent.orderHash))
       .map((c) => (c.params![1] as { blockHash: Hex }).blockHash);
-    return { result, escrowReadAt };
+    return { result, escrowReadAt, calls: recorded.calls };
   }
 
   const escrowCheck = (result: EscrowVerification) => result.checks.find((c) => c.check === 'V-E2');
@@ -207,7 +208,7 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
     if (short > 0n) await mine(Number(short));
   });
 
-  test('CAN-2808: an open reorged out before it is openConfirmations deep — V-E2 refuses ESCROW_NOT_OPEN on the new chain past the old height', async () => {
+  test('TC-SDK-2808-INT-01 CAN-2808: an open reorged out before it is openConfirmations deep — V-E2 refuses ESCROW_NOT_OPEN on the new chain past the old height', async () => {
     const N = 3;
     const beforeOpen = await snapshot();
     const intent = await openIntent();
@@ -224,7 +225,7 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
     expect(result.detail).toBe(`V-E2: status ${INTENT_STATUS.None} at ${N} confirmations`);
   }, 60_000);
 
-  test('CAN-2808: an open exactly openConfirmations deep is open; the read is pinned to the hash of the canonical block at head − N + 1', async () => {
+  test('TC-SDK-2808-INT-02 CAN-2808: an open exactly openConfirmations deep is open; the read is pinned to the hash of the canonical block at head − N + 1', async () => {
     const N = 4;
     const intent = await openIntent();
     await mine(N - 2);
@@ -243,7 +244,7 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
     expect(escrowReadAt).toEqual([canonical]);
   }, 60_000);
 
-  test('CAN-2808: an open reorged out after it was openConfirmations deep — a later V-E2 refuses, and the watcher reports IntentOpened removed', async () => {
+  test('TC-SDK-2808-INT-04 CAN-2808: an open reorged out after it was openConfirmations deep — a later V-E2 refuses, and the watcher reports IntentOpened removed', async () => {
     const N = 3;
     const beforeOpen = await snapshot();
     const intent = await openIntent();
@@ -269,7 +270,7 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
     ['safe', ANVIL_SLOTS_IN_AN_EPOCH],
     ['finalized', 2 * ANVIL_SLOTS_IN_AN_EPOCH],
   ] as const)(
-    'CAN-2808: openConfirmations "%s" — anvil serves it at head − %i (slots-in-an-epoch 32, no consensus layer), so an open above that block is not open and at it is; the read is pinned to the tag block',
+    'TC-SDK-2808-INT-03 CAN-2808: openConfirmations "%s" — anvil serves it at head − %i (slots-in-an-epoch 32, no consensus layer), so an open above that block is not open and at it is; the read is pinned to the tag block',
     async (tag, depth) => {
       const tagBlock = async () => BigInt((await block(tag)).number);
       expect(await tagBlock()).toBe((await head()) - BigInt(depth));
@@ -289,4 +290,47 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
     },
     60_000,
   );
+
+  test('TC-SDK-1846-INT-03 CAN-1846: an offer naming another router R\' with the same code — every read goes to the configured router, none to R\'', async () => {
+    const elsewhere: Hex = '0x0000000000000000000000000000000000001846';
+    const code = await rpc.request<Hex>({ method: 'eth_getCode', params: [router, 'latest'] });
+    await rpc.request({ method: 'anvil_setCode', params: [elsewhere, code] });
+    const intent = await openIntent();
+    await mine(1);
+
+    const { result, calls } = await verify(intent, 2, { router: elsewhere, source: { chainId: stand.chainId, router: elsewhere } });
+    expect(escrowCheck(result)).toMatchObject({ status: 'passed' });
+    const readTargets = calls.filter((c) => c.method === 'eth_call').map((c) => (c.params![0] as { to: Hex }).to.toLowerCase());
+    expect(readTargets.length).toBeGreaterThan(0);
+    expect(new Set(readTargets)).toEqual(new Set([router]));
+    expect(calls.some((c) => JSON.stringify(c.params ?? []).toLowerCase().includes(elsewhere.slice(2)))).toBe(false);
+  }, 60_000);
+
+  test('TC-SDK-1846-INT-06 CAN-1846: RouterEventWatcher — an open reorged out is reported removed with no Filled, and the same order opened again on the new chain is reported once', async () => {
+    const beforeOpen = await snapshot();
+    const first = await openIntent();
+    const updates: RouterEventUpdate[] = [];
+    const watcher = new RouterEventWatcher({ client: readers(1).client, router, confirmations: 1, fromBlock: first.block, onUpdate: (u) => void updates.push(u), logger });
+    await watcher.poll();
+    const ofThisOrder = () => updates.filter((u) => u.log.orderHash === first.orderHash).map((u) => [u.kind, u.log.name, u.log.blockHash]);
+    expect(ofThisOrder()).toEqual([['added', 'IntentOpened', first.blockHash]]);
+
+    await revert(beforeOpen);
+    await mine(3);
+    await watcher.poll();
+    expect(ofThisOrder()).toEqual([['added', 'IntentOpened', first.blockHash], ['removed', 'IntentOpened', first.blockHash]]);
+
+    const again = await openIntent(first.order);
+    expect(again.orderHash).toBe(first.orderHash);
+    expect(again.blockHash).not.toBe(first.blockHash);
+    await watcher.poll();
+    await watcher.poll();
+    expect(ofThisOrder()).toEqual([
+      ['added', 'IntentOpened', first.blockHash],
+      ['removed', 'IntentOpened', first.blockHash],
+      ['added', 'IntentOpened', again.blockHash],
+    ]);
+    expect(updates.some((u) => u.log.name === 'Filled' && u.log.orderHash === first.orderHash)).toBe(false);
+    expect((await readers(1).router.intents(first.orderHash, 'latest')).status).toBe(INTENT_STATUS.Opened);
+  }, 60_000);
 });
