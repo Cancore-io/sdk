@@ -15,14 +15,7 @@ import { join, relative } from 'node:path';
 
 const ROOT = join(import.meta.dirname, '..');
 
-const ALLOWLIST = {
-  'packages/trader/test/canton-source.int.test.ts':
-    'CAN-3253 2026-11-03: needs CANCORE_INTENT_STAND_ENV (full intent stand); no lane passes it and the name lacks the .stand suffix sdk-stand-specs.yml selects',
-  'packages/trader/test/quotes.int.test.ts':
-    'CAN-3253 2026-11-03: needs FILLER_GATEWAY_URL of a live filler-gateway; no lane provides one (CAN-1876)',
-  'packages/trader/test/ticket.int.test.ts':
-    'CAN-3253 2026-11-03: needs FILLER_GATEWAY_URL/REDIS_URL/FILLER_ID of a live filler-gateway; no lane provides one (CAN-1876)',
-};
+const ALLOWLIST = {};
 
 export function intSuites(root) {
   return readdirSync(join(root, 'packages'), { recursive: true, encoding: 'utf8' })

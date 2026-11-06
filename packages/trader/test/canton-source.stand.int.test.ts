@@ -20,7 +20,7 @@
  *    it with the party key, trading submits.
  * 5. The intent is gone, the party holds the payout.
  *
- *   CANCORE_INTENT_STAND_ENV=<out>/intent-stand.env npx jest --selectProjects int --runInBand packages/trader/test/canton-source.int.test.ts
+ *   CANCORE_INTENT_STAND_ENV=<out>/intent-stand.env npx jest --selectProjects int --runInBand packages/trader/test/canton-source.stand.int.test.ts
  *
  * Skipped, with the cause named, only when no stand env file is named at all
  * (this repository's CI). Once one is named — the intent-stand job — a missing
@@ -72,7 +72,7 @@ function readStand(): { env: Record<StandKey, string> } | { skip: string } | { b
 }
 
 const stand = readStand();
-if ('skip' in stand) console.warn(`canton-source.int.test.ts skipped: ${stand.skip}`);
+if ('skip' in stand) console.warn(`canton-source.stand.int.test.ts skipped: ${stand.skip}`);
 // A stand that was asked for and is not usable fails, it never skips.
 if ('broken' in stand) {
   test('the intent stand env is complete (CAN-1863)', () => {
@@ -428,7 +428,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
   const checked = (orderHash: string) =>
     events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === 'ticket.checked' && String(e.orderHash).toLowerCase() === orderHash);
 
-  test('CAN-1863: the reads V-C1…V-C6 take are the stand participant’s, and refuse what is not committed to this filler', async () => {
+  test('TC-SDK-1863-INT-01 TC-SDK-1863-INT-02: the reads V-C1…V-C6 take are the stand participant’s, and refuse what is not committed to this filler', async () => {
     const nowS = Math.floor(Date.now() / 1000);
     const opened = await openIntent({ fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 });
     const ops = createCantonOperations({
@@ -454,7 +454,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
     expect(refusal).toMatchObject({ check: 'V-C1', reason: 'ESCROW_NOT_OPEN' });
   });
 
-  test('CAN-1863 + CAN-2321: ticketed, checked V-C1…V-C6, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
+  test('TC-SDK-1863-INT-07 TC-SDK-2321-INT-01: ticketed, checked V-C1…V-C6, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
     const before = await freeCnrx(E.STAND_FILLER_CANTON_PARTY);
     const opened = await openAsUser(`0x${'b0'.repeat(20)}`);
     expect(opened.amountOut).toBe(QUOTED_OUT.toString());

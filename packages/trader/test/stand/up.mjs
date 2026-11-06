@@ -44,7 +44,7 @@ const provider = new JsonRpcProvider(rpcUrl, undefined, { staticNetwork: true, p
 const chainId = Number((await provider.getNetwork()).chainId);
 
 // Roles from index 20 of the test mnemonic: the first ten anvil accounts stay free for suites that sign with them
-// and must NOT be a stand ticket signer (escrow.int.test.ts, ticket.int.test.ts).
+// and must NOT be a stand ticket signer (escrow.int.test.ts).
 const ROLES = ['DEPLOYER', 'ALICE', 'BOB', 'FRANK', 'FILLER1', 'RELAYER', 'QUOTESIGNER', 'TICKETSIGNER', 'ATTESTOR1', 'ATTESTOR2', 'ATTESTOR3'];
 const mnemonic = Mnemonic.fromPhrase('test test test test test test test test test test test junk');
 const keys = Object.fromEntries(ROLES.map((role, i) => [role, HDNodeWallet.fromMnemonic(mnemonic, `m/44'/60'/0'/0/${20 + i}`)]));
