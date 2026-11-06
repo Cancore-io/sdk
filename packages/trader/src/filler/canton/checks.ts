@@ -23,7 +23,7 @@
  * `delivery-check.ts`); `intent.settle` against the intent (CAN-2321).
  */
 import type { CantonOpParams, Hex } from '@cancore/contracts';
-import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
+import { CANTON_TRANSFER_FACTORIES, holdingTemplateOf, type CantonTransferFactory } from './factories';
 import { CantonRefusal, cantonFingerprint } from './legs';
 import type { CantonOpCheck } from './operations';
 import type { CantonTransaction, CreateNode, DamlValue, ExerciseNode, TransactionNode } from './transaction';
@@ -324,7 +324,7 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
   const f = pinnedFactoryOf(o.factories, asked.asset.admin, root.templateId);
   if (!f) return refuse(`the transfer factory ${root.templateId} is not a pinned factory of the admin ${asked.asset.admin}`);
   const pinned = (t: string, entity: string) => t === `${f.packageId}:${entity}`;
-  const isHolding = (t: string) => t === `${f.holdingPackageId ?? f.packageId}:${f.holding}`;
+  const isHolding = (t: string) => t === holdingTemplateOf(f);
   const sameInstrument = (h: HoldingSeen) => h.admin === asked.asset.admin && h.id === asked.asset.id;
   const amount = scaled(asked.amount);
 

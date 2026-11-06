@@ -24,7 +24,7 @@
  * The summary states the same economics; it is checked, never trusted alone.
  */
 import { cantonInclusiveFeeSplit, type CantonIntent, type FillProofJson, type Hex } from '@cancore/contracts';
-import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
+import { CANTON_TRANSFER_FACTORIES, holdingTemplateOf, type CantonTransferFactory } from './factories';
 import { canonicalDecimal, decimal, field, holdingOf, isOwnParty, namesFactoryPin, optionalParty, qualified, refuse, requireCreatingPackage, requirePinnedFactory, sameSet, scaled, soleRoot, subtree, textOf } from './checks';
 import type { CantonOpCheck } from './operations';
 import type { CantonTransaction, DamlValue, ExerciseNode } from './transaction';
@@ -143,9 +143,6 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
     if (credited !== payout) refuse(`the party is credited ${decimal(credited)}, not ${decimal(payout)}`);
   };
 }
-
-/** A registry's holding template: DA Utilities keeps `Holding` in a package of its own (`holdingPackageId`). */
-const holdingTemplateOf = (f: CantonTransferFactory): string => `${f.holdingPackageId ?? f.packageId}:${f.holding}`;
 
 /** The batch's transfer legs: exactly `payout` owner → party and `fee` owner → operator (when non-zero). */
 function checkLegs(legs: DamlValue, intent: CantonIntent, payee: string, payout: bigint, fee: bigint): void {
