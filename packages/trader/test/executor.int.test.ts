@@ -4,9 +4,11 @@
  * a fill from the delivery key the ticket names, nothing sent past
  * `validUntil`, `validUntil` inclusive at the router, replace-by-fee, a fill
  * reorged out and resent, and a restart between the nonce journal and the
- * broadcast that sends no second fill. anvil plays the chain: automine off for
- * a stuck transaction, `evm_snapshot` / `evm_revert` for a reorg,
- * `evm_setNextBlockTimestamp` for the boundary.
+ * broadcast that sends no second fill (CAN-1855). anvil plays the chain:
+ * automine off for a stuck transaction, `evm_snapshot` / `evm_revert` for a
+ * reorg, `evm_setNextBlockTimestamp` for the boundary. A fee-on-transfer token
+ * (evm-contracts `FeeOnTransferToken`, 1 % burnt on every `transferFrom`) is
+ * deployed from `stand/artifacts.json` as an output asset.
  *
  *   CANCORE_INTENT_JSON=<meta>/docker/modules/genesis/out/intent.json \
  *   CANCORE_ACTORS_ENV=<meta>/docker/modules/genesis/out/local-actors.env \
@@ -28,6 +30,7 @@ import type { StageEvent } from '../src/filler/events';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { Clock } from '../src/filler/runtime';
 import type { FillRecord, TicketRecord } from '../src/filler/store';
+import { isBoundToDeliver } from '../src/filler/tickets/terms';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, decodeSignedTransaction, InMemoryFillerStore } from '../src/filler/testing';
 
 const INTENT = process.env.CANCORE_INTENT_JSON;
@@ -88,7 +91,7 @@ async function waitFor<T>(read: () => Promise<T | undefined>, what: string, time
 
 live('Executor against the stand router (make intent-genesis)', () => {
   const stand = (INTENT ? JSON.parse(readFileSync(INTENT, 'utf8')) : {}) as IntentArtifact;
-  const evm = (INTENT ? JSON.parse(readFileSync(process.env.CANCORE_EVM_JSON ?? join(dirname(INTENT), 'evm.json'), 'utf8')) : {}) as { tokens: Record<string, { address: Hex }> };
+  const evm = (INTENT ? JSON.parse(readFileSync(process.env.CANCORE_EVM_JSON ?? join(dirname(INTENT), 'evm.json'), 'utf8')) : {}) as { tokens: Record<string, { address: Hex }>; fixtures?: { feeOnTransfer?: { address: Hex; feeBps: number } } };
   const actors = ACTORS ? env(ACTORS) : {};
   const chain = `eip155:${stand.chainId}` as const;
   const router = stand.contracts?.CancoreRouter?.toLowerCase() as Hex;
@@ -111,8 +114,14 @@ live('Executor against the stand router (make intent-genesis)', () => {
     await rpc.request({ method: 'eth_sendRawTransaction', params: [raw] });
   }
 
-  /** An EVM → EVM order on the stand's one network, its ticket issued to FILLER1 and receipted in a fresh store. */
-  async function scenario(options: { ttlS?: number; validUntil?: bigint; clockAt?: () => number; delivery?: DeliveryOptions; chain?: Partial<ChainConfig>; instanceId?: string } = {}) {
+  /**
+   * An EVM → EVM order on the stand's one network, its ticket issued to FILLER1 and — unless `receiptSent` is false —
+   * receipted in a fresh store; `outputToken` is the asset delivered (the stand's first test token by default).
+   */
+  // Every executor is stopped after its test, passed or not: no timer outlives the suite.
+  const built: Executor[] = [];
+  const track = (e: Executor) => (built.push(e), e);
+  async function scenario(options: { ttlS?: number; validUntil?: bigint; clockAt?: () => number; delivery?: DeliveryOptions; chain?: Partial<ChainConfig>; instanceId?: string; outputToken?: Hex; receiptSent?: boolean } = {}) {
     const now = await chainTime();
     const offset = Number(now) * 1000 - Date.now();
     const clock = options.clockAt ? { ...offsetClock(() => 0), now: options.clockAt } : offsetClock(() => offset);
@@ -124,7 +133,7 @@ live('Executor against the stand router (make intent-genesis)', () => {
       inputToken: token,
       inputAmount: '1000000000000000000',
       destination,
-      outputAsset: `0x${'00'.repeat(12)}${token.slice(2)}`,
+      outputAsset: `0x${'00'.repeat(12)}${(options.outputToken ?? token).slice(2)}`,
       minReceived: '990000000000000000',
       recipient: `0x${'00'.repeat(12)}${recipient.slice(2)}`,
       createdAt: String(now - 60n),
@@ -144,21 +153,25 @@ live('Executor against the stand router (make intent-genesis)', () => {
       validUntil: String(validUntil),
     };
     const ticketSig = await ticketSigner.signTypedData({ domain: FILL_TICKET_DOMAIN, types: FILL_TICKET_TYPES, primaryType: 'FillTicket', message: { ...ticket } });
+    const receiptSent = options.receiptSent ?? true;
     const record: TicketRecord = {
       orderHash,
       attempt: 0,
-      state: 'receipted',
+      state: receiptSent ? 'receipted' : 'checking',
       offer: { type: 'ticket.offer', orderHash, attempt: 0, order, amountOut: order.minReceived, validFrom: ticket.validFrom, validUntil: ticket.validUntil } as never,
       issued: { type: 'ticket.issued', form: 'evm', orderHash, attempt: 0, ticket, ticketSig } as never,
-      receipt: { type: 'ticket.receipt' } as never,
-      sentAtMs: clock.now(),
+      ...(receiptSent ? { receipt: { type: 'ticket.receipt' } as never, sentAtMs: clock.now() } : {}),
       updatedAtMs: clock.now(),
     };
     await store.withOrder(orderHash, (tx) => tx.putTicket(record));
     const events = createRecordingEventSink();
     const chains = new FillerChains({ [chain]: [rpc] }, { [chain]: policy(options.chain) }, logger);
-    const receipted = async (hash: Hex, attempt: number) => store.withOrder(hash, (tx) => tx.getTicket(attempt));
-    const executor = new Executor({
+    // TicketDesk.receipted: the delivery may fill only an attempt whose receipt went out (T-22).
+    const receipted = async (hash: Hex, attempt: number) => {
+      const r = await store.withOrder(hash, (tx) => tx.getTicket(attempt));
+      return r && isBoundToDeliver(r) ? r : undefined;
+    };
+    const executor = track(new Executor({
       store,
       chains,
       fillSigners: { [chain]: delivery },
@@ -169,12 +182,14 @@ live('Executor against the stand router (make intent-genesis)', () => {
       logger,
       events,
       delivery: { pollIntervalMs: 200, replaceAfterMs: 1_500, nonceLeaseTtlMs: 1_000, ...options.delivery },
-    });
+    }));
     const fill = () => store.withOrder(orderHash, (tx) => tx.getFill(0));
     const state = (want: FillRecord['state']) => waitFor(async () => ((await fill())?.state === want ? (await fill())! : undefined), `fill ${want}`);
     const stages = (name: string) => events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === name);
     const filled = async () => (await chains.get(chain)!.router.filled(orderHash)) as boolean;
-    return { clock, store, order, orderHash, ticket, ticketSig, executor, events, fill, state, stages, filled, chains };
+    const executorFor = (instanceId: string) =>
+      track(new Executor({ store, chains, fillSigners: { [chain]: delivery }, fillerId: FILLER, receipted, instanceId, clock, logger, events, delivery: { pollIntervalMs: 200, replaceAfterMs: 1_500, nonceLeaseTtlMs: 1_000, ...options.delivery } }));
+    return { clock, store, order, orderHash, ticket, ticketSig, executor, executorFor, events, fill, state, stages, filled, chains };
   }
 
   beforeAll(async () => {
@@ -185,6 +200,7 @@ live('Executor against the stand router (make intent-genesis)', () => {
   });
 
   afterEach(async () => {
+    for (const e of built.splice(0)) e.stop();
     await rpc.request({ method: 'evm_setAutomine', params: [true] });
   });
 
@@ -281,4 +297,119 @@ live('Executor against the stand router (make intent-genesis)', () => {
     expect(await s.filled()).toBe(true);
     s.executor.stop();
   });
+  const ERC20 = IBURN_MINT_ERC20_ABI as unknown as readonly AbiEntry[];
+  const pendingNonce = async () => rpc.request<string>({ method: 'eth_getTransactionCount', params: [delivery.address, 'pending'] });
+  const balanceOf = async (asset: Hex, owner: Hex) => BigInt(await rpc.request<string>({ method: 'eth_call', params: [{ to: asset, data: encodeFunctionCall(entryOf(ERC20, 'function', 'balanceOf'), [owner]) }, 'latest'] }));
+
+  test('TC-SDK-1855-INT-02: a fee-on-transfer output token on the real router — sent without a margin it reverts and nothing goes out; with the margin the recipient gets at least minReceived, one filled', async () => {
+    const fot = evm.fixtures?.feeOnTransfer;
+    if (!fot) throw new Error('evm.json has no fixtures.feeOnTransfer: the stand predates CAN-1855 INT-02 (test/stand/up.mjs)');
+    const asset = fot.address.toLowerCase() as Hex;
+    await sendFrom(asset, `0xa0712d68${(10n ** 24n).toString(16).padStart(64, '0')}`);
+    await sendFrom(asset, encodeFunctionCall(entryOf(ERC20, 'function', 'approve'), [router, 10n ** 24n]));
+    // The router pays out what reached the recipient: send so much that minReceived is left after the burn.
+    const grossUp = (net: bigint) => (net * 10_000n + BigInt(10_000 - fot.feeBps) - 1n) / BigInt(10_000 - fot.feeBps);
+
+    const bare = await scenario({ outputToken: asset, instanceId: 'int-fot-bare' });
+    expect(await bare.executor.deliver(bare.orderHash, 0)).toMatchObject({ status: 'refused', reason: 'reverted', detail: expect.stringContaining('BelowMinReceived') });
+    // eth_estimateGas refused it: no fill went out (the executor may still top up its allowance, T-25).
+    expect(bare.stages('fill.sent')).toHaveLength(0);
+    expect(await bare.filled()).toBe(false);
+
+    const s = await scenario({ outputToken: asset, instanceId: 'int-fot', delivery: { fillAmount: ({ order }) => grossUp(BigInt(order.minReceived)) } });
+    const recipient = `0x${s.order.recipient.slice(26)}` as Hex;
+    const before = await balanceOf(asset, recipient);
+    await s.executor.start();
+    expect(await s.executor.deliver(s.orderHash, 0)).toMatchObject({ status: 'sent' });
+    await s.state('included');
+    await mine(2);
+    const fill = await s.state('confirmed');
+    expect(fill.amount).toBe(grossUp(BigInt(s.order.minReceived)).toString());
+    expect((await balanceOf(asset, recipient)) - before).toBeGreaterThanOrEqual(BigInt(s.order.minReceived));
+    expect(await s.filled()).toBe(true);
+    expect(s.events.events.filter((e) => e.type === 'filled')).toHaveLength(1);
+    s.executor.stop();
+  });
+
+  test.each([
+    ['a second replica without the lease of the attempt', 'tracking'],
+    ['filled(orderHash) already true on the router', 'already-filled'],
+    ['no ticket.receipt went out', 'no-receipt'],
+    ['now past validUntil', 'send-guard'],
+  ] as const)('TC-SDK-1855-INT-03: no fill is sent — %s: the delivery key\'s nonce does not move', async (situation, outcome) => {
+    const s = await scenario({ instanceId: 'int-guard', ...(situation.startsWith('no ticket') ? { receiptSent: false } : {}), ...(situation.startsWith('now past') ? { ttlS: -1 } : {}) });
+    if (situation.startsWith('a second replica')) {
+      // Replica A claimed the attempt and holds it: its claim outlives this test.
+      const now = await s.store.now();
+      await s.store.withOrder(s.orderHash, (tx) => tx.putFill({ orderHash: s.orderHash, attempt: 0, chain, txRef: '', amount: s.order.minReceived, state: 'pending', owner: 'int-replica-a', leaseUntilMs: now + 600_000, updatedAtMs: now }));
+    }
+    if (situation.startsWith('filled')) {
+      // The order was filled behind this store's back (a restart that lost its journal): the router knows, the store does not.
+      const data = encodeFunctionCall(entryOf(CANCORE_ROUTER_ABI as unknown as readonly AbiEntry[], 'function', 'fill'), [s.order, BigInt(s.order.minReceived), s.ticket, s.ticketSig]);
+      const raw = await delivery.signTransaction({ chainId: BigInt(stand.chainId), nonce: BigInt(await pendingNonce()), to: router, data, value: 0n, gasLimit: 400_000n, maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n });
+      await rpc.request({ method: 'eth_sendRawTransaction', params: [raw] });
+      await waitFor(async () => ((await s.filled()) ? true : undefined), 'the fill on the router');
+    }
+    const nonce = await pendingNonce();
+    const result = await s.executor.deliver(s.orderHash, 0);
+    if (outcome === 'tracking') expect(result).toMatchObject({ status: 'tracking', detail: 'another replica is sending it' });
+    else expect(result).toMatchObject({ status: 'refused', reason: outcome });
+    expect(await pendingNonce()).toBe(nonce);
+    expect(s.stages('fill.sent')).toHaveLength(0);
+    s.executor.stop();
+  });
+  /** Inclusion block and head, read from anvil after the fill is included. */
+  const inclusionOf = async (s: Awaited<ReturnType<typeof scenario>>) =>
+    BigInt((await waitFor(async () => { const f = await s.fill(); return f?.inclusion && (f.state === 'included' || f.state === 'confirmed') ? f : undefined; }, 'the fill included')).inclusion!.blockNumber);
+  const headNow = async () => BigInt((await rpc.request<{ number: string }>({ method: 'eth_getBlockByNumber', params: ['latest', false] })).number);
+  /** The executor polls every 200 ms: three polls at the same head and the fill is still not confirmed. */
+  const staysIncluded = async (s: Awaited<ReturnType<typeof scenario>>) => {
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect((await s.fill())?.state).toBe('included');
+  };
+
+  // CAN-2893: the finality property of the unit harness, on the real chain: N drawn from a fixed seed, so a failure replays.
+  test('TC-SDK-2893-INT-01 G0-CAN-2893.1 G0-CAN-2893.2: a fill with fillConfirmations N is confirmed exactly at head − b + 1 = N, never one block before (seeded draws of N)', async () => {
+    let state = 0xca2893;
+    const draw = () => {
+      state = (Math.imul(state, 1_103_515_245) + 12_345) >>> 0;
+      return 1 + (state % 5);
+    };
+    const depths = [1, draw(), draw(), draw()];
+    for (const N of depths) {
+      const s = await scenario({ chain: { fillConfirmations: N }, instanceId: `int-2893-${N}` });
+      await s.executor.start();
+      expect(await s.executor.deliver(s.orderHash, 0)).toMatchObject({ status: 'sent' });
+      const b = await inclusionOf(s);
+      if (N > 1) {
+        const short = Number(b + BigInt(N) - 2n - (await headNow()));
+        if (short > 0) await mine(short);
+        expect((await headNow()) - b + 1n).toBe(BigInt(N - 1));
+        await staysIncluded(s);
+        await mine(1);
+      }
+      const fill = await s.state('confirmed');
+      expect(BigInt(fill.inclusion!.blockNumber)).toBe(b);
+      expect((await headNow()) - b + 1n).toBeGreaterThanOrEqual(BigInt(N));
+      s.executor.stop();
+    }
+  }, 120_000);
+
+  test('TC-SDK-2893-INT-02 G0-CAN-2893.3: openConfirmations "safe" and no fillConfirmations — the fill is confirmed when its block is the safe block (b = t), not at b = t + 1', async () => {
+    const s = await scenario({ chain: { openConfirmations: 'safe', fillConfirmations: undefined }, instanceId: 'int-2893-safe' });
+    await s.executor.start();
+    expect(await s.executor.deliver(s.orderHash, 0)).toMatchObject({ status: 'sent' });
+    const b = await inclusionOf(s);
+    const safe = async () => BigInt((await rpc.request<{ number: string }>({ method: 'eth_getBlockByNumber', params: ['safe', false] })).number);
+    const toTagBelow = Number(b - 1n - (await safe()));
+    if (toTagBelow > 0) await mine(toTagBelow);
+    expect(await safe()).toBe(b - 1n);
+    await staysIncluded(s);
+    await mine(1);
+    expect(await safe()).toBe(b);
+    const fill = await s.state('confirmed');
+    expect(BigInt(fill.inclusion!.blockNumber)).toBe(b);
+    expect(await s.filled()).toBe(true);
+    s.executor.stop();
+  }, 120_000);
 });

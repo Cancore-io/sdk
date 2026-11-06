@@ -1,6 +1,7 @@
 /**
- * Refreshes `artifacts.json`: the build of the three contracts the anvil stand
- * of this repository's CI deploys (CancoreRouter, MockPermit2, TestToken), from
+ * Refreshes `artifacts.json`: the build of the contracts the anvil stand of
+ * this repository's CI deploys (CancoreRouter, MockPermit2, TestToken, and the
+ * fee-on-transfer token of CAN-1855), from
  * a checkout of the private evm-contracts at a reviewed commit (operator
  * decision Ыу-1, CAN-1846). CI never sees evm-contracts: it deploys these bytes.
  *
@@ -28,6 +29,7 @@ const artifact = (file) => JSON.parse(readFileSync(join(root, 'artifacts', file)
 const router = artifact('contracts/CancoreRouter.sol/CancoreRouter.json');
 const permit2 = artifact('contracts/mocks/MockPermit2.sol/MockPermit2.json');
 const token = artifact('contracts/test/TestToken.sol/TestToken.json');
+const feeOnTransfer = artifact('contracts/mocks/MaliciousTokens.sol/FeeOnTransferToken.json');
 
 // evm-contracts' own bytecode baseline (scripts/tools/check-bytecode-match.mjs): sha256 of the hex string.
 const pinned = JSON.parse(readFileSync(join(root, 'abi/bytecode-hashes.json'), 'utf8')).CancoreRouter;
@@ -41,6 +43,7 @@ const out = {
   CancoreRouter: { abi: router.abi, bytecode: router.bytecode, bytecodeHash: keccak256(router.bytecode), sha256 },
   MockPermit2: { deployedBytecode: permit2.deployedBytecode, deployedBytecodeHash: keccak256(permit2.deployedBytecode) },
   TestToken: { abi: token.abi, bytecode: token.bytecode, bytecodeHash: keccak256(token.bytecode) },
+  FeeOnTransferToken: { abi: feeOnTransfer.abi, bytecode: feeOnTransfer.bytecode, bytecodeHash: keccak256(feeOnTransfer.bytecode) },
 };
 const target = join(dirname(fileURLToPath(import.meta.url)), 'artifacts.json');
 writeFileSync(target, `${JSON.stringify(out, null, 2)}\n`);

@@ -20,7 +20,7 @@
  *    it with the party key, trading submits.
  * 5. The intent is gone, the party holds the payout.
  *
- *   CANCORE_INTENT_STAND_ENV=<out>/intent-stand.env npx jest --selectProjects int --runInBand packages/trader/test/canton-source.int.test.ts
+ *   CANCORE_INTENT_STAND_ENV=<out>/intent-stand.env npx jest --selectProjects int --runInBand packages/trader/test/canton-source.stand.int.test.ts
  *
  * Skipped, with the cause named, only when no stand env file is named at all
  * (this repository's CI). Once one is named — the intent-stand job — a missing
@@ -72,7 +72,7 @@ function readStand(): { env: Record<StandKey, string> } | { skip: string } | { b
 }
 
 const stand = readStand();
-if ('skip' in stand) console.warn(`canton-source.int.test.ts skipped: ${stand.skip}`);
+if ('skip' in stand) console.warn(`canton-source.stand.int.test.ts skipped: ${stand.skip}`);
 // A stand that was asked for and is not usable fails, it never skips.
 if ('broken' in stand) {
   test('the intent stand env is complete (CAN-1863)', () => {
@@ -87,7 +87,6 @@ const BOOK_ROOT = '#cancore-intent:Intent.BookRoot:BookRoot';
 const FILL_ROOT = '#cancore-intent:Intent.BookRoot:FillRoot';
 const CNRX = '#cnrx-registry:Cnrx';
 const BURN_MINT = '#splice-api-token-burn-mint-v1:Splice.Api.Token.BurnMintV1:BurnMintFactory';
-const NO_ARGS = { context: { values: {} }, meta: { values: {} } };
 // SwapIntent validTerms: refundAfter − fillDeadline ∈ [30 min, 4 h].
 const MIN_PROOF_WINDOW_S = 30 * 60;
 const GIVE = '10.0';
@@ -205,6 +204,17 @@ async function openAsUser(recipient: Hex): Promise<Pick> {
   return { ...pick, orderHash: pick.orderHash.toLowerCase() as Hex };
 }
 
+/**
+ * The registrar's CnrxPause as a context entry: cnrx-registry 0.2.4 (CAN-2730) refuses burn/mint and allocate
+ * without it under `cnrx/pause`.
+ */
+async function cnrxPauseContext(): Promise<Record<string, unknown>> {
+  const admin = E.CNRX_ADMIN_PARTY;
+  const [pause] = await active(admin, `${CNRX}.Pause:CnrxPause`, (a) => a.admin === admin);
+  if (!pause) throw new Error('the stand has no CnrxPause of the registrar');
+  return { 'cnrx/pause': { tag: 'AV_ContractId', value: pause.contractId } };
+}
+
 /** CNRX the registrar mints to the owner, free: the give the open commits. */
 async function mintGive(owner: string, amount: string): Promise<string[]> {
   const admin = E.CNRX_ADMIN_PARTY;
@@ -217,7 +227,10 @@ async function mintGive(owner: string, amount: string): Promise<string[]> {
     inputHoldingCids: [],
     outputs: [{ owner, amount, context: { values: {} } }],
     extraActors: [owner],
-    extraArgs: { context: { values: { 'cnrx/supply': { tag: 'AV_ContractId', value: supply.contractId } } }, meta: { values: {} } },
+    extraArgs: {
+      context: { values: { 'cnrx/supply': { tag: 'AV_ContractId', value: supply.contractId }, ...(await cnrxPauseContext()) } },
+      meta: { values: {} },
+    },
   }));
   return events.filter((c) => c.templateId.endsWith(':CnrxHolding')).map((c) => c.contractId);
 }
@@ -264,7 +277,7 @@ async function openIntent(deadlines: { fillDeadline: number; refundAfter: number
     filler: E.STAND_FILLER_CANTON_PARTY, fillerId: E.STAND_FILLER_ID,
     bookGuardian: E.INTENT_BOOK_GUARDIAN_PARTY, attestorGovernor: E.INTENT_ATTESTOR_GOVERNOR_PARTY, attestorSetId: '1',
     attestorSetCommitment: ledgerHex(E.INTENT_ATTESTOR_SET_COMMITMENT),
-    inputHoldingCids: holdings, allocExtraArgs: NO_ARGS,
+    inputHoldingCids: holdings, allocExtraArgs: { context: { values: await cnrxPauseContext() }, meta: { values: {} } },
     fillerEntryCid: E.STAND_FILLER_REGISTRY_ENTRY_CID, intentBookCid, attestorRegistryCid: E.INTENT_ATTESTOR_REGISTRY_CID,
   };
   const events = await submit([owner], exercise(`${INTENT}:IntentFactory`, factory.contractId, 'IntentFactory_Open', fields), [E.INTENT_OPERATOR_PARTY_ID, E.CNRX_ADMIN_PARTY, E.INTENT_ATTESTOR_GOVERNOR_PARTY]);
@@ -428,7 +441,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
   const checked = (orderHash: string) =>
     events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === 'ticket.checked' && String(e.orderHash).toLowerCase() === orderHash);
 
-  test('CAN-1863: the reads V-C1…V-C6 take are the stand participant’s, and refuse what is not committed to this filler', async () => {
+  test('TC-SDK-1863-INT-01 TC-SDK-1863-INT-02: the reads V-C1…V-C6 take are the stand participant’s, and refuse what is not committed to this filler', async () => {
     const nowS = Math.floor(Date.now() / 1000);
     const opened = await openIntent({ fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 });
     const ops = createCantonOperations({
@@ -454,7 +467,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
     expect(refusal).toMatchObject({ check: 'V-C1', reason: 'ESCROW_NOT_OPEN' });
   });
 
-  test('CAN-1863 + CAN-2321: ticketed, checked V-C1…V-C6, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
+  test('TC-SDK-1863-INT-07 TC-SDK-2321-INT-01: ticketed, checked V-C1…V-C6, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
     const before = await freeCnrx(E.STAND_FILLER_CANTON_PARTY);
     const opened = await openAsUser(`0x${'b0'.repeat(20)}`);
     expect(opened.amountOut).toBe(QUOTED_OUT.toString());

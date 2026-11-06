@@ -52,6 +52,7 @@ import type { EvmRpc } from '../src/filler/rpc';
 import type { WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
 import { activeContracts, cantonToken, env } from './stand/canton-ledger';
+import { cursor, eventsAfter, ofOrder, STREAMS } from './stand/filler-gateway';
 
 const STAND = process.env.INTENT_STAND_ENV;
 /** Every key this spec reads (Cancore-io/meta docs/runbooks/intent-stand.md); TRADING_URL or GATEWAY_URL besides. */
@@ -365,9 +366,26 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     return { orderHash, fill, ticket, openedAt: (await reader.intents(orderHash)).openedAt };
   };
 
+  let delivered: { orderHash: Hex; from: string } | undefined;
+
   test('TC-CAN-1867-STAND-01: an order to canton:devnet is delivered by the filler’s party and settled on the router: repayTo paid, the party’s CNRX spent', async () => {
-    await deliverAndSettle(0);
+    const from = await cursor(STREAMS.ticketEvents);
+    const { orderHash } = await deliverAndSettle(0);
+    delivered = { orderHash, from };
   }, 20 * 60_000);
+
+  // CAN-1861, CAN-2151: what filler-gateway recorded of that delivery's ticket, on the stream trading reads.
+  test('TC-SDK-1861-INT-01 TC-SDK-2151-INT-01: the ticket of TC-CAN-1867-STAND-01 went offer → intent → issued → receipt at filler-gateway; the sealed receipt was taken, nothing declined or refused', async () => {
+    if (!delivered) throw new Error('TC-CAN-1867-STAND-01 delivered nothing');
+    const kinds = (await eventsAfter(STREAMS.ticketEvents, delivered.from, ofOrder(delivered.orderHash))).map((e) => e.kind);
+    const at = (kind: string) => kinds.indexOf(kind);
+    expect(at('ticket.offered')).toBeGreaterThanOrEqual(0);
+    expect(at('ticket.intent')).toBeGreaterThan(at('ticket.offered'));
+    expect(at('ticket.issued')).toBeGreaterThan(at('ticket.intent'));
+    expect(at('ticket.receipt')).toBeGreaterThan(at('ticket.issued'));
+    expect(kinds.filter((k) => k === 'ticket.receipt')).toHaveLength(1);
+    expect(kinds.filter((k) => k === 'ticket.declined' || k.endsWith('.refused'))).toEqual([]);
+  }, 60_000);
 
   // The finding of CAN-3026 end to end: the source block opens the order 15 s ahead of the participant's clock. The
   // ticket's validFrom is that openedAt, the node waits for it, DeliveryOrder_Fill lands at or after it, and the
