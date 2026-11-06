@@ -46,7 +46,7 @@
   "scripts": {
     "build": "tsup",
     "prepack": "tsup --silent",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.20.0",

@@ -73,12 +73,15 @@
     "node": ">=26"
   },
   "peerDependencies": {
-    "@cancore/wallet": ">=0.3.0 <1.0.0"
+    "@cancore/wallet": "workspace:>=0.3.0 <1.0.0"
+  },
+  "devDependencies": {
+    "@noble/curves": "^1.9.7"
   },
   "scripts": {
     "build": "tsup",
     "prepack": "tsup --silent",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "pnpm run build",
     "spec:refresh": "node scripts/refresh-spec.mjs"
   },
   "dependencies": {

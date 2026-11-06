@@ -54,7 +54,7 @@
   "scripts": {
     "build": "tsup",
     "prepack": "tsup --silent",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "@noble/curves": "^1.9.7",

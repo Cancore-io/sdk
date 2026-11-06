@@ -101,11 +101,16 @@ owner actions), what to check before an order, and what each refusal means.
 ## Working in this repository
 
 ```bash
-npm install          # npm workspaces, Node >= 26
-npm test             # jest: plain node, plus jsdom for the wallet's ./web entry
-npm run typecheck    # tsc, strict; each package also has its own tsconfig
-npm run build        # tsup: ESM + .d.ts per package
+pnpm install         # pnpm workspace (pnpm-workspace.yaml), Node >= 26
+pnpm test            # jest: plain node, plus jsdom for the wallet's ./web entry
+pnpm run typecheck   # tsc, strict; each package also has its own tsconfig
+pnpm run build       # tsup: ESM + .d.ts per package
 ```
+
+pnpm is the version `packageManager` in `package.json` names (12.15.0); without one,
+`npm install -g pnpm@12.15.0`. Sibling packages depend on each other through
+`workspace:` ranges, which link the local copy; `pnpm pack` and `pnpm publish`
+write the plain range into the tarball, so consumers keep installing with npm.
 
 Two details worth knowing before a first change:
 
@@ -129,10 +134,10 @@ pretending otherwise.
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before the first PR. In short: comments
 only for a why the code cannot carry (the why of a change goes into the
 Linear ticket, the PR and the commit; `CAN-2777`),
-names that say what the code does, `>= 90%` line coverage (`npm run coverage:check`),
+names that say what the code does, `>= 90%` line coverage (`pnpm run coverage:check`),
 local + `nx`/blast-radius mutation testing with 0 surviving mutants, `<= 500` LOC
-per file (`< 300` LOC target; `npm run loc:check`), cognitive complexity `<= 12`
-(`npm run complexity:check`), zero explicit `any` (`npm run any:check`),
+per file (`< 300` LOC target; `pnpm run loc:check`), cognitive complexity `<= 12`
+(`pnpm run complexity:check`), zero explicit `any` (`pnpm run any:check`),
 discriminated-union ADTs with `assertNever`, a run on the local stand from
 [Cancore-io/meta](https://github.com/Cancore-io/meta), its RTM row, a Qase run,
 and the PR quality-gate checklist in [`.github/pull_request_template.md`](.github/pull_request_template.md).
@@ -151,10 +156,10 @@ match the manifest, because otherwise the version on npm is not the version the
 tag claims and nobody can tell afterwards.
 
 The `publish` workflow builds from that tag, runs the tests it publishes
-against, and publishes through **npm trusted publishing**: GitHub Actions mints
-an OIDC token, npm exchanges it for a short-lived publish right, and attaches
-provenance by itself. There is no npm token in this repository — nothing to
-leak, rotate, or answer a 2FA prompt for.
+against, and publishes with `pnpm publish` through **npm trusted publishing**:
+GitHub Actions mints an OIDC token, npm exchanges it for a short-lived publish
+right, and pnpm attaches provenance by itself. There is no npm token in this
+repository — nothing to leak, rotate, or answer a 2FA prompt for.
 
 Each package's trusted publisher is configured once on npmjs.com against this
 repository and the `publish.yml` workflow filename.
@@ -167,26 +172,24 @@ published there is no package to configure. So version one goes out by hand
 (five packages here have had theirs):
 
 ```bash
-npm run release:connector -- --otp=<code>
-npm run release:mcp -- --otp=<code>
-npm run release:wallet -- --otp=<code>
-npm run release:client -- --otp=<code>
-npm run release:contracts -- --otp=<code>
+pnpm run release:connector --otp=<code>
+pnpm run release:mcp --otp=<code>
+pnpm run release:wallet --otp=<code>
+pnpm run release:client --otp=<code>
+pnpm run release:contracts --otp=<code>
 ```
 
-From the repository root, and note the package name in each. `npm publish` at
-the root publishes the ROOT — which is `private: true` and refuses, after
-printing a tarball listing of the whole repository that looks alarming and is
-not what would have been sent. Naming the workspace is what makes the command
-mean what it reads like.
+From the repository root, and note the package name in each. `pnpm publish` at
+the root publishes the ROOT — which is `private: true` and refuses. Filtering on
+the package is what makes the command mean what it reads like. `pnpm publish`
+also refuses to run off `main` or from a dirty tree.
 
 A prerelease (`0.2.0-rc.1`) by hand goes out with `--tag next`:
-`npm run release:contracts -- --tag next --otp=<code>`. npm 11 refuses one
-without a tag; older npm moves `latest` onto it.
+`pnpm run release:contracts --tag next --otp=<code>`, so that `latest` never
+points at a release candidate.
 
-`npm pack` runs each package's `prepack` build with `--silent`, because
-`npm pack --silent` prints the tarball name to stdout and callers capture it —
-a chatty build ends up inside the filename.
+`pnpm pack` runs each package's `prepack` build with `--silent`, so a pack
+prints only its own output, never the build's.
 
 ## License
 

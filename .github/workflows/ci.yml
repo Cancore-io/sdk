@@ -34,14 +34,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: bash scripts/ci/check-node-pins.test.sh
       - run: bash scripts/ci/check-node-pins.sh .
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24 # node-pin: ignore
       # Negative: a Node 24 consumer must be refused by engines, not merely warned.
       - name: engines >=26 rejects Node 24 under engine-strict
         run: |
-          if out="$(npm ci --engine-strict --ignore-scripts 2>&1)"; then
-            echo "npm ci passed on Node 24: engines does not require >=26"; exit 1
+          if out="$(pnpm install --frozen-lockfile --engine-strict --ignore-scripts 2>&1)"; then
+            echo "pnpm install passed on Node 24: engines does not require >=26"; exit 1
           fi
           printf '%s\n' "$out"
           printf '%s\n' "$out" | grep -F '>=26'
@@ -61,11 +62,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - run: echo "c73ebcc36053239efac406ce148ec8ac28349fabd4f856eda094314f8c048725  scripts/quality-gates.ts" | sha256sum -c -
       - run: npm run typecheck
       - run: npm run loc:check
@@ -77,7 +79,7 @@ jobs:
       # The committed vectors must be what the generators produce: a hand-edited
       # or stale spec file fails here instead of shipping (CAN-2496 review F-2).
       - name: Vectors are regenerated, not hand-edited
-        run: npm run vectors -w @cancore/contracts && git diff --exit-code packages/contracts/spec
+        run: pnpm --filter @cancore/contracts run vectors && git diff --exit-code packages/contracts/spec
       # Suites against a local stand skip themselves without its artifacts here; the `stand` job runs the anvil ones.
       - run: npm run test:int
       # CAN-3253: a suite that can skip itself must be named in a lane below (or be a .stand suite).
@@ -103,7 +105,11 @@ jobs:
           for pkg in packages/*/; do
             name=$(node -p "require('./$pkg/package.json').name")
             if [ "$(node -p "require('./$pkg/package.json').private === true")" = "true" ]; then continue; fi
-            TARBALL[$name]="$RUNNER_TEMP/$(cd "$pkg" && npm pack --pack-destination "$RUNNER_TEMP" --silent)"
+            # pnpm pack, as publish.yml publishes: it rewrites `workspace:` ranges, npm pack would ship them.
+            # Its --silent prints no file name, so the name is npm's convention, checked to exist.
+            TARBALL[$name]="$RUNNER_TEMP/$(node -p "const m = require('./$pkg/package.json'); m.name.replace('@', '').replace('/', '-') + '-' + m.version + '.tgz'")"
+            (cd "$pkg" && pnpm pack --pack-destination "$RUNNER_TEMP" --silent)
+            test -f "${TARBALL[$name]}"
           done
           for pkg in packages/*/; do
             name=$(node -p "require('./$pkg/package.json').name")
@@ -231,11 +237,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       # anvil from the foundry release tarball, pinned by its sha256 (the release asset digest): no installer script.
       - name: Install anvil (foundry v1.8.3)
         run: |
@@ -253,7 +260,7 @@ jobs:
             sleep 0.2
           done
           cat "$RUNNER_TEMP/anvil.log"; exit 1
-      - run: npm run build -w @cancore/contracts
+      - run: pnpm --filter @cancore/contracts run build
       - name: Deploy, configure, and drive one intent open -> fill -> settle
         run: node packages/trader/test/stand/up.mjs "$RUNNER_TEMP/stand"
       - name: Integration suites against the stand, none skipped
@@ -280,11 +287,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       # anvil from the foundry release tarball, pinned by its sha256 (the release asset digest): no installer script.
       - name: Install anvil (foundry v1.8.3)
         run: |
@@ -321,11 +329,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Install @cancore/contracts from the registry
         run: |
           set -euo pipefail
@@ -357,7 +366,8 @@ jobs:
       CANCORE_ROOT_TESTS: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: npm ci
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - run: pnpm install --frozen-lockfile
       - run: npm run build
       - run: npm run test:security:root
 
