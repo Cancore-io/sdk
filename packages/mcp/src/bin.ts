@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './install-http1-dispatcher';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';

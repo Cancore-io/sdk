@@ -60,6 +60,7 @@
     "@cancore/client": "workspace:^0.13.2",
     "@cancore/trader": "workspace:^0.1.0-rc.1",
     "@cancore/wallet": "workspace:>=0.3.0 <1.0.0",
+    "undici": "^8.12.4",
     "zod": "^4.6.6"
   },
   "devDependencies": {

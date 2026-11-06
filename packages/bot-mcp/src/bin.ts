@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './install-http1-dispatcher';
 import { createRequire } from 'node:module';
 import { resolveSocketPath, startServer } from './index';
 

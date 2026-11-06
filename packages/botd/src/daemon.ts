@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import './install-http1-dispatcher';
 import { statSync, writeFileSync, renameSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { userInfo } from 'os';
@@ -75,7 +76,6 @@ function withoutStale(s: BotState, now: number): BotState {
 }
 /** Ceiling of the backoff between lookups of one intent while the API keeps failing. */
 const LOOKUP_BACKOFF_MAX_MS = 15 * 60_000;
-
 
 const active = (s: StrategyRecord) => s.status === 'running' || s.status === 'rate_limited';
 const everyFiveSeconds = (fn: () => void) => {

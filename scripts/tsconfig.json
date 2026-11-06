@@ -5,7 +5,8 @@
   },
   "include": [
     "./*.ts",
-    "../packages/quality-gates.test.ts"
+    "../packages/quality-gates.test.ts",
+    "../packages/http1-dispatcher.test.ts"
   ],
   "exclude": []
 }
