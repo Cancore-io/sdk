@@ -28,6 +28,7 @@ const RPCS: Record<string, readonly string[]> = {
   bnb_testnet: ['https://bsc-testnet-rpc.publicnode.com', 'https://data-seed-prebsc-1-s1.binance.org:8545'],
   arbitrum_sepolia: ['https://sepolia-rollup.arbitrum.io/rpc', 'https://arbitrum-sepolia-rpc.publicnode.com'],
   robinhood_testnet: ['https://rpc.testnet.chain.robinhood.com'],
+  base_sepolia: ['https://sepolia.base.org', 'https://base-sepolia-rpc.publicnode.com'],
 };
 
 interface Installed {
