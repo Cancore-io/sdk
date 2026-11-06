@@ -24,7 +24,7 @@
  * The summary states the same economics; it is checked, never trusted alone.
  */
 import { cantonInclusiveFeeSplit, type CantonIntent, type FillProofJson, type Hex } from '@cancore/contracts';
-import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
+import { CANTON_TRANSFER_FACTORIES, holdingTemplateOf, type CantonTransferFactory } from './factories';
 import { canonicalDecimal, decimal, field, holdingOf, isOwnParty, namesFactoryPin, optionalParty, qualified, refuse, requireCreatingPackage, requirePinnedFactory, sameSet, scaled, soleRoot, subtree, textOf } from './checks';
 import type { CantonOpCheck } from './operations';
 import type { CantonTransaction, DamlValue, ExerciseNode } from './transaction';
@@ -134,7 +134,7 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
     // What the party ends up with: unlocked holdings of the instrument, exactly the payout.
     let credited = 0n;
     for (const n of nodes) {
-      if (n.kind !== 'create' || n.templateId !== `${registry.packageId}:${registry.holding}`) continue;
+      if (n.kind !== 'create' || n.templateId !== holdingTemplateOf(registry)) continue;
       const h = holdingOf(n.argument, registry);
       if (h.owner !== payee) continue;
       if (h.admin !== intent.asset.admin || h.id !== intent.asset.id || h.locked) refuse('the party is credited a locked holding or another instrument');
