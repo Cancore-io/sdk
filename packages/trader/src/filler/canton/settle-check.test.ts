@@ -190,6 +190,6 @@ describe('intent.settle of a registry whose holdings live in a package of their 
   });
 
   test('TC-SDK-3301-02: a holding of the app package is no payout of a registry that keeps holdings apart', () => {
-    refused(() => checkSplit(prepared(), [honest({ credit: credited(REG_PKG) })]), /credited 0\.0000000000, not 99\.7008973081/);
+    refused(() => checkSplit(prepared(), [honest({ credit: credited(REG_PKG) })]), /credited 0, not 99\.7008973081/);
   });
 });
