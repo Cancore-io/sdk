@@ -246,11 +246,11 @@ Cancore wallet under My bots, or one made from a program and set up once with `@
 git clone https://github.com/Cancore-io/sdk.git
 cd sdk
 git checkout <commit>   # the commit you reviewed (or a botd-v… tag once one exists); keep it for upgrades
-npm ci --ignore-scripts
+npx --yes pnpm@12.15.0 install --frozen-lockfile --ignore-scripts
 rm -rf packs && mkdir packs
-npm pack --silent --pack-destination packs \
-  -w @cancore/contracts -w @cancore/wallet -w @cancore/client \
-  -w @cancore/trader -w @cancore/botd -w @cancore/bot-mcp
+npx --yes pnpm@12.15.0 --filter @cancore/contracts --filter @cancore/wallet --filter @cancore/client \
+  --filter @cancore/trader --filter @cancore/botd --filter @cancore/bot-mcp \
+  pack --silent --pack-destination packs
 sudo npm install --ignore-scripts --prefix /opt/cancore-bot ./packs/*.tgz
 sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
 ```
@@ -261,15 +261,18 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
   clone shows which commit you run, and the [upgrade](#upgrading) starts from it.
 - npm has no `@cancore/botd`, `@cancore/bot-mcp` or `@cancore/trader` yet. The recipe packs those
   and also `@cancore/client`, `@cancore/wallet` and `@cancore/contracts` from the same commit, so
-  every `@cancore` package is the one that commit was built and tested with. `npm pack` builds each
+  every `@cancore` package is the one that commit was built and tested with. `pnpm pack` builds each
   package (its `prepack` runs the build) and writes the six tarballs to `packs/`; no separate
-  `npm run build` is needed.
+  build is needed.
+- The repository builds with pnpm, the version its `package.json` names in `packageManager`; `npx`
+  runs that version without a global install. Only the build needs pnpm: `pnpm pack` writes plain
+  version ranges into each tarball, and the install below is plain npm.
 - One `npm install` with all six resolves every `@cancore/*` dependency to the tarball beside it;
   the rest (zod, the MCP SDK, noble, …) comes from npm, within the semver ranges the packages
-  declare. `--ignore-scripts` keeps the install scripts of dependencies from running: in `npm ci`,
-  which runs as you (the build needs none of them), and in `sudo npm install`, which runs as root
-  (none of the installed packages has one today). Install tarballs, not package folders (npm links
-  a folder instead of copying it).
+  declare. `--ignore-scripts` keeps the install scripts of dependencies from running: in
+  `pnpm install`, which runs as you (the build needs none of them), and in `sudo npm install`, which
+  runs as root (none of the installed packages has one today). Install tarballs, not package folders
+  (npm links a folder instead of copying it).
 - `/opt/cancore-bot` is created by npm, root-owned `0755`; nothing in it is writable by group or
   others. The last line links `cancore-bot`, `cancore-botd` and `cancore-bot-mcp` into
   `/usr/local/bin`, which is on sudo's `secure_path` on Debian and Ubuntu.
@@ -827,11 +830,11 @@ new state starts empty: there is no 24 h history, so the daily caps count from z
 cd sdk && git fetch
 git log --oneline <old>..<new>   # review what changed between the commit you run and the one you upgrade to
 git checkout <new>
-npm ci --ignore-scripts
+npx --yes pnpm@12.15.0 install --frozen-lockfile --ignore-scripts
 rm -rf packs && mkdir packs
-npm pack --silent --pack-destination packs \
-  -w @cancore/contracts -w @cancore/wallet -w @cancore/client \
-  -w @cancore/trader -w @cancore/botd -w @cancore/bot-mcp
+npx --yes pnpm@12.15.0 --filter @cancore/contracts --filter @cancore/wallet --filter @cancore/client \
+  --filter @cancore/trader --filter @cancore/botd --filter @cancore/bot-mcp \
+  pack --silent --pack-destination packs
 sudo systemctl stop cancore-botd
 sudo rm -rf /opt/cancore-bot
 sudo npm install --ignore-scripts --prefix /opt/cancore-bot ./packs/*.tgz

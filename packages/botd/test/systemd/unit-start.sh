@@ -4,15 +4,15 @@
 # the sandbox (SystemCallFilter, ProtectSystem …), so a unit that kills the daemon passes them.
 # Runs as root inside a disposable container whose PID 1 is systemd; skips otherwise.
 #   docker run -d --name sd --privileged --cgroupns=private --tmpfs /run --tmpfs /run/lock \
-#     -v "$PWD":/src:ro <image with node 22 + systemd> /sbin/init
+#     -v "$PWD":/src:ro <image with node 26 + systemd> /sbin/init
 #   docker exec sd bash /src/packages/botd/test/systemd/unit-start.sh
 set -euo pipefail
 
-if [[ -n "${CANCORE_SYSTEMD_TESTS:-}" && ( $EUID -ne 0 || "$(ps -p 1 -o comm=)" != systemd ) ]]; then
+if [[ -n "${CANCORE_SYSTEMD_TESTS:-}" && ( $EUID -ne 0 || "$(cat /proc/1/comm)" != systemd ) ]]; then
   echo "CANCORE_SYSTEMD_TESTS is set but this is not root under systemd"
   exit 1
 fi
-if [[ $EUID -ne 0 || "$(ps -p 1 -o comm=)" != systemd || ! ( -f /.dockerenv || -f /run/.containerenv || -n "${CANCORE_SYSTEMD_TESTS:-}" ) ]]; then
+if [[ $EUID -ne 0 || "$(cat /proc/1/comm)" != systemd || ! ( -f /.dockerenv || -f /run/.containerenv || -n "${CANCORE_SYSTEMD_TESTS:-}" ) ]]; then
   echo "skip: test:systemd needs root in a disposable container whose PID 1 is systemd (or CANCORE_SYSTEMD_TESTS=1)"
   exit 0
 fi
@@ -26,14 +26,15 @@ fail() { echo "FAIL $1"; fails=$((fails + 1)); }
 check() { if "${@:2}" >/dev/null 2>&1; then pass "$1"; else fail "$1"; fi; }
 
 # The install recipe of packages/botd/README.md, from a copy: the checkout is mounted read-only, and
-# npm ci and the build write into the tree.
+# pnpm install and the build write into the tree.
 tar -C "$SRC" --exclude=./node_modules --exclude='./packages/*/node_modules' --exclude='./packages/*/dist' -cf - . | tar -C "$BUILD" -xf -
 cd "$BUILD"
-npm ci --ignore-scripts --no-audit --no-fund >/dev/null
+pnpm() { npx --yes "pnpm@$(node -p "require('./package.json').packageManager.split('@')[1]")" "$@"; }
+pnpm install --frozen-lockfile --ignore-scripts >/dev/null
 mkdir packs
-npm pack --silent --pack-destination packs \
-  -w @cancore/contracts -w @cancore/wallet -w @cancore/client \
-  -w @cancore/trader -w @cancore/botd -w @cancore/bot-mcp >/dev/null
+pnpm --filter @cancore/contracts --filter @cancore/wallet --filter @cancore/client \
+  --filter @cancore/trader --filter @cancore/botd --filter @cancore/bot-mcp \
+  pack --silent --pack-destination packs >/dev/null
 npm install --ignore-scripts --no-audit --no-fund --prefix /opt/cancore-bot ./packs/*.tgz >/dev/null
 ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
 

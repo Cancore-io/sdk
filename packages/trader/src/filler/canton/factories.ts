@@ -52,6 +52,12 @@ export interface CantonTransferFactory {
    * a contract the sender is a stakeholder of, as `<module>:<entity>.<choice>`.
    */
   serviceChoices: readonly string[];
+  /**
+   * Consuming choices of `holding` that spend a stated input as its archive does, as `<module>:<entity>.<choice>`:
+   * cnrx-registry 0.2.6 spends the first input of a transfer through `CnrxHolding_Move`, the one body with the
+   * guardian's authority, and archives the others.
+   */
+  spendChoices?: readonly string[];
   /** The V2 allocation template the registry's allocation factory creates, when the registry has one (V-C4). */
   allocation?: string;
   /**
@@ -111,6 +117,18 @@ const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
   openReceipt: true,
   // Cnrx.Transfer: signatory receiver, observer admin; transfers to the receiver complete at once.
   preapproval: 'Cnrx.Transfer:CnrxTransferPreapproval',
+};
+
+/**
+ * cnrx-registry 0.2.6 (cancore-token-canton `dist/cnrx-registry-0.2.6.dar`, CHANGELOG 0.2.6), the version dev vets for the
+ * CNRX admin since the CertiK CNA-01 fix: the templates and fields of 0.2.3 stay, a guardian co-signs every holding
+ * and factory, and a direct transfer spends its first input through `CnrxHolding_Move` (`Cnrx.Holding`
+ * `moveCheckedInputs`), archiving the rest.
+ */
+const CNRX_REGISTRY_0_2_6: CantonTransferFactory = {
+  ...CNRX_REGISTRY_0_2_3,
+  packageId: '643a728658256e42fe69f8bb5202a4466da5d8564e628af5d5534d8b416c9dc8',
+  spendChoices: ['Cnrx.Holding:CnrxHolding.CnrxHolding_Move'],
 };
 
 /**
@@ -186,7 +204,8 @@ const SPLICE_AMULET_0_1_24_DEVNET: CantonTransferFactory = {
 /** By instrument admin party. */
 export const CANTON_TRANSFER_FACTORIES: Readonly<Record<string, readonly CantonTransferFactory[]>> = {
   // dev: the CNRX registrar (gitops k8s/envs/dev CNRX_REGISTRY_ADMIN_PARTY).
-  'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b': [CNRX_REGISTRY_0_2_3],
+  // 0.2.3 stays until dev un-vets it: holdings and allocations created under it may still be live.
+  'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b': [CNRX_REGISTRY_0_2_6, CNRX_REGISTRY_0_2_3],
   // devnet: CBTC's registrar on DA Utilities dev (backend libs/common/src/config/cbtc.config.ts).
   // 0.8.2 stays: contracts created under it remain on the ledger after devnet moved to 0.9.2.
   'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff': [DA_UTILITY_REGISTRY_APP_0_9_2_DEVNET, DA_UTILITY_REGISTRY_APP_0_8_2_DEVNET],
@@ -218,6 +237,7 @@ export function registriesProblem(registries: unknown): string | undefined {
   return undefined;
 }
 
+const isChoiceList = (v: unknown, optional: boolean): boolean => (optional && v === undefined) || (Array.isArray(v) && v.every((c) => typeof c === 'string'));
 const optionalTemplate = (v: unknown): boolean => v === undefined || (typeof v === 'string' && QUALIFIED.test(v));
 
 function entryProblem(f: Partial<CantonTransferFactory> | null, at: string): string | undefined {
@@ -225,7 +245,7 @@ function entryProblem(f: Partial<CantonTransferFactory> | null, at: string): str
   if (typeof f.packageId !== 'string' || !PACKAGE_ID.test(f.packageId)) return `${at}.packageId: expected 64 lowercase hex`;
   for (const k of ['factory', 'holding', 'offer'] as const) if (typeof f[k] !== 'string' || !QUALIFIED.test(f[k] as string)) return `${at}.${k}: expected <module>:<entity>`;
   if (typeof f.holdingView !== 'string' || f.holdingView.length === 0) return `${at}.holdingView: expected a field name`;
-  if (!Array.isArray(f.serviceChoices) || !f.serviceChoices.every((c) => typeof c === 'string')) return `${at}.serviceChoices: expected a list of <module>:<entity>.<choice>`;
+  for (const k of ['serviceChoices', 'spendChoices'] as const) if (!isChoiceList(f[k], k === 'spendChoices')) return `${at}.${k}: expected a list of <module>:<entity>.<choice>`;
   for (const k of ['allocation', 'preapproval', 'directFactory'] as const) if (!optionalTemplate(f[k])) return `${at}.${k}: expected <module>:<entity>`;
   if (f.transferRecords !== undefined && (!Array.isArray(f.transferRecords) || !f.transferRecords.every((t) => typeof t === 'string' && FULL_TEMPLATE.test(t)))) return `${at}.transferRecords: expected a list of <packageId>:<module>:<entity>`;
   if (f.openReceipt !== undefined && typeof f.openReceipt !== 'boolean') return `${at}.openReceipt: expected a boolean`;

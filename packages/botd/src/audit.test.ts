@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { hashEntry, openAuditLog } from './audit';
+import { hashEntry, openAuditLog as openUntracked } from './audit';
 import type { AuditEntry, AuditLog } from './types';
 
 type Input = Parameters<AuditLog['append']>[0];
@@ -14,7 +14,17 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'botd-audit-'));
   file = path.join(dir, 'audit.jsonl');
 });
-afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+// Node 26 turns a FileHandle closed by the garbage collector into an error, so every log opened here is closed explicitly.
+const opened: Awaited<ReturnType<typeof openUntracked>>[] = [];
+const openAuditLog: typeof openUntracked = async (path) => {
+  const log = await openUntracked(path);
+  opened.push(log);
+  return log;
+};
+afterEach(async () => {
+  await Promise.all(opened.splice(0).map((log) => log.close()));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
 
 async function seed(n: number): Promise<void> {
   const log = await openAuditLog(file);

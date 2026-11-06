@@ -156,7 +156,7 @@ describe('deployments', () => {
     expect(deploymentOf('devnet', 'ethereum')).toBeUndefined();
   });
 
-  test('every devnet chain has its intent router at its deployment block (evm-contracts deployments/router/dev, CAN-2331)', () => {
+  test('every devnet chain with an intent router has it at its deployment block (evm-contracts deployments/router/dev, CAN-2331)', () => {
     // Values as recorded in evm-contracts deployments/router/dev/<network>.json and export.env.
     const records: Record<string, [router: string, block: number]> = {
       sepolia: ['0xfd227a0de77807206f4eEF9eE6eDd5795a45EF95', 11913649],
@@ -164,11 +164,15 @@ describe('deployments', () => {
       arbitrum_sepolia: ['0x7e27831316F7Ee8E44B96056F4354A6D1a22953a', 319105856],
       robinhood_testnet: ['0xF833A980ae858fe3cD14a79a9f610525AbB95BF9', 135089078],
     };
-    expect(DEPLOYMENTS.devnet.map((d) => d.network).sort()).toEqual(Object.keys(records).sort());
+    const routed = DEPLOYMENTS.devnet.filter((d) => d.router !== undefined);
+    expect(routed.map((d) => d.network).sort()).toEqual(Object.keys(records).sort());
+    // Base Sepolia carries the HTLC rail only; the intent rail on Base follows its prod rollout (CAN-3260).
+    expect(deploymentOf('devnet', 'base_sepolia')).toMatchObject({ htlc: '0xdA2bbf80d1F3e5689eDbF56488201bB05bCCBc5E' });
+    expect(deploymentOf('devnet', 'base_sepolia')?.router).toBeUndefined();
     for (const [network, [router, block]] of Object.entries(records)) {
       expect(deploymentOf('devnet', network)).toMatchObject({ router, routerBlock: block });
     }
-    const routers = DEPLOYMENTS.devnet.map((d) => d.router!.toLowerCase());
+    const routers = routed.map((d) => d.router!.toLowerCase());
     expect(new Set(routers).size).toBe(routers.length);
     // Routers are not on testnet or mainnet yet.
     for (const env of ['mainnet', 'testnet'] as const) expect(DEPLOYMENTS[env].every((d) => d.router === undefined)).toBe(true);

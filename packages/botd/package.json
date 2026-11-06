@@ -54,15 +54,18 @@
   "scripts": {
     "build": "tsup",
     "prepack": "tsup --silent",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@cancore/client": "^0.13.2",
-    "@cancore/trader": "^0.1.0-rc.1",
-    "@cancore/wallet": ">=0.3.0 <1.0.0",
+    "@cancore/client": "workspace:^0.13.2",
+    "@cancore/trader": "workspace:^0.1.0-rc.1",
+    "@cancore/wallet": "workspace:>=0.3.0 <1.0.0",
     "zod": "^4.6.6"
   },
+  "devDependencies": {
+    "@noble/curves": "^1.9.7"
+  },
   "engines": {
-    "node": ">=20"
+    "node": ">=26"
   }
 }

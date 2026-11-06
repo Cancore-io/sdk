@@ -37,11 +37,11 @@
   "keywords": ["canton", "cancore", "abi", "htlc", "evm", "eip-712", "contracts", "filler-protocol", "asyncapi", "json-schema"],
   "files": ["dist", "spec", "README.md", "LICENSE"],
   "publishConfig": { "access": "public" },
-  "engines": { "node": ">=20" },
+  "engines": { "node": ">=26" },
   "scripts": {
     "build": "tsup",
     "prepack": "tsup --silent",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "pnpm run build",
     "sync": "node scripts/sync.mjs && node scripts/sync-typed-data.mjs",
     "vectors": "node scripts/gen-protocol-vectors.mjs && node scripts/gen-settle-attestations.mjs && node scripts/gen-protocol-docs.mjs && node scripts/gen-router-vectors.mjs"
   },

@@ -43,9 +43,9 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsup",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=26"
   }
 }

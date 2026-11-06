@@ -325,6 +325,8 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
   if (!f) return refuse(`the transfer factory ${root.templateId} is not a pinned factory of the admin ${asked.asset.admin}`);
   const pinned = (t: string, entity: string) => t === `${f.packageId}:${entity}`;
   const isHolding = (t: string) => t === holdingTemplateOf(f);
+  const spendsStated = (node: ExerciseNode) =>
+    node.consuming && isHolding(node.templateId) && o.stated.includes(node.contractId) && (node.choice === 'Archive' || (f.spendChoices ?? []).includes(`${qualified(node.templateId)}.${node.choice}`));
   const sameInstrument = (h: HoldingSeen) => h.admin === asked.asset.admin && h.id === asked.asset.id;
   const amount = scaled(asked.amount);
 
@@ -351,7 +353,7 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
     if (node.kind === 'rollback') return refuse('a rollback node inside the transfer');
     if (node.kind === 'exercise' && node.stakeholders.includes(sender)) {
       const name = `${qualified(node.templateId)}.${node.choice}`;
-      if (node.consuming && node.choice === 'Archive' && isHolding(node.templateId) && o.stated.includes(node.contractId)) {
+      if (spendsStated(node)) {
         if (archived.has(node.contractId)) refuse(`the stated input ${node.contractId} is archived twice`);
         archived.add(node.contractId);
       } else if (!f.serviceChoices.includes(name)) {
