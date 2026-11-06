@@ -351,20 +351,23 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
       const [one, two, three] = d.signed([a1, a2, a3]) as [AttestationEvm, AttestationEvm, AttestationEvm];
       const { settler, serve } = d.settlerFor();
 
-      // A duplicate signer breaks the strictly ascending order of the set: the frame is refused whole.
-      serve(await d.frameOf([one, one, two]));
-      await expectNothingSent(d, settler.selfSettle(d.orderHash), 'mismatch');
-      expect(d.stages('settle.refused').map((e) => String((e.detail as { detail: string }).detail)).join(' ')).toContain('ascending');
+      // A duplicate signer breaks the strictly ascending order of the set: that frame is refused whole (an order of its own).
+      const inOrder = (sigs: AttestationEvm[]) => [...sigs].sort(ascending);
+      const dup = await delivered();
+      const dupSettle = dup.settlerFor('int-settle-dup');
+      const [first] = inOrder(dup.signed([a1, a2]));
+      dupSettle.serve(await dup.frameOf([first!, ...inOrder(dup.signed([a1, a2]))]));
+      await expectNothingSent(dup, dupSettle.settler.selfSettle(dup.orderHash), 'mismatch');
+      expect(dup.stages('settle.refused').map((e) => String((e.detail as { detail: string }).detail)).join(' ')).toContain('ascending');
 
       // a3 revoked, a2 only as its high-s twin, ascending: one valid signature, below k = 2.
-      const ascending = (sigs: AttestationEvm[]) => [...sigs].sort((x, y) => (BigInt(x.signer) < BigInt(y.signer) ? -1 : 1));
-      serve(await d.frameOf(ascending([one, { signer: two.signer, signature: highS(two.signature) }, three])));
+      serve(await d.frameOf(inOrder([one, { signer: two.signer, signature: highS(two.signature) }, three])));
       await expectNothingSent(d, settler.selfSettle(d.orderHash), 'insufficient-signatures');
       const refused = d.stages('settle.refused').map((e) => String((e.detail as { detail: string }).detail)).join(' ');
       for (const reason of ['revoked', 'high-s']) expect(refused).toContain(reason);
 
       // A frame that failed verification is replaced by the next one: a2's low-s signature makes k.
-      serve(await d.frameOf([one, two, three]));
+      serve(await d.frameOf(inOrder([one, two, three])));
       const payeeBefore = await balanceOf(d.delivery.address.toLowerCase() as Hex);
       await settler.selfSettle(d.orderHash);
       await waitFor(async () => ((await d.settlement())?.state === 'confirmed' ? true : undefined), 'the settle confirmed');
