@@ -324,7 +324,8 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
   const f = pinnedFactoryOf(o.factories, asked.asset.admin, root.templateId);
   if (!f) return refuse(`the transfer factory ${root.templateId} is not a pinned factory of the admin ${asked.asset.admin}`);
   const pinned = (t: string, entity: string) => t === `${f.packageId}:${entity}`;
-  const isHolding = (t: string) => t === `${f.holdingPackageId ?? f.packageId}:${f.holding}`;
+  const holdingPackages = [f.holdingPackageId ?? f.packageId, ...(f.upgradedHoldingPackageIds ?? [])];
+  const isHolding = (t: string) => holdingPackages.some((p) => t === `${p}:${f.holding}`);
   const spendsStated = (node: ExerciseNode) =>
     node.consuming && isHolding(node.templateId) && o.stated.includes(node.contractId) && (node.choice === 'Archive' || (f.spendChoices ?? []).includes(`${qualified(node.templateId)}.${node.choice}`));
   const sameInstrument = (h: HoldingSeen) => h.admin === asked.asset.admin && h.id === asked.asset.id;
