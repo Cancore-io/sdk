@@ -283,9 +283,9 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
   const payoutOf = (order: OrderJson) => (BigInt(order.inputAmount) * 10_000n) / (10_000n + BigInt(order.feeBps));
 
   /** selfSettle refuses with `reason`; the delivery key sent nothing and the intent is still open on the router. */
-  const expectNothingSent = async (d: Delivered, settle: Promise<unknown>, reason: string) => {
+  const expectNothingSent = async (d: Delivered, settle: () => Promise<unknown>, reason: string) => {
     const before = await pendingNonce(d.delivery.address);
-    await expect(settle).rejects.toMatchObject({ name: 'SettleError', reason });
+    await expect(settle()).rejects.toMatchObject({ name: 'SettleError', reason });
     expect(await pendingNonce(d.delivery.address)).toBe(before);
     expect(await d.status()).toBe(INTENT_STATUS.Opened);
   };
@@ -337,7 +337,7 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
       d.executor.stop();
       return;
     }
-    await expectNothingSent(d, settler.selfSettle(d.orderHash), reason);
+    await expectNothingSent(d, () => settler.selfSettle(d.orderHash), reason);
     expect(d.stages('settle.refused').map((e) => (e.detail as { reason: string }).reason)).toContain(reason);
     d.executor.stop();
   }, 60_000);
@@ -357,12 +357,12 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
       const dupSettle = dup.settlerFor('int-settle-dup');
       const [first] = inOrder(dup.signed([a1, a2]));
       dupSettle.serve(await dup.frameOf([first!, ...inOrder(dup.signed([a1, a2]))]));
-      await expectNothingSent(dup, dupSettle.settler.selfSettle(dup.orderHash), 'mismatch');
+      await expectNothingSent(dup, () => dupSettle.settler.selfSettle(dup.orderHash), 'mismatch');
       expect(dup.stages('settle.refused').map((e) => String((e.detail as { detail: string }).detail)).join(' ')).toContain('ascending');
 
       // a3 revoked, a2 only as its high-s twin, ascending: one valid signature, below k = 2.
       serve(await d.frameOf(inOrder([one, { signer: two.signer, signature: highS(two.signature) }, three])));
-      await expectNothingSent(d, settler.selfSettle(d.orderHash), 'insufficient-signatures');
+      await expectNothingSent(d, () => settler.selfSettle(d.orderHash), 'insufficient-signatures');
       const refused = d.stages('settle.refused').map((e) => String((e.detail as { detail: string }).detail)).join(' ');
       for (const reason of ['revoked', 'high-s']) expect(refused).toContain(reason);
 
