@@ -54,8 +54,8 @@ function damlProof(p: FillProofJson): DamlValue {
 }
 const leg = (id: string, receiver: string, amount: string) =>
   v.record({ transferLegId: v.text(id), sender: account(OWNER), receiver: account(receiver), amount: v.numeric(amount), instrumentId: v.text('CNRX'), meta: v.record({}) });
-const holding = (nodeId: string, owner: string, amount: string, locked = false): TransactionNode => ({
-  nodeId, kind: 'create', contractId: `h-${nodeId}`, packageName: 'cnrx-registry', templateId: `${REG_PKG}:Cnrx.Holding:CnrxHolding`,
+const holding = (nodeId: string, owner: string, amount: string, locked = false, pkg = REG_PKG): TransactionNode => ({
+  nodeId, kind: 'create', contractId: `h-${nodeId}`, packageName: 'cnrx-registry', templateId: `${pkg}:Cnrx.Holding:CnrxHolding`,
   argument: v.record({ holding: v.record({ account: account(owner), instrumentId: v.record({ admin: v.party(ADMIN), id: v.text('CNRX') }), amount: v.numeric(amount), lock: locked ? v.some(v.record({})) : v.none() }) }),
   signatories: [ADMIN, owner], stakeholders: [ADMIN, owner],
 });
@@ -176,4 +176,20 @@ describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery
     ],
     ['two transactions', () => check(prepared(), [honest(), honest()]), /one transaction/],
   ])('%s is refused', (_name, run, detail) => refused(run, detail));
+});
+
+describe('intent.settle of a registry whose holdings live in a package of their own (CAN-3301)', () => {
+  // DA Utilities keeps `Holding` in utility-registry-holding-v0, apart from the app package that runs the batch.
+  const HOLDING_PKG = 'ef'.repeat(32);
+  const split = { [ADMIN]: [{ ...(FACTORIES[ADMIN]?.[0] as CantonTransferFactory), holdingPackageId: HOLDING_PKG }] };
+  const checkSplit = checkIntentSettle({ publicKey: KEY, party: ME, intent, feeBps: 30n, proof, entryCid: '00en', factories: split });
+  const credited = (pkg: string) => [holding('10', ME, PAYOUT, false, pkg), holding('11', OPERATOR, FEE, false, pkg)];
+
+  test('TC-SDK-3301-01: the payout credited as a holding of the registry’s holding package counts', () => {
+    expect(() => checkSplit(prepared(), [honest({ credit: credited(HOLDING_PKG) })])).not.toThrow();
+  });
+
+  test('TC-SDK-3301-02: a holding of the app package is no payout of a registry that keeps holdings apart', () => {
+    refused(() => checkSplit(prepared(), [honest({ credit: credited(REG_PKG) })]), /credited 0\.0000000000, not 99\.7008973081/);
+  });
 });

@@ -1,0 +1,102 @@
+name: Unit tests on demand
+
+# CAN-3346: ci.yml runs no unit tests (CAN-2934), and publish.yml runs them only
+# right before it publishes. This workflow runs the same unit suite against a PR
+# head or a ref on request, and nothing else: no publish step, no secret, a
+# read-only token.
+#
+# The `pull_request` trigger is limited to this file: a change to the workflow
+# itself proves it on its own PR, since workflow_dispatch exists only once the
+# file is on the default branch. Every other PR is tested by dispatch alone.
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'PR number: its head (refs/pull/<n>/head) is tested'
+        required: false
+        type: string
+      ref:
+        description: 'A sha or branch, when no PR number is given'
+        required: false
+        type: string
+  pull_request:
+    paths: ['.github/workflows/test-dispatch.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-tests-${{ inputs.pr || inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    # ubuntu-latest, not cancore-runners: a PR head may come from a fork (ci.yml, CAN-1120).
+    runs-on: ubuntu-latest
+    # publish.yml runs install, build and the unit suite in under 2 minutes; 30 covers a cold cache with room.
+    timeout-minutes: 30
+    env:
+      # ubuntu-latest has 16 GB; two jest workers and the parent stay well inside 6 GB each.
+      NODE_OPTIONS: --max-old-space-size=6144
+    steps:
+      - name: What to test
+        id: target
+        env:
+          EVENT: ${{ github.event_name }}
+          PR: ${{ inputs.pr }}
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == pull_request ]]; then
+            echo "ref=" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$PR" ]]; then
+            [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::pr must be a PR number, got '$PR'"; exit 1; }
+            echo "ref=refs/pull/$PR/head" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$REF" ]]; then
+            [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "::error::ref must be a sha or a branch name, got '$REF'"; exit 1; }
+            echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::give pr or ref"; exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.target.outputs.ref }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      # The same commands as publish.yml, up to its publish step.
+      - run: pnpm install --frozen-lockfile
+      # Build before test: the bundle-isolation tests read dist (as in publish.yml).
+      - run: npm run build
+      - name: Unit tests
+        run: |
+          set -euo pipefail
+          # GNU time reports the peak RSS of the largest single process: the jest parent or one worker.
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" npm test -- --maxWorkers=2 --json --outputFile="$RUNNER_TEMP/unit.json"
+
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Unit tests at \`$(git rev-parse HEAD)\`"
+            if [[ -f "$RUNNER_TEMP/unit.json" ]]; then
+              # shellcheck disable=SC2016 # the single quotes hold JavaScript template literals, not shell.
+              node -e '
+                const r = require(process.argv[1]);
+                console.log(`- tests: ${r.numPassedTests}/${r.numTotalTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped`);
+                console.log(`- suites: ${r.numPassedTestSuites}/${r.numTotalTestSuites} passed`);
+              ' "$RUNNER_TEMP/unit.json"
+            else
+              echo "- no jest report: the run stopped before the tests finished"
+            fi
+            if [[ -f "$RUNNER_TEMP/time.txt" ]]; then
+              grep -E 'Elapsed \(wall clock\)|Maximum resident set size' "$RUNNER_TEMP/time.txt" | sed 's/^\s*/- /'
+            fi
+          # Also in the log: the job summary has no API, the log does.
+          } | tee -a "$GITHUB_STEP_SUMMARY"

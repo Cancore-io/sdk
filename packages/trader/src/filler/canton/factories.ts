@@ -104,6 +104,12 @@ export interface CantonTransferFactory {
   preapprovalOperator?: string;
 }
 
+/** The holding template of a registry, `<package>:<module>:<entity>`: DA Utilities keeps `Holding` in a package of its own (`holdingPackageId`). */
+export const holdingTemplateOf = (f: CantonTransferFactory): string => `${f.holdingPackageId ?? f.packageId}:${f.holding}`;
+
+/** Every template a holding of the registry can carry: the one it creates and those of `upgradedHoldingPackageIds` it still spends. */
+export const holdingTemplatesOf = (f: CantonTransferFactory): string[] => [holdingTemplateOf(f), ...(f.upgradedHoldingPackageIds ?? []).map((p) => `${p}:${f.holding}`)];
+
 const CNRX_REGISTRY_0_2_3: CantonTransferFactory = {
   packageId: 'd495b7d2e9376e42bb58845c47e165492bba917216352636b6c357c76d3bb736',
   factory: 'Cnrx.Rules:CnrxRules',
