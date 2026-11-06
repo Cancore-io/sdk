@@ -6,19 +6,36 @@
  *
  *   INTENT_STAND_ENV=<stand env> npx jest --selectProjects int --runInBand packages/trader/test/CAN-1861-tickets.stand.int.test.ts
  */
-import { FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, fillerIdHash, type Hex, type TicketIntentMessage } from '@cancore/contracts';
-import { hashOrder } from '../src/filler/chain/hashes';
+import type { Hex } from '@cancore/contracts';
 import { OFFER_DECLINE_REASONS, type TicketOfferDecision } from '../src/filler/tickets/desk';
 import { createTestTypedDataSigner } from '../src/filler/testing';
 import { env } from './stand/canton-ledger';
-import { command, cursor, eventsAfter, GATEWAY_KEYS, httpRpc, offerCommand, ofOrder, sleep, standChain, standFiller, standOrder, standRouter, standSuite, STREAMS, until, type StandFiller, type StandFillerOptions } from './stand/filler-gateway';
+import {
+  command,
+  cursor,
+  eventsAfter,
+  GATEWAY_KEYS,
+  httpRpc,
+  issueEvmTicket,
+  offerCommand,
+  ofOrder,
+  openOnStand,
+  sleep,
+  STAND_TICKET_SIGNER_KEY,
+  standEvmOrder,
+  standFiller,
+  standOrder,
+  standSuite,
+  STREAMS,
+  until,
+  type StandFiller,
+  type StandFillerOptions,
+} from './stand/filler-gateway';
 
-/** The stand's ticket signer: anvil's default mnemonic, index 16 (TICKETSIGNER of the runbook) — a test key. */
-const STAND_TICKET_SIGNER_KEY: Hex = '0xea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0';
 /** Any other key: what filler-gateway must not pass off as Cancore's. */
 const FOREIGN_KEY: Hex = `0x${'4d'.repeat(32)}`;
 
-standSuite('CAN-1861: the ticket desk against the real filler-gateway', GATEWAY_KEYS, () => {
+standSuite('CAN-1861: the ticket desk against the real filler-gateway', [...GATEWAY_KEYS, 'MAKER_EVM_KEY', 'PERMIT2_ADDRESS', 'QUOTE_SIGNER_KEY'], () => {
   const decisions = new Map<Hex, () => Promise<TicketOfferDecision>>();
   const asked = new Map<Hex, number>();
   const offerHook: StandFillerOptions['offer'] = async (offer) => {
@@ -32,31 +49,6 @@ standSuite('CAN-1861: the ticket desk against the real filler-gateway', GATEWAY_
   const declined = (orderHash: Hex, from: string) =>
     until('ticket.declined at filler-gateway', async () => (await eventsAfter(STREAMS.ticketEvents, from, (e) => ofOrder(orderHash)(e) && e.kind === 'ticket.declined'))[0], 60_000, () => stand?.diagnostics() ?? '');
 
-  /** An EVM → EVM order on the stand chain, EVM-form ticket: what the SDK reads on the stand router. */
-  const evmOrder = (salt: number) => {
-    const { nowS, order: base } = standOrder(salt);
-    const order = {
-      ...base,
-      destination: `0x${BigInt(env('EVM_CHAIN_ID')).toString(16).padStart(64, '0')}` as Hex,
-      outputAsset: `0x${'00'.repeat(12)}${env('INPUT_TOKEN_ADDRESS').slice(2).toLowerCase()}` as Hex,
-      recipient: `0x${'00'.repeat(12)}${'61'.repeat(20)}` as Hex,
-    };
-    return { nowS, order, orderHash: hashOrder(order, { chainId: BigInt(env('EVM_CHAIN_ID')), router: standRouter() }) };
-  };
-
-  /** Offers an EVM-form ticket of `o`, waits for the intent ack, issues it signed by `signerKey`; returns the cursor. */
-  async function issueEvm(s: StandFiller, o: { order: ReturnType<typeof standOrder>['order']; orderHash: Hex; nowS: number }, signerKey: Hex) {
-    const from = await cursor(STREAMS.ticketEvents);
-    await command(STREAMS.tickets, 'ticket.offer', offerCommand(o, { destination: standChain(), form: 'evm' }));
-    const acked = await until('the intent acked', async () => ((await ticket(s, o.orderHash))?.intentAck ? ticket(s, o.orderHash) : undefined), 60_000, s.diagnostics);
-    const intent = acked!.intent as TicketIntentMessage;
-    const fillTicket = {
-      orderHash: o.orderHash, fillerId: fillerIdHash(env('STAND_FILLER_ID')), deliveryKey: intent.deliveryKey, repayTo: intent.repayTo, attempt: 0, validFrom: String(o.nowS), validUntil: String(o.nowS + 900),
-    };
-    const ticketSig = await createTestTypedDataSigner(signerKey).signTypedData({ domain: FILL_TICKET_DOMAIN, types: FILL_TICKET_TYPES, primaryType: 'FillTicket', message: fillTicket });
-    await command(STREAMS.tickets, 'ticket.issue', { orderHash: o.orderHash, attempt: 0, ticketSig, deliveryKey: intent.deliveryKey, repayTo: intent.repayTo });
-    return from;
-  }
   describe('one filler pinned to the stand', () => {
     beforeAll(async () => {
       expect(env('TICKET_SIGNERS').toLowerCase()).toContain(createTestTypedDataSigner(STAND_TICKET_SIGNER_KEY).address.toLowerCase());
@@ -78,8 +70,8 @@ standSuite('CAN-1861: the ticket desk against the real filler-gateway', GATEWAY_
     }, 120_000);
 
     test('TC-SDK-1861-INT-03: an issued EVM-form ticket of an order never opened — V-E2 refuses ESCROW_NOT_OPEN, the decline reaches filler-gateway, no receipt', async () => {
-      const o = evmOrder(110);
-      const from = await issueEvm(stand, o, STAND_TICKET_SIGNER_KEY);
+      const o = standEvmOrder(110);
+      const from = await issueEvmTicket(stand, o, STAND_TICKET_SIGNER_KEY);
       expect((await declined(o.orderHash, from)).data).toMatchObject({ reason: 'ESCROW_NOT_OPEN' });
       const kinds = (await eventsAfter(STREAMS.ticketEvents, from, ofOrder(o.orderHash))).map((e) => e.kind);
       expect(kinds).toEqual(expect.arrayContaining(['ticket.offered', 'ticket.intent', 'ticket.issued', 'ticket.declined']));
@@ -87,8 +79,8 @@ standSuite('CAN-1861: the ticket desk against the real filler-gateway', GATEWAY_
     }, 120_000);
 
     test('TC-SDK-1861-INT-05: a ticket signed by a key filler-gateway does not hold is refused there and never reaches the SDK', async () => {
-      const o = evmOrder(111);
-      const from = await issueEvm(stand, o, FOREIGN_KEY);
+      const o = standEvmOrder(111);
+      const from = await issueEvmTicket(stand, o, FOREIGN_KEY);
       const refused = await until('the issue refused', async () => (await eventsAfter(STREAMS.ticketEvents, from, (e) => ofOrder(o.orderHash)(e) && /refused$/.test(e.kind)))[0], 30_000, stand.diagnostics);
       expect(refused.kind).toMatch(/^ticket\.issue/);
       await sleep(3_000);
@@ -119,10 +111,12 @@ standSuite('CAN-1861: the ticket desk against the real filler-gateway', GATEWAY_
       expect((await ticket(stand, o.orderHash))?.state).toBe('declined');
     }, 120_000);
 
-    test.each(['FILLED', 'NO_SHOW'])('TC-SDK-1861-INT-09: ticket.expired %s — the SDK records the attempt expired with the result', async (result) => {
-      const o = standOrder(result === 'FILLED' ? 114 : 115);
-      await command(STREAMS.tickets, 'ticket.offer', offerCommand(o));
-      await until('the intent acked', async () => ((await ticket(stand, o.orderHash))?.intentAck ? true : undefined), 60_000, stand.diagnostics);
+    // filler-gateway expires an issued ticket only (STATE), and NO_SHOW only over a receipt (P-4): the ticket here is
+    // issued and declined, so the misses it can carry are FILLED and NO_SHOW_UNCONFIRMED.
+    test.each(['FILLED', 'NO_SHOW_UNCONFIRMED'])('TC-SDK-1861-INT-09: ticket.expired %s — the SDK records the attempt expired with the result', async (result) => {
+      const o = standEvmOrder(result === 'FILLED' ? 114 : 115);
+      const from = await issueEvmTicket(stand, o, STAND_TICKET_SIGNER_KEY);
+      await declined(o.orderHash, from);
       await command(STREAMS.tickets, 'ticket.expire', { orderHash: o.orderHash, attempt: 0, result });
       const expired = await until('expired', async () => {
         const t = await ticket(stand, o.orderHash);
@@ -138,8 +132,10 @@ standSuite('CAN-1861: the ticket desk against the real filler-gateway', GATEWAY_
     stand = pinnedElsewhere;
     await pinnedElsewhere.filler.start();
     try {
-      const o = evmOrder(120);
-      const from = await issueEvm(pinnedElsewhere, o, STAND_TICKET_SIGNER_KEY);
+      // V-T1 is read after the escrow checks: only an open escrow lets the ticket reach it.
+      const o = standEvmOrder(120);
+      await openOnStand(o);
+      const from = await issueEvmTicket(pinnedElsewhere, o, STAND_TICKET_SIGNER_KEY);
       expect((await declined(o.orderHash, from)).data).toMatchObject({ reason: 'TICKET_SIGNER_UNKNOWN' });
       expect((await eventsAfter(STREAMS.ticketEvents, from, ofOrder(o.orderHash))).map((e) => e.kind)).not.toContain('ticket.receipt');
     } finally {
@@ -152,8 +148,8 @@ standSuite('CAN-1861: the ticket desk against the real filler-gateway', GATEWAY_
     stand = blind;
     await blind.filler.start();
     try {
-      const o = evmOrder(121);
-      const from = await issueEvm(blind, o, STAND_TICKET_SIGNER_KEY);
+      const o = standEvmOrder(121);
+      const from = await issueEvmTicket(blind, o, STAND_TICKET_SIGNER_KEY);
       await declined(o.orderHash, from);
       expect((await eventsAfter(STREAMS.ticketEvents, from, ofOrder(o.orderHash))).map((e) => e.kind)).not.toContain('ticket.receipt');
       expect((await ticket(blind, o.orderHash))?.state).toBe('declined');

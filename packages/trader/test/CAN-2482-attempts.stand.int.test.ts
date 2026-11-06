@@ -9,7 +9,25 @@
 import type { Hex, TicketOffer } from '@cancore/contracts';
 import type { FillerReconfirm } from '../src/filler/quotes';
 import { env } from './stand/canton-ledger';
-import { command, cursor, eventsAfter, GATEWAY_KEYS, offerCommand, ofOrder, sleep, standFiller, standOrder, standSuite, STREAMS, until, type StandFiller } from './stand/filler-gateway';
+import {
+  command,
+  cursor,
+  eventsAfter,
+  GATEWAY_KEYS,
+  issueEvmTicket,
+  offerCommand,
+  ofOrder,
+  sleep,
+  STAND_TICKET_SIGNER_KEY,
+  standChain,
+  standEvmOrder,
+  standFiller,
+  standOrder,
+  standSuite,
+  STREAMS,
+  until,
+  type StandFiller,
+} from './stand/filler-gateway';
 
 standSuite('CAN-2482: one attempt per order against the real filler-gateway', [...GATEWAY_KEYS, 'STAND_FILLER2_ID'], () => {
   const offers: TicketOffer[] = [];
@@ -62,12 +80,15 @@ standSuite('CAN-2482: one attempt per order against the real filler-gateway', [.
   }, 120_000);
 
   test('TC-SDK-2482-INT-02: attempt 2 after attempt 0 expired — refused by filler-gateway (S-7), no hook, nothing stored for it', async () => {
-    const o = await offeredAndAcked(2);
-    await command(STREAMS.tickets, 'ticket.expire', { orderHash: o.orderHash, attempt: 0, result: 'NO_SHOW' });
+    // filler-gateway expires an issued ticket only: attempt 0 is issued, declined by the SDK (never opened), then expired.
+    const o = standEvmOrder(2);
+    const issuedFrom = await issueEvmTicket(stand, o, STAND_TICKET_SIGNER_KEY);
+    await until('attempt 0 declined at filler-gateway', async () => (await eventsAfter(STREAMS.ticketEvents, issuedFrom, (e) => ofOrder(o.orderHash)(e) && e.kind === 'ticket.declined'))[0], 60_000, stand.diagnostics);
+    await command(STREAMS.tickets, 'ticket.expire', { orderHash: o.orderHash, attempt: 0, result: 'NO_SHOW_UNCONFIRMED' });
     await until('attempt 0 expired in the SDK', async () => ((await ticket(o.orderHash, 0))?.state === 'expired' ? true : undefined), 60_000, stand.diagnostics);
 
     const from = await cursor(STREAMS.ticketEvents);
-    await command(STREAMS.tickets, 'ticket.offer', offerCommand(o, { attempt: 2 }));
+    await command(STREAMS.tickets, 'ticket.offer', offerCommand(o, { attempt: 2, destination: standChain(), form: 'evm' }));
     expect((await refusedS7(o.orderHash, from, 2)).data).toMatchObject({ rule: 'S-7' });
     await sleep(3_000);
     expect(hookCalls(o.orderHash)).toBe(1);

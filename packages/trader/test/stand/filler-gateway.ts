@@ -9,10 +9,28 @@
  * One SDK filler per spec at a time: each logs in as STAND_FILLER_ID and stops before the next starts.
  */
 import { connect } from 'node:net';
-import { encodeCantonAmount, encodeCantonDestination, encodeCantonOutputAsset, encodeCantonRecipient, fillerIdHash, type Hex, type OrderJson } from '@cancore/contracts';
+import {
+  CANCORE_ROUTER_ABI,
+  encodeCantonAmount,
+  encodeCantonDestination,
+  encodeCantonOutputAsset,
+  encodeCantonRecipient,
+  FILL_TICKET_DOMAIN,
+  FILL_TICKET_TYPES,
+  fillerIdHash,
+  hashPermitWitness,
+  QUOTE_TYPES,
+  routerDomain,
+  type Hex,
+  type OrderJson,
+  type TicketIntentMessage,
+} from '@cancore/contracts';
 import { ed25519 } from '@noble/curves/ed25519';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { keccak_256 } from '@noble/hashes/sha3';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
 import type { CantonTransferFactory } from '../../src/filler/canton/factories';
+import { encodeFunctionCall, entryOf, type AbiEntry } from '../../src/filler/chain/abi';
 import { hashOrder } from '../../src/filler/chain/hashes';
 import type { EvmChainId } from '../../src/filler/chains';
 import { createFiller, type Filler, type QuoteRequestHook, type ReconfirmHook, type TicketOfferHook } from '../../src/filler/filler';
@@ -219,6 +237,69 @@ export function standOrder(salt: number, fillerId = env('STAND_FILLER_ID')): { o
     fillerId: fillerIdHash(fillerId),
   };
   return { order, orderHash: hashOrder(order, { chainId: BigInt(env('EVM_CHAIN_ID')), router: standRouter() }), nowS };
+}
+
+/** An EVM → EVM order on the stand chain with an EVM-form ticket, what the SDK reads on the stand router; never opened. */
+export function standEvmOrder(salt: number): { order: OrderJson; orderHash: Hex; nowS: number } {
+  const { nowS, order: base } = standOrder(salt);
+  const order: OrderJson = {
+    ...base,
+    destination: `0x${BigInt(env('EVM_CHAIN_ID')).toString(16).padStart(64, '0')}` as Hex,
+    outputAsset: `0x${'00'.repeat(12)}${env('INPUT_TOKEN_ADDRESS').slice(2).toLowerCase()}` as Hex,
+    recipient: `0x${'00'.repeat(12)}${'61'.repeat(20)}` as Hex,
+  };
+  return { nowS, order, orderHash: hashOrder(order, { chainId: BigInt(env('EVM_CHAIN_ID')), router: standRouter() }) };
+}
+
+/** The stand's ticket signer: anvil's default mnemonic, index 16 (TICKETSIGNER of the runbook) — a test key. */
+export const STAND_TICKET_SIGNER_KEY: Hex = '0xea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0';
+
+/**
+ * Offers an EVM-form ticket of `o` to `s`, waits for the intent ack and issues the ticket signed by `signerKey`, as
+ * trading would; returns the ticket-events cursor taken before the offer.
+ */
+export async function issueEvmTicket(s: StandFiller, o: { order: OrderJson; orderHash: Hex; nowS: number }, signerKey: Hex): Promise<string> {
+  const from = await cursor(STREAMS.ticketEvents);
+  await command(STREAMS.tickets, 'ticket.offer', offerCommand(o, { destination: standChain(), form: 'evm' }));
+  const acked = await until('the intent acked', async () => {
+    const t = await s.store.withOrder(o.orderHash, (tx) => tx.getTicket(0));
+    return t?.intentAck ? t : undefined;
+  }, 60_000, s.diagnostics);
+  const intent = acked.intent as TicketIntentMessage;
+  const fillTicket = {
+    orderHash: o.orderHash, fillerId: fillerIdHash(env('STAND_FILLER_ID')), deliveryKey: intent.deliveryKey, repayTo: intent.repayTo, attempt: 0, validFrom: String(o.nowS), validUntil: String(o.nowS + 900),
+  };
+  const ticketSig = await createTestTypedDataSigner(signerKey).signTypedData({ domain: FILL_TICKET_DOMAIN, types: FILL_TICKET_TYPES, primaryType: 'FillTicket', message: fillTicket });
+  await command(STREAMS.tickets, 'ticket.issue', { orderHash: o.orderHash, attempt: 0, ticketSig, deliveryKey: intent.deliveryKey, repayTo: intent.repayTo });
+  return from;
+}
+
+const signDigest = (key: Hex, digest: Hex): Hex => {
+  const sig = secp256k1.sign(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)), { lowS: true });
+  return `0x${bytesToHex(sig.toCompactRawBytes())}${(27 + sig.recovery).toString(16)}`;
+};
+
+/**
+ * Opens `o` on the stand router as the maker (MAKER_EVM_KEY, Permit2-approved on the stand's test tokens) with a
+ * quote of the stand's quote signer (QUOTE_SIGNER_KEY): the escrow a ticket's checks read past V-E2.
+ */
+export async function openOnStand(o: { order: OrderJson; orderHash: Hex }): Promise<void> {
+  const rpc = httpRpc(env('EVM_RPC_URL'));
+  const chainId = BigInt(env('EVM_CHAIN_ID'));
+  const router = standRouter();
+  const makerKey = env('MAKER_EVM_KEY') as Hex;
+  const latest = BigInt((await rpc.request<{ timestamp: string }>({ method: 'eth_getBlockByNumber', params: ['latest', false] })).timestamp);
+  const quoteDeadline = latest + 300n;
+  const quoteSig = await createTestTypedDataSigner(env('QUOTE_SIGNER_KEY') as Hex).signTypedData({ domain: routerDomain(chainId, router), types: QUOTE_TYPES, primaryType: 'Quote', message: { orderHash: o.orderHash, quoteDeadline } });
+  const permit = { permitted: { token: o.order.inputToken, amount: o.order.inputAmount }, nonce: BigInt(`0x${bytesToHex(keccak_256(utf8ToBytes(o.orderHash)))}`) >> 8n, deadline: o.order.fillDeadline };
+  const permitSig = signDigest(makerKey, hashPermitWitness({ ...permit, spender: router, witness: o.order }, chainId, env('PERMIT2_ADDRESS') as Hex));
+  const data = encodeFunctionCall(entryOf(CANCORE_ROUTER_ABI as unknown as readonly AbiEntry[], 'function', 'openFor'), [o.order, permit, permitSig, quoteDeadline, quoteSig]);
+  const maker = createTestFillSigner(makerKey);
+  const nonce = BigInt(await rpc.request<string>({ method: 'eth_getTransactionCount', params: [maker.address, 'pending'] }));
+  const raw = await maker.signTransaction({ chainId, nonce, to: router, data, value: 0n, gasLimit: 1_500_000n, maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n });
+  const tx = await rpc.request<Hex>({ method: 'eth_sendRawTransaction', params: [raw] });
+  const receipt = await until('the open mined', async () => (await rpc.request<{ status: string } | null>({ method: 'eth_getTransactionReceipt', params: [tx] })) ?? undefined, 60_000);
+  if (receipt.status !== '0x1') throw new Error(`openFor of ${o.orderHash} reverted`);
 }
 
 /** `ticket.offer` of `order` as trading sends it after the pick: attempt 0, a 15 min ticket, 15 s to accept. */

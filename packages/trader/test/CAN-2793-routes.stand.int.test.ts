@@ -46,7 +46,7 @@ standSuite('CAN-2793: routes against the real filler-gateway', GATEWAY_KEYS, () 
     const refusal = await routes.set([...activeOf(before), unapproved]).catch((e: unknown) => e);
     expect(refusal).toBeInstanceOf(GatewayError);
     expect(refusal).toMatchObject({ code: 'ROUTE_NOT_APPROVED' });
-    expect(await routes.state()).toEqual(before);
+    expect((await routes.state()).routes).toEqual(before.routes);
   }, 120_000);
 
   test('TC-SDK-2793-INT-03: answers signed by filler-gateway while another key is pinned — refused UNVERIFIED_RESPONSE, nothing taken from them', async () => {

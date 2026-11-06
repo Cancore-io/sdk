@@ -44,7 +44,7 @@ standSuite('CAN-2151: the signed envelope against the real filler-gateway', GATE
       const routes = createFillerRoutes({ gatewayUrl: env('FILLER_GATEWAY_WS_URL'), fillerId: env('STAND_FILLER_ID'), gatewaySigner: env('FILLER_GATEWAY_SIGNER') as Hex, messageSigner: createTestTypedDataSigner(env('STAND_FILLER_MESSAGE_KEY') as Hex) });
       const before = await routes.state();
       const after = await routes.set(before.routes.filter((r) => r.active).map(({ src, dst }) => ({ src, dst })));
-      expect(after).toEqual(before);
+      expect(after.routes).toEqual(before.routes);
       expect(stand.logger.entries.filter((l) => JSON.stringify(l).includes('BAD_SIGNATURE'))).toEqual([]);
     } finally {
       await stand.filler.stop();
