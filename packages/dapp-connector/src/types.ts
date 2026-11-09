@@ -28,6 +28,18 @@ export interface Cip0103Provider {
   removeListener(event: string, listener: ProviderListener): Cip0103Provider;
 }
 
+/**
+ * What `prepareExecute` answers. `preparedTransaction` and `preparedTransactionHash` (base64, CIP-0103
+ * names) are the wallet's, handed through untouched when it sends them: a signer that verifies a
+ * transaction before signing it needs the bytes, not only their hash (CAN-3340).
+ */
+export interface PrepareExecuteResult {
+  commandId: string;
+  userUrl: string;
+  preparedTransaction?: string;
+  preparedTransactionHash?: string;
+}
+
 /** The grant the consent ceremony hands over, plus where to spend it. */
 export interface CancoreSession {
   /** Opaque `cs_…` app-session grant. Bound to the dApp's origin by the backend. */

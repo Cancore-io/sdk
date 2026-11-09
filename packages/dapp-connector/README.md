@@ -81,7 +81,7 @@ Each is behind the scope it needs — `wallet:connect`, `wallet:accounts`, `wall
 | `listAccounts` | `wallet:accounts` | the owner's accounts |
 | `getPrimaryAccount` | `wallet:accounts` | the account the owner treats as primary |
 | `signMessage` | `wallet:sign` | `{ messageId, userUrl }` — a place the person goes |
-| `prepareExecute` | `wallet:sign` | `{ commandId, userUrl }` — same shape, for a transaction |
+| `prepareExecute` | `wallet:sign` | `{ commandId, userUrl }` — same shape, for a transaction; plus `preparedTransaction` and `preparedTransactionHash` when the wallet sends them (`PrepareExecuteResult`) |
 | `cancore_getMessageSignature` | `wallet:sign` | the signature for a `messageId`, once it exists |
 | `cancore_getTxOutcome` | `wallet:sign` | the outcome for a `commandId`, once it exists |
 | `cancore_streamTicket` | — | one-shot ticket the event stream authenticates with |

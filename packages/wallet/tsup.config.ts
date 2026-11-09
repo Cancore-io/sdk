@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup';
 
 /**
- * Three entries, ESM only, types emitted, runtime dependencies left external.
+ * One entry per published subpath, ESM only, types emitted, runtime dependencies left external.
  *
  * `./web` is its own entry rather than a re-export from the core because that
  * split IS the package's contract: folding web into `index` would put
@@ -23,7 +23,7 @@ export default defineConfig({
   // (classic resolution) and cannot find `@noble/curves/ed25519`, whose types
   // live behind package `exports`.
   tsconfig: './tsconfig.json',
-  entry: ['src/index.ts', 'src/operations.ts', 'src/web/index.ts'],
+  entry: { index: 'src/index.ts', operations: 'src/operations.ts', 'web/index': 'src/web/index.ts', 'canton/index': 'src/canton/index.ts', 'canton/proto': 'src/canton/proto.ts' },
   format: ['esm'],
   dts: true,
   sourcemap: true,
