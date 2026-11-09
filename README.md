@@ -129,6 +129,18 @@ and `postMessage`, and the wallet core is WebCrypto — a runtime old enough to
 need CommonJS has none of them, so a CJS build would be a build nobody can use
 pretending otherwise.
 
+## Running CI on your personal runner (CAN-2942)
+
+`ci.yml` runs on GitHub-hosted `ubuntu-latest` (this repository is public, so fork PRs never reach a self-hosted runner). A manual run can go to your own runner from gitops `tools/personal-runner` instead.
+
+**Not working yet:** personal mode does nothing until an org admin adds this repository to the `personal-runners` runner group. That happens only after [gitops#413](https://github.com/Cancore-io/gitops/pull/413) is merged and the runner slots are restarted with it: its job-started hook refuses a job unless the runner's owner triggered it, the repository belongs to Cancore-io and the code does not come from a fork, so re-running a fork PR cannot run fork code on a developer's machine. Fork PR workflows also need approval for all outside collaborators. Until then a `runner=personal` run queues with no runner to take it. Once enrolled:
+
+```bash
+gh workflow run ci.yml -R Cancore-io/sdk --ref <branch> -f runner=personal
+```
+
+PR and push runs always stay on `ubuntu-latest`; only a manual run with `runner=personal` goes to the runner of whoever dispatched it (`github.triggering_actor`), and dispatching needs write access. Setup, limits and troubleshooting: [personal runner guide](https://github.com/Cancore-io/gitops/blob/dev/tools/personal-runner/README.md).
+
 ## Making a change
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before the first PR. In short: comments
