@@ -108,6 +108,8 @@ interface Over {
   fetchSignatories?: string[];
   /** The operator's RegistryFactoryPin the fill names; fields replace the honest one's, `null` leaves it undisclosed. */
   pin?: Record<string, DamlValue> | null;
+  /** The template of the factory the pin's transfer route runs. */
+  transferTemplate?: string;
 }
 
 /** The honest fill: DeliveryOrder_Fill → [registry fetch, TransferFactory_Transfer → (archive h1, h2, credit, change), DeliveryReceipt]. */
@@ -125,7 +127,7 @@ function fill(o: Over = {}): CantonTransaction {
       : []),
   ];
   const transfer: TransactionNode = {
-    nodeId: '2', kind: 'exercise', contractId: FACTORY_CID, packageName: 'cnrx-registry', templateId: `${CNRX}:Cnrx.Rules:CnrxRules`,
+    nodeId: '2', kind: 'exercise', contractId: FACTORY_CID, packageName: 'cnrx-registry', templateId: o.transferTemplate ?? `${CNRX}:Cnrx.Rules:CnrxRules`,
     interfaceId: `${TI_V1}:Splice.Api.Token.TransferInstructionV1:TransferFactory`, choice: 'TransferFactory_Transfer',
     chosenValue: v.record({
       expectedAdmin: v.party(ADMIN),
@@ -172,6 +174,12 @@ const refused = (run: () => unknown, detail: RegExp) => {
 describe('delivery.fill: the honest delivery of the node’s own ticket (CAN-1867)', () => {
   test('TC-SDK-1867-01: DeliveryOrder_Fill of the ticket, 25 CNRX to the recipient, 5 back as change, one receipt: passes', () => {
     expect(() => check()(prepared(), [fill()])).not.toThrow();
+  });
+});
+
+describe('delivery.fill: the factory of the operator’s pin is the registry’s (CAN-3352)', () => {
+  test('TC-SDK-3352-05: a pin whose transfer factory is EvilTransferFactory is refused before the fill is signed', () => {
+    refused(() => check()(prepared(), [fill({ transferTemplate: `${'ee'.repeat(32)}:Intent.Test.Mocks:EvilTransferFactory` })]), /not a pinned factory of the admin/);
   });
 });
 

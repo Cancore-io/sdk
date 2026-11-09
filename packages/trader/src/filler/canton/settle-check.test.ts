@@ -117,9 +117,21 @@ function honest(o: Over = {}): CantonTransaction {
   return { commandId: 'c', actAs: o.actAs ?? [ME], roots: ['0'], nodes: Object.fromEntries(nodes.map((n) => [n.nodeId, n])), inputContracts: [...(o.noIntent ? [] : [intentContract(o.intentPackage)]), ...(o.pin === null ? [] : [pinContract(o.pin)])], synchronizerId: 's', preparationTime: '0' };
 }
 
+const OTHER_REG_PKG = 'bc'.repeat(32);
+const OTHER_ADMIN = 'other-admin::1220bb';
+/** A receipt allocation the settle runs on `templateId` with the party's authority (CAN-3352). */
+const allocate = (templateId: string, signatories: string[]): TransactionNode => ({
+  nodeId: '30', kind: 'exercise', contractId: '00af', packageName: 'registry', templateId, interfaceId: `${'99'.repeat(32)}:Splice.Api.Token.AllocationInstructionV2:AllocationFactory`,
+  choice: 'AllocationFactory_Allocate', chosenValue: v.record({}), actingParties: [ME, OPERATOR], signatories, stakeholders: signatories, consuming: false, children: [],
+});
+
 const summary = { orderHash: ORDER_HASH, intentCid: '00si', asset: { admin: ADMIN, id: 'CNRX' }, amount: PAYOUT, executeBefore: '1790004200', payee: ME, giveAmount: '100.0', fee: { receiver: OPERATOR, amount: FEE } };
 const prepared = (s: Partial<typeof summary> = {}) => ({ summary: { ...summary, ...s } }) as unknown as PreparedOf<'intent.settle'>;
 const check = checkIntentSettle({ publicKey: KEY, party: ME, intent, feeBps: 30n, proof, entryCid: '00en', factories: FACTORIES });
+const checkTwoRegistries = checkIntentSettle({
+  publicKey: KEY, party: ME, intent, feeBps: 30n, proof, entryCid: '00en',
+  factories: { ...FACTORIES, [OTHER_ADMIN]: [{ ...(FACTORIES[ADMIN]?.[0] as CantonTransferFactory), packageId: OTHER_REG_PKG }] },
+});
 const refused = (run: () => unknown, detail: RegExp) => {
   expect(run).toThrow(CantonRefusal);
   expect(run).toThrow(detail);
@@ -128,6 +140,14 @@ const refused = (run: () => unknown, detail: RegExp) => {
 describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery (CAN-2321)', () => {
   test('the honest settle passes', () => {
     expect(() => check(prepared(), [honest()])).not.toThrow();
+  });
+
+  test('TC-SDK-3352-03: a receipt allocation through the pinned registry’s factory passes', () => {
+    expect(() => check(prepared(), [honest({ extra: [allocate(`${REG_PKG}:Cnrx.Allocation:CnrxAllocationRules`, [ADMIN])] })])).not.toThrow();
+  });
+
+  test('TC-SDK-3352-04: a receipt allocation through an unlisted template the instrument admin signs passes', () => {
+    expect(() => check(prepared(), [honest({ extra: [allocate(`${'97'.repeat(32)}:Cnrx.Allocation:CnrxAllocationRulesV3`, [ADMIN])] })])).not.toThrow();
   });
 
   test('TC-SDK-3172-05: a 0.4.2 settle names no pin and runs the factory stored at Open: passes', () => {
@@ -162,6 +182,8 @@ describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery
     ['the fee leg paid to the party', () => check(prepared(), [honest({ legs: [leg('payout', ME, PAYOUT), leg('fee', ME, FEE)] })]), /fee leg pays another party/],
     ['a third leg', () => check(prepared(), [honest({ legs: [leg('payout', ME, PAYOUT), leg('fee', OPERATOR, FEE), leg('extra', 'mallory::1220', '1.0')] })]), /3 legs/],
     ['a settlement factory of an unpinned registry', () => check(prepared(), [honest({ batchTemplate: `${'98'.repeat(32)}:Evil:Rules` })]), /not of a pinned registry/],
+    ['TC-SDK-3352-01: a receipt allocation through a factory of another package', () => check(prepared(), [honest({ extra: [allocate(`${'98'.repeat(32)}:Evil:AllocationFactory`, [OPERATOR])] })]), /allocation factory .* is not of a pinned registry/],
+    ['TC-SDK-3352-02: a receipt allocation through a factory of another admin’s registry', () => checkTwoRegistries(prepared(), [honest({ extra: [allocate(`${OTHER_REG_PKG}:Other.Rules:Rules`, [OTHER_ADMIN])] })]), /allocation factory .* is not of a pinned registry/],
     ['the party credited less than the payout', () => check(prepared(), [honest({ credit: [holding('10', ME, '99.0'), holding('11', OPERATOR, FEE)] })]), /credited 99/],
     ['the party credited a locked holding', () => check(prepared(), [honest({ credit: [holding('10', ME, PAYOUT, true), holding('11', OPERATOR, FEE)] })]), /locked/],
     [
