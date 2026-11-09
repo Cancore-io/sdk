@@ -286,6 +286,47 @@ to refuse before it draws. `pauseMsBetweenLegs` exists for signers that open a U
 signature — an extension asked twice in the same tick can drop the second prompt — and is 0
 for an unlocked local key.
 
+### Intent operations: signed from the prepared transaction
+
+An intent operation (`INTENT_OPERATIONS`: `intent.open`, `intent.renew-settlement-factory`) is
+never signed from a bare hash. Its legs carry `preparedTransaction`, and the wallet recomputes the
+hash and reads the transaction before the key signs:
+
+```ts
+import { signPreparedTransaction, type IntentSigningPolicy } from '@cancore/wallet/operations';
+
+const policy: IntentSigningPolicy = { owner, admin, intentPackageIds };
+const signature = await signPreparedTransaction(signer, preparedTransactionB64, expectedHashB64, policy);
+```
+
+It refuses with `IntentTransactionRefusedError` (its `reason` is the sentence to show) unless:
+
+- the recomputed V2 hash is `expectedHashB64`, and the transaction acts as `owner` alone;
+- the one root is `IntentFactory_Open` or `SwapIntent_RenewSettlementFactory` of a `cancore-intent`
+  package in `intentPackageIds`;
+- every action below it that carries the owner's authority is code of that package, or
+  `AllocationFactory_Allocate` / `SettlementFactory_PublicFetch` on a factory of the registry of
+  `admin` — `isRegistryFactory`: the admin signs the factory, or its package is in the admin's
+  closed list (`REGISTRY_PACKAGES`); an admin with no list is refused.
+
+`verifyPreparedTransaction` is the same check without signing, for a screen or for a Renew the
+wallet signs unattended. `execute(signer, type, params, confirm, intentPolicy)` and
+`signLegs(signer, legs, { operation, intentPolicy })` run it on every leg before `confirm` and
+before the first signature; `signPreparedHashBase64(signer, hash, 'intent.open')` throws.
+
+## `@cancore/wallet/canton` — what the rail checks a Canton transaction with
+
+The prepared-transaction view and hash, the registry packages by admin and the factory rule,
+shared by the wallet, the filler node (`@cancore/trader`) and the attestor:
+
+```ts
+import { isRegistryFactory, readPreparedTransaction, REGISTRY_PACKAGES } from '@cancore/wallet/canton';
+```
+
+Its declarations need neither Node nor DOM types. The functions typed over
+`@canton-network/core-ledger-proto` (`hashPreparedTransactionV2`, `decodePreparedTransaction`,
+`transactionView`) are `@cancore/wallet/canton/proto`.
+
 ## `@cancore/wallet/web` — the browser entry
 
 ```ts

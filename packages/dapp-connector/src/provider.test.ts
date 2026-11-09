@@ -1,5 +1,5 @@
 import { CancoreProvider } from './provider';
-import { RpcCode, type ProviderRpcError, type RequestInitLike, type StreamLike } from './types';
+import { RpcCode, type PrepareExecuteResult, type ProviderRpcError, type RequestInitLike, type StreamLike } from './types';
 
 const SESSION = {
   token: 'cs_grant',
@@ -299,6 +299,21 @@ describe('CancoreProvider — events', () => {
   // this provider declines must be REFUSED BY THE WALLET, with 4200. Answering
   // -32601 here would tell a dApp author the name is wrong, when the name is
   // right and the provider is simply not obliged.
+  it('TC-SDK-3340-12: hands a prepared transaction and its hash through to the caller untouched', async () => {
+    const answer: PrepareExecuteResult = {
+      commandId: 'cmd-1',
+      userUrl: 'https://app-dev.cancore.app/sign/cmd-1',
+      preparedTransaction: 'CgMyLjESBTAuMC4x',
+      preparedTransactionHash: 'q83vEjRWeJA=',
+    };
+    const { fetchImpl, calls } = transport([{ body: { result: answer } }]);
+    const provider = new CancoreProvider({ host: 'https://app-dev.cancore.app', session: SESSION, fetchImpl });
+    const params = { commands: [{ ExerciseCommand: { choice: 'IntentFactory_Open' } }] };
+
+    await expect(provider.request({ method: 'prepareExecute', params })).resolves.toEqual(answer);
+    expect(JSON.parse(calls[0]!.init.body)).toMatchObject({ method: 'prepareExecute', params });
+  });
+
   it('lets the wallet refuse the methods it declines, rather than refusing them here', async () => {
     const { fetchImpl, calls } = transport([
       { body: { error: { code: 4200, message: 'Method prepareExecuteAndWait is not supported by this provider' } } },

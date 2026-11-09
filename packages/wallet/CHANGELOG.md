@@ -1,5 +1,42 @@
 # Changelog — `@cancore/wallet`
 
+## 0.4.0
+
+### Added — intent operations are signed from the prepared transaction (CAN-3340)
+
+The owner of an intent signs the transaction that opens it and, after a registry rotates its
+settlement factory, the one that renews it. Both run registry factories with the owner's
+authority, so the wallet now reads the transaction before the key signs instead of signing a
+32-byte hash on the server's word.
+
+- `signPreparedTransaction(signer, preparedTransactionB64, expectedHashB64, policy)` and
+  `verifyPreparedTransaction(...)` (no signature): the recomputed V2 hash must be the expected
+  one; the transaction acts as the owner alone; its one root is `IntentFactory_Open` or
+  `SwapIntent_RenewSettlementFactory` of an allowed `cancore-intent` package; every action that
+  carries the owner's authority is that package's code or `AllocationFactory_Allocate` /
+  `SettlementFactory_PublicFetch` on a factory of the policy's registry. Anything else is an
+  `IntentTransactionRefusedError` with a `reason` to show, and no signature.
+- `OperationLeg.preparedTransaction`. For `intent.open` and `intent.renew-settlement-factory`
+  every leg must carry it, `execute` and `signLegs` need an `intentPolicy` and verify every leg
+  before `confirm` and before the first signature, and `signPreparedHashBase64(signer, hash,
+  operation)` throws for these operations.
+- `@cancore/wallet/canton`: the plain view of a prepared transaction, the registry packages by
+  instrument admin (`REGISTRY_PACKAGES`, derived from the pinned `CANTON_TRANSFER_FACTORIES`) and
+  `isRegistryFactory(contract, admin)` — the admin signs the contract, or its package is in the
+  admin's closed list; an admin with no list is refused. One list for the wallet, the filler node
+  and the attestor. Its declarations need neither Node nor DOM types.
+- `@cancore/wallet/canton/proto`: Canton's V2 prepared-transaction hashing and decoding, moved
+  here from `@cancore/trader` (whose `./filler/canton/hashing` subpath re-exports it unchanged).
+
+### What a caller changes
+
+Nothing for the operations that existed before. To sign an intent operation, pass an
+`IntentSigningPolicy` — the owner, the instrument admin and the `cancore-intent` package ids the
+wallet signs for. The renew choice and its operation name follow the CAN-3340 plan and are
+re-checked against `cancore-intent` 0.6.0 once that package is built.
+
+New runtime dependencies: `@canton-network/core-ledger-proto` and `@protobuf-ts/runtime`.
+
 ## 0.3.0
 
 ### Changed — what the key signs in an envelope ceremony (CAN-2399)

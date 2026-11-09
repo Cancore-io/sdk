@@ -1,4 +1,9 @@
 import { bytesToBinaryString, hexToBytes } from './bytes';
+import { INTENT_OPERATIONS, isIntentOperation, type IntentSigningPolicy } from './canton/intentPolicy';
+import { verifyPreparedTransaction } from './canton/prepared';
+
+export { INTENT_OPERATIONS, IntentTransactionRefusedError, isIntentOperation, type IntentRoot, type IntentSigningPolicy } from './canton/intentPolicy';
+export { verifyPreparedTransaction } from './canton/prepared';
 
 /**
  * `@cancore/wallet/operations` — the wallet's client for the Cancore operations
@@ -23,6 +28,8 @@ export interface OperationLeg {
   legId: string;
   /** Base64 prepared-transaction hash, as the participant returned it. */
   hash: string;
+  /** Base64 prepared transaction the hash is of; required for an intent operation, whose legs are signed from it. */
+  preparedTransaction?: string;
   /**
    * What this leg is FOR, for the window that shows it. A CC send prepares TWO
    * — the transfer and its network fee — and one action to a user is still two
@@ -147,7 +154,32 @@ export function hexSignatureToBase64(hex: string): string {
 export async function signPreparedHashBase64(
   signer: HashSigner,
   preparedTransactionHashB64: string,
+  operation?: string,
 ): Promise<string> {
+  if (operation !== undefined && isIntentOperation(operation)) {
+    throw new UnexpectedLegError(`"${operation}" is signed from its prepared transaction (signPreparedTransaction), never from a bare hash`);
+  }
+  return signHash(signer, preparedTransactionHashB64);
+}
+
+/**
+ * Sign an intent operation's prepared transaction for its owner (CAN-3340): the hash is
+ * recomputed from the bytes and must be `expectedHashB64`, and the transaction must hold to
+ * `policy` ({@link verifyPreparedTransaction}); otherwise `IntentTransactionRefusedError` and no
+ * signature.
+ */
+export async function signPreparedTransaction(
+  signer: HashSigner,
+  preparedTransactionB64: string,
+  expectedHashB64: string,
+  policy: IntentSigningPolicy,
+): Promise<string> {
+  preparedHash(expectedHashB64);
+  verifyPreparedTransaction(preparedTransactionB64, expectedHashB64, policy);
+  return signHash(signer, expectedHashB64);
+}
+
+async function signHash(signer: HashSigner, preparedTransactionHashB64: string): Promise<string> {
   // The shape is checked here, whichever method signs (CAN-2399): a prepared-transaction hash is 32
   // bytes and nothing else is. A signer with only `signMessage` signs whatever bytes it is handed —
   // without this the fallback was a second way to a raw signature over a login challenge or a
@@ -211,8 +243,9 @@ function topologyMultihash(leg: OperationLeg): string {
  * login challenge, a consent text, anything. The kind picks the path and the
  * bytes have to be what that path is for — a multihash and nothing else.
  */
-async function signLeg(signer: HashSigner, leg: OperationLeg): Promise<string> {
-  if (leg.kind !== 'topology') return signPreparedHashBase64(signer, leg.hash);
+async function signLeg(signer: HashSigner, leg: OperationLeg, intentPolicy?: IntentSigningPolicy): Promise<string> {
+  if (intentPolicy) return signPreparedTransaction(signer, leg.preparedTransaction ?? '', leg.hash, intentPolicy);
+  if (leg.kind !== 'topology') return signHash(signer, leg.hash);
   const rawHex = await signer.signMessage(topologyMultihash(leg));
   return hexSignatureToBase64(rawHex);
 }
@@ -251,6 +284,26 @@ export function assertOperationLegs(legs: OperationLeg[], operation?: string): v
   if (operation === TOPOLOGY_OPERATION ? topology.length !== legs.length : topology.length > 0) {
     throw new UnexpectedLegError(`"${operation}" prepared a transaction of a kind it does not have`);
   }
+  if (isIntentOperation(operation) && legs.some((leg) => typeof leg.preparedTransaction !== 'string')) {
+    throw new UnexpectedLegError(`"${operation}" is signed from its prepared transaction, and a leg came without one`);
+  }
+}
+
+/**
+ * The policy an intent operation's legs are signed under, held to that operation's root, or a
+ * refusal when the operation is an intent one and no policy was given.
+ */
+function intentPolicyFor(operation: string | undefined, policy: IntentSigningPolicy | undefined): IntentSigningPolicy | undefined {
+  if (operation === undefined || !isIntentOperation(operation)) return undefined;
+  if (!policy) throw new UnexpectedLegError(`"${operation}" is signed only under an intent signing policy`);
+  const root = INTENT_OPERATIONS[operation];
+  return { ...policy, roots: root ? [root] : [] };
+}
+
+/** Every intent leg verified before the first signature or the confirm screen: a set with one refused leg is refused whole. */
+function verifyIntentLegs(legs: OperationLeg[], policy: IntentSigningPolicy | undefined): void {
+  if (!policy) return;
+  for (const leg of legs) verifyPreparedTransaction(leg.preparedTransaction ?? '', leg.hash, policy);
 }
 
 export interface SignLegsOptions {
@@ -271,6 +324,8 @@ export interface SignLegsOptions {
    * operation may prepare — see {@link assertOperationLegs}. `execute` does.
    */
   operation?: string;
+  /** Required when `operation` is an intent operation ({@link INTENT_OPERATIONS}): what its prepared transactions must hold to. */
+  intentPolicy?: IntentSigningPolicy;
 }
 
 /**
@@ -289,12 +344,14 @@ export async function signLegs(
 ): Promise<OperationSignature[]> {
   // Before the first signature: a set that is refused must not be half signed.
   assertOperationLegs(legs, options.operation);
+  const intentPolicy = intentPolicyFor(options.operation, options.intentPolicy);
+  verifyIntentLegs(legs, intentPolicy);
   const signed: OperationSignature[] = [];
   for (const leg of legs) {
     if (signed.length > 0 && options.pauseMsBetweenLegs) {
       await new Promise((resolve) => setTimeout(resolve, options.pauseMsBetweenLegs));
     }
-    signed.push({ legId: leg.legId, signature: await signLeg(signer, leg) });
+    signed.push({ legId: leg.legId, signature: await signLeg(signer, leg, intentPolicy) });
   }
   return signed;
 }
@@ -323,12 +380,16 @@ export interface WalletOperations {
    *
    * `confirm` (CAN-1113) runs after prepare and before any signature. Omit it
    * and this is exactly the call it always was.
+   *
+   * An intent operation needs `intentPolicy` (CAN-3340): its legs are verified
+   * against it before `confirm` is asked.
    */
   execute<TResult = unknown>(
     signer: HashSigner,
     type: string,
     params?: Record<string, unknown>,
     confirm?: OperationConfirm,
+    intentPolicy?: IntentSigningPolicy,
   ): Promise<TResult>;
 }
 
@@ -364,7 +425,7 @@ export const wallet: WalletOperations = {
   list: () => client().list(),
   prepare: (type, params) => client().prepare(type, params),
   submit: (operationId, signatures) => client().submit(operationId, signatures),
-  execute: (signer, type, params, confirm) => client().execute(signer, type, params, confirm),
+  execute: (signer, type, params, confirm, intentPolicy) => client().execute(signer, type, params, confirm, intentPolicy),
 };
 
 /**
@@ -395,14 +456,16 @@ export function createWalletOperations(request: WalletRequest): WalletOperations
       type: string,
       params?: Record<string, unknown>,
       confirm?: OperationConfirm,
+      intentPolicy?: IntentSigningPolicy,
     ): Promise<TResult> {
       const prepared = await prepare(type, params);
       // Before the screen: a user is not asked to confirm what will not be signed.
       assertOperationLegs(prepared.legs, type);
+      verifyIntentLegs(prepared.legs, intentPolicyFor(type, intentPolicy));
       if (confirm && !(await confirm(prepared.legs, prepared.meta))) {
         throw new OperationDeclinedError();
       }
-      return submit<TResult>(prepared.operationId, await signLegs(signer, prepared.legs, { operation: type }));
+      return submit<TResult>(prepared.operationId, await signLegs(signer, prepared.legs, { operation: type, ...(intentPolicy ? { intentPolicy } : {}) }));
     },
   };
 }

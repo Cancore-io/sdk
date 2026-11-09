@@ -214,14 +214,15 @@ jobs:
       # A filler node is a Node program, so @cancore/trader may use Node types in
       # its own tsconfig — but its published declarations must not need them, nor
       # DOM: a consumer with neither, and with skipLibCheck off, must typecheck
-      # against both entries (CAN-1843).
+      # against both entries (CAN-1843), and against the wallet's intent signing
+      # the attestor and the filler node import with it (CAN-3340).
       - name: Typecheck @cancore/trader as a stranger with no Node or DOM types
         run: |
           set -euo pipefail
           rm -rf "$RUNNER_TEMP/trader-types" && mkdir -p "$RUNNER_TEMP/trader-types" && cd "$RUNNER_TEMP/trader-types"
           npm init -y >/dev/null
           npm pkg set type=module
-          npm install "$RUNNER_TEMP"/cancore-trader-*.tgz "$RUNNER_TEMP"/cancore-contracts-*.tgz --no-audit --no-fund
+          npm install "$RUNNER_TEMP"/cancore-trader-*.tgz "$RUNNER_TEMP"/cancore-contracts-*.tgz "$RUNNER_TEMP"/cancore-wallet-*.tgz --no-audit --no-fund
           test ! -e node_modules/@types/node || { echo "@types/node arrived with @cancore/trader"; exit 1; }
           cat > tsconfig.json <<'JSON'
           { "compilerOptions": { "strict": true, "noEmit": true, "target": "ES2022", "lib": ["ES2022"],
@@ -231,9 +232,12 @@ jobs:
           cat > consumer.ts <<'TS'
           import { createFiller, type Filler, type FillerConfig, type FillerStore, type WebSocketFactory } from '@cancore/trader/filler';
           import { InMemoryFillerStore, createFakeWebSocketFactory } from '@cancore/trader/filler/testing';
+          import { isRegistryFactory, verifyPreparedTransaction, type IntentSigningPolicy } from '@cancore/wallet/canton';
+          import { signPreparedTransaction } from '@cancore/wallet/operations';
           const store: FillerStore = new InMemoryFillerStore();
           const webSocket: WebSocketFactory = createFakeWebSocketFactory().factory;
           export const build = (config: Omit<FillerConfig, 'store' | 'webSocket'>): Filler => createFiller({ ...config, store, webSocket });
+          export const intentSigning = (policy: IntentSigningPolicy) => [policy, isRegistryFactory, verifyPreparedTransaction, signPreparedTransaction];
           TS
           "$GITHUB_WORKSPACE/node_modules/.bin/tsc" -p .
 
