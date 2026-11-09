@@ -1,5 +1,17 @@
 # Changelog — `@cancore/wallet`
 
+## 0.4.1
+
+### Changed — intent operations are signed for cancore-intent 0.6.0 only (CAN-3340)
+
+- `INTENT_PACKAGE_IDS` pins the `cancore-intent` package ids whose `IntentFactory_Open` and
+  `SwapIntent_RenewSettlementFactory` the wallet signs: 0.6.0
+  (`580ee9b8249c0125c24145f3346dba07cc9f516263716265426d8c303dd45ff7`). 0.6.0 is an upgrade of
+  0.4.2–0.5.1, so their roots still run on a ledger that vets them; those versions open an intent
+  without the owner approving the settlement factory, and settle it through the operator's pin.
+- `IntentSigningPolicy.intentPackageIds` is optional and defaults to the pin; a package outside
+  the pin is refused (`IntentTransactionRefusedError`), so a caller cannot widen it.
+
 ## 0.4.0
 
 ### Added — intent operations are signed from the prepared transaction (CAN-3340)

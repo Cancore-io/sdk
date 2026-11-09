@@ -9,10 +9,19 @@ import type { CantonTransaction, CreateNode, ExerciseNode, TransactionNode } fro
 
 export const INTENT_PACKAGE_NAME = 'cancore-intent';
 
+/**
+ * Package ids of the `cancore-intent` versions whose Open and Renew this wallet signs: 0.6.0 only (CAN-3340).
+ * 0.6.0 is an SCU of 0.4.2–0.5.1, so a root of an older package still runs: their Open stores a settlement factory
+ * without the owner's PublicFetch, and their settle runs the operator's pin under the owner's authority.
+ * shortcut: the 0.6.0 id is read from canton-contracts#327's `deploy-contracts/dars/cancore-intent-0.6.0.dar` at
+ * 973d063; re-pin it if #327 changes the package before merge.
+ */
+export const INTENT_PACKAGE_IDS: readonly string[] = ['580ee9b8249c0125c24145f3346dba07cc9f516263716265426d8c303dd45ff7'];
+
 /** The roots an owner signs, by `<module>:<entity>` of the template and the choice. */
 export const INTENT_ROOTS = {
   open: { template: 'Intent.SwapIntent:IntentFactory', choice: 'IntentFactory_Open' },
-  // shortcut: named after the CAN-3340 plan §3 E2; re-check against the cancore-intent 0.6.0 DAR once it is built.
+  // Checked against the cancore-intent 0.6.0 DAR of canton-contracts#327 (973d063).
   renewSettlementFactory: { template: 'Intent.SwapIntent:SwapIntent', choice: 'SwapIntent_RenewSettlementFactory' },
 } as const;
 
@@ -44,8 +53,8 @@ export interface IntentSigningPolicy {
   owner: string;
   /** The instrument admin of the intent's give: the registry whose factories the owner's authority may reach. */
   admin: string;
-  /** Package ids of the `cancore-intent` versions this wallet signs for. */
-  intentPackageIds: readonly string[];
+  /** Package ids of the `cancore-intent` versions this signature may be for: a subset of {@link INTENT_PACKAGE_IDS}, which is the default. */
+  intentPackageIds?: readonly string[];
   /** The roots this signature may be for. Default: every intent root. */
   roots?: readonly IntentRoot[];
   /** Registry packages by admin. Default {@link REGISTRY_PACKAGES}. */
@@ -69,8 +78,10 @@ function refuse(reason: string): never {
 const packageOf = (templateId: string): string => templateId.split(':')[0] ?? '';
 const qualified = (templateId: string): string => templateId.split(':').slice(1).join(':');
 
+const intentPackagesOf = (policy: IntentSigningPolicy): readonly string[] => policy.intentPackageIds ?? INTENT_PACKAGE_IDS;
+
 function isIntentCode(node: ExerciseNode | CreateNode, policy: IntentSigningPolicy): boolean {
-  return node.packageName === INTENT_PACKAGE_NAME && policy.intentPackageIds.includes(packageOf(node.templateId));
+  return node.packageName === INTENT_PACKAGE_NAME && intentPackagesOf(policy).includes(packageOf(node.templateId));
 }
 
 function rootOf(tx: CantonTransaction, policy: IntentSigningPolicy): { node: ExerciseNode; root: IntentRoot } {
@@ -121,7 +132,10 @@ function childrenToCheck(node: TransactionNode, policy: IntentSigningPolicy): re
  * registry ({@link isRegistryFactory}).
  */
 export function checkIntentTransaction(tx: CantonTransaction, policy: IntentSigningPolicy): IntentRoot {
-  if (policy.intentPackageIds.length === 0) refuse('no cancore-intent package is allowed');
+  const packages = intentPackagesOf(policy);
+  if (packages.length === 0) refuse('no cancore-intent package is allowed');
+  const unpinned = packages.find((id) => !INTENT_PACKAGE_IDS.includes(id));
+  if (unpinned) refuse(`cancore-intent package ${unpinned} is not a version this wallet signs for`);
   if (tx.actAs.length !== 1 || tx.actAs[0] !== policy.owner) refuse(`the transaction acts as ${tx.actAs.join(', ') || 'nobody'}, not as the owner alone`);
   const { node, root } = rootOf(tx, policy);
   const seen = new Set<string>([node.nodeId]);

@@ -2,11 +2,13 @@ import { type DamlTransaction_Node, PreparedTransaction, type Value } from '@can
 import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
 import { describe, expect, jest, test } from '@jest/globals';
 import { signLegs, signPreparedHashBase64, signPreparedTransaction, UnexpectedLegError, type HashSigner } from '../operations';
-import { IntentTransactionRefusedError, type IntentRoot, type IntentSigningPolicy } from './intentPolicy';
+import { INTENT_PACKAGE_IDS, IntentTransactionRefusedError, type IntentRoot, type IntentSigningPolicy } from './intentPolicy';
 import { verifyPreparedTransaction } from './prepared';
 import { isRegistryFactory, REGISTRY_PACKAGES } from './registry';
 
-const INTENT_PKG = 'a1'.repeat(32);
+const INTENT_PKG = INTENT_PACKAGE_IDS[0] as string;
+/** cancore-intent 0.5.1 (canton-contracts `external-test-dars/cancore-intent-0.5.1.dar`): still an SCU predecessor of 0.6.0. */
+const INTENT_0_5_1 = 'cc52de44b338f20f0438cc0cb82d877ecb2128dcd1dcd50145b9e697a5612626';
 const OWNER = 'alice::1220' + '0a'.repeat(32);
 const OPERATOR = 'cancore-operator::1220' + '0b'.repeat(32);
 const FILLER = 'filler::1220' + '0c'.repeat(32);
@@ -170,7 +172,7 @@ async function prepared(spec: ExerciseSpec, actAs = [OWNER]): Promise<{ tx: stri
   return { tx, hash: Buffer.from(await hashPreparedTransaction(tx, 'hex'), 'hex').toString('base64') };
 }
 
-const policy = (r: Registry, over: Partial<IntentSigningPolicy> = {}): IntentSigningPolicy => ({ owner: OWNER, admin: r.admin, intentPackageIds: [INTENT_PKG], ...over });
+const policy = (r: Registry, over: Partial<IntentSigningPolicy> = {}): IntentSigningPolicy => ({ owner: OWNER, admin: r.admin, ...over });
 
 function signer(): HashSigner & { signPreparedHash: jest.Mock<(hash: string) => Promise<string>> } {
   return { signMessage: jest.fn(async () => 'never'), signPreparedHash: jest.fn(async (hash: string) => `sig:${hash}`) };
@@ -222,9 +224,21 @@ describe('the owner signs an intent root from its prepared transaction (CAN-3340
     expect(await refusal(() => verifyPreparedTransaction(tx, hash, policy(AMULET)))).toMatch(/owner's authority reaches .*TransferFactory_Transfer/);
   });
 
-  test('TC-SDK-3340-06: a root of a package the wallet does not allow is refused', async () => {
+  test('TC-SDK-3340-06: a policy naming a package outside the wallet\'s pin is refused', async () => {
     const { tx, hash } = await prepared(honest('open', AMULET));
-    expect(await refusal(() => verifyPreparedTransaction(tx, hash, policy(AMULET, { intentPackageIds: ['f0'.repeat(32)] })))).toMatch(/root is not a choice of an allowed cancore-intent package/);
+    expect(await refusal(() => verifyPreparedTransaction(tx, hash, policy(AMULET, { intentPackageIds: ['f0'.repeat(32)] })))).toMatch(/not a version this wallet signs for/);
+  });
+
+  const at0_5_1 = (spec: ExerciseSpec): ExerciseSpec => JSON.parse(JSON.stringify(spec).replaceAll(INTENT_PKG, INTENT_0_5_1)) as ExerciseSpec;
+
+  test.each(['open', 'renewSettlementFactory'] as const)('TC-SDK-3340-20: a cancore-intent 0.5.1 %s is refused', async (kind) => {
+    const { tx, hash } = await prepared(at0_5_1(honest(kind, AMULET)));
+    expect(await refusal(() => verifyPreparedTransaction(tx, hash, policy(AMULET)))).toMatch(/root is not a choice of an allowed cancore-intent package/);
+  });
+
+  test('TC-SDK-3340-21: a caller cannot widen the pin to cancore-intent 0.5.1', async () => {
+    const { tx, hash } = await prepared(at0_5_1(honest('open', AMULET)));
+    expect(await refusal(() => verifyPreparedTransaction(tx, hash, policy(AMULET, { intentPackageIds: [INTENT_PKG, INTENT_0_5_1] })))).toMatch(/not a version this wallet signs for/);
   });
 
   test('TC-SDK-3340-07: a root the policy does not expect is refused', async () => {
