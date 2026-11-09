@@ -13,7 +13,7 @@
   "packages/mcp/src/session.ts": 26,
   "packages/trader/src/filler/canton/checks.ts": 69,
   "packages/trader/src/filler/canton/delivery-check.ts": 60,
-  "packages/trader/src/filler/canton/factories.ts": 48,
+  "packages/wallet/src/canton/factories.ts": 48,
   "packages/trader/src/filler/canton/legs.ts": 72,
   "packages/trader/src/filler/canton/operations.ts": 30,
   "packages/trader/src/filler/canton/preapproval-check.ts": 23,

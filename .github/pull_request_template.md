@@ -15,6 +15,7 @@
 - [ ] Local stand verification: end-to-end verified on local compose stand before review
 - [ ] Integration suites registered in a lane (CAN-3253): every new or renamed `*.int.test.ts` is named in `ci.yml`, is `*.stand.int.test.ts`, or runs in `npm run test:int` with no skip path (`node --test scripts/int-registration.test.mjs`) — or `n/a`
 - [ ] Allure & Docs-as-Code RTM traceability: scenarios linked in `docs/rtm/rtm.yaml` (`REQ-<DOMAIN>-<NNN>`) and verified in Allure via `scripts/ci/allure-rtm-sync.ts` (no Qase.io)
+- [ ] ReportPortal launch uploaded: test results pushed to ReportPortal (https://reportportal-dev.cancore.app, project caef, via scripts/ci/allure-rtm-sync.ts --rp-url) and launch URL (https://reportportal-dev.cancore.app/ui/#caef/launches/all/<id>) attached to the PR and Linear ticket (--tx-evidence reportportal_run=...)
 
 ## Local & Nx Blast-Radius Mutation Report
 
@@ -30,3 +31,4 @@
 - Stand run:
 - RTM (`docs/rtm/rtm.yaml`) PR:
 - Allure / `allure-rtm-sync.ts` verification:
+- ReportPortal launch (`https://reportportal-dev.cancore.app/ui/#caef/launches/all/<id>`):

@@ -18,20 +18,25 @@
  *   settle names no pin and runs the factory stored at Open), whose transfer
  *   legs are exactly `payout` from the owner to the party and, when there is a
  *   fee, `fee` from the owner to the operator, split as the ledger splits;
+ * - every `AllocationFactory_Allocate` under the settle (the receipt
+ *   allocations, run with the party's authority) is on a factory of the
+ *   instrument's registry (CAN-3352);
  * - the party is credited exactly the payout in unlocked holdings of the
  *   instrument.
  *
  * The summary states the same economics; it is checked, never trusted alone.
  */
 import { cantonInclusiveFeeSplit, type CantonIntent, type FillProofJson, type Hex } from '@cancore/contracts';
+import { isRegistryFactory, registryPackagesOf } from '@cancore/wallet/canton';
 import { CANTON_TRANSFER_FACTORIES, holdingTemplateOf, type CantonTransferFactory } from './factories';
 import { canonicalDecimal, decimal, field, holdingOf, isOwnParty, namesFactoryPin, optionalParty, qualified, refuse, requireCreatingPackage, requirePinnedFactory, sameSet, scaled, soleRoot, subtree, textOf } from './checks';
 import type { CantonOpCheck } from './operations';
-import type { CantonTransaction, DamlValue, ExerciseNode } from './transaction';
+import type { CantonTransaction, DamlValue, ExerciseNode, TransactionNode } from './transaction';
 
 const SWAP_INTENT = 'Intent.SwapIntent:SwapIntent';
 const SETTLE_WITH_PROOF = 'SwapIntent_SettleWithProof';
 const SETTLE_BATCH = 'SettlementFactory_SettleBatch';
+const ALLOCATE = 'AllocationFactory_Allocate';
 
 export interface IntentSettleExpectation {
   /** The party's Ed25519 public key: the party is in its namespace. */
@@ -122,7 +127,9 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
       }
     }
 
-    const factories = (expect.factories ?? CANTON_TRANSFER_FACTORIES)[intent.asset.admin] ?? [];
+    const pinned = expect.factories ?? CANTON_TRANSFER_FACTORIES;
+    checkAllocationFactories(nodes, intent.asset.admin, pinned);
+    const factories = pinned[intent.asset.admin] ?? [];
     const batches = nodes.filter((n): n is ExerciseNode => n.kind === 'exercise' && n.choice === SETTLE_BATCH);
     if (batches.length !== 1) refuse(`expected one ${SETTLE_BATCH}, got ${batches.length}`);
     const batch = batches[0] as ExerciseNode;
@@ -142,6 +149,19 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
     }
     if (credited !== payout) refuse(`the party is credited ${decimal(credited)}, not ${decimal(payout)}`);
   };
+}
+
+/**
+ * The receipt allocations come from the operator's pin and run with the party's authority (CAN-3352): a factory of
+ * another package could spend the party's holdings, so each must be the instrument registry's own.
+ */
+function checkAllocationFactories(nodes: readonly TransactionNode[], admin: string, pinned: Readonly<Record<string, readonly CantonTransferFactory[]>>): void {
+  const registries = registryPackagesOf(pinned);
+  for (const n of nodes) {
+    if (n.kind === 'exercise' && n.choice === ALLOCATE && !isRegistryFactory(n, admin, registries)) {
+      refuse(`the allocation factory ${n.templateId} is not of a pinned registry of ${admin}`);
+    }
+  }
 }
 
 /** The batch's transfer legs: exactly `payout` owner → party and `fee` owner → operator (when non-zero). */

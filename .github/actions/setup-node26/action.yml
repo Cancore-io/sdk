@@ -1,0 +1,36 @@
+name: setup-node26
+description: >-
+  Node from .nvmrc on a self-hosted runner. The Node 26 linux-x64 binary links
+  libatomic.so.1, which ghcr.io/actions/actions-runner does not ship (CAN-3315);
+  it is installed here, per job, only when missing, instead of changing the runner image.
+  Copy of Cancore-io/backend .github/actions/setup-node26: backend is private, so a
+  cross-repo `uses:` from this public repository cannot resolve it.
+inputs:
+  node-version: # node-pin: ignore
+    description: Explicit Node version; overrides node-version-file when set (negative engine checks)
+    default: ''
+  node-version-file:
+    description: Path of the .nvmrc to read (repo root by default; subpath for nested checkouts)
+    default: .nvmrc
+  cache:
+    description: Package-manager cache passed to actions/setup-node (empty for none)
+    default: ''
+  cache-dependency-path:
+    description: Passed to actions/setup-node
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: libatomic1 for the Node 26 binary
+      shell: bash
+      run: |
+        if ! ldconfig -p | grep -q 'libatomic\.so\.1'; then
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libatomic1
+        fi
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }} # node-pin: ignore
+        node-version-file: ${{ inputs.node-version-file }}
+        cache: ${{ inputs.cache }}
+        cache-dependency-path: ${{ inputs.cache-dependency-path }}

@@ -1,6 +1,13 @@
 name: CI
 
 on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'pool = the CI pool; personal = your own runner (gitops tools/personal-runner)'
+        type: choice
+        options: [pool, personal]
+        default: pool
   push:
     branches: [main]
   pull_request:
@@ -17,7 +24,7 @@ on:
 # minutes this saves are all on PR branches anyway, where the expensive tarball
 # step below runs on every push.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Explicit, rather than whatever the repository default grants. Nothing in this
@@ -28,14 +35,16 @@ permissions:
 jobs:
   # Node pin consistency (CAN-3315): .nvmrc is the single source; the checker names every stale pin.
   node-pins:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner == 'personal' && fromJSON(format('["self-hosted","personal","{0}"]', github.triggering_actor)) || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: bash scripts/ci/check-node-pins.test.sh
       - run: bash scripts/ci/check-node-pins.sh .
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: ./.github/actions/setup-node26
         with:
           node-version: 24 # node-pin: ignore
       # Negative: a Node 24 consumer must be refused by engines, not merely warned.
@@ -56,16 +65,17 @@ jobs:
     # violated by an undocumented one, so this is the record. Revisit only if
     # cancore-runners becomes ephemeral/isolated per job, or if fork PRs get a
     # workflow of their own.
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner == 'personal' && fromJSON(format('["self-hosted","personal","{0}"]', github.triggering_actor)) || 'ubuntu-latest' }}
     # A hung `npm install` in the loop below would otherwise burn the default
     # six hours of a public repository's runner budget.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: ./.github/actions/setup-node26
+        with:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: echo "c73ebcc36053239efac406ce148ec8ac28349fabd4f856eda094314f8c048725  scripts/quality-gates.ts" | sha256sum -c -
@@ -204,14 +214,15 @@ jobs:
       # A filler node is a Node program, so @cancore/trader may use Node types in
       # its own tsconfig — but its published declarations must not need them, nor
       # DOM: a consumer with neither, and with skipLibCheck off, must typecheck
-      # against both entries (CAN-1843).
+      # against both entries (CAN-1843), and against the wallet's intent signing
+      # the attestor and the filler node import with it (CAN-3340).
       - name: Typecheck @cancore/trader as a stranger with no Node or DOM types
         run: |
           set -euo pipefail
           rm -rf "$RUNNER_TEMP/trader-types" && mkdir -p "$RUNNER_TEMP/trader-types" && cd "$RUNNER_TEMP/trader-types"
           npm init -y >/dev/null
           npm pkg set type=module
-          npm install "$RUNNER_TEMP"/cancore-trader-*.tgz "$RUNNER_TEMP"/cancore-contracts-*.tgz --no-audit --no-fund
+          npm install "$RUNNER_TEMP"/cancore-trader-*.tgz "$RUNNER_TEMP"/cancore-contracts-*.tgz "$RUNNER_TEMP"/cancore-wallet-*.tgz --no-audit --no-fund
           test ! -e node_modules/@types/node || { echo "@types/node arrived with @cancore/trader"; exit 1; }
           cat > tsconfig.json <<'JSON'
           { "compilerOptions": { "strict": true, "noEmit": true, "target": "ES2022", "lib": ["ES2022"],
@@ -221,9 +232,12 @@ jobs:
           cat > consumer.ts <<'TS'
           import { createFiller, type Filler, type FillerConfig, type FillerStore, type WebSocketFactory } from '@cancore/trader/filler';
           import { InMemoryFillerStore, createFakeWebSocketFactory } from '@cancore/trader/filler/testing';
+          import { isRegistryFactory, verifyPreparedTransaction, type IntentSigningPolicy } from '@cancore/wallet/canton';
+          import { signPreparedTransaction } from '@cancore/wallet/operations';
           const store: FillerStore = new InMemoryFillerStore();
           const webSocket: WebSocketFactory = createFakeWebSocketFactory().factory;
           export const build = (config: Omit<FillerConfig, 'store' | 'webSocket'>): Filler => createFiller({ ...config, store, webSocket });
+          export const intentSigning = (policy: IntentSigningPolicy) => [policy, isRegistryFactory, verifyPreparedTransaction, signPreparedTransaction];
           TS
           "$GITHUB_WORKSPACE/node_modules/.bin/tsc" -p .
 
@@ -233,14 +247,15 @@ jobs:
   # runs it too), one intent opened, filled and settled, then the suites — none of them may skip.
   # ubuntu-latest for the reason given on `check` (CAN-1120).
   stand:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner == 'personal' && fromJSON(format('["self-hosted","personal","{0}"]', github.triggering_actor)) || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: ./.github/actions/setup-node26
+        with:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # anvil from the foundry release tarball, pinned by its sha256 (the release asset digest): no installer script.
@@ -283,14 +298,15 @@ jobs:
   # secret. The suite toggles automine, so no other suite shares this anvil. ubuntu-latest for the reason given on
   # `check` (CAN-1120).
   anvil:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner == 'personal' && fromJSON(format('["self-hosted","personal","{0}"]', github.triggering_actor)) || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: ./.github/actions/setup-node26
+        with:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # anvil from the foundry release tarball, pinned by its sha256 (the release asset digest): no installer script.
@@ -325,14 +341,15 @@ jobs:
   # devnet routers read on their own chains over public RPCs (read-only, no key, no secret). The manifest's version
   # when the registry has it, else `next`. ubuntu-latest for the reason given on `check` (CAN-1120).
   deployments:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner == 'personal' && fromJSON(format('["self-hosted","personal","{0}"]', github.triggering_actor)) || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version-file: .nvmrc
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: ./.github/actions/setup-node26
+        with:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install @cancore/contracts from the registry
@@ -358,7 +375,7 @@ jobs:
   # cancore-botd's OS isolation (users, groups, socket and state-dir modes, /proc) needs root: a
   # disposable container is root and is thrown away. ubuntu-latest for the reason given on `check`.
   botd-root:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner == 'personal' && fromJSON(format('["self-hosted","personal","{0}"]', github.triggering_actor)) || 'ubuntu-latest' }}
     timeout-minutes: 15
     container: node:26-bookworm-slim@sha256:c3aea913c1a6c89c0daf1e94867118e4aae4846b2c58c8cb9b33b80c5c695b8d
     env:
@@ -366,6 +383,8 @@ jobs:
       CANCORE_ROOT_TESTS: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - run: pnpm install --frozen-lockfile
       - run: npm run build
@@ -375,10 +394,12 @@ jobs:
   # (SystemCallFilter, ProtectSystem …), so a unit that kills the daemon passes every unit test
   # (CAN-2978). systemd must be PID 1, which a job `container:` cannot give; the job starts its own.
   botd-systemd:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner == 'personal' && fromJSON(format('["self-hosted","personal","{0}"]', github.triggering_actor)) || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Start a container with systemd as PID 1
         run: |
           docker build -t botd-systemd - <<'DOCKERFILE'

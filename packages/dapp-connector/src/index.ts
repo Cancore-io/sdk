@@ -6,6 +6,7 @@ export {
   rpcError,
   type CancoreSession,
   type Cip0103Provider,
+  type PrepareExecuteResult,
   type ProviderRpcError,
   type RequestArgs,
 } from './types';

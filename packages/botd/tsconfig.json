@@ -9,6 +9,8 @@
       "@cancore/client/swap": ["../client/src/swap.ts"],
       "@cancore/wallet": ["../wallet/src/index.ts"],
       "@cancore/wallet/operations": ["../wallet/src/operations.ts"],
+      "@cancore/wallet/canton": ["../wallet/src/canton/index.ts"],
+      "@cancore/wallet/canton/proto": ["../wallet/src/canton/proto.ts"],
       "@cancore/trader/filler/canton/hashing": ["../trader/src/filler/canton/hashing.ts"]
     }
   },

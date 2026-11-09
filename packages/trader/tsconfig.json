@@ -10,7 +10,9 @@
     // The sibling package's source, not its unbuilt `dist/`: typecheck runs
     // before build, in CI and here.
     "paths": {
-      "@cancore/contracts": ["../contracts/src/index.ts"]
+      "@cancore/contracts": ["../contracts/src/index.ts"],
+      "@cancore/wallet/canton": ["../wallet/src/canton/index.ts"],
+      "@cancore/wallet/canton/proto": ["../wallet/src/canton/proto.ts"]
     }
   },
   "include": ["src/**/*.ts", "test/**/*.ts"],
