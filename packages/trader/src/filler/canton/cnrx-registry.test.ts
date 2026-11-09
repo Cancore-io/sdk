@@ -98,7 +98,7 @@ const refused = (run: () => unknown, detail: RegExp) => {
 };
 
 describe('holdings.transfer of CNRX under cnrx-registry 0.2.6: the first input spent by CnrxHolding_Move (CAN-3304)', () => {
-  test('TC-SDK-3304-01: dev pins 0.2.6 next to 0.2.3, behind 0.2.7; the honest direct transfer passes', () => {
+  test('TC-SDK-3304-01: dev pins 0.2.6 next to 0.2.3, behind 0.2.8 and 0.2.7; the honest direct transfer passes', () => {
     expect(pinned.map((f) => f.packageId)).toEqual([CNRX_0_2_8, CNRX_0_2_7, CNRX_0_2_6, CNRX_0_2_3]);
     expect(() => check()(prepared, [transfer()])).not.toThrow();
   });
