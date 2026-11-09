@@ -152,12 +152,12 @@ const CNRX_REGISTRY_0_2_7: CantonTransferFactory = {
 
 /**
  * cnrx-registry 0.2.8 (cancore-token-canton `dist/cnrx-registry-0.2.8.dar`, CHANGELOG 0.2.8): the CertiK CNA-04 fix,
- * an upgrade of 0.2.7 that adds one choice (`CnrxTransferOffer_Expire`) and changes no transfer. Its transfers spend
- * the holdings created under 0.2.7 and 0.2.6.
+ * an upgrade of 0.2.7 that adds one choice (`CnrxTransferOffer_Expire`) and caps an offer's deadline at 31 days; the
+ * direct transfer is unchanged. Its transfers spend the holdings created under 0.2.7 and 0.2.6.
  */
 const CNRX_REGISTRY_0_2_8: CantonTransferFactory = {
   ...CNRX_REGISTRY_0_2_7,
-  packageId: 'accb5a33c240fa08b3a9f3365d2f500324498c55903fbb715ab36cf23483f37f',
+  packageId: '0673c0e747c716342d189a7fcdf36448864b49788a91c1c664da08df2944d28f',
   upgradedHoldingPackageIds: [CNRX_REGISTRY_0_2_7.packageId, CNRX_REGISTRY_0_2_6.packageId],
 };
 
