@@ -51,7 +51,7 @@ import type { FillSigner, QuoteSigner } from '../signer';
 import type { FillerStore, TicketRecord, TicketState } from '../store';
 import { GatewayError } from '../errors';
 import type { TicketVerifier } from './checks';
-import { chainsOf, identityFor, signCantonTicketReceipt, signTicketIntent, signTicketReceipt } from './terms';
+import { chainsOf, identityFor, isBoundToDeliver, signCantonTicketReceipt, signTicketIntent, signTicketReceipt } from './terms';
 
 /** The reasons a filler may give for not taking an offered ticket (protocol §3.5, stage «offer»). */
 export const OFFER_DECLINE_REASONS = ['NO_INVENTORY', 'RISK_LIMIT', 'PRICE_MOVED', 'PAUSED', 'OTHER'] as const;
@@ -132,7 +132,7 @@ export class TicketDesk {
    */
   async receipted(orderHash: Hex, attempt: number): Promise<TicketRecord | undefined> {
     const record = await this.options.store.withOrder(orderHash.toLowerCase() as Hex, (tx) => tx.getTicket(attempt));
-    return record?.state === 'receipted' && record.sentAtMs !== undefined && !record.unsent && record.receipt ? record : undefined;
+    return record && isBoundToDeliver(record) ? record : undefined;
   }
 
   // -- frames ------------------------------------------------------------------

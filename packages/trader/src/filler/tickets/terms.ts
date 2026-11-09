@@ -42,6 +42,7 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { hashTicket } from '../chain/hashes';
 import type { EvmChainId } from '../chains';
 import type { Unsealed } from '../protocol/envelope';
+import type { TicketRecord } from '../store';
 import { signTypedDataChecked, type FillSigner, type QuoteSigner } from '../signer';
 
 /** Canton origin ids are `2⁶³ + n` (protocol §3.8); every EVM chain id is below. */
@@ -216,4 +217,9 @@ export async function signCantonTicketReceipt(issued: TicketIssuedCanton, messag
     type: 'ticket.receipt', form: 'canton', id, orderHash: issued.orderHash.toLowerCase() as Hex, attempt: issued.attempt,
     deliveryOrderCid: issued.deliveryOrderCid, validUntil: issued.validUntil, sig,
   };
+}
+
+/** Receipted with the receipt handed to filler-gateway: the only attempt a delivery may fill (T-22). */
+export function isBoundToDeliver(record: TicketRecord): boolean {
+  return record.state === 'receipted' && record.sentAtMs !== undefined && !record.unsent && Boolean(record.receipt);
 }
