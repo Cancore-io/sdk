@@ -133,7 +133,7 @@ pretending otherwise.
 
 `ci.yml` runs on GitHub-hosted `ubuntu-latest` (this repository is public, so fork PRs never reach a self-hosted runner). A manual run can go to your own runner from gitops `tools/personal-runner` instead.
 
-**Not working yet:** personal mode does nothing until this repository is added to the `personal-runners` runner group; that group is private-only and enrolling a public repository is an open operator decision (CAN-2942). Until then a `runner=personal` run queues with no runner to take it. Once enrolled:
+**Not working yet:** personal mode does nothing until an org admin adds this repository to the `personal-runners` runner group. That happens only after [gitops#413](https://github.com/Cancore-io/gitops/pull/413) is merged and the runner slots are restarted with it: its job-started hook refuses a job unless the runner's owner triggered it, the repository belongs to Cancore-io and the code does not come from a fork, so re-running a fork PR cannot run fork code on a developer's machine. Fork PR workflows also need approval for all outside collaborators. Until then a `runner=personal` run queues with no runner to take it. Once enrolled:
 
 ```bash
 gh workflow run ci.yml -R Cancore-io/sdk --ref <branch> -f runner=personal
