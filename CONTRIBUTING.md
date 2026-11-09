@@ -120,6 +120,7 @@ Traceability lives in [Cancore-io/meta](https://github.com/Cancore-io/meta): can
 
 - Every test case must be linked to its requirement ID (`REQ-<DOMAIN>-<NNN>`) in `docs/rtm/rtm.yaml` and export Allure results (`allure-results` / JUnit XML) verified via `npx tsx scripts/ci/allure-rtm-sync.ts`.
 - Qase.io is removed from the development and release loop; do not require or attach Qase runs.
+- **ReportPortal launch upload (`CAN-3406`, mandatory in every repo with tests).** Every test run (unit, integration, e2e, contract/property, mutation) must be uploaded to **ReportPortal** (`https://reportportal-dev.cancore.app`, project `caef`, via `scripts/ci/allure-rtm-sync.ts --rp-url https://reportportal-dev.cancore.app --rp-project caef --ticket <CAN-ID> --stand <local|dev>`), and the resulting launch URL (`https://reportportal-dev.cancore.app/ui/#caef/launches/all/<id>`) must be attached to both the PR description and the Linear ticket (`--tx-evidence reportportal_run=...`).
 
 ## 11. PR Quality Gate Checklist (Required in Every PR Description)
 
@@ -135,3 +136,4 @@ Copy and check off every item in the PR description (`.github/pull_request_templ
 - [ ] Local stand verification: end-to-end verified on local compose stand before review
 - [ ] Integration suites registered in a lane (CAN-3253): every new or renamed `*.int.test.ts` is named in `ci.yml`, is `*.stand.int.test.ts`, or runs in `npm run test:int` with no skip path (`node --test scripts/int-registration.test.mjs`) — or `n/a`
 - [ ] Allure & Docs-as-Code RTM traceability: scenarios linked in `docs/rtm/rtm.yaml` (`REQ-<DOMAIN>-<NNN>`) and verified in Allure via `scripts/ci/allure-rtm-sync.ts` (no Qase.io)
+- [ ] ReportPortal launch uploaded: test results pushed to ReportPortal (https://reportportal-dev.cancore.app, project caef, via scripts/ci/allure-rtm-sync.ts --rp-url) and launch URL (https://reportportal-dev.cancore.app/ui/#caef/launches/all/<id>) attached to the PR and Linear ticket (--tx-evidence reportportal_run=...)
