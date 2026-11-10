@@ -34,8 +34,8 @@ permissions:
 
 jobs:
   pick-runner:
-    # CAN-3441: the goodmai runner's job-started hook refuses any job goodmai did not trigger (CAN-3377).
-    runs-on: ${{ vars.LOCAL_RUNNER_ON == 'true' && github.triggering_actor == 'goodmai' && fromJSON('["self-hosted","goodmai"]') || 'ubuntu-latest' }}
+    # CAN-3441: always on the pool, so a powered-off personal runner never holds the jobs waiting on this pick.
+    runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions: {}
     outputs:
@@ -45,7 +45,6 @@ jobs:
         env:
           ACTOR: ${{ github.triggering_actor }}
           REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ secrets.RUNNERS_READ_TOKEN }}
           LOCAL_ACTORS: ${{ vars.LOCAL_RUNNER_ACTORS || vars.LOCAL_RUNNER_ACTOR }}
           LOCAL_ON: ${{ vars.LOCAL_RUNNER_ON }}
           RUNNER_CHOICE: ${{ inputs.runner }}
