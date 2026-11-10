@@ -253,7 +253,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Cancore-io/CAEF
-          ref: 63952235704c4981b6219fc6b83ce9e6e0e200ef
+          ref: 60d02f1c4d6e4e2b8924a0a54417072909b61746
           token: ${{ secrets.CAEF_READ_TOKEN }}
           path: .caef
           persist-credentials: false
@@ -267,7 +267,6 @@ jobs:
           junit: junit-int.xml
           token: ${{ secrets.RP_API_TOKEN }}
           server-url: ${{ vars.RP_SERVER_URL }}
-          project: ${{ vars.RP_PROJECT }}
 
   # The integration suites of @cancore/trader against a real CancoreRouter (operator decision Ыу-1, CAN-1846):
   # an anvil without a fork, the router, Permit2 and test tokens deployed from the build committed in
