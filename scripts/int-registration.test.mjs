@@ -53,6 +53,9 @@ test('a skippable suite named nowhere is reported; named, stand-suffixed or alwa
     'packages/a/xd.int.test.ts',
   ]);
   assert.deepEqual(unregistered(['packages/a/inproc.int.test.ts'], '# npm run test:int\n', (s) => files[s], {}), ['packages/a/inproc.int.test.ts']);
+  const inproc = ['packages/a/inproc.int.test.ts'];
+  assert.deepEqual(unregistered(inproc, '      - run: npm run test:int -- --reporters=default --reporters=jest-junit\n', (s) => files[s], {}), []);
+  assert.deepEqual(unregistered(inproc, '      - run: npm run test:int -- --testPathPattern=x\n', (s) => files[s], {}), inproc);
 });
 
 test('every *.int.test.ts of this checkout is registered in a lane (CAN-3253)', () => {
