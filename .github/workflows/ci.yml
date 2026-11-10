@@ -69,8 +69,6 @@ jobs:
     # A hung `npm install` in the loop below would otherwise burn the default
     # six hours of a public repository's runner budget.
     timeout-minutes: 20
-    env:
-      HAS_CAEF_READ_TOKEN: ${{ secrets.CAEF_READ_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -244,29 +242,18 @@ jobs:
           export const intentSigning = (policy: IntentSigningPolicy) => [policy, isRegistryFactory, verifyPreparedTransaction, signPreparedTransaction];
           TS
           "$GITHUB_WORKSPACE/node_modules/.bin/tsc" -p .
-      # sdk is public and cannot `uses:` a private repository's action, so the action is checked out with a read token;
-      # last in the job so no later step lints, tests or packs .caef. Fork PRs get no secrets and skip both steps.
-      - name: Check out the rp-publish action
-        if: always() && env.HAS_CAEF_READ_TOKEN == 'true'
+      # sdk is public: no RP or CAEF secret ever enters this workflow (a fork PR could read it). CAEF's private
+      # rp-collect workflow downloads this artifact from same-repo runs and publishes it to RP project `sdk`.
+      - name: Upload test reports for rp-collect
+        if: always()
         continue-on-error: true
         timeout-minutes: 5
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          repository: Cancore-io/CAEF
-          ref: 60d02f1c4d6e4e2b8924a0a54417072909b61746
-          token: ${{ secrets.CAEF_READ_TOKEN }}
-          path: .caef
-          persist-credentials: false
-      - name: Publish to ReportPortal
-        if: always() && env.HAS_CAEF_READ_TOKEN == 'true'
-        continue-on-error: true
-        timeout-minutes: 5
-        uses: ./.caef/.github/actions/rp-publish
-        with:
-          suite: sdk-int
-          junit: junit-int.xml
-          token: ${{ secrets.RP_API_TOKEN }}
-          server-url: ${{ vars.RP_SERVER_URL }}
+          name: rp-reports
+          path: junit-int.xml
+          if-no-files-found: ignore
+          retention-days: 7
 
   # The integration suites of @cancore/trader against a real CancoreRouter (operator decision Ыу-1, CAN-1846):
   # an anvil without a fork, the router, Permit2 and test tokens deployed from the build committed in
