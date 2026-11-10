@@ -14,8 +14,8 @@
 - [ ] Algebraic Data Types (ADT): fixed variant sets modeled as discriminated unions with exhaustive default: return assertNever(x)
 - [ ] Local stand verification: end-to-end verified on local compose stand before review
 - [ ] Integration suites registered in a lane (CAN-3253): every new or renamed `*.int.test.ts` is named in `ci.yml`, is `*.stand.int.test.ts`, or runs in `npm run test:int` with no skip path (`node --test scripts/int-registration.test.mjs`) — or `n/a`
-- [ ] Allure & Docs-as-Code RTM traceability: scenarios linked in `docs/rtm/rtm.yaml` (`REQ-<DOMAIN>-<NNN>`) and verified in Allure via `scripts/ci/allure-rtm-sync.ts` (no Qase.io)
-- [ ] ReportPortal launch uploaded: test results pushed to ReportPortal (https://reportportal-dev.cancore.app, project caef, via scripts/ci/allure-rtm-sync.ts --rp-url) and launch URL (https://reportportal-dev.cancore.app/ui/#caef/launches/all/<id>) attached to the PR and Linear ticket (--tx-evidence reportportal_run=...)
+- [ ] Allure & Docs-as-Code RTM traceability: scenarios linked in `docs/rtm/rtm.yaml` (`REQ-<DOMAIN>-<NNN>`) and verified in Allure via the external CAEF script [`scripts/ci/allure-rtm-sync.ts`](https://github.com/Cancore-io/CAEF/blob/main/scripts/ci/allure-rtm-sync.ts) (no Qase.io)
+- [ ] ReportPortal launch uploaded: launch URL (https://reportportal-dev.cancore.app/ui/#caef/launches/all/<id>) attached to the PR and Linear ticket (--tx-evidence reportportal_run=...), uploaded with the full command in `CONTRIBUTING.md` §10 — or `n/a: no Allure producer yet (CAN-3413)`: jest writes no JUnit/Allure results yet
 
 ## Local & Nx Blast-Radius Mutation Report
 
