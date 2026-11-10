@@ -69,6 +69,8 @@ jobs:
     # A hung `npm install` in the loop below would otherwise burn the default
     # six hours of a public repository's runner budget.
     timeout-minutes: 20
+    env:
+      HAS_CAEF_READ_TOKEN: ${{ secrets.CAEF_READ_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -94,16 +96,6 @@ jobs:
       - run: npm run test:int -- --reporters=default --reporters=jest-junit
         env:
           JEST_JUNIT_OUTPUT_FILE: junit-int.xml
-      - name: Publish to ReportPortal
-        if: always()
-        continue-on-error: true
-        uses: Cancore-io/CAEF/.github/actions/rp-publish@b3f706e4f2d67531b02f58525d4e7d0469a6d963
-        with:
-          suite: sdk-int
-          junit: junit-int.xml
-          token: ${{ secrets.RP_API_TOKEN }}
-          server-url: ${{ vars.RP_SERVER_URL }}
-          project: ${{ vars.RP_PROJECT }}
       # CAN-3253: a suite that can skip itself must be named in a lane below (or be a .stand suite).
       - name: Every integration suite is registered in a lane
         run: node --test scripts/int-registration.test.mjs
@@ -252,6 +244,30 @@ jobs:
           export const intentSigning = (policy: IntentSigningPolicy) => [policy, isRegistryFactory, verifyPreparedTransaction, signPreparedTransaction];
           TS
           "$GITHUB_WORKSPACE/node_modules/.bin/tsc" -p .
+      # sdk is public and cannot `uses:` a private repository's action, so the action is checked out with a read token;
+      # last in the job so no later step lints, tests or packs .caef. Fork PRs get no secrets and skip both steps.
+      - name: Check out the rp-publish action
+        if: always() && env.HAS_CAEF_READ_TOKEN == 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Cancore-io/CAEF
+          ref: 63952235704c4981b6219fc6b83ce9e6e0e200ef
+          token: ${{ secrets.CAEF_READ_TOKEN }}
+          path: .caef
+          persist-credentials: false
+      - name: Publish to ReportPortal
+        if: always() && env.HAS_CAEF_READ_TOKEN == 'true'
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: ./.caef/.github/actions/rp-publish
+        with:
+          suite: sdk-int
+          junit: junit-int.xml
+          token: ${{ secrets.RP_API_TOKEN }}
+          server-url: ${{ vars.RP_SERVER_URL }}
+          project: ${{ vars.RP_PROJECT }}
 
   # The integration suites of @cancore/trader against a real CancoreRouter (operator decision Ыу-1, CAN-1846):
   # an anvil without a fork, the router, Permit2 and test tokens deployed from the build committed in
