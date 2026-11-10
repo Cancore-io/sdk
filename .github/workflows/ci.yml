@@ -91,7 +91,19 @@ jobs:
       - name: Vectors are regenerated, not hand-edited
         run: pnpm --filter @cancore/contracts run vectors && git diff --exit-code packages/contracts/spec
       # Suites against a local stand skip themselves without its artifacts here; the `stand` job runs the anvil ones.
-      - run: npm run test:int
+      - run: npm run test:int -- --reporters=default --reporters=jest-junit
+        env:
+          JEST_JUNIT_OUTPUT_FILE: junit-int.xml
+      - name: Publish to ReportPortal
+        if: always()
+        continue-on-error: true
+        uses: Cancore-io/CAEF/.github/actions/rp-publish@b3f706e4f2d67531b02f58525d4e7d0469a6d963
+        with:
+          suite: sdk-int
+          junit: junit-int.xml
+          token: ${{ secrets.RP_API_TOKEN }}
+          server-url: ${{ vars.RP_SERVER_URL }}
+          project: ${{ vars.RP_PROJECT }}
       # CAN-3253: a suite that can skip itself must be named in a lane below (or be a .stand suite).
       - name: Every integration suite is registered in a lane
         run: node --test scripts/int-registration.test.mjs
