@@ -11,12 +11,12 @@ export const INTENT_PACKAGE_NAME = 'cancore-intent';
 
 /**
  * Package ids of the `cancore-intent` versions whose Open and Renew this wallet signs: 0.6.0 only (CAN-3340).
- * 0.6.0 is an SCU of 0.4.2–0.5.1, so a root of an older package still runs: their Open stores a settlement factory
+ * 0.6.0 is an SCU of 0.4.2–0.5.2, so a root of an older package still runs: their Open stores a settlement factory
  * without the owner's PublicFetch, and their settle runs the operator's pin under the owner's authority.
- * shortcut: the 0.6.0 id is read from canton-contracts#327's `deploy-contracts/dars/cancore-intent-0.6.0.dar` at
- * 973d063; re-pin it if #327 changes the package before merge.
+ * The 0.6.0 id is the main package of `deploy-contracts/dars/cancore-intent-0.6.0.dar` at canton-contracts dev 7ca6dd66
+ * (#327 merged), the DAR the dev participant vets.
  */
-export const INTENT_PACKAGE_IDS: readonly string[] = ['580ee9b8249c0125c24145f3346dba07cc9f516263716265426d8c303dd45ff7'];
+export const INTENT_PACKAGE_IDS: readonly string[] = ['26648cea50d39e2d7110248825bb390df9cbfcfde9aca1f4f8986c33be86b731'];
 
 /** The roots an owner signs, by `<module>:<entity>` of the template and the choice. */
 export const INTENT_ROOTS = {

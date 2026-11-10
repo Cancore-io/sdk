@@ -6,8 +6,8 @@
 
 - `INTENT_PACKAGE_IDS` pins the `cancore-intent` package ids whose `IntentFactory_Open` and
   `SwapIntent_RenewSettlementFactory` the wallet signs: 0.6.0
-  (`580ee9b8249c0125c24145f3346dba07cc9f516263716265426d8c303dd45ff7`). 0.6.0 is an upgrade of
-  0.4.2–0.5.1, so their roots still run on a ledger that vets them; those versions open an intent
+  (`26648cea50d39e2d7110248825bb390df9cbfcfde9aca1f4f8986c33be86b731`). 0.6.0 is an upgrade of
+  0.4.2–0.5.2, so their roots still run on a ledger that vets them; those versions open an intent
   without the owner approving the settlement factory, and settle it through the operator's pin.
 - `IntentSigningPolicy.intentPackageIds` is optional and defaults to the pin; a package outside
   the pin is refused (`IntentTransactionRefusedError`), so a caller cannot widen it.
