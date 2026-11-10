@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: 'auto = your long-lived runner when it is up, else the pool; pool = the CI pool; personal = your own runner (gitops tools/personal-runner)'
+        description: 'pool = the CI pool; personal = your own runner (gitops tools/personal-runner)'
         type: choice
-        options: [auto, pool, personal]
-        default: auto
+        options: [pool, personal]
+        default: pool
   push:
     branches: [main]
   pull_request:
@@ -42,11 +42,27 @@ jobs:
       runs-on: ${{ steps.pick.outputs.runs-on }}
     steps:
       - id: pick
-        uses: Cancore-io/CAEF/.github/actions/pick-runner@4a79b5a20f27d9838fd506f305e6d61c7ff94493
-        with:
-          runner: ${{ inputs.runner }}
-          actors: ${{ vars.LOCAL_RUNNER_ACTORS || vars.LOCAL_RUNNER_ACTOR }}
-          local-on: ${{ vars.LOCAL_RUNNER_ON }}
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+          REPO: ${{ github.repository }}
+          LOCAL_ACTORS: ${{ vars.LOCAL_RUNNER_ACTORS || vars.LOCAL_RUNNER_ACTOR }}
+          LOCAL_ON: ${{ vars.LOCAL_RUNNER_ON }}
+          RUNNER_CHOICE: ${{ inputs.runner }}
+        # Empty output keeps each consumer on its own pool label: an absent token, gh or offline runner never routes to it.
+        run: |
+          runs_on=""
+          actors_csv=$(printf '%s' "$LOCAL_ACTORS" | tr -d '[:space:]')
+          if [ "${RUNNER_CHOICE:-}" = "personal" ]; then
+            runs_on=$(jq -cn --arg a "$ACTOR" '["self-hosted", "personal", $a]')
+          elif [ "$LOCAL_ON" = "true" ] && [ -n "$ACTOR" ] && [ -n "$GH_TOKEN" ] && command -v gh >/dev/null 2>&1 \
+            && printf ',%s,' "$actors_csv" | grep -qF ",${ACTOR},"; then
+            online=$(gh api --paginate "/repos/$REPO/actions/runners" 2>/dev/null \
+              | jq -r --arg a "$ACTOR" '.runners[] | select(.status == "online") | select(any(.labels[]; .name == $a)) | .id' \
+              | head -n 1) || online=""
+            if [ -n "$online" ]; then runs_on=$(jq -cn --arg a "$ACTOR" '["self-hosted", $a]'); fi
+          fi
+          echo "runs-on=$runs_on" >> "$GITHUB_OUTPUT"
+          echo "runs-on: ${runs_on:-pool}"
 
   # Node pin consistency (CAN-3315): .nvmrc is the single source; the checker names every stale pin.
   node-pins:
