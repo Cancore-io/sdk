@@ -93,7 +93,7 @@ jobs:
       # Suites against a local stand skip themselves without its artifacts here; the `stand` job runs the anvil ones.
       - run: npm run test:int -- --reporters=default --reporters=jest-junit
         env:
-          JEST_JUNIT_OUTPUT_FILE: junit-int.xml
+          JEST_JUNIT_OUTPUT_FILE: rp-reports/sdk-int.xml
       # CAN-3253: a suite that can skip itself must be named in a lane below (or be a .stand suite).
       - name: Every integration suite is registered in a lane
         run: node --test scripts/int-registration.test.mjs
@@ -251,7 +251,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rp-reports
-          path: junit-int.xml
+          path: rp-reports/
           if-no-files-found: ignore
           retention-days: 7
 
