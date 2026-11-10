@@ -30,7 +30,7 @@ const canSkip = (source) => /\.skip(If)?\b|\bx(describe|it|test)\b|\.todo\b|proc
 
 export function unregistered(suites, workflow, read, allowlist) {
   const ci = liveWorkflow(workflow);
-  const globRuns = /^\s*-?\s*run:\s*npm run test:int\s*$/m.test(ci);
+  const globRuns = /^\s*-?\s*run:\s*npm run test:int(\s+--(\s+--reporters=\S+)+)?\s*$/m.test(ci);
   return suites.filter((s) => {
     if (ci.includes(s) || s.endsWith('.stand.int.test.ts') || Object.hasOwn(allowlist, s)) return false;
     return !(globRuns && !canSkip(read(s)));
