@@ -152,6 +152,14 @@ describe('preapproval.create with a DA Utilities registry: the utility TransferP
     expect(registriesProblem({ [CBTC_ADMIN]: [UNPINNED] })).toBeUndefined();
     expect(registriesProblem({ [CBTC_ADMIN]: [{ ...UNPINNED, preapprovalOperator: undefined }] })).toMatch(/preapprovalOperator/);
     expect(registriesProblem({ [CBTC_ADMIN]: [{ ...UNPINNED, preapprovalOperator: 'operator' }] })).toMatch(/preapprovalOperator/);
+    // CAN-3132: a CNRX guardian is a party id or absent.
+    expect(registriesProblem({ [CBTC_ADMIN]: [{ ...UNPINNED, guardian: `g::1220${'0d'.repeat(32)}` }] })).toBeUndefined();
+    expect(registriesProblem({ [CBTC_ADMIN]: [{ ...UNPINNED, guardian: 'g' }] })).toMatch(/guardian: expected the CNRX guardian's party id/);
+    expect(registriesProblem({ [CBTC_ADMIN]: [{ ...UNPINNED, guardian: 7 as unknown as string }] })).toMatch(/guardian/);
+    // A cnrx-registry entry (its holding is CnrxHolding) must name G: a stand pin without it would switch the check off.
+    const cnrxEntry = { ...UNPINNED, holding: 'Cnrx.Holding:CnrxHolding' };
+    expect(registriesProblem({ [CBTC_ADMIN]: [cnrxEntry] })).toMatch(/guardian: .*required for a cnrx-registry entry/);
+    expect(registriesProblem({ [CBTC_ADMIN]: [{ ...cnrxEntry, guardian: `g::1220${'0d'.repeat(32)}` }] })).toBeUndefined();
   });
 });
 

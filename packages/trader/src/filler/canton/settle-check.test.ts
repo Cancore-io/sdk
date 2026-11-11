@@ -14,8 +14,11 @@ const ADMIN = 'cancore::1220aa';
 const INTENT_PKG = 'cd'.repeat(32);
 const REG_PKG = 'ab'.repeat(32);
 const ORDER_HASH = `0x${'77'.repeat(32)}` as Hex;
+// CAN-3132: the registry's guardian G, which a CNRX pin must name and which marks and co-signs every accounted holding.
+const G = 'cnrx-guardian::1220c7';
+const G_PRIME = 'cnrx-guardian-prime::1220c7';
 const FACTORIES: Record<string, readonly CantonTransferFactory[]> = {
-  [ADMIN]: [{ packageId: REG_PKG, factory: 'Cnrx.Rules:CnrxRules', holding: 'Cnrx.Holding:CnrxHolding', holdingView: 'holding', offer: 'Cnrx.Transfer:CnrxTransferOffer', serviceChoices: [], allocation: 'Cnrx.Allocation:CnrxAllocationV2' }],
+  [ADMIN]: [{ packageId: REG_PKG, factory: 'Cnrx.Rules:CnrxRules', holding: 'Cnrx.Holding:CnrxHolding', holdingView: 'holding', offer: 'Cnrx.Transfer:CnrxTransferOffer', serviceChoices: [], allocation: 'Cnrx.Allocation:CnrxAllocationV2', guardian: G }],
 };
 
 // 100 CNRX at 30 bps: 100 / 1.003 = 99.7008973081 (Numeric 10, half to even), the rest to the operator.
@@ -54,9 +57,14 @@ function damlProof(p: FillProofJson): DamlValue {
 }
 const leg = (id: string, receiver: string, amount: string) =>
   v.record({ transferLegId: v.text(id), sender: account(OWNER), receiver: account(receiver), amount: v.numeric(amount), instrumentId: v.text('CNRX'), meta: v.record({}) });
-const holding = (nodeId: string, owner: string, amount: string, locked = false, pkg = REG_PKG): TransactionNode => ({
-  nodeId, kind: 'create', contractId: `h-${nodeId}`, packageName: 'cnrx-registry', templateId: `${pkg}:Cnrx.Holding:CnrxHolding`,
-  argument: v.record({ holding: v.record({ account: account(owner), instrumentId: v.record({ admin: v.party(ADMIN), id: v.text('CNRX') }), amount: v.numeric(amount), lock: locked ? v.some(v.record({})) : v.none() }) }),
+/** The view meta cnrx-registry 0.2.6 gives an accounted holding: `cnrx/guardian` = its guardian. */
+const marked = (mark: DamlValue): DamlValue => v.record({ values: { t: 'textMap', v: { 'cnrx/guardian': mark } } });
+/** A holding the settle creates; `meta` null leaves the view without one. */
+const holding = (nodeId: string, owner: string, amount: string, locked = false, pkg = REG_PKG, meta: DamlValue | null = marked(v.text(G)), entity = 'Cnrx.Holding:CnrxHolding'): TransactionNode => ({
+  nodeId, kind: 'create', contractId: `h-${nodeId}`, packageName: 'cnrx-registry', templateId: `${pkg}:${entity}`,
+  argument: v.record({
+    holding: v.record({ account: account(owner), instrumentId: v.record({ admin: v.party(ADMIN), id: v.text('CNRX') }), amount: v.numeric(amount), lock: locked ? v.some(v.record({})) : v.none(), ...(meta === null ? {} : { meta }) }),
+  }),
   signatories: [ADMIN, owner], stakeholders: [ADMIN, owner],
 });
 
@@ -143,11 +151,11 @@ describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery
   });
 
   test('TC-SDK-3352-03: a receipt allocation through the pinned registry’s factory passes', () => {
-    expect(() => check(prepared(), [honest({ extra: [allocate(`${REG_PKG}:Cnrx.Allocation:CnrxAllocationRules`, [ADMIN])] })])).not.toThrow();
+    expect(() => check(prepared(), [honest({ extra: [allocate(`${REG_PKG}:Cnrx.Allocation:CnrxAllocationRules`, [ADMIN, G])] })])).not.toThrow();
   });
 
   test('TC-SDK-3352-04: a receipt allocation through an unlisted template the instrument admin signs passes', () => {
-    expect(() => check(prepared(), [honest({ extra: [allocate(`${'97'.repeat(32)}:Cnrx.Allocation:CnrxAllocationRulesV3`, [ADMIN])] })])).not.toThrow();
+    expect(() => check(prepared(), [honest({ extra: [allocate(`${'97'.repeat(32)}:Cnrx.Allocation:CnrxAllocationRulesV3`, [ADMIN, G])] })])).not.toThrow();
   });
 
   test('TC-SDK-3172-05: a 0.4.2 settle names no pin and runs the factory stored at Open: passes', () => {
@@ -198,6 +206,42 @@ describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery
     ],
     ['two transactions', () => check(prepared(), [honest(), honest()]), /one transaction/],
   ])('%s is refused', (_name, run, detail) => refused(run, detail));
+});
+
+describe('intent.settle of a CNRX registry with a guardian G: G accounts for every holding the party is credited (CAN-3132)', () => {
+  const credit = (meta: DamlValue | null, entity?: string) => [holding('10', ME, PAYOUT, false, REG_PKG, meta, entity), holding('11', OPERATOR, FEE, false, REG_PKG, meta, entity)];
+  const settleWith = (entry: Partial<CantonTransferFactory>) =>
+    checkIntentSettle({ publicKey: KEY, party: ME, intent, feeBps: 30n, proof, entryCid: '00en', factories: { [ADMIN]: [{ ...(FACTORIES[ADMIN]?.[0] as CantonTransferFactory), ...entry }] } });
+
+  test('TC-SDK-3132-04: the payout marked with G, through an allocation factory G co-signs, counts', () => {
+    expect(() => check(prepared(), [honest({ credit: credit(marked(v.text(G))), extra: [allocate(`${REG_PKG}:Cnrx.Allocation:CnrxAllocationRules`, [ADMIN, G])] })])).not.toThrow();
+  });
+
+  test.each([
+    ['marked with another guardian G\'', marked(v.text(G_PRIME))],
+    ['without a mark (unaccounted)', v.record({ values: { t: 'textMap', v: {} } })],
+    ['without any meta', null],
+    ['with a meta without values', v.record({})],
+    ['marked with a value that is not text', marked(v.party(G))],
+  ])('TC-SDK-3132-05: the payout %s is refused', (_name, meta) => {
+    refused(() => check(prepared(), [honest({ credit: credit(meta) })]), /credited h-10, which the registry’s guardian cnrx-guardian::1220c7 does not account for/);
+  });
+
+  test('TC-SDK-3132-06: a receipt allocation through a factory anchored on G\' is refused', () => {
+    refused(
+      () => check(prepared(), [honest({ extra: [allocate(`${REG_PKG}:Cnrx.Allocation:CnrxAllocationRules`, [ADMIN, G_PRIME])] })]),
+      /allocation factory .* is not of a pinned registry/,
+    );
+  });
+
+  test('TC-SDK-3132-07: a CNRX pin that names no guardian refuses the settle — fail-closed, even for G-marked holdings', () => {
+    refused(() => settleWith({ guardian: undefined })(prepared(), [honest()]), /the pin names no guardian for the CNRX registry of cancore::1220aa/);
+  });
+
+  test('TC-SDK-3132-08: a registry that is not cnrx-registry needs no guardian and credits a holding whatever its mark', () => {
+    const other = settleWith({ guardian: undefined, factory: 'Other.Rules:Rules', holding: 'Other.Holding:Holding' });
+    expect(() => other(prepared(), [honest({ credit: credit(marked(v.text(G_PRIME)), 'Other.Holding:Holding') })])).not.toThrow();
+  });
 });
 
 describe('intent.settle of a registry whose holdings live in a package of their own (CAN-3301)', () => {

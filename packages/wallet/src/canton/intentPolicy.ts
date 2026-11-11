@@ -1,4 +1,4 @@
-import { isRegistryFactory, REGISTRY_PACKAGES, type RegistryPackages } from './registry';
+import { isRegistryFactory, REGISTRY_GUARDIANS, REGISTRY_PACKAGES, type RegistryGuardians, type RegistryPackages } from './registry';
 import type { CantonTransaction, CreateNode, ExerciseNode, TransactionNode } from './transactionTypes';
 
 /**
@@ -60,6 +60,11 @@ export interface IntentSigningPolicy {
   roots?: readonly IntentRoot[];
   /** Registry packages by admin. Default {@link REGISTRY_PACKAGES}. */
   registries?: RegistryPackages;
+  /**
+   * CNRX guardians by admin (CAN-3132): G must co-sign the admin's cnrx-registry factories. Default
+   * {@link REGISTRY_GUARDIANS}. A cnrx-registry factory of an admin with no G here is refused.
+   */
+  guardians?: RegistryGuardians;
 }
 
 /** Thrown before anything is signed; `reason` is the sentence a wallet shows its user. */
@@ -105,7 +110,7 @@ function checkExercise(node: ExerciseNode, policy: IntentSigningPolicy): boolean
   if (isIntentCode(node, policy) && INTENT_OWNER_CHOICES.has(name)) return true;
   const factoryInterface = Object.hasOwn(REGISTRY_FACTORY_CHOICES, node.choice) ? REGISTRY_FACTORY_CHOICES[node.choice] : undefined;
   if (!factoryInterface || qualified(node.interfaceId ?? '') !== factoryInterface) refuse(`the owner's authority reaches ${name}`);
-  if (!isRegistryFactory(node, policy.admin, policy.registries ?? REGISTRY_PACKAGES)) {
+  if (!isRegistryFactory(node, policy.admin, policy.registries ?? REGISTRY_PACKAGES, policy.guardians ?? REGISTRY_GUARDIANS)) {
     refuse(`${node.choice} runs on ${qualified(node.templateId)} (${node.contractId}), which is not a factory of the registry ${policy.admin}`);
   }
   return false;

@@ -218,6 +218,18 @@ export interface HoldingSeen {
   id: string;
   amount: bigint;
   locked: boolean;
+  /** The view meta `cnrx/guardian` (CAN-3132): the guardian a CNRX holding is accounted by; undefined when it names none. */
+  guardian?: string;
+}
+
+/** The view meta key cnrx-registry 0.2.6 marks an accounted holding with: its guardian, a signatory (CAN-3132). */
+const CNRX_GUARDIAN_MARK = 'cnrx/guardian';
+
+function guardianMarkOf(view: DamlValue): string | undefined {
+  const meta = view.t === 'record' ? view.v.meta : undefined;
+  const values = meta?.t === 'record' ? meta.v.values : undefined;
+  const mark = values?.t === 'textMap' ? values.v[CNRX_GUARDIAN_MARK] : undefined;
+  return mark?.t === 'text' ? mark.v : undefined;
 }
 export function holdingOf(argument: DamlValue, f: CantonTransferFactory): HoldingSeen {
   if (f.holdingForm === 'amulet') return amuletOf(argument, f);
@@ -232,6 +244,7 @@ export function holdingOf(argument: DamlValue, f: CantonTransferFactory): Holdin
     id: textOf(field(instrument, 'id')),
     amount: scaled(numeric(field(view, 'amount'))),
     locked: lock !== undefined && !(lock.t === 'optional' && lock.v === undefined),
+    guardian: guardianMarkOf(view),
   };
 }
 const AMULET_ID = 'Amulet';
