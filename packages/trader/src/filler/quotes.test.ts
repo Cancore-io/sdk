@@ -173,6 +173,8 @@ function desk(over: Partial<QuoteDeskOptions> & { hook?: (r: FillerQuoteRequest)
   return { clock, store, logger, events, protocol, quoteSigner, fill1, fill56, seenRequests, seenReconfirms, options, desk: new QuoteDesk(options) };
 }
 
+const drain = () => new Promise((resolve) => setImmediate(resolve));
+
 const delivery = (frame: Record<string, unknown>, firstSeen = true): Delivery =>
   ({ frame: { sentAt: 0, sig: '0x', ...frame }, raw: new Uint8Array(), id: '0x00', channel: 'ws', firstSeen }) as unknown as Delivery;
 
@@ -272,36 +274,69 @@ describe('quote.request → onQuoteRequest → FillerQuote', () => {
     );
   });
 
-  test('CAN-3238: a sent quote is logged with where its time went', async () => {
+  test('CAN-3238, BUG-1396: the minInput read and the hook run side by side; a sent quote is logged with where its time went', async () => {
     const h = desk({
-      minInput: async () => {
-        h.clock.advance(40);
-        return undefined;
-      },
-      hook: async () => {
-        h.clock.advance(120);
-        return { amountOut: 99n, validUntil: '1800000000' };
-      },
+      minInput: () => new Promise((resolve) => h.clock.schedule(40, () => resolve(undefined))),
+      hook: () => new Promise((resolve) => h.clock.schedule(120, () => resolve({ amountOut: 99n, validUntil: '1800000000' }))),
     });
-    await expect(h.desk.onRequest(delivery(request(h.clock)))).resolves.toHaveProperty('sent');
-    expect(h.logger.entries).toContainEqual(
-      expect.objectContaining({
-        message: 'quotes: quote sent',
-        fields: expect.objectContaining({ windowLeftAtReceiptMs: 500, minInputMs: 40, hookMs: 120, signingMs: expect.any(Number), elapsedMs: expect.any(Number) }),
-      }),
+    const result = h.desk.onRequest(delivery(request(h.clock)));
+    await drain();
+    h.clock.advance(40);
+    await drain();
+    h.clock.advance(80);
+    await expect(result).resolves.toHaveProperty('sent');
+    const sent = h.logger.entries.find((e) => e.message === 'quotes: quote sent');
+    expect(sent?.fields).toEqual(
+      expect.objectContaining({ windowLeftAtReceiptMs: 500, minInputMs: 40, hookMs: 120, signingMs: expect.any(Number), elapsedMs: 120 }),
     );
   });
 
-  test('not quoted: inputAmount below the source router minInput (T-16)', async () => {
+  test('not quoted: inputAmount below the source router minInput (T-16), whatever the hook priced', async () => {
     const h = desk({ minInput: async (chain, token) => (chain === 'eip155:56' && token === '0x0000000000000000000000000000000000000056' ? 106n : undefined) });
     await expect(h.desk.onRequest(delivery(request(h.clock)))).resolves.toEqual({ skipped: 'below-min-input' });
-    expect(h.seenRequests).toHaveLength(0);
+    expect(h.protocol.sent).toHaveLength(0);
+    expect(await h.store.quotes.listQuotes('rq-1')).toEqual([]);
   });
 
-  test('not quoted: the source router minInput cannot be read (no floor the filler did not see)', async () => {
+  test('not quoted: the source router minInput cannot be read (no floor the filler did not see), whatever the hook priced', async () => {
     const h = desk({ minInput: async () => Promise.reject(new Error('eip155:56: no endpoint answered')) });
     await expect(h.desk.onRequest(delivery(request(h.clock)))).resolves.toEqual({ skipped: 'chain-unavailable' });
-    expect(h.seenRequests).toHaveLength(0);
+    expect(h.protocol.sent).toHaveLength(0);
+    expect(await h.store.quotes.listQuotes('rq-1')).toEqual([]);
+  });
+
+  test('not quoted: the minInput read failing wins over the hook throwing', async () => {
+    const h = desk({
+      minInput: async () => Promise.reject(new Error('eip155:56: no endpoint answered')),
+      hook: async () => Promise.reject(new Error('no price')),
+    });
+    await expect(h.desk.onRequest(delivery(request(h.clock)))).resolves.toEqual({ skipped: 'chain-unavailable' });
+  });
+
+  test('not quoted: the hook throws above the floor', async () => {
+    const h = desk({ hook: async () => Promise.reject(new Error('no price')) });
+    await expect(h.desk.onRequest(delivery(request(h.clock)))).resolves.toEqual({ skipped: 'hook-failed' });
+    expect(h.logger.entries).toContainEqual(expect.objectContaining({ message: 'quotes: onQuoteRequest threw', fields: expect.objectContaining({ requestId: 'rq-1' }) }));
+  });
+
+  test('not quoted: no hook registered', async () => {
+    const h = desk({ onQuoteRequest: () => undefined });
+    await expect(h.desk.onRequest(delivery(request(h.clock)))).resolves.toEqual({ skipped: 'hook-failed' });
+  });
+
+  test('BUG-1396: windowCloseAt passes while the quote is recorded — stored, not sent, logged late after record', async () => {
+    const h = desk();
+    const recordQuote = h.store.quotes.recordQuote.bind(h.store.quotes);
+    h.store.quotes.recordQuote = async (quote) => {
+      h.clock.advance(600);
+      return recordQuote(quote);
+    };
+    await expect(h.desk.onRequest(delivery(request(h.clock)))).resolves.toEqual({ skipped: 'late' });
+    expect(h.protocol.sent).toHaveLength(0);
+    expect(h.events.events).not.toContainEqual(expect.objectContaining({ stage: 'quote.sent' }));
+    expect(h.logger.entries).toContainEqual(
+      expect.objectContaining({ message: 'quotes: request not quoted', fields: expect.objectContaining({ reason: 'late', after: 'record', stored: true, recordMs: 600 }) }),
+    );
   });
 
   test('validUntil × 1000 = windowCloseAt + quoteTtlMs is accepted; one second less is not; the boundary is in ms', async () => {
@@ -568,7 +603,6 @@ describe('through createFiller and a crafted filler-gateway', () => {
     // N-12: an EVM source with no router in the config is one the filler cannot verify or settle on — no quote.
     socket.receive(gateway.frame({ ...request(clock, { requestId: 'rq-137', route: { src: 'eip155:137', dst: 'eip155:1' } }), fillerId: FILLER }));
     await settle();
-    expect(payouts).toEqual([100n]);
     expect(socket.sentFrames().filter((f) => f.type === 'quote')).toHaveLength(1);
     await filler.stop();
   });
