@@ -265,7 +265,7 @@ describe('holdings.transfer: the subtree under an honest root (TC-SDK-2352)', ()
     refused(() => check(prepared(), [transfer({ children: [archive('1', 'h1'), archive('2', 'h2'), mint('3', ME, '25', true), mint('4', ME, '5'), offer('5', '30')] })]), /another amount/);
   });
 
-  test('TC-SDK-2352-11: the dev CNRX registrar pins cnrx-registry 0.2.3, next to 0.2.6 and 0.2.7', () => {
+  test('TC-SDK-2352-11: the dev CNRX registrar pins cnrx-registry 0.2.3, next to 0.2.6, 0.2.7 and 0.2.8', () => {
     expect(CANTON_TRANSFER_FACTORIES[ADMIN]).toContainEqual(expect.objectContaining({ packageId: CNRX, factory: 'Cnrx.Rules:CnrxRules', holding: 'Cnrx.Holding:CnrxHolding' }));
   });
 });

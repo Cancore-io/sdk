@@ -151,6 +151,17 @@ const CNRX_REGISTRY_0_2_7: CantonTransferFactory = {
 };
 
 /**
+ * cnrx-registry 0.2.8 (cancore-token-canton `dist/cnrx-registry-0.2.8.dar`, CHANGELOG 0.2.8): the CertiK CNA-04 fix,
+ * an upgrade of 0.2.7 that adds one choice (`CnrxTransferOffer_Expire`) and caps an offer's deadline at 31 days; the
+ * direct transfer is unchanged. Its transfers spend the holdings created under 0.2.7 and 0.2.6.
+ */
+const CNRX_REGISTRY_0_2_8: CantonTransferFactory = {
+  ...CNRX_REGISTRY_0_2_7,
+  packageId: '0673c0e747c716342d189a7fcdf36448864b49788a91c1c664da08df2944d28f',
+  upgradedHoldingPackageIds: [CNRX_REGISTRY_0_2_7.packageId, CNRX_REGISTRY_0_2_6.packageId],
+};
+
+/**
  * DA Utilities `utility-registry-app-v0` 0.8.2 (meta `dars/utility/packages.json`; the version dev vets for a
  * receiver and DA's operator, backend utility-registry-package.resolver.ts). The factory, offer and preapproval
  * are as the stand spike decoded a CBTC `TransferFactory_Transfer` (sdk test da-utility-transfer, CAN-2931).
@@ -223,8 +234,8 @@ const SPLICE_AMULET_0_1_24_DEVNET: CantonTransferFactory = {
 /** By instrument admin party. */
 export const CANTON_TRANSFER_FACTORIES: Readonly<Record<string, readonly CantonTransferFactory[]>> = {
   // dev: the CNRX registrar (gitops k8s/envs/dev CNRX_REGISTRY_ADMIN_PARTY).
-  // 0.2.6 and 0.2.3 stay until dev un-vets them: transactions run under them and allocations created under them may still be live.
-  'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b': [CNRX_REGISTRY_0_2_7, CNRX_REGISTRY_0_2_6, CNRX_REGISTRY_0_2_3],
+  // 0.2.7, 0.2.6 and 0.2.3 stay until dev un-vets them: transactions run under them and allocations created under them may still be live.
+  'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b': [CNRX_REGISTRY_0_2_8, CNRX_REGISTRY_0_2_7, CNRX_REGISTRY_0_2_6, CNRX_REGISTRY_0_2_3],
   // devnet: CBTC's registrar on DA Utilities dev (backend libs/common/src/config/cbtc.config.ts).
   // 0.8.2 stays: contracts created under it remain on the ledger after devnet moved to 0.9.2.
   'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff': [DA_UTILITY_REGISTRY_APP_0_9_2_DEVNET, DA_UTILITY_REGISTRY_APP_0_8_2_DEVNET],

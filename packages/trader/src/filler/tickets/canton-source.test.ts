@@ -245,7 +245,7 @@ describe('V-C1…V-C6 on the golden Canton-source order (CAN-1863)', () => {
 
   test('V-C5 (T-9): the pinned dev CNRX registry pays any party; DA Utilities (CBTC) is not pinned as one', () => {
     const pinned = (admin: string) => CANTON_TRANSFER_FACTORIES[admin]?.map((f) => f.openReceipt === true);
-    expect(pinned('cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b')).toEqual([true, true, true]);
+    expect(pinned('cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b')).toEqual([true, true, true, true]);
     expect(pinned('cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff')).toEqual([false, false]);
   });
 

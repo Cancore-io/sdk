@@ -2,6 +2,7 @@
  * cnrx-registry 0.2.6 on dev (CAN-3304): a guardian co-signs every holding, and a direct transfer spends its first
  * input through `CnrxHolding_Move`, archiving the rest (cancore-token-canton `Cnrx.Holding` `moveCheckedInputs`).
  * cnrx-registry 0.2.7 (CAN-2573, CertiK CNA-03) upgrades 0.2.6 in place: its transfers spend holdings of both.
+ * cnrx-registry 0.2.8 (CAN-2574, CertiK CNA-04) upgrades 0.2.7 the same way.
  */
 import type { Hex } from '@cancore/contracts';
 import { checkHoldingsTransfer } from './checks';
@@ -17,6 +18,7 @@ const ME = party();
 const RECEIVER = 'treasury::1220cd';
 const GUARDIAN = 'cnrx-guardian::1220ef';
 const ADMIN = 'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b';
+const CNRX_0_2_8 = '0673c0e747c716342d189a7fcdf36448864b49788a91c1c664da08df2944d28f';
 const CNRX_0_2_7 = '0cc44c28f323b455c1875e85fd7a1ad7732ad2a34ed8dd1550cb79dead750bba';
 const CNRX_0_2_6 = '643a728658256e42fe69f8bb5202a4466da5d8564e628af5d5534d8b416c9dc8';
 const CNRX_0_2_3 = 'd495b7d2e9376e42bb58845c47e165492bba917216352636b6c357c76d3bb736';
@@ -96,8 +98,8 @@ const refused = (run: () => unknown, detail: RegExp) => {
 };
 
 describe('holdings.transfer of CNRX under cnrx-registry 0.2.6: the first input spent by CnrxHolding_Move (CAN-3304)', () => {
-  test('TC-SDK-3304-01: dev pins 0.2.6 next to 0.2.3, behind 0.2.7; the honest direct transfer passes', () => {
-    expect(pinned.map((f) => f.packageId)).toEqual([CNRX_0_2_7, CNRX_0_2_6, CNRX_0_2_3]);
+  test('TC-SDK-3304-01: dev pins 0.2.6 next to 0.2.3, behind 0.2.8 and 0.2.7; the honest direct transfer passes', () => {
+    expect(pinned.map((f) => f.packageId)).toEqual([CNRX_0_2_8, CNRX_0_2_7, CNRX_0_2_6, CNRX_0_2_3]);
     expect(() => check()(prepared, [transfer()])).not.toThrow();
   });
 
@@ -113,12 +115,13 @@ describe('holdings.transfer of CNRX under cnrx-registry 0.2.6: the first input s
 
 describe('V-C4 and preapproval.create of CNRX under cnrx-registry 0.2.6 (CAN-3304)', () => {
   test('TC-SDK-3304-08: a committed 0.2.6 allocation is a pinned allocation of the CNRX admin, as is 0.2.3’s', () => {
-    expect(CANTON_ALLOCATION_TEMPLATES[ADMIN]).toEqual([CNRX_0_2_7, CNRX_0_2_6, CNRX_0_2_3].map((pkg) => `${pkg}:Cnrx.Allocation:CnrxAllocationV2`));
+    expect(CANTON_ALLOCATION_TEMPLATES[ADMIN]).toEqual([CNRX_0_2_8, CNRX_0_2_7, CNRX_0_2_6, CNRX_0_2_3].map((pkg) => `${pkg}:Cnrx.Allocation:CnrxAllocationV2`));
   });
 
   test.each([
     ['TC-SDK-3304-09', CNRX_0_2_6],
     ['TC-SDK-2573-04', CNRX_0_2_7],
+    ['TC-SDK-2574-02', CNRX_0_2_8],
   ])('%s: the party’s CnrxTransferPreapproval of %s passes the CNRX form', (_id, pkg) => {
     const requested = String(NOW / 1000 - 60);
     const before = String(NOW / 1000 + 86_400);
@@ -160,5 +163,21 @@ describe('holdings.transfer of CNRX under cnrx-registry 0.2.7: an in-place upgra
     const entry = pinned[0] as CantonTransferFactory;
     expect(registriesProblem({ [ADMIN]: [entry] })).toBeUndefined();
     expect(registriesProblem({ [ADMIN]: [{ ...entry, upgradedHoldingPackageIds }] })).toMatch(/upgradedHoldingPackageIds/);
+  });
+});
+
+describe('holdings.transfer of CNRX under cnrx-registry 0.2.8: an in-place upgrade of 0.2.7 (CAN-2574)', () => {
+  const holdingsOf = (pkg: string) => [input('h1', '20', pkg), input('h2', '10', pkg)];
+
+  test.each([
+    ['TC-SDK-2574-01: holdings created under 0.2.6', CNRX_0_2_6],
+    ['TC-SDK-2574-01: holdings created under 0.2.7', CNRX_0_2_7],
+    ['TC-SDK-2574-01: holdings created under 0.2.8', CNRX_0_2_8],
+  ])('%s, spent by a 0.2.8 transfer: passes', (_name, pkg) => {
+    expect(() => check()(prepared, [transfer({ pkg: CNRX_0_2_8, inputs: holdingsOf(pkg) })])).not.toThrow();
+  });
+
+  test('TC-SDK-2574-03: holdings of 0.2.3 spent by a 0.2.8 transfer: refused', () => {
+    refused(() => check()(prepared, [transfer({ pkg: CNRX_0_2_8, inputs: holdingsOf(CNRX_0_2_3) })]), /not a holding of the pinned registry/);
   });
 });
