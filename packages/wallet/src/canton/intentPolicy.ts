@@ -10,18 +10,19 @@ import type { CantonTransaction, CreateNode, ExerciseNode, TransactionNode } fro
 export const INTENT_PACKAGE_NAME = 'cancore-intent';
 
 /**
- * Package ids of the `cancore-intent` versions whose Open and Renew this wallet signs: 0.6.0 only (CAN-3340).
- * 0.6.0 is an SCU of 0.4.2–0.5.2, so a root of an older package still runs: their Open stores a settlement factory
- * without the owner's PublicFetch, and their settle runs the operator's pin under the owner's authority.
- * The 0.6.0 id is the main package of `deploy-contracts/dars/cancore-intent-0.6.0.dar` at canton-contracts dev 7ca6dd66
- * (#327 merged), the DAR the dev participant vets.
+ * Package ids of the `cancore-intent` versions whose Open and Renew this wallet signs: 0.6.2 only (CAN-3340, CAN-2716).
+ * 0.6.2 is an SCU of 0.4.2–0.6.1, so a root of an older package still runs: up to 0.5.2 their Open stores a settlement
+ * factory without the owner's PublicFetch and their settle runs the operator's pin under the owner's authority; 0.6.0
+ * and 0.6.1 read an attestor registry whose sets may start on a fractional second (CAN-2716).
+ * The 0.6.2 id is the main package of `deploy-contracts/dars/cancore-intent-0.6.2.dar` at canton-contracts dev 55438e36
+ * (#319 merged), the DAR the dev participant vets and the backend prepares owner-signed steps against.
  */
-export const INTENT_PACKAGE_IDS: readonly string[] = ['26648cea50d39e2d7110248825bb390df9cbfcfde9aca1f4f8986c33be86b731'];
+export const INTENT_PACKAGE_IDS: readonly string[] = ['16883f74059616eda07b70764b1160196a5123c5691adccf11062f90176d9d5d'];
 
 /** The roots an owner signs, by `<module>:<entity>` of the template and the choice. */
 export const INTENT_ROOTS = {
   open: { template: 'Intent.SwapIntent:IntentFactory', choice: 'IntentFactory_Open' },
-  // Checked against the cancore-intent 0.6.0 DAR of canton-contracts#327 (973d063).
+  // Checked against the cancore-intent 0.6.0 DAR of canton-contracts#327 (973d063); unchanged through 0.6.2 (#319).
   renewSettlementFactory: { template: 'Intent.SwapIntent:SwapIntent', choice: 'SwapIntent_RenewSettlementFactory' },
 } as const;
 

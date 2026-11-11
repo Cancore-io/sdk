@@ -10,6 +10,17 @@
   an admin with G, G must sign the factory too. A `CnrxRules` / `CnrxAllocationRules` anchored on another guardian G'
   is admin-signed and of the same package; the intent signing policy now refuses it.
 
+## 0.4.2
+
+### Changed — intent operations are signed for cancore-intent 0.6.2 only (CAN-2716)
+
+- `INTENT_PACKAGE_IDS` pins 0.6.2
+  (`16883f74059616eda07b70764b1160196a5123c5691adccf11062f90176d9d5d`), the version the dev
+  participant now vets and prefers; the backend prepares owner-signed Open and Renew against it.
+  0.6.2 is an upgrade of 0.4.2–0.6.1, so their roots still run on a ledger that vets them; 0.6.0
+  and 0.6.1 accept attestor sets that start on a fractional second, which 0.6.2 refuses.
+  A wallet on 0.4.1 refuses every intent operation prepared against 0.6.2.
+
 ## 0.4.1
 
 ### Changed — intent operations are signed for cancore-intent 0.6.0 only (CAN-3340)

@@ -8,7 +8,8 @@
  * the ledger formula on a Canton source, T-12), then holds the hook's answer to
  * the wire rules before it signs:
  *
- * - not after `windowCloseAt` (checked before and after the hook, and after signing);
+ * - not after `windowCloseAt` (checked before and after the hook, after signing, and
+ *   after recording, right before the send);
  * - `validUntil × 1000 ≥ windowCloseAt + quoteTtlMs` (the boundary counts);
  * - not below the source router's `minInput` (T-16);
  * - `nonce` strictly greater than any nonce of this quote key for the
@@ -132,7 +133,7 @@ export type QuoteSkipReason =
   | 'below-min-input'
   /** The source router's `minInput` could not be read: no quote on a floor the filler did not see. */
   | 'chain-unavailable'
-  /** `windowCloseAt` passed (before or after the hook, or after signing). */
+  /** `windowCloseAt` passed (before or after the hook, after signing, or after recording). */
   | 'late'
   /** The hook returned null. */
   | 'declined'
@@ -242,24 +243,9 @@ export class QuoteDesk {
     if (this.options.clock.now() >= windowCloseAt) return skip('late');
     if ((await this.options.store.getOverrides()).paused) return skip('paused');
 
-    let minInput: bigint | undefined;
-    try {
-      minInput = await timings.measure('minInputMs', () => this.options.minInput(request.route.src, request.inputToken));
-    } catch (error) {
-      return skip('chain-unavailable', { error: String(error) });
-    }
-    if (minInput !== undefined && total < minInput) return skip('below-min-input', { minInput: minInput.toString() });
-
-    const hook = this.options.onQuoteRequest();
-    if (!hook) return skip('hook-failed');
-    const payout = payoutOf(total, request.feeBps);
-    let decision: QuoteDecisionInput | null;
-    try {
-      decision = await timings.measure('hookMs', () => hook({ ...request, payout, fee: total - payout, shownToUser: true }));
-    } catch (error) {
-      this.options.logger.error('quotes: onQuoteRequest threw', { requestId, error: String(error) });
-      return skip('hook-failed');
-    }
+    const priced = await this.priceAboveFloor(request, total, payoutOf(total, request.feeBps), timings);
+    if (priced.kind === 'skip') return skip(priced.reason, priced.fields);
+    const { decision } = priced;
     if (decision === null) return skip('declined');
     const amountOut = uintOf(decision?.amountOut, UINT256);
     const validUntil = uintOf(decision?.validUntil, UINT64);
@@ -286,10 +272,39 @@ export class QuoteDesk {
 
     const stored: StoredQuote = { requestId, quoteHash, quote, sentAtMs: this.options.clock.now() };
     await timings.measure('recordMs', () => this.options.store.quotes.recordQuote(stored));
+    // A quote that reaches filler-gateway after the close is counted LATE there; logged as sent here, it hid the miss.
+    if (this.options.clock.now() >= windowCloseAt) return skip('late', { after: 'record', stored: true });
     if (!this.options.protocol.send(quote)) return skip('disconnected', { stored: true });
     this.stage('quote.sent', requestId, { nonce: Number(nonce) });
     this.options.logger.info('quotes: quote sent', { requestId, nonce: Number(nonce), ...timings.fields() });
     return { sent: stored };
+  }
+
+  /**
+   * The source router's floor and the hook's price. BUG-1396: they run side by side; one after the
+   * other, a cold RPC read pushed the quote past `windowCloseAt`. The floor still decides first:
+   * below it, or unread, the price is dropped.
+   */
+  private async priceAboveFloor(
+    request: QuoteRequest,
+    total: bigint,
+    payout: bigint,
+    timings: QuoteTimings,
+  ): Promise<{ kind: 'priced'; decision: QuoteDecisionInput | null | undefined } | { kind: 'skip'; reason: QuoteSkipReason; fields?: Record<string, string> }> {
+    const hook = this.options.onQuoteRequest();
+    const [floor, answer] = await Promise.allSettled([
+      timings.measure('minInputMs', () => this.options.minInput(request.route.src, request.inputToken)),
+      hook ? timings.measure('hookMs', () => hook({ ...request, payout, fee: total - payout, shownToUser: true })) : Promise.resolve(undefined),
+    ]);
+    if (floor.status === 'rejected') return { kind: 'skip', reason: 'chain-unavailable', fields: { error: String(floor.reason) } };
+    const minInput = floor.value;
+    if (minInput !== undefined && total < minInput) return { kind: 'skip', reason: 'below-min-input', fields: { minInput: minInput.toString() } };
+    if (!hook) return { kind: 'skip', reason: 'hook-failed' };
+    if (answer.status === 'rejected') {
+      this.options.logger.error('quotes: onQuoteRequest threw', { requestId: request.requestId, error: String(answer.reason) });
+      return { kind: 'skip', reason: 'hook-failed' };
+    }
+    return { kind: 'priced', decision: answer.value };
   }
 
   /** The quote of `requestId` that is firm at `atMs` (unix ms): the newest one sent whose `validUntil` has not passed (T-4). */

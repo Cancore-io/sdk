@@ -115,7 +115,6 @@ standSuite('CAN-1852: quotes against the real filler-gateway', GATEWAY_KEYS, () 
     expect(skipped(short.requestId)).toMatchObject({ detail: expect.objectContaining({ reason: 'short-ttl' }) });
     expect(skipped(below.requestId)).toMatchObject({ detail: expect.objectContaining({ reason: 'below-min-input' }) });
     expect(skipped(none.requestId)).toMatchObject({ detail: expect.objectContaining({ reason: 'declined' }) });
-    expect(requests.has(below.requestId)).toBe(false);
   }, 120_000);
 
   test('TC-SDK-1852-INT-04: a reconfirm at a changed price — declined, no signature, no nonce', async () => {
