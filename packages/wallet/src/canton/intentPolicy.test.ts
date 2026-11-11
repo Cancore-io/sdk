@@ -7,7 +7,7 @@ import { verifyPreparedTransaction } from './prepared';
 import { isRegistryFactory, REGISTRY_PACKAGES } from './registry';
 
 const INTENT_PKG = INTENT_PACKAGE_IDS[0] as string;
-/** cancore-intent 0.5.1 (canton-contracts `external-test-dars/cancore-intent-0.5.1.dar`): still an SCU predecessor of 0.6.0. */
+/** cancore-intent 0.5.1 (canton-contracts `external-test-dars/cancore-intent-0.5.1.dar`): still an SCU predecessor of 0.6.2. */
 const INTENT_0_5_1 = 'cc52de44b338f20f0438cc0cb82d877ecb2128dcd1dcd50145b9e697a5612626';
 const OWNER = 'alice::1220' + '0a'.repeat(32);
 const OPERATOR = 'cancore-operator::1220' + '0b'.repeat(32);
