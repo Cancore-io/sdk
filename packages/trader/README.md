@@ -452,10 +452,14 @@ prepares only.
 **Pinned registries.** Every check that meets a registry contract — `transfer`, `delivery.fill`,
 the committed give (V-C4, V-C5) and `intent.settle` — holds it to `CantonOperations.registries`: by
 instrument admin, the package id and templates of the registry (`CantonTransferFactory`: factory,
-holding, pending transfer, V2 allocation, `openReceipt`). It is `CANTON_TRANSFER_FACTORIES`, the
+holding, pending transfer, V2 allocation, `openReceipt`, and for a cnrx-registry entry its
+`guardian`). It is `CANTON_TRANSFER_FACTORIES`, the
 published registries, unless `CantonConfig.registries` (or `CantonClientConfig.registries`) names
 others — only for a network with its own registrar, such as a test stand; `registriesProblem`
-checks such a pin before it is used. filler-gateway never supplies it.
+checks such a pin before it is used. filler-gateway never supplies it. A cnrx-registry entry (its
+holding is `Cnrx.Holding:CnrxHolding`) must name `guardian`, the guardian G of the registrar's
+`CnrxSupply` (CAN-3132): `intent.settle` credits only holdings marked `cnrx/guardian = G` and runs
+receipt allocations only on factories G co-signs; a pin without it is refused.
 
 `allocateParty()`, `acceptRegistry(fillerId)`, `transfer(params)` and `createPreapproval(admin)` carry their checks built in.
 The party is recognised by its namespace, the fingerprint of the node key (its hint, the part before

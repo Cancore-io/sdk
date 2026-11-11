@@ -107,9 +107,14 @@ export interface CantonTransferFactory {
    * environment. G co-signs the registry's `CnrxRules` / `CnrxAllocationRules` and every holding they account, which
    * names it in its view meta `cnrx/guardian`. A factory anchored on another guardian G' — same package, signed by the
    * admin — and the G' holdings it makes are not this registry's CNRX. One G per admin: the first entry's that names one.
+   * Required for an entry whose holding is `Cnrx.Holding:CnrxHolding` ({@link isCnrxRegistry}): `registriesProblem`
+   * refuses a CNRX pin without it, so a stand pin can never switch the check off.
    */
   guardian?: string;
 }
+
+/** CAN-3132: a cnrx-registry entry, told by the holding template it names; its factories are anchored on a guardian. */
+export const isCnrxRegistry = (f: Pick<CantonTransferFactory, 'holding'>): boolean => f.holding === 'Cnrx.Holding:CnrxHolding';
 
 /** The holding template of a registry, `<package>:<module>:<entity>`: DA Utilities keeps `Holding` in a package of its own (`holdingPackageId`). */
 export const holdingTemplateOf = (f: CantonTransferFactory): string => `${f.holdingPackageId ?? f.packageId}:${f.holding}`;
@@ -237,6 +242,9 @@ const DEV_CNRX_GUARDIAN = 'cancore-intent-guardian::12204f383aca6af056f6d83c9b57
 export const CANTON_TRANSFER_FACTORIES: Readonly<Record<string, readonly CantonTransferFactory[]>> = {
   // dev: the CNRX registrar (gitops k8s/envs/dev CNRX_REGISTRY_ADMIN_PARTY).
   // 0.2.6 and 0.2.3 stay until dev un-vets them: transactions run under them and allocations created under them may still be live.
+  // G is the admin's, not a version's (CAN-3132), so the 0.2.3 entry names it too: under 0.2.6+ a factory G does not
+  // co-sign moves nothing (Cnrx.Rules / Cnrx.Allocation: "the factory has no guardian") and a holding without the mark
+  // is inert until migrated, so refusing both refuses nothing the ledger would still settle.
   'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b': [CNRX_REGISTRY_0_2_7, CNRX_REGISTRY_0_2_6, CNRX_REGISTRY_0_2_3].map((f) => ({ ...f, guardian: DEV_CNRX_GUARDIAN })),
   // devnet: CBTC's registrar on DA Utilities dev (backend libs/common/src/config/cbtc.config.ts).
   // 0.8.2 stays: contracts created under it remain on the ledger after devnet moved to 0.9.2.
@@ -290,7 +298,9 @@ function entryProblem(f: Partial<CantonTransferFactory> | null, at: string): str
   if (f.preapprovalPackageId !== undefined && (typeof f.preapprovalPackageId !== 'string' || !PACKAGE_ID.test(f.preapprovalPackageId))) return `${at}.preapprovalPackageId: expected 64 lowercase hex`;
   if (f.preapprovalForm === 'utility' && (typeof f.preapprovalOperator !== 'string' || !PARTY_ID.test(f.preapprovalOperator))) return `${at}.preapprovalOperator: expected the DA operator's party id`;
   if (f.preapprovalForm === 'splice' && (typeof f.preapprovalProvider !== 'string' || !PARTY_ID.test(f.preapprovalProvider))) return `${at}.preapprovalProvider: expected the provider's party id`;
-  if (f.guardian !== undefined && (typeof f.guardian !== 'string' || !PARTY_ID.test(f.guardian))) return `${at}.guardian: expected the CNRX guardian's party id`;
+  if ((isCnrxRegistry(f as CantonTransferFactory) || f.guardian !== undefined) && (typeof f.guardian !== 'string' || !PARTY_ID.test(f.guardian))) {
+    return `${at}.guardian: expected the CNRX guardian's party id (CAN-3132: required for a cnrx-registry entry)`;
+  }
   return undefined;
 }
 

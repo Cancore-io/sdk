@@ -311,7 +311,11 @@ It refuses with `IntentTransactionRefusedError` (its `reason` is the sentence to
 - every action below it that carries the owner's authority is code of that package, or
   `AllocationFactory_Allocate` / `SettlementFactory_PublicFetch` on a factory of the registry of
   `admin` — `isRegistryFactory`: the admin signs the factory, or its package is in the admin's
-  closed list (`REGISTRY_PACKAGES`); an admin with no list is refused.
+  closed list (`REGISTRY_PACKAGES`); an admin with no list is refused. Of a CNRX admin the
+  registry's guardian G must co-sign the factory as well (`REGISTRY_GUARDIANS`, CAN-3132): a
+  `CnrxRules` / `CnrxAllocationRules` anchored on another guardian is admin-signed and of the same
+  package. A wallet with its own CNRX pin passes `policy.guardians` next to `policy.registries`;
+  a cnrx-registry factory of an admin with no guardian there is refused.
 
 `verifyPreparedTransaction` is the same check without signing, for a screen or for a Renew the
 wallet signs unattended. `execute(signer, type, params, confirm, intentPolicy)` and
@@ -320,11 +324,11 @@ before the first signature; `signPreparedHashBase64(signer, hash, 'intent.open')
 
 ## `@cancore/wallet/canton` — what the rail checks a Canton transaction with
 
-The prepared-transaction view and hash, the registry packages by admin and the factory rule,
-shared by the wallet, the filler node (`@cancore/trader`) and the attestor:
+The prepared-transaction view and hash, the registry packages and CNRX guardians by admin and the
+factory rule, shared by the wallet, the filler node (`@cancore/trader`) and the attestor:
 
 ```ts
-import { isRegistryFactory, readPreparedTransaction, REGISTRY_PACKAGES } from '@cancore/wallet/canton';
+import { isRegistryFactory, readPreparedTransaction, REGISTRY_GUARDIANS, REGISTRY_PACKAGES, registryGuardiansOf } from '@cancore/wallet/canton';
 ```
 
 Its declarations need neither Node nor DOM types. The functions typed over

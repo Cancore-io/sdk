@@ -289,16 +289,32 @@ describe('isRegistryFactory of a CNRX admin with a guardian G: G signs the facto
     expect(isRegistryFactory({ templateId: RULES, signatories: [CNRX, CNRX_GUARDIAN_PRIME] }, CNRX)).toBe(false);
     expect(isRegistryFactory({ templateId: RULES, signatories: [CNRX] }, CNRX)).toBe(false);
     expect(isRegistryFactory({ templateId: RULES, signatories: [CNRX_GUARDIAN_PRIME] }, CNRX)).toBe(false);
-    // An admin without a guardian keeps the CAN-3340 rule; a guardians map without the admin adds nothing, even for
-    // an admin named like an Object.prototype key.
-    expect(isRegistryFactory({ templateId: RULES, signatories: [CNRX] }, CNRX, REGISTRY_PACKAGES, {})).toBe(true);
-    expect(isRegistryFactory({ templateId: RULES, signatories: ['constructor'] }, 'constructor', { constructor: [] }, {})).toBe(true);
+    // Without a G for the admin a cnrx-registry factory is refused, admin-signed or not (fail-closed); any other factory
+    // keeps the CAN-3340 rule, even for an admin named like an Object.prototype key.
+    expect(isRegistryFactory({ templateId: RULES, signatories: [CNRX, CNRX_GUARDIAN] }, CNRX, REGISTRY_PACKAGES, {})).toBe(false);
+    expect(isRegistryFactory({ templateId: RULES.replace('Cnrx.Rules:CnrxRules', 'Cnrx.Allocation:CnrxAllocationRules'), signatories: [CNRX] }, CNRX, REGISTRY_PACKAGES, {})).toBe(false);
+    expect(isRegistryFactory({ templateId: RULES.replace('Cnrx.Rules:CnrxRules', 'Other.Rules:Rules'), signatories: [CNRX] }, CNRX, REGISTRY_PACKAGES, {})).toBe(true);
+    expect(isRegistryFactory({ templateId: `${ROGUE_PKG}:X:Y`, signatories: ['constructor'] }, 'constructor', { constructor: [] }, {})).toBe(true);
   });
 
   test('TC-SDK-3132-02: the guardian of an admin is the first of its entries that names one; an admin with none has no entry', () => {
     const [entry] = CANTON_TRANSFER_FACTORIES[CNRX]!;
     const plain = { ...entry!, guardian: undefined };
     expect(registryGuardiansOf({ [CNRX]: [plain, { ...plain, guardian: 'g::1220' }, { ...plain, guardian: 'h::1220' }], [DSO]: [plain] })).toStrictEqual({ [CNRX]: 'g::1220' });
+  });
+
+  test('TC-SDK-3132-04: a wallet with its own CNRX pin passes G in the policy; without it every cnrx-registry factory is refused', async () => {
+    const STAND = 'stand-cnrx::1220' + '5e'.repeat(32);
+    const G = 'stand-guardian::1220' + '6f'.repeat(32);
+    const stand: Registry = { ...REGISTRIES[2]!, name: 'a stand\'s cnrx-registry', admin: STAND, factorySignatories: [STAND, G] };
+    const registries = { [STAND]: [stand.factory.split(':')[0]!] };
+    const signedBy = async (signatories: string[]) => prepared(honest('open', stand, registryCalls(stand, stand.factory, signatories)));
+
+    const own = await signedBy([STAND, G]);
+    expect(verifyPreparedTransaction(own.tx, own.hash, policy(stand, { registries, guardians: { [STAND]: G } }))).toBe('open');
+    const forged = await signedBy([STAND, CNRX_GUARDIAN_PRIME]);
+    expect(await refusal(() => verifyPreparedTransaction(forged.tx, forged.hash, policy(stand, { registries, guardians: { [STAND]: G } })))).toMatch(/not a factory of the registry/);
+    expect(await refusal(() => verifyPreparedTransaction(own.tx, own.hash, policy(stand, { registries })))).toMatch(/not a factory of the registry/);
   });
 
   test('TC-SDK-3132-03: an intent open whose CNRX factory is anchored on another guardian G\' is refused before signing', async () => {

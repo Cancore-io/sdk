@@ -28,7 +28,7 @@
  */
 import { cantonInclusiveFeeSplit, type CantonIntent, type FillProofJson, type Hex } from '@cancore/contracts';
 import { isRegistryFactory, registryGuardiansOf, registryPackagesOf } from '@cancore/wallet/canton';
-import { CANTON_TRANSFER_FACTORIES, holdingTemplateOf, type CantonTransferFactory } from './factories';
+import { CANTON_TRANSFER_FACTORIES, holdingTemplateOf, isCnrxRegistry, type CantonTransferFactory } from './factories';
 import { canonicalDecimal, decimal, field, holdingOf, isOwnParty, namesFactoryPin, optionalParty, qualified, refuse, requireCreatingPackage, requirePinnedFactory, sameSet, scaled, soleRoot, subtree, textOf } from './checks';
 import type { CantonOpCheck } from './operations';
 import type { CantonTransaction, DamlValue, ExerciseNode, TransactionNode } from './transaction';
@@ -139,7 +139,9 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
     checkLegs(field(batch.chosenValue, 'transferLegs'), intent, payee, payout, fee);
 
     // What the party ends up with: unlocked holdings of the instrument, exactly the payout.
-    const credited = creditedTo(nodes, payee, intent, registry, registryGuardiansOf(pinned)[intent.asset.admin]);
+    const guardian = registryGuardiansOf(pinned)[intent.asset.admin];
+    if (guardian === undefined && isCnrxRegistry(registry)) refuse(`the pin names no guardian for the CNRX registry of ${intent.asset.admin}: nothing tells its holdings from a G' supply's`);
+    const credited = creditedTo(nodes, payee, intent, registry, guardian);
     if (credited !== payout) refuse(`the party is credited ${decimal(credited)}, not ${decimal(payout)}`);
   };
 }

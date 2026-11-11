@@ -9,6 +9,10 @@
 - `REGISTRY_GUARDIANS` / `registryGuardiansOf` and `isRegistryFactory(contract, admin, registries?, guardians?)`: of
   an admin with G, G must sign the factory too. A `CnrxRules` / `CnrxAllocationRules` anchored on another guardian G'
   is admin-signed and of the same package; the intent signing policy now refuses it.
+- Fail-closed: a cnrx-registry factory (`Cnrx.Rules:CnrxRules`, `Cnrx.Allocation:CnrxAllocationRules`) of an
+  admin with no G is refused; `IntentSigningPolicy.guardians` names G for a wallet with its own CNRX pin, next to
+  `registries`. `isCnrxRegistry`: a registry entry whose holding is `Cnrx.Holding:CnrxHolding`; `registriesProblem`
+  refuses such an entry without `guardian`.
 
 ## 0.4.2
 
