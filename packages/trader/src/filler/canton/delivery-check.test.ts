@@ -283,3 +283,29 @@ describe('delivery.fill: the decoded transaction (CAN-1867)', () => {
     refused(() => check()(prepared(), [fill({ extra: [archiveEntry] })]), /besides the delivery/);
   });
 });
+
+describe('delivery.fill: the fill reads the pin it names (CAN-3504)', () => {
+  const pinFetch = (over: Partial<TransactionNode> = {}): TransactionNode =>
+    ({ nodeId: '4', kind: 'fetch', contractId: PIN_CID, packageName: 'cancore-intent', templateId: `${INTENT}:Intent.RegistryFactoryPin:RegistryFactoryPin`, actingParties: [ME], signatories: [OPERATOR], stakeholders: [OPERATOR], ...over }) as TransactionNode;
+
+  test('TC-SDK-3504-01: a fetch of the RegistryFactoryPin the fill names, as cancore-intent 0.5.0+ runs it: passes', () => {
+    expect(() => check()(prepared(), [fill({ extra: [pinFetch()] })])).not.toThrow();
+  });
+
+  test.each([
+    ['TC-SDK-3504-02: a fetch of another RegistryFactoryPin than the fill names', pinFetch({ contractId: '00otherpin' })],
+    ['TC-SDK-3504-03: a fetch of a RegistryFactoryPin of another package', pinFetch({ packageName: 'evil-intent', templateId: `${'ee'.repeat(32)}:Intent.RegistryFactoryPin:RegistryFactoryPin` })],
+    [
+      'TC-SDK-3504-04: an archive of the pin the fill names',
+      {
+        nodeId: '4', kind: 'exercise', contractId: PIN_CID, packageName: 'cancore-intent', templateId: `${INTENT}:Intent.RegistryFactoryPin:RegistryFactoryPin`, choice: 'Archive',
+        chosenValue: v.record({}), actingParties: [OPERATOR], signatories: [OPERATOR], stakeholders: [OPERATOR], consuming: true, children: [],
+      } as TransactionNode,
+    ],
+  ])('%s: refused', (_name, node) => refused(() => check()(prepared(), [fill({ extra: [node] })]), /besides the delivery/));
+
+  test('TC-SDK-3504-05: a 0.4.2 fill names no pin, so a pin fetch under it is refused', () => {
+    const unpinned = { root: { chosenValue: v.record({ inputHoldingCids: v.list([v.cid('h1'), v.cid('h2')]), extraArgs: v.record({}) }) }, pin: null };
+    refused(() => check()(prepared(), [fill({ ...unpinned, extra: [pinFetch()] })]), /besides the delivery/);
+  });
+});

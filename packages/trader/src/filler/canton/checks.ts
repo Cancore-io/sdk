@@ -79,6 +79,13 @@ export function requireCreatingPackage(tx: CantonTransaction, root: ExerciseNode
  */
 export const namesFactoryPin = (chosen: DamlValue): boolean => chosen.t === 'record' && 'factoryPin' in chosen.v;
 
+/** Whether `node` is a fetch of exactly the `RegistryFactoryPin` the choice names in `factoryPin` (CAN-3504). */
+export const fetchesNamedPin = (node: TransactionNode, chosen: DamlValue): boolean =>
+  node.kind === 'fetch' &&
+  node.packageName === 'cancore-intent' &&
+  qualified(node.templateId) === FACTORY_PIN &&
+  node.contractId === someCid(chosen.t === 'record' ? chosen.v.factoryPin : undefined);
+
 /**
  * The choice's trailing `factoryPin` (CAN-3172): the operator's `RegistryFactoryPin`, disclosed with the transaction,
  * whose `role` factory is `cid` — the factory the transaction runs. A pin of None is refused.
