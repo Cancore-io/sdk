@@ -14,6 +14,7 @@ import { FillerConfigError, NotImplementedError } from './errors';
 import { Executor, type DeliveryOptions } from './delivery/executor';
 import { DEFAULT_SETTLEMENT, Settler, type SettlementOptions } from './settlement/settler';
 import { FillerProtocolClient, DEFAULT_REST_POLL_INTERVAL_MS } from './protocol/client';
+import { MinInputCache, routerMinInputSource } from './min-input-cache';
 import { createSealer } from './protocol/envelope';
 import { GatewayRest } from './protocol/rest';
 import {
@@ -593,15 +594,7 @@ export function createFiller(config: FillerConfig): Filler {
     nextId,
     onQuoteRequest: () => quoteHook,
     onReconfirm: () => reconfirmHook,
-    // T-16: the source router's own floor, read at the head.
-    minInput: async (chain, token) => {
-      if (!isEvmChainId(chain)) return undefined; // a Canton source has no router floor
-      const source = chains.get(chain);
-      // N-12: an EVM source this filler has no router for is one it cannot verify or settle on — no quote.
-      if (!source) throw new Error(`no router configured for the source ${chain}`);
-      if (typeof token !== 'string') return undefined;
-      return source.router.minInput(token as Hex);
-    },
+    minInput: routerMinInputSource(chains, new MinInputCache(clock)),
     reconfirmMarginS: DEFAULT_RECONFIRM_MARGIN_S,
     reconcileLookbackMs: DEFAULT_RECONCILE_LOOKBACK_MS,
   }).register();
