@@ -49,7 +49,7 @@ const KEYS = [
   'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET', 'CANTON_PARTICIPANT_UID', 'CANTON_ORIGIN_ID',
   'CNRX_ADMIN_PARTY', 'CANTON_TRANSFER_FACTORIES_JSON',
   'STAND_FILLER_ID', 'STAND_FILLER_MESSAGE_KEY', 'STAND_FILLER_EVM_KEY', 'STAND_FILLER_CANTON_PARTY', 'STAND_FILLER_CANTON_PARTY_KEY', 'STAND_FILLER_REGISTRY_ENTRY_CID',
-  'STAND_OWNER_PARTY', 'STAND_ROUTE_OUTPUT_TOKEN', 'STAND_ROUTE_OUTPUT_DECIMALS', 'STAND_INTENT_FACTORY_CID',
+  'STAND_OWNER_PARTY', 'STAND_ROUTE_OUTPUT_TOKEN', 'STAND_ROUTE_OUTPUT_DECIMALS', 'STAND_INTENT_FACTORY_CID', 'STAND_CNRX_FACTORY_PIN_CID',
   'TRADING_URL', 'GATEWAY_URL', 'STAND_USER_TOKEN_URL', 'STAND_USER_CLIENT_ID', 'STAND_USER_CLIENT_SECRET', 'STAND_USER_NAME', 'STAND_USER_PASSWORD',
   'INTENT_OPERATOR_PARTY_ID', 'INTENT_BOOK_GUARDIAN_PARTY', 'INTENT_ATTESTOR_GOVERNOR_PARTY', 'INTENT_ATTESTOR_REGISTRY_CID', 'INTENT_ATTESTOR_SET_COMMITMENT',
 ] as const;
@@ -279,6 +279,8 @@ async function openIntent(deadlines: { fillDeadline: number; refundAfter: number
     attestorSetCommitment: ledgerHex(E.INTENT_ATTESTOR_SET_COMMITMENT),
     inputHoldingCids: holdings, allocExtraArgs: { context: { values: await cnrxPauseContext() }, meta: { values: {} } },
     fillerEntryCid: E.STAND_FILLER_REGISTRY_ENTRY_CID, intentBookCid, attestorRegistryCid: E.INTENT_ATTESTOR_REGISTRY_CID,
+    // The operator's pin of CNRX the stand created; cancore-intent 0.5.0+ refuses an Open without it (CAN-3505).
+    factoryPin: E.STAND_CNRX_FACTORY_PIN_CID,
   };
   const events = await submit([owner], exercise(`${INTENT}:IntentFactory`, factory.contractId, 'IntentFactory_Open', fields), [E.INTENT_OPERATOR_PARTY_ID, E.CNRX_ADMIN_PARTY, E.INTENT_ATTESTOR_GOVERNOR_PARTY]);
   const intentCid = createdOf(events, ':SwapIntent');
