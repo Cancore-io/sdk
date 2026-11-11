@@ -295,7 +295,7 @@ hash and reads the transaction before the key signs:
 ```ts
 import { signPreparedTransaction, type IntentSigningPolicy } from '@cancore/wallet/operations';
 
-const policy: IntentSigningPolicy = { owner, admin, intentPackageIds };
+const policy: IntentSigningPolicy = { owner, admin };
 const signature = await signPreparedTransaction(signer, preparedTransactionB64, expectedHashB64, policy);
 ```
 
@@ -303,7 +303,10 @@ It refuses with `IntentTransactionRefusedError` (its `reason` is the sentence to
 
 - the recomputed V2 hash is `expectedHashB64`, and the transaction acts as `owner` alone;
 - the one root is `IntentFactory_Open` or `SwapIntent_RenewSettlementFactory` of a `cancore-intent`
-  package in `intentPackageIds`;
+  package in `INTENT_PACKAGE_IDS` — 0.6.0 only. 0.6.0 is a Smart Contract Upgrade of 0.4.2–0.5.1,
+  so a root of an older version still runs, and its code takes the operator's pinned settlement
+  factory under the owner's authority. `policy.intentPackageIds` may narrow the list, never
+  widen it;
 - every action below it that carries the owner's authority is code of that package, or
   `AllocationFactory_Allocate` / `SettlementFactory_PublicFetch` on a factory of the registry of
   `admin` — `isRegistryFactory`: the admin signs the factory, or its package is in the admin's

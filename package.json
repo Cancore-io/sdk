@@ -46,6 +46,7 @@
     "ethers": "^6.17.0",
     "jest": "^29.7.0",
     "jest-environment-jsdom": "^30.5.1",
+    "jest-junit": "^16.0.0",
     "selfsigned": "^2.4.1",
     "socket.io-client": "^4.8.3",
     "tsup": "^9.0.0",

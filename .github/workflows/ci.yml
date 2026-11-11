@@ -33,6 +33,37 @@ permissions:
   contents: read
 
 jobs:
+  pick-runner:
+    # CAN-3441: always on the pool, so a powered-off personal runner never holds the jobs waiting on this pick.
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    outputs:
+      runs-on: ${{ steps.pick.outputs.runs-on }}
+    steps:
+      - id: pick
+        env:
+          ACTOR: ${{ github.triggering_actor }}
+          REPO: ${{ github.repository }}
+          LOCAL_ACTORS: ${{ vars.LOCAL_RUNNER_ACTORS || vars.LOCAL_RUNNER_ACTOR }}
+          LOCAL_ON: ${{ vars.LOCAL_RUNNER_ON }}
+          RUNNER_CHOICE: ${{ inputs.runner }}
+        # Empty output keeps each consumer on its own pool label: an absent token, gh or offline runner never routes to it.
+        run: |
+          runs_on=""
+          actors_csv=$(printf '%s' "$LOCAL_ACTORS" | tr -d '[:space:]')
+          if [ "${RUNNER_CHOICE:-}" = "personal" ]; then
+            runs_on=$(jq -cn --arg a "$ACTOR" '["self-hosted", "personal", $a]')
+          elif [ "$LOCAL_ON" = "true" ] && [ -n "$ACTOR" ] && [ -n "$GH_TOKEN" ] && command -v gh >/dev/null 2>&1 \
+            && printf ',%s,' "$actors_csv" | grep -qF ",${ACTOR},"; then
+            online=$(gh api --paginate "/repos/$REPO/actions/runners" 2>/dev/null \
+              | jq -r --arg a "$ACTOR" '.runners[] | select(.status == "online") | select(any(.labels[]; .name == $a)) | .id' \
+              | head -n 1) || online=""
+            if [ -n "$online" ]; then runs_on=$(jq -cn --arg a "$ACTOR" '["self-hosted", $a]'); fi
+          fi
+          echo "runs-on=$runs_on" >> "$GITHUB_OUTPUT"
+          echo "runs-on: ${runs_on:-pool}"
+
   # Node pin consistency (CAN-3315): .nvmrc is the single source; the checker names every stale pin.
   node-pins:
     runs-on: ${{ inputs.runner == 'personal' && fromJSON(format('["self-hosted","personal","{0}"]', github.triggering_actor)) || 'ubuntu-latest' }}
@@ -65,7 +96,8 @@ jobs:
     # violated by an undocumented one, so this is the record. Revisit only if
     # cancore-runners becomes ephemeral/isolated per job, or if fork PRs get a
     # workflow of their own.
-    runs-on: ${{ inputs.runner == 'personal' && fromJSON(format('["self-hosted","personal","{0}"]', github.triggering_actor)) || 'ubuntu-latest' }}
+    needs: pick-runner
+    runs-on: ${{ needs.pick-runner.outputs.runs-on && fromJSON(needs.pick-runner.outputs.runs-on) || 'ubuntu-latest' }}
     # A hung `npm install` in the loop below would otherwise burn the default
     # six hours of a public repository's runner budget.
     timeout-minutes: 20
@@ -91,7 +123,9 @@ jobs:
       - name: Vectors are regenerated, not hand-edited
         run: pnpm --filter @cancore/contracts run vectors && git diff --exit-code packages/contracts/spec
       # Suites against a local stand skip themselves without its artifacts here; the `stand` job runs the anvil ones.
-      - run: npm run test:int
+      - run: npm run test:int -- --reporters=default --reporters=jest-junit
+        env:
+          JEST_JUNIT_OUTPUT_FILE: rp-reports/sdk-int.xml
       # CAN-3253: a suite that can skip itself must be named in a lane below (or be a .stand suite).
       - name: Every integration suite is registered in a lane
         run: node --test scripts/int-registration.test.mjs
@@ -240,6 +274,18 @@ jobs:
           export const intentSigning = (policy: IntentSigningPolicy) => [policy, isRegistryFactory, verifyPreparedTransaction, signPreparedTransaction];
           TS
           "$GITHUB_WORKSPACE/node_modules/.bin/tsc" -p .
+      # sdk is public: no RP or CAEF secret ever enters this workflow (a fork PR could read it). CAEF's private
+      # rp-collect workflow downloads this artifact from same-repo runs and publishes it to RP project `sdk`.
+      - name: Upload test reports for rp-collect
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rp-reports
+          path: rp-reports/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # The integration suites of @cancore/trader against a real CancoreRouter (operator decision Ыу-1, CAN-1846):
   # an anvil without a fork, the router, Permit2 and test tokens deployed from the build committed in
