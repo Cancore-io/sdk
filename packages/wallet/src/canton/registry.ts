@@ -21,6 +21,20 @@ export function registryPackagesOf(factories: Readonly<Record<string, readonly C
 
 export const REGISTRY_PACKAGES: RegistryPackages = registryPackagesOf(CANTON_TRANSFER_FACTORIES);
 
+/** CAN-3132: by instrument admin, G — the CNRX guardian of the registry ({@link CantonTransferFactory.guardian}). */
+export type RegistryGuardians = Readonly<Record<string, string>>;
+
+export function registryGuardiansOf(factories: Readonly<Record<string, readonly CantonTransferFactory[]>>): RegistryGuardians {
+  return Object.fromEntries(
+    Object.entries(factories).flatMap(([admin, entries]) => {
+      const guardian = entries.find((f) => f.guardian !== undefined)?.guardian;
+      return guardian === undefined ? [] : [[admin, guardian]];
+    }),
+  );
+}
+
+export const REGISTRY_GUARDIANS: RegistryGuardians = registryGuardiansOf(CANTON_TRANSFER_FACTORIES);
+
 /** A contract as a prepared transaction or a created event names it: `templateId` is `<package id>:<module>:<entity>`. */
 export interface RegistryContract {
   templateId: string;
@@ -30,11 +44,20 @@ export interface RegistryContract {
 /**
  * Whether `contract` is the registry's of `admin`: the admin signs it, or its template is of
  * one of the admin's registry packages. An admin with no entry is refused (fail-closed): a
- * registry nobody pinned is not one a signer lends authority to.
+ * registry nobody pinned is not one a signer lends authority to. Of an admin with a guardian G
+ * (CNRX, CAN-3132) G must sign it too: a factory anchored on another guardian G' is admin-signed
+ * and of the same package, and only G's signature tells it apart.
  */
-export function isRegistryFactory(contract: RegistryContract, admin: string, registries: RegistryPackages = REGISTRY_PACKAGES): boolean {
+export function isRegistryFactory(
+  contract: RegistryContract,
+  admin: string,
+  registries: RegistryPackages = REGISTRY_PACKAGES,
+  guardians: RegistryGuardians = REGISTRY_GUARDIANS,
+): boolean {
   const packages = Object.hasOwn(registries, admin) ? registries[admin] : undefined;
   if (!packages) return false;
+  const guardian = Object.hasOwn(guardians, admin) ? guardians[admin] : undefined;
+  if (guardian !== undefined && !contract.signatories.includes(guardian)) return false;
   const packageId = contract.templateId.split(':')[0] ?? '';
   return contract.signatories.includes(admin) || packages.includes(packageId);
 }

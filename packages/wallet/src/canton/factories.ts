@@ -102,6 +102,13 @@ export interface CantonTransferFactory {
    * Required with `preapprovalForm: 'utility'`.
    */
   preapprovalOperator?: string;
+  /**
+   * CNRX (cnrx-registry 0.2.6+) only, CAN-3132: G, the guardian of the registrar's `CnrxSupply`, pinned per
+   * environment. G co-signs the registry's `CnrxRules` / `CnrxAllocationRules` and every holding they account, which
+   * names it in its view meta `cnrx/guardian`. A factory anchored on another guardian G' — same package, signed by the
+   * admin — and the G' holdings it makes are not this registry's CNRX. One G per admin: the first entry's that names one.
+   */
+  guardian?: string;
 }
 
 /** The holding template of a registry, `<package>:<module>:<entity>`: DA Utilities keeps `Holding` in a package of its own (`holdingPackageId`). */
@@ -220,11 +227,17 @@ const SPLICE_AMULET_0_1_24_DEVNET: CantonTransferFactory = {
   preapprovalProvider: 'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b',
 };
 
+/**
+ * dev's CNRX guardian (CAN-3132): the guardian of the registrar's live `CnrxSupply`, as gitops publishes it
+ * (`k8s/envs/dev/cnrx-deploy-values.yaml` `CNRX_GUARDIAN_PARTY_ID`).
+ */
+const DEV_CNRX_GUARDIAN = 'cancore-intent-guardian::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b';
+
 /** By instrument admin party. */
 export const CANTON_TRANSFER_FACTORIES: Readonly<Record<string, readonly CantonTransferFactory[]>> = {
   // dev: the CNRX registrar (gitops k8s/envs/dev CNRX_REGISTRY_ADMIN_PARTY).
   // 0.2.6 and 0.2.3 stay until dev un-vets them: transactions run under them and allocations created under them may still be live.
-  'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b': [CNRX_REGISTRY_0_2_7, CNRX_REGISTRY_0_2_6, CNRX_REGISTRY_0_2_3],
+  'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b': [CNRX_REGISTRY_0_2_7, CNRX_REGISTRY_0_2_6, CNRX_REGISTRY_0_2_3].map((f) => ({ ...f, guardian: DEV_CNRX_GUARDIAN })),
   // devnet: CBTC's registrar on DA Utilities dev (backend libs/common/src/config/cbtc.config.ts).
   // 0.8.2 stays: contracts created under it remain on the ledger after devnet moved to 0.9.2.
   'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff': [DA_UTILITY_REGISTRY_APP_0_9_2_DEVNET, DA_UTILITY_REGISTRY_APP_0_8_2_DEVNET],
@@ -277,6 +290,7 @@ function entryProblem(f: Partial<CantonTransferFactory> | null, at: string): str
   if (f.preapprovalPackageId !== undefined && (typeof f.preapprovalPackageId !== 'string' || !PACKAGE_ID.test(f.preapprovalPackageId))) return `${at}.preapprovalPackageId: expected 64 lowercase hex`;
   if (f.preapprovalForm === 'utility' && (typeof f.preapprovalOperator !== 'string' || !PARTY_ID.test(f.preapprovalOperator))) return `${at}.preapprovalOperator: expected the DA operator's party id`;
   if (f.preapprovalForm === 'splice' && (typeof f.preapprovalProvider !== 'string' || !PARTY_ID.test(f.preapprovalProvider))) return `${at}.preapprovalProvider: expected the provider's party id`;
+  if (f.guardian !== undefined && (typeof f.guardian !== 'string' || !PARTY_ID.test(f.guardian))) return `${at}.guardian: expected the CNRX guardian's party id`;
   return undefined;
 }
 

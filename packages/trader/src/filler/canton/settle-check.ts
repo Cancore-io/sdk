@@ -27,7 +27,7 @@
  * The summary states the same economics; it is checked, never trusted alone.
  */
 import { cantonInclusiveFeeSplit, type CantonIntent, type FillProofJson, type Hex } from '@cancore/contracts';
-import { isRegistryFactory, registryPackagesOf } from '@cancore/wallet/canton';
+import { isRegistryFactory, registryGuardiansOf, registryPackagesOf } from '@cancore/wallet/canton';
 import { CANTON_TRANSFER_FACTORIES, holdingTemplateOf, type CantonTransferFactory } from './factories';
 import { canonicalDecimal, decimal, field, holdingOf, isOwnParty, namesFactoryPin, optionalParty, qualified, refuse, requireCreatingPackage, requirePinnedFactory, sameSet, scaled, soleRoot, subtree, textOf } from './checks';
 import type { CantonOpCheck } from './operations';
@@ -139,16 +139,26 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
     checkLegs(field(batch.chosenValue, 'transferLegs'), intent, payee, payout, fee);
 
     // What the party ends up with: unlocked holdings of the instrument, exactly the payout.
-    let credited = 0n;
-    for (const n of nodes) {
-      if (n.kind !== 'create' || n.templateId !== holdingTemplateOf(registry)) continue;
-      const h = holdingOf(n.argument, registry);
-      if (h.owner !== payee) continue;
-      if (h.admin !== intent.asset.admin || h.id !== intent.asset.id || h.locked) refuse('the party is credited a locked holding or another instrument');
-      credited += h.amount;
-    }
+    const credited = creditedTo(nodes, payee, intent, registry, registryGuardiansOf(pinned)[intent.asset.admin]);
     if (credited !== payout) refuse(`the party is credited ${decimal(credited)}, not ${decimal(payout)}`);
   };
+}
+
+/**
+ * The party's unlocked holdings of the instrument the settle creates — of a registry with a guardian G (CNRX), each one
+ * G accounts for (CAN-3132): a G' holding of the same template is another supply's.
+ */
+function creditedTo(nodes: readonly TransactionNode[], payee: string, intent: CantonIntent, registry: CantonTransferFactory, guardian: string | undefined): bigint {
+  let credited = 0n;
+  for (const n of nodes) {
+    if (n.kind !== 'create' || n.templateId !== holdingTemplateOf(registry)) continue;
+    const h = holdingOf(n.argument, registry);
+    if (h.owner !== payee) continue;
+    if (h.admin !== intent.asset.admin || h.id !== intent.asset.id || h.locked) refuse('the party is credited a locked holding or another instrument');
+    if (guardian !== undefined && h.guardian !== guardian) refuse(`the party is credited ${n.contractId}, which the registry’s guardian ${guardian} does not account for`);
+    credited += h.amount;
+  }
+  return credited;
 }
 
 /**
@@ -157,8 +167,9 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
  */
 function checkAllocationFactories(nodes: readonly TransactionNode[], admin: string, pinned: Readonly<Record<string, readonly CantonTransferFactory[]>>): void {
   const registries = registryPackagesOf(pinned);
+  const guardians = registryGuardiansOf(pinned);
   for (const n of nodes) {
-    if (n.kind === 'exercise' && n.choice === ALLOCATE && !isRegistryFactory(n, admin, registries)) {
+    if (n.kind === 'exercise' && n.choice === ALLOCATE && !isRegistryFactory(n, admin, registries, guardians)) {
       refuse(`the allocation factory ${n.templateId} is not of a pinned registry of ${admin}`);
     }
   }

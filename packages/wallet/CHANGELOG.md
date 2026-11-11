@@ -1,5 +1,15 @@
 # Changelog — `@cancore/wallet`
 
+## Unreleased
+
+### Changed — a CNRX factory must be signed by the registry's guardian (CAN-3132)
+
+- `CantonTransferFactory.guardian`: G, the guardian of the registrar's `CnrxSupply` (cnrx-registry 0.2.6+), pinned
+  per environment; dev's CNRX entries name dev's G. `registriesProblem` takes it only as a party id.
+- `REGISTRY_GUARDIANS` / `registryGuardiansOf` and `isRegistryFactory(contract, admin, registries?, guardians?)`: of
+  an admin with G, G must sign the factory too. A `CnrxRules` / `CnrxAllocationRules` anchored on another guardian G'
+  is admin-signed and of the same package; the intent signing policy now refuses it.
+
 ## 0.4.0
 
 ### Added — intent operations are signed from the prepared transaction (CAN-3340)

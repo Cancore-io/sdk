@@ -4,7 +4,8 @@ import { describe, expect, jest, test } from '@jest/globals';
 import { signLegs, signPreparedHashBase64, signPreparedTransaction, UnexpectedLegError, type HashSigner } from '../operations';
 import { IntentTransactionRefusedError, type IntentRoot, type IntentSigningPolicy } from './intentPolicy';
 import { verifyPreparedTransaction } from './prepared';
-import { isRegistryFactory, REGISTRY_PACKAGES } from './registry';
+import { isRegistryFactory, REGISTRY_GUARDIANS, REGISTRY_PACKAGES, registryGuardiansOf } from './registry';
+import { CANTON_TRANSFER_FACTORIES } from './factories';
 
 const INTENT_PKG = 'a1'.repeat(32);
 const OWNER = 'alice::1220' + '0a'.repeat(32);
@@ -24,7 +25,9 @@ const DSO = 'DSO::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881
 const CBTC = 'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff';
 const CNRX = 'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b';
 const DA_OPERATOR = 'auth0_007c65f857f1c3d599cb6df73775::1220d2d732d042c281cee80f483ab80f3cbaa4782860ed5f4dc228ab03dedd2ee8f9';
-const CNRX_GUARDIAN = 'cnrx-guardian::1220' + '0d'.repeat(32);
+// dev's CNRX guardian G (CAN-3132), the one CANTON_TRANSFER_FACTORIES pins for the CNRX admin.
+const CNRX_GUARDIAN = 'cancore-intent-guardian::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b';
+const CNRX_GUARDIAN_PRIME = 'cnrx-guardian-prime::1220' + '0d'.repeat(32);
 
 const REGISTRIES: Registry[] = [
   {
@@ -260,6 +263,34 @@ describe('isRegistryFactory: admin among the signatories, or a package of the ad
     expect(isRegistryFactory({ templateId: `${ROGUE_PKG}:X:Y`, signatories: [OPERATOR] }, CBTC)).toBe(false);
     expect(isRegistryFactory({ templateId: `${ROGUE_PKG}:X:Y`, signatories: [OPERATOR] }, OPERATOR)).toBe(false);
     expect(REGISTRY_PACKAGES[CBTC]).toEqual(expect.arrayContaining(['1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b274b8c0', '415a1ec96a9e2839453e9aa1c5c71b6511c008c79511cb6f873e0b7393fe3b92']));
+  });
+});
+
+describe('isRegistryFactory of a CNRX admin with a guardian G: G signs the factory too (CAN-3132)', () => {
+  const RULES = '0cc44c28f323b455c1875e85fd7a1ad7732ad2a34ed8dd1550cb79dead750bba:Cnrx.Rules:CnrxRules';
+
+  test('TC-SDK-3132-01: admin + G is the registry\'s; admin + G\', the admin alone, or G\'s package without G are not', () => {
+    expect(REGISTRY_GUARDIANS[CNRX]).toBe(CNRX_GUARDIAN);
+    expect(isRegistryFactory({ templateId: RULES, signatories: [CNRX, CNRX_GUARDIAN] }, CNRX)).toBe(true);
+    expect(isRegistryFactory({ templateId: RULES, signatories: [CNRX, CNRX_GUARDIAN_PRIME] }, CNRX)).toBe(false);
+    expect(isRegistryFactory({ templateId: RULES, signatories: [CNRX] }, CNRX)).toBe(false);
+    expect(isRegistryFactory({ templateId: RULES, signatories: [CNRX_GUARDIAN_PRIME] }, CNRX)).toBe(false);
+    // An admin without a guardian keeps the CAN-3340 rule; a guardians map without the admin adds nothing, even for
+    // an admin named like an Object.prototype key.
+    expect(isRegistryFactory({ templateId: RULES, signatories: [CNRX] }, CNRX, REGISTRY_PACKAGES, {})).toBe(true);
+    expect(isRegistryFactory({ templateId: RULES, signatories: ['constructor'] }, 'constructor', { constructor: [] }, {})).toBe(true);
+  });
+
+  test('TC-SDK-3132-02: the guardian of an admin is the first of its entries that names one; an admin with none has no entry', () => {
+    const [entry] = CANTON_TRANSFER_FACTORIES[CNRX]!;
+    const plain = { ...entry!, guardian: undefined };
+    expect(registryGuardiansOf({ [CNRX]: [plain, { ...plain, guardian: 'g::1220' }, { ...plain, guardian: 'h::1220' }], [DSO]: [plain] })).toStrictEqual({ [CNRX]: 'g::1220' });
+  });
+
+  test('TC-SDK-3132-03: an intent open whose CNRX factory is anchored on another guardian G\' is refused before signing', async () => {
+    const cnrx = REGISTRIES[2]!;
+    const { tx, hash } = await prepared(honest('open', cnrx, registryCalls(cnrx, cnrx.factory, [CNRX, CNRX_GUARDIAN_PRIME])));
+    expect(await refusal(() => verifyPreparedTransaction(tx, hash, policy(cnrx)))).toMatch(/not a factory of the registry/);
   });
 });
 
