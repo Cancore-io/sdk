@@ -352,7 +352,7 @@ On any difference it does not sign. The kind of a leg is closed: an unknown kind
 `preapprovals`, the party's live transfer preapprovals),
 `/holdings`, `/delivery-orders`, and `/intents/{orderHash}` — the live Canton-source `SwapIntent`
 naming the party as its filler, with its committed allocation, which the node checks before
-`ticket.receipt` (V-C1…V-C6; 404 `UNKNOWN_TICKET` when none names it). Refusals: `CANTON_NOT_READY` (409), `CANTON_REFUSED` (422),
+`ticket.receipt` (V-C1…V-C7; 404 `UNKNOWN_TICKET` when none names it). Refusals: `CANTON_NOT_READY` (409), `CANTON_REFUSED` (422),
 `CANTON_UNAVAILABLE` (503, retry), `OPERATION_EXPIRED` (410, prepare again), plus
 `UNKNOWN_TICKET`, `TICKET_CLOSED` and `NOT_ELIGIBLE` for an operation on someone else's ticket or party.
 
@@ -465,6 +465,11 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.22` — `CantonIntent.settlementFactory` (CAN-3408): the settlement factory the owner
+  approved into the `SwapIntent` (CAN-3340) and `live`, whether it is still the registry's current
+  one, as settle reads it (`CantonSettlementFactory`; `$defs/cantonIntent.settlementFactory`).
+  Optional on the wire, so a filler-gateway without it still validates; the filler node refuses
+  the ticket without it (V-C7). Additive.
 - `0.2.0-rc.21` — Base (CAN-3260): `NETWORKS.base` (8453) and `NETWORKS.base_sepolia` (84532),
   and the Base Sepolia HTLC and MultiBalanceChecker of the dev stand in `DEPLOYMENTS.devnet` and
   of the stage stand in `DEPLOYMENTS.testnet` (two independent deploys), and the Base mainnet HTLC

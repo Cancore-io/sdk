@@ -1,7 +1,9 @@
 /**
  * Canton → EVM end to end on the shared intent stand (operator decision Н-1,
- * meta docs/runbooks/intent-stand.md): CAN-1863 (V-C1…V-C6 before the
- * receipt) and CAN-2321 (the payout by SwapIntent_SettleWithProof). Every
+ * meta docs/runbooks/intent-stand.md): CAN-1863 (V-C1…V-C7 before the
+ * receipt), CAN-2321 (the payout by SwapIntent_SettleWithProof) and CAN-3408
+ * (V-C7: no delivery for an intent whose settlement factory the registry no
+ * longer holds). Every
  * component is the stand's own — Canton participant with cancore-intent and
  * cnrx-registry, trading and filler-gateway (decision T-1: the party's
  * operations go through Cancore), the attestor daemons, anvil with the
@@ -269,7 +271,7 @@ async function cnrxFactoryPin(): Promise<string> {
 }
 
 /** IntentFactory_Open by the custodial owner: the give committed to the stand filler, the intent created. */
-async function openIntent(deadlines: { fillDeadline: number; refundAfter: number }) {
+async function openIntent(deadlines: { fillDeadline: number; refundAfter: number }, factoryPin?: string) {
   const owner = E.STAND_OWNER_PARTY;
   const [factory] = await active(E.INTENT_OPERATOR_PARTY_ID, `${INTENT}:IntentFactory`, () => true).then((all) => all.filter((f) => f.contractId === E.STAND_INTENT_FACTORY_CID));
   if (!factory) throw new Error('STAND_INTENT_FACTORY_CID is not a live IntentFactory of the operator');
@@ -299,12 +301,36 @@ async function openIntent(deadlines: { fillDeadline: number; refundAfter: number
     attestorSetCommitment: ledgerHex(E.INTENT_ATTESTOR_SET_COMMITMENT),
     inputHoldingCids: holdings, allocExtraArgs: { context: { values: await cnrxPauseContext() }, meta: { values: {} } },
     fillerEntryCid: E.STAND_FILLER_REGISTRY_ENTRY_CID, intentBookCid, attestorRegistryCid: E.INTENT_ATTESTOR_REGISTRY_CID,
-    factoryPin: await cnrxFactoryPin(),
+    factoryPin: factoryPin ?? (await cnrxFactoryPin()),
   };
   const events = await submit([owner], exercise(`${INTENT}:IntentFactory`, factory.contractId, 'IntentFactory_Open', fields), [E.INTENT_OPERATOR_PARTY_ID, E.CNRX_ADMIN_PARTY, E.INTENT_ATTESTOR_GOVERNOR_PARTY]);
   const intentCid = createdOf(events, ':SwapIntent');
   if (!intentCid) throw new Error('IntentFactory_Open created no SwapIntent');
   return { orderHash: built.orderHash.toLowerCase() as Hex, order: built.order, intentCid, feeBps: BigInt(built.order.feeBps as string) };
+}
+
+/**
+ * CAN-3408: an operator pin like the stand's whose settlement factory the registry no longer holds, so an intent
+ * opened through it is one whose factory was rotated after Open. A copy of the live CnrxAllocationRules is created
+ * and archived in one transaction, so the stand's own factory, and every other spec on it, stay untouched.
+ */
+async function pinOfArchivedSettlementFactory(): Promise<{ pin: string; factory: string }> {
+  const admin = E.CNRX_ADMIN_PARTY;
+  const operator = E.INTENT_OPERATOR_PARTY_ID;
+  const ALLOCATION_RULES = `${CNRX}.Allocation:CnrxAllocationRules`;
+  const [rules] = await active(admin, ALLOCATION_RULES, (a) => a.admin === admin);
+  if (!rules) throw new Error('the stand has no CnrxAllocationRules of the registrar');
+  const guardian = String(rules.createArgument.guardian);
+  const copy = { CreateAndExerciseCommand: { templateId: ALLOCATION_RULES, createArguments: rules.createArgument, choice: 'Archive', choiceArgument: {} } };
+  const factory = createdOf(await submit([admin, guardian], copy), ':CnrxAllocationRules');
+  if (!factory) throw new Error('the copy of CnrxAllocationRules was not created');
+  const livePin = await cnrxFactoryPin();
+  const [standPin] = (await active(operator, FACTORY_PIN)).filter((p) => p.contractId === livePin);
+  if (!standPin) throw new Error(`the operator's pin ${livePin} was archived while it was read`);
+  const created = await submit([operator], { CreateCommand: { templateId: FACTORY_PIN, createArguments: { ...standPin.createArgument, settlementFactory: factory } } });
+  const pin = createdOf(created, ':RegistryFactoryPin');
+  if (!pin) throw new Error('the pin of the archived settlement factory was not created');
+  return { pin, factory };
 }
 
 /** The party's free CNRX, in Numeric-10 units. */
@@ -478,7 +504,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
       );
     // The live intent, as the participant holds it, passes every check.
     await run(opened.order);
-    expect(passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6']);
+    expect(passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
     // An offer that differs from the committed terms by one base unit: V-C2.
     await expect(run({ ...opened.order, minReceived: String(BigInt(opened.order.minReceived as string) + 1n) })).rejects.toMatchObject({ check: 'V-C2', reason: 'ESCROW_MISMATCH' });
     // No intent on the ledger names this filler for that hash: V-C1, through filler-gateway's 404.
@@ -486,6 +512,38 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
     const refusal = await run(opened.order, missing).catch((e: unknown) => e);
     expect(refusal).toBeInstanceOf(TicketRefusal);
     expect(refusal).toMatchObject({ check: 'V-C1', reason: 'ESCROW_NOT_OPEN' });
+  });
+
+  test('TC-SDK-3408-STAND-01: an intent whose settlement factory the registry no longer holds is refused at V-C7, one on the live factory passes', async () => {
+    const nowS = Math.floor(Date.now() / 1000);
+    const deadlines = { fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 };
+    const live = await openIntent(deadlines);
+    const archived = await pinOfArchivedSettlementFactory();
+    const rotated = await openIntent(deadlines, archived.pin);
+    // The pin served its one Open: no other spec, and no pin sweep of trading, may pick it up.
+    await submit([E.INTENT_OPERATOR_PARTY_ID], exercise(FACTORY_PIN, archived.pin, 'Archive', {}));
+    const ops = createCantonOperations({
+      gatewayUrl: E.FILLER_GATEWAY_WS_URL, fillerId: E.STAND_FILLER_ID, gatewaySigner: E.FILLER_GATEWAY_SIGNER as Hex,
+      messageSigner: createTestTypedDataSigner(E.STAND_FILLER_MESSAGE_KEY as Hex), partySigner: signerOf(), participantUid: E.CANTON_PARTICIPANT_UID, registries: registries(),
+    });
+    const check = async (opened: Awaited<ReturnType<typeof openIntent>>) => {
+      const passed: string[] = [];
+      const ticket = { orderHash: opened.orderHash, repayTo: repayToFromParty(E.STAND_FILLER_CANTON_PARTY) };
+      const result = await checkCantonSource(
+        { order: opened.order as never, ticket: ticket as never, party: E.STAND_FILLER_CANTON_PARTY, fillerId: E.STAND_FILLER_ID, requiredProofWindowSec: MIN_PROOF_WINDOW_S, reader: ops },
+        (c) => void passed.push(c),
+      ).catch((e: unknown) => e);
+      return { result, passed };
+    };
+
+    const ok = await check(live);
+    expect(ok.result).toBeUndefined();
+    expect(ok.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
+
+    const refused = await check(rotated);
+    expect(refused.result).toBeInstanceOf(TicketRefusal);
+    expect(refused.result).toMatchObject({ check: 'V-C7', reason: 'OTHER', alert: true, detail: expect.stringContaining(`settlement factory ${archived.factory} is no longer the registry’s`) });
+    expect(refused.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6']);
   });
 
   test('TC-SDK-1863-INT-07 TC-SDK-2321-INT-01: ticketed, checked V-C1…V-C6, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
@@ -503,7 +561,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
       return state === 'receipted' || state === 'filled' ? true : undefined;
     }, 5 * 60_000, diagnostics);
     expect(checked(opened.orderHash).map((e) => [e.detail?.check, e.detail?.status])).toEqual(
-      ['form', 'V-T4', 'V-T2', 'V-T3', 'V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-T1', 'V-E5'].map((c) => [c, 'passed']),
+      ['form', 'V-T4', 'V-T2', 'V-T3', 'V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7', 'V-T1', 'V-E5'].map((c) => [c, 'passed']),
     );
 
     const fill = await until('the fill on anvil is confirmed', async () => {
