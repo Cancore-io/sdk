@@ -137,9 +137,9 @@ async function active(party: string, templateId: string, pred: (a: Record<string
 }
 
 let commands = 0;
-async function submit(actAs: string[], command: Record<string, unknown>, readAs: string[] = []): Promise<Created[]> {
+async function submit(actAs: string[], command: Record<string, unknown> | Record<string, unknown>[], readAs: string[] = []): Promise<Created[]> {
   const res = await api<{ transactionTree?: { eventsById?: Record<string, unknown> } }>('/v2/commands/submit-and-wait-for-transaction-tree', {
-    commands: [command],
+    commands: Array.isArray(command) ? command : [command],
     commandId: `can-1863-${Date.now()}-${commands++}`,
     actAs,
     readAs,
@@ -276,7 +276,7 @@ async function cnrxFactoryPin(): Promise<string> {
 }
 
 /** IntentFactory_Open by the custodial owner: the give committed to the stand filler, the intent created. */
-async function openIntent(deadlines: { fillDeadline: number; refundAfter: number }, pinOf: () => Promise<string> = cnrxFactoryPin) {
+async function openIntent(deadlines: { fillDeadline: number; refundAfter: number }) {
   const owner = E.STAND_OWNER_PARTY;
   const [factory] = await active(E.INTENT_OPERATOR_PARTY_ID, `${INTENT}:IntentFactory`, () => true).then((all) => all.filter((f) => f.contractId === E.STAND_INTENT_FACTORY_CID));
   if (!factory) throw new Error('STAND_INTENT_FACTORY_CID is not a live IntentFactory of the operator');
@@ -306,7 +306,7 @@ async function openIntent(deadlines: { fillDeadline: number; refundAfter: number
     attestorSetCommitment: ledgerHex(E.INTENT_ATTESTOR_SET_COMMITMENT),
     inputHoldingCids: holdings, allocExtraArgs: { context: { values: await cnrxPauseContext() }, meta: { values: {} } },
     fillerEntryCid: E.STAND_FILLER_REGISTRY_ENTRY_CID, intentBookCid, attestorRegistryCid: E.INTENT_ATTESTOR_REGISTRY_CID,
-    factoryPin: await pinOf(),
+    factoryPin: await cnrxFactoryPin(),
   };
   const events = await submit([owner], exercise(`${INTENT}:IntentFactory`, factory.contractId, 'IntentFactory_Open', fields), [E.INTENT_OPERATOR_PARTY_ID, E.CNRX_ADMIN_PARTY, E.INTENT_ATTESTOR_GOVERNOR_PARTY]);
   const intentCid = createdOf(events, ':SwapIntent');
@@ -314,61 +314,26 @@ async function openIntent(deadlines: { fillDeadline: number; refundAfter: number
   return { orderHash: built.orderHash.toLowerCase() as Hex, order: built.order, intentCid, feeBps: BigInt(built.order.feeBps as string) };
 }
 
-/** Each attempt of an Open through a throwaway pin that trading rotated away before the Open reached the ledger. */
-const PIN_RACE_ATTEMPTS = 3;
-
 /**
- * CAN-3408: an intent opened through an operator pin whose settlement factory the registry no longer holds, as one
- * whose factory was rotated after Open. A copy of the live CnrxAllocationRules is created and archived in one
- * transaction, so the stand's own factory, and every other spec on it, stay untouched. The pin is created only when
- * the Open is about to be submitted and archived right after it: any trading step that pins CNRX meanwhile finds a
- * pin naming a factory it cannot vouch for and rotates every CNRX pin away (RegistryFactoryPins.current()), so an
- * Open that lost the pin that way is tried again. While the pin is live, trading-worker's FactoryPinWatcher
- * (CAN-3341) logs it at error level and counts it in intent_factory_pin_unverified_total: expected on the stand.
+ * CAN-3408: the registrar rotates its settlement factory. The live CnrxAllocationRules is archived and an identical one
+ * created in one transaction, so there is never a second live one, and registry-api, which answers with the
+ * registrar's only live CnrxAllocationRules, names the new one from then on. An intent opened before keeps the old
+ * one as the settlement factory its owner approved. The specs after this one read the factory and the operator's pin
+ * at each call, so they follow the rotation; a pin trading cannot vouch for is never created here.
  */
-async function openOnRetiredSettlementFactory(deadlines: { fillDeadline: number; refundAfter: number }) {
-  const factory = await retiredSettlementFactory();
-  for (let attempt = 1; ; attempt++) {
-    const made: { pin?: string } = {};
-    try {
-      const opened = await openIntent(deadlines, async () => (made.pin = await pinNamingSettlementFactory(factory)));
-      return { factory, opened };
-    } catch (e) {
-      const lostPin = made.pin !== undefined && String(e).includes(made.pin);
-      if (!lostPin || attempt >= PIN_RACE_ATTEMPTS) throw e;
-    } finally {
-      if (made.pin) await archivePinIfLive(made.pin);
-    }
-  }
-}
-
-async function retiredSettlementFactory(): Promise<string> {
+async function rotateCnrxSettlementFactory(): Promise<{ retired: string; current: string }> {
   const admin = E.CNRX_ADMIN_PARTY;
   const ALLOCATION_RULES = `${CNRX}.Allocation:CnrxAllocationRules`;
   const [rules] = await active(admin, ALLOCATION_RULES, (a) => a.admin === admin);
   if (!rules) throw new Error('the stand has no CnrxAllocationRules of the registrar');
   const guardian = String(rules.createArgument.guardian);
-  const copy = { CreateAndExerciseCommand: { templateId: ALLOCATION_RULES, createArguments: rules.createArgument, choice: 'Archive', choiceArgument: {} } };
-  const factory = createdOf(await submit([admin, guardian], copy), ':CnrxAllocationRules');
-  if (!factory) throw new Error('the copy of CnrxAllocationRules was not created');
-  return factory;
-}
-
-async function pinNamingSettlementFactory(settlementFactory: string): Promise<string> {
-  const operator = E.INTENT_OPERATOR_PARTY_ID;
-  const livePin = await cnrxFactoryPin();
-  const [standPin] = (await active(operator, FACTORY_PIN)).filter((p) => p.contractId === livePin);
-  if (!standPin) throw new Error(`the operator's pin ${livePin} was archived while it was read`);
-  const created = await submit([operator], { CreateCommand: { templateId: FACTORY_PIN, createArguments: { ...standPin.createArgument, settlementFactory } } });
-  const pin = createdOf(created, ':RegistryFactoryPin');
-  if (!pin) throw new Error(`the pin of settlement factory ${settlementFactory} was not created`);
-  return pin;
-}
-
-/** Trading may have rotated the operator's pins meanwhile (RegistryFactoryPins.current()), archiving this one first. */
-async function archivePinIfLive(pin: string): Promise<void> {
-  const [held] = (await active(E.INTENT_OPERATOR_PARTY_ID, FACTORY_PIN)).filter((p) => p.contractId === pin);
-  if (held) await submit([E.INTENT_OPERATOR_PARTY_ID], exercise(FACTORY_PIN, pin, 'Archive', {}));
+  const rotation = [
+    exercise(ALLOCATION_RULES, rules.contractId, 'Archive', {}),
+    { CreateCommand: { templateId: ALLOCATION_RULES, createArguments: rules.createArgument } },
+  ];
+  const current = createdOf(await submit([admin, guardian], rotation), ':CnrxAllocationRules');
+  if (!current) throw new Error('the rotation created no CnrxAllocationRules');
+  return { retired: rules.contractId, current };
 }
 
 /** The party's free CNRX, in Numeric-10 units. */
@@ -555,8 +520,9 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
   test('TC-SDK-3408-STAND-01: an intent whose settlement factory the registry no longer holds is refused at V-C7, one on the live factory passes', async () => {
     const nowS = Math.floor(Date.now() / 1000);
     const deadlines = { fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 };
+    const rotated = await openIntent(deadlines);
+    const { retired } = await rotateCnrxSettlementFactory();
     const live = await openIntent(deadlines);
-    const { factory: retired, opened: rotated } = await openOnRetiredSettlementFactory(deadlines);
     const ops = createCantonOperations({
       gatewayUrl: E.FILLER_GATEWAY_WS_URL, fillerId: E.STAND_FILLER_ID, gatewaySigner: E.FILLER_GATEWAY_SIGNER as Hex,
       messageSigner: createTestTypedDataSigner(E.STAND_FILLER_MESSAGE_KEY as Hex), partySigner: signerOf(), participantUid: E.CANTON_PARTICIPANT_UID, registries: registries(),
