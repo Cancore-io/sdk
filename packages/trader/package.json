@@ -54,7 +54,7 @@
   },
   "dependencies": {
     "@cancore/contracts": "workspace:^0.2.0-rc.20",
-    "@cancore/wallet": "workspace:^0.4.0",
+    "@cancore/wallet": "workspace:^0.4.3",
     "@canton-network/core-ledger-proto": "^1.13.0",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",
