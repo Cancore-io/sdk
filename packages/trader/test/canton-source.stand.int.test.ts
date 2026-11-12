@@ -15,7 +15,7 @@
  *    pick of the stand filler, then the wallet operation intent.open — trading
  *    tickets only a picked order. The reads of test 1 open IntentFactory_Open
  *    directly as the custodial owner over the JSON Ledger API.
- * 3. trading tickets it to the picked filler (CAN-2326); the SDK runs V-C1…V-C6
+ * 3. trading tickets it to the picked filler (CAN-2326); the SDK runs V-C1…V-C7
  *    against GET /v1/filler/canton/intents/{orderHash}, receipts, fills on anvil.
  * 4. The attestors sign, filler-gateway delivers settle.attestations, the SDK
  *    runs intent.settle: checks the prepared SwapIntent_SettleWithProof, signs
@@ -318,6 +318,8 @@ async function openIntent(deadlines: { fillDeadline: number; refundAfter: number
  * CAN-3408: an operator pin like the stand's whose settlement factory the registry no longer holds, so an intent
  * opened through it is one whose factory was rotated after Open. A copy of the live CnrxAllocationRules is created
  * and archived in one transaction, so the stand's own factory, and every other spec on it, stay untouched.
+ * While the extra pin is live, trading-worker's FactoryPinWatcher (CAN-3341) logs it at error level and counts it in
+ * intent_factory_pin_unverified_total: that alarm on the stand is expected and ends when the test archives the pin.
  */
 async function pinOfArchivedSettlementFactory(): Promise<{ pin: string; factory: string }> {
   const admin = E.CNRX_ADMIN_PARTY;
@@ -336,6 +338,12 @@ async function pinOfArchivedSettlementFactory(): Promise<{ pin: string; factory:
   const pin = createdOf(created, ':RegistryFactoryPin');
   if (!pin) throw new Error('the pin of the archived settlement factory was not created');
   return { pin, factory };
+}
+
+/** Trading may have rotated the operator's pins meanwhile (RegistryFactoryPins.current()), archiving this one first. */
+async function archivePinIfLive(pin: string): Promise<void> {
+  const [held] = (await active(E.INTENT_OPERATOR_PARTY_ID, FACTORY_PIN)).filter((p) => p.contractId === pin);
+  if (held) await submit([E.INTENT_OPERATOR_PARTY_ID], exercise(FACTORY_PIN, pin, 'Archive', {}));
 }
 
 /** The party's free CNRX, in Numeric-10 units. */
@@ -428,7 +436,7 @@ const until = async <T>(what: string, read: () => Promise<T | undefined>, timeou
   throw new Error(`timed out: ${what}${last ? ` (last error: ${String(last)})` : ''}\n${why()}`);
 };
 
-live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_SettleWithProof (CAN-2321)', () => {
+live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_SettleWithProof (CAN-2321)', () => {
   jest.setTimeout(20 * 60_000);
   const DST = 'eip155:11155111' as const;
   let QUOTED_OUT = 0n;
@@ -493,7 +501,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
   const checked = (orderHash: string) =>
     events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === 'ticket.checked' && String(e.orderHash).toLowerCase() === orderHash);
 
-  test('TC-SDK-1863-INT-01 TC-SDK-1863-INT-02: the reads V-C1…V-C6 take are the stand participant’s, and refuse what is not committed to this filler', async () => {
+  test('TC-SDK-1863-INT-01 TC-SDK-1863-INT-02: the reads V-C1…V-C7 take are the stand participant’s, and refuse what is not committed to this filler', async () => {
     const nowS = Math.floor(Date.now() / 1000);
     const opened = await openIntent({ fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 });
     const ops = createCantonOperations({
@@ -524,9 +532,13 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
     const deadlines = { fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 };
     const live = await openIntent(deadlines);
     const archived = await pinOfArchivedSettlementFactory();
-    const rotated = await openIntent(deadlines, archived.pin);
-    // The pin served its one Open: no other spec, and no pin sweep of trading, may pick it up.
-    await submit([E.INTENT_OPERATOR_PARTY_ID], exercise(FACTORY_PIN, archived.pin, 'Archive', {}));
+    let rotated: Awaited<ReturnType<typeof openIntent>>;
+    try {
+      rotated = await openIntent(deadlines, archived.pin);
+    } finally {
+      // The pin served its one Open: no other spec, and no pin sweep of trading, may pick it up, even when Open threw.
+      await archivePinIfLive(archived.pin);
+    }
     const ops = createCantonOperations({
       gatewayUrl: E.FILLER_GATEWAY_WS_URL, fillerId: E.STAND_FILLER_ID, gatewaySigner: E.FILLER_GATEWAY_SIGNER as Hex,
       messageSigner: createTestTypedDataSigner(E.STAND_FILLER_MESSAGE_KEY as Hex), partySigner: signerOf(), participantUid: E.CANTON_PARTICIPANT_UID, registries: registries(),
@@ -551,7 +563,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
     expect(refused.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6']);
   });
 
-  test('TC-SDK-1863-INT-07 TC-SDK-2321-INT-01: ticketed, checked V-C1…V-C6, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
+  test('TC-SDK-1863-INT-07 TC-SDK-2321-INT-01: ticketed, checked V-C1…V-C7, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
     const before = await freeCnrx(E.STAND_FILLER_CANTON_PARTY);
     const opened = await openAsUser(`0x${'b0'.repeat(20)}`);
     expect(opened.amountOut).toBe(QUOTED_OUT.toString());
@@ -560,7 +572,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
       return intents.length > 0 ? true : undefined;
     }, 2 * 60_000);
 
-    // The receipt only after every check passed, V-C1…V-C6 among them (T-22).
+    // The receipt only after every check passed, V-C1…V-C7 among them (T-22).
     await until('the ticket of the Canton-source intent is receipted', async () => {
       const state = (await store.withOrder(opened.orderHash, (tx) => tx.getTicket(0)))?.state;
       return state === 'receipted' || state === 'filled' ? true : undefined;

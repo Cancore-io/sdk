@@ -563,6 +563,7 @@ describe('Canton operations of the filler party (§3.19)', () => {
     expect(rest('cantonIntent', { ...intent, allocation: { ...allocation, settlementDeadline: null } })).toBe(true);
     // CAN-3408: the settlement factory of the intent; optional, the node refuses without it (V-C7).
     expect(rest('cantonIntent', { ...intent, settlementFactory: { contractId: '00sf', live: false } })).toBe(true);
+    expect(rest('cantonIntent', { ...intent, settlementFactory: null })).toBe(true);
     expect(rest('cantonIntent', { ...intent, settlementFactory: { contractId: '00sf' } })).toBe(false);
     expect(rest('cantonIntent', { ...intent, settlementFactory: { contractId: '', live: true } })).toBe(false);
   });

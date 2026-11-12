@@ -249,10 +249,15 @@
           "description": "the contract allocationCid names, by its AllocationV2 view; null when it is not live"
         },
         "settlementFactory": {
-          "type": "object",
-          "description": "SwapIntent.settlementFactoryCid, the factory settle runs (CAN-3340), and whether it is the registry's current settlement factory, read as settle reads it (CAN-3408). The node refuses the ticket (V-C7) when it is not live or the field is absent",
-          "required": ["contractId", "live"],
-          "properties": { "contractId": { "type": "string", "minLength": 1 }, "live": { "type": "boolean" } }
+          "anyOf": [
+            {
+              "type": "object",
+              "required": ["contractId", "live"],
+              "properties": { "contractId": { "type": "string", "minLength": 1 }, "live": { "type": "boolean" } }
+            },
+            { "type": "null" }
+          ],
+          "description": "SwapIntent.settlementFactoryCid, the factory settle runs (CAN-3340), and whether it is the registry's current settlement factory, read as settle reads it (CAN-3408). The node refuses the ticket (V-C7) when it is not live, null or absent"
         }
       }
     },

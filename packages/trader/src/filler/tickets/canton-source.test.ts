@@ -287,7 +287,7 @@ describe('V-C1…V-C7 on the golden Canton-source order (CAN-1863, CAN-3408)', (
 });
 
 // ---------------------------------------------------------------------------
-// The verifier: a Canton source runs V-C1…V-C6 in place of V-E1…V-E4
+// The verifier: a Canton source runs V-C1…V-C7 in place of V-E1…V-E4
 // ---------------------------------------------------------------------------
 
 const FILL_KEY: Hex = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';

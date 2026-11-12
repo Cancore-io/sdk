@@ -250,7 +250,7 @@ export class GatewayRest {
   /**
    * `GET /v1/filler/canton/intents/{orderHash}`: the live Canton-source intent
    * naming this filler's party, with its committed allocation (CAN-1863). Its
-   * fields are checked by V-C1…V-C6, never trusted; here only its shape.
+   * fields are checked by V-C1…V-C7, never trusted; here only its shape.
    */
   async getCantonIntent(orderHash: Hex): Promise<CantonIntent> {
     if (!/^0x[0-9a-fA-F]{64}$/.test(orderHash)) throw new GatewayError('BAD_REQUEST', false, `orderHash ${orderHash} is not 32 bytes of hex`);

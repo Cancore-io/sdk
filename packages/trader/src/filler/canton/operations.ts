@@ -182,7 +182,7 @@ export class CantonOperations {
     return this.options.rest.listCantonDeliveryOrders();
   }
 
-  /** The live Canton-source intent of `orderHash` naming the party, with its committed allocation (V-C1…V-C6). */
+  /** The live Canton-source intent of `orderHash` naming the party, with its committed allocation (V-C1…V-C7). */
   intent(orderHash: Hex): Promise<CantonIntent> {
     return this.options.rest.getCantonIntent(orderHash);
   }
