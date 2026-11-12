@@ -252,7 +252,9 @@ async function bookOf(kind: 'IntentBook' | 'FillBook', shard: string): Promise<s
 /**
  * The operator's live RegistryFactoryPin of CNRX whose allocation and settlement factory are the registrar's
  * CnrxAllocationRules, as cancore-intent 0.5.0+ Open requires (CAN-3172). Read at the call, not taken from the stand
- * env: trading may rotate the operator's pins on any step (CAN-3505).
+ * env: trading may rotate the operator's pins on any step (CAN-3505). A canton-delivery Dispatch rotates them to a
+ * transfer-only pin, since trading cannot read the registrar's CnrxAllocationRules to carry them over, so the pin is
+ * created when none is live, as meta's operatorFactoryPin does at bring-up; a second live pin of the operator is safe.
  */
 async function cnrxFactoryPin(): Promise<string> {
   const admin = E.CNRX_ADMIN_PARTY;
@@ -264,8 +266,11 @@ async function cnrxFactoryPin(): Promise<string> {
     return a.operator === operator && instrument.admin === admin && instrument.id === 'CNRX'
       && a.allocationFactory === rules.contractId && a.settlementFactory === rules.contractId;
   });
-  if (!pin) throw new Error('no live RegistryFactoryPin of the operator holds CnrxAllocationRules: the stand pins one at bring-up (meta CAN-3505)');
-  return pin.contractId;
+  if (pin) return pin.contractId;
+  const createArguments = { operator, instrumentId: { admin, id: 'CNRX' }, allocationFactory: rules.contractId, settlementFactory: rules.contractId, transfer: null };
+  const created = createdOf(await submit([operator], { CreateCommand: { templateId: FACTORY_PIN, createArguments } }), ':RegistryFactoryPin');
+  if (!created) throw new Error('pinning CnrxAllocationRules for the operator created no RegistryFactoryPin');
+  return created;
 }
 
 /** IntentFactory_Open by the custodial owner: the give committed to the stand filler, the intent created. */
