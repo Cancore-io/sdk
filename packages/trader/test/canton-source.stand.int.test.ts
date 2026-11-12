@@ -86,6 +86,7 @@ const INTENT = '#cancore-intent:Intent.SwapIntent';
 const BOOK_ROOT = '#cancore-intent:Intent.BookRoot:BookRoot';
 const FILL_ROOT = '#cancore-intent:Intent.BookRoot:FillRoot';
 const CNRX = '#cnrx-registry:Cnrx';
+const FACTORY_PIN = '#cancore-intent:Intent.RegistryFactoryPin:RegistryFactoryPin';
 const BURN_MINT = '#splice-api-token-burn-mint-v1:Splice.Api.Token.BurnMintV1:BurnMintFactory';
 // SwapIntent validTerms: refundAfter − fillDeadline ∈ [30 min, 4 h].
 const MIN_PROOF_WINDOW_S = 30 * 60;
@@ -248,6 +249,30 @@ async function bookOf(kind: 'IntentBook' | 'FillBook', shard: string): Promise<s
   return cid;
 }
 
+/**
+ * The operator's live RegistryFactoryPin of CNRX whose allocation and settlement factory are the registrar's
+ * CnrxAllocationRules, as cancore-intent 0.5.0+ Open requires (CAN-3172). Read at the call, not taken from the stand
+ * env: trading may rotate the operator's pins on any step (CAN-3505). A canton-delivery Dispatch rotates them to a
+ * transfer-only pin, since trading cannot read the registrar's CnrxAllocationRules to carry them over, so the pin is
+ * created when none is live, as meta's operatorFactoryPin does at bring-up; a second live pin of the operator is safe.
+ */
+async function cnrxFactoryPin(): Promise<string> {
+  const admin = E.CNRX_ADMIN_PARTY;
+  const operator = E.INTENT_OPERATOR_PARTY_ID;
+  const [rules] = await active(admin, `${CNRX}.Allocation:CnrxAllocationRules`, (a) => a.admin === admin);
+  if (!rules) throw new Error('the stand has no CnrxAllocationRules of the registrar');
+  const [pin] = await active(operator, FACTORY_PIN, (a) => {
+    const instrument = a.instrumentId as { admin?: string; id?: string };
+    return a.operator === operator && instrument.admin === admin && instrument.id === 'CNRX'
+      && a.allocationFactory === rules.contractId && a.settlementFactory === rules.contractId;
+  });
+  if (pin) return pin.contractId;
+  const createArguments = { operator, instrumentId: { admin, id: 'CNRX' }, allocationFactory: rules.contractId, settlementFactory: rules.contractId, transfer: null };
+  const created = createdOf(await submit([operator], { CreateCommand: { templateId: FACTORY_PIN, createArguments } }), ':RegistryFactoryPin');
+  if (!created) throw new Error('pinning CnrxAllocationRules for the operator created no RegistryFactoryPin');
+  return created;
+}
+
 /** IntentFactory_Open by the custodial owner: the give committed to the stand filler, the intent created. */
 async function openIntent(deadlines: { fillDeadline: number; refundAfter: number }) {
   const owner = E.STAND_OWNER_PARTY;
@@ -279,6 +304,7 @@ async function openIntent(deadlines: { fillDeadline: number; refundAfter: number
     attestorSetCommitment: ledgerHex(E.INTENT_ATTESTOR_SET_COMMITMENT),
     inputHoldingCids: holdings, allocExtraArgs: { context: { values: await cnrxPauseContext() }, meta: { values: {} } },
     fillerEntryCid: E.STAND_FILLER_REGISTRY_ENTRY_CID, intentBookCid, attestorRegistryCid: E.INTENT_ATTESTOR_REGISTRY_CID,
+    factoryPin: await cnrxFactoryPin(),
   };
   const events = await submit([owner], exercise(`${INTENT}:IntentFactory`, factory.contractId, 'IntentFactory_Open', fields), [E.INTENT_OPERATOR_PARTY_ID, E.CNRX_ADMIN_PARTY, E.INTENT_ATTESTOR_GOVERNOR_PARTY]);
   const intentCid = createdOf(events, ':SwapIntent');
