@@ -54,7 +54,8 @@ const FETCH_TIMEOUT_MS = 20_000;
 
 export class NoAccountError extends Error {
   constructor() {
-    super('no Cancore account for this key: make the bot in the Cancore wallet (Settings → My bots), then import its key with `cancore-bot init --import-key <file>`');
+    // The gateway also answers a slow sign-in of an existing key with this 404 (the SDK has asked three times by now).
+    super('the API knows no Cancore account for this key: if the bot was made in My bots, run register again; otherwise make it in the Cancore wallet (Settings → My bots) and import its key with `cancore-bot init --import-key <file>`');
     this.name = 'NoAccountError';
   }
 }
@@ -84,7 +85,7 @@ export function createEngine(options: EngineOptions): Engine {
   // A venue taken from the API's fee-config would let the API pick who settles: pinned, or no engine.
   const venuePartyId = pinnedVenue(options);
   if (!venuePartyId) throw new Error(`no venue is pinned for ${options.baseUrl}: set venuePartyId, with network, in the config`);
-  const guarded = guardSigning(options.signer, options.fetchImpl ?? ((url, init) => globalThis.fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS) })), hooks.onVerifyFailed);
+  const guarded = guardSigning(options.signer, options.fetchImpl ?? ((url, init) => globalThis.fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(FETCH_TIMEOUT_MS) })), hooks.onVerifyFailed, hooks.onTopologySigned);
   const acct = createSelfCustody({
     baseUrl: options.baseUrl,
     signer: guarded.signer,

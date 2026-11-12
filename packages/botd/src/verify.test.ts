@@ -42,10 +42,10 @@ describe('guardSigning', () => {
   describe('a topology multihash (CAN-2922)', () => {
     // 0x12 (sha2-256), 0x20 (32 bytes), then a digest: the binary string the wallet signs a topology leg with.
     const MULTIHASH = `\x12\x20${String.fromCharCode(...Array.from({ length: 32 }, (_, i) => 0xe0 + i))}`;
-    const recording = () => {
+    const recording = (onTopologySigned?: (hex: string) => Promise<unknown>) => {
       const calls: string[] = [];
       const failed: string[] = [];
-      const g = guardSigning({ ...fakeSigner(), signMessage: async (m: string) => (calls.push(m), 'sig') }, answering({}), (r) => failed.push(r));
+      const g = guardSigning({ ...fakeSigner(), signMessage: async (m: string) => (calls.push(m), 'sig') }, answering({}), (r) => failed.push(r), onTopologySigned);
       return { g, calls, failed };
     };
 
@@ -76,6 +76,23 @@ describe('guardSigning', () => {
       release();
       await expect(leftover).rejects.toBeInstanceOf(VerifyError);
       expect(calls).toEqual([]);
+    });
+
+    it('is put on the record, in hex, before the key signs it; a record that fails stops the signature (review F-1)', async () => {
+      // Each record with the number of signatures the key had made when it was written.
+      const recorded: { hex: string; signedBefore: number }[] = [];
+      let recordFails = false;
+      const { g, calls } = recording(async (hex) => {
+        if (recordFails) throw new Error('audit write failed');
+        recorded.push({ hex, signedBefore: calls.length });
+      });
+      await expect(g.signer.signMessage(MULTIHASH)).rejects.toBeInstanceOf(VerifyError);
+      await g.onboarding(() => g.signer.signMessage(MULTIHASH));
+      expect(recorded).toEqual([{ hex: Buffer.from(MULTIHASH, 'latin1').toString('hex'), signedBefore: 0 }]);
+      expect(recorded[0]!.hex).toMatch(/^1220[0-9a-f]{64}$/);
+      recordFails = true;
+      await expect(g.onboarding(() => g.signer.signMessage(MULTIHASH))).rejects.toThrow('audit write failed');
+      expect(calls).toEqual([MULTIHASH]);
     });
 
     it('still refuses every other binary inside an onboarding, without using up its one multihash', async () => {

@@ -212,4 +212,6 @@ export interface EngineHooks {
   onEnded(orderId: string, reason: string): void;
   /** A prepared transaction's hash did not match its bytes, or a hash nobody verified was given to sign. */
   onVerifyFailed(reason: string): void;
+  /** The key is about to sign this topology multihash (hex) for an onboarding; it signs once this resolves. */
+  onTopologySigned?(multihash: string): Promise<unknown>;
 }

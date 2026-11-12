@@ -116,7 +116,8 @@ describe('engine.register (CAN-2922)', () => {
     const e = await engineOver({ onboard: async () => Promise.reject(failure) });
     const { NoAccountError } = await import('./index');
     await expect(e.register()).rejects.toBeInstanceOf(NoAccountError);
-    await expect(e.register()).rejects.toThrow(/Settings → My bots.*cancore-bot init --import-key <file>/);
+    // Review F-2: the gateway gives an existing key this 404 on a slow sign-in too, so the retry comes first.
+    await expect(e.register()).rejects.toThrow(/made in My bots, run register again; otherwise .*Settings → My bots.*cancore-bot init --import-key <file>/);
     failure = Object.assign(new Error('POST /auth/challenge → 404'), { status: 404, errorCode: 'NOT_FOUND' });
     await expect(e.register()).rejects.toBe(failure);
   });

@@ -58,11 +58,17 @@ type Onboarding = <T>(onboard: () => Promise<T>) => Promise<T>;
 /**
  * Wraps the engine's `fetch` and signer together: the fetch records which hashes were recomputed
  * from bytes, the signer signs only those (each once). `onFailed` hears every mismatch and every
- * refused signature. `onboarding` runs an onboarding, the one place a topology multihash is signed.
+ * refused signature. `onboarding` runs an onboarding, the one place a topology multihash is signed;
+ * `onTopologySigned` hears each one, in hex, and the key signs only once it has returned.
  */
 const MAX_VERIFIED = 256;
 
-export function guardSigning(inner: BotSigner, fetchImpl: FetchLike, onFailed: (reason: string) => void): { signer: BotSigner; fetchImpl: FetchLike; onboarding: Onboarding } {
+export function guardSigning(
+  inner: BotSigner,
+  fetchImpl: FetchLike,
+  onFailed: (reason: string) => void,
+  onTopologySigned: (multihashHex: string) => Promise<unknown> = async () => undefined,
+): { signer: BotSigner; fetchImpl: FetchLike; onboarding: Onboarding } {
   const verified = new Set<string>();
   // Bound to the onboarding's own async calls, not to a time window: a trade signing meanwhile gets no multihash.
   const topologyWindow = new AsyncLocalStorage<{ open: boolean }>();
@@ -107,11 +113,14 @@ export function guardSigning(inner: BotSigner, fetchImpl: FetchLike, onFailed: (
     // Text only (consent, faucet terms), and one topology multihash per onboarding: raw bytes here would be a
     // prepared-transaction hash signed past the check below.
     async signMessage(m) {
-      if (!/^[\x20-\x7e\n]*$/.test(m) && !(isTopologyMultihash(m) && takeTopologySignature())) {
+      if (/^[\x20-\x7e\n]*$/.test(m)) return inner.signMessage(m);
+      if (!isTopologyMultihash(m) || !takeTopologySignature()) {
         const reason = 'refused to sign a non-text message: hashes are signed only through signPreparedHash, a topology multihash once per onboarding';
         onFailed(reason);
         throw new VerifyError(reason);
       }
+      // The API alone decides a topology leg exists, and nothing here can read it (CAN-2922 review F-1): on the record first.
+      await onTopologySigned(Buffer.from(m, 'latin1').toString('hex'));
       return inner.signMessage(m);
     },
     ...(inner.signChallenge && { signChallenge: (c: string) => inner.signChallenge!(c) }),
