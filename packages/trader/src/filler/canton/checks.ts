@@ -61,7 +61,9 @@ export const party = (v: DamlValue): string => (v.t === 'party' ? v.v : refuse('
 export const textOf = (v: DamlValue): string => (v.t === 'text' ? v.v : refuse('expected text'));
 export const numeric = (v: DamlValue): string => (v.t === 'numeric' ? canonicalDecimal(v.v) : refuse('expected a decimal'));
 const FACTORY_PIN = 'Intent.RegistryFactoryPin:RegistryFactoryPin';
+const PIN_PACKAGE = 'cancore-intent';
 const someCid = (value: DamlValue | undefined): string | undefined => (value?.t === 'optional' && value.v?.t === 'contractId' ? value.v.v : undefined);
+const namedPinCid = (chosen: DamlValue): string | undefined => someCid(chosen.t === 'record' ? chosen.v.factoryPin : undefined);
 
 /**
  * The root runs under the package that created its contract, as the transaction discloses it (CAN-3172): with
@@ -78,6 +80,13 @@ export function requireCreatingPackage(tx: CantonTransaction, root: ExerciseNode
  * ("Registry factory pin is required"), so dropping the field cannot skip the pin check.
  */
 export const namesFactoryPin = (chosen: DamlValue): boolean => chosen.t === 'record' && 'factoryPin' in chosen.v;
+
+/** Whether `node` is a fetch of exactly the `RegistryFactoryPin` the choice names in `factoryPin` (CAN-3504). */
+export const fetchesNamedPin = (node: TransactionNode, chosen: DamlValue): boolean =>
+  node.kind === 'fetch' &&
+  node.packageName === PIN_PACKAGE &&
+  qualified(node.templateId) === FACTORY_PIN &&
+  node.contractId === namedPinCid(chosen);
 
 /**
  * The choice's trailing `factoryPin` (CAN-3172): the operator's `RegistryFactoryPin`, disclosed with the transaction,
@@ -104,10 +113,10 @@ export function pinnedTransferFactory(tx: CantonTransaction, chosen: DamlValue, 
 
 /** The argument of the choice's `factoryPin`: the operator's `RegistryFactoryPin`, disclosed with the transaction. */
 function operatorPin(tx: CantonTransaction, chosen: DamlValue, operator: string): DamlValue {
-  const pinCid = someCid(chosen.t === 'record' ? chosen.v.factoryPin : undefined);
+  const pinCid = namedPinCid(chosen);
   if (!pinCid) return refuse('the choice names no registry factory pin');
   const pin = tx.inputContracts.find((c) => c.contractId === pinCid);
-  if (!pin || pin.packageName !== 'cancore-intent' || qualified(pin.templateId) !== FACTORY_PIN) return refuse('the registry factory pin is not disclosed with the transaction');
+  if (!pin || pin.packageName !== PIN_PACKAGE || qualified(pin.templateId) !== FACTORY_PIN) return refuse('the registry factory pin is not disclosed with the transaction');
   if (party(field(pin.argument, 'operator')) !== operator) refuse('the registry factory pin is not the operator’s');
   return pin.argument;
 }
