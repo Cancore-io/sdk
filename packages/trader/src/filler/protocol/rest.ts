@@ -437,6 +437,8 @@ export function isCantonIntent(body: unknown): body is CantonIntent {
   if (!isObject(body.asset) || !strings(body.asset, ['admin', 'id'])) return false;
   if (!isObject(body.destination) || !strings(body.destination, ['chainId', 'token', 'recipient'])) return false;
   if (!isObject(body.minReceived) || typeof body.minReceived.units !== 'string' || !Number.isSafeInteger(body.minReceived.decimals)) return false;
+  const f = body.settlementFactory;
+  if (f !== undefined && f !== null && (!isObject(f) || typeof f.contractId !== 'string' || typeof f.live !== 'boolean')) return false;
   const a = body.allocation;
   if (a === null) return true;
   if (!isObject(a) || !strings(a, ['contractId', 'templateId', 'admin', 'settlementId']) || typeof a.committed !== 'boolean') return false;

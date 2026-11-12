@@ -80,6 +80,7 @@ function intentOf(input: CantonSourceIntent, orderHash: Hex, legs: { payout: str
         { legId: 'fee', side: 'SENDER', otherside: OPERATOR, amount: legs.fee, instrumentId: input.instrumentId },
       ],
     },
+    settlementFactory: { contractId: '00sf', live: true },
   };
 }
 
@@ -137,11 +138,11 @@ async function refusal(promise: Promise<unknown>): Promise<TicketRefusal> {
   throw new Error('expected a refusal');
 }
 
-describe('V-C1…V-C6 on the golden Canton-source order (CAN-1863)', () => {
+describe('V-C1…V-C7 on the golden Canton-source order (CAN-1863, CAN-3408)', () => {
   test('a committed intent that names this filler passes every check, in order', async () => {
     const g = golden3();
     await g.run();
-    expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6']);
+    expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
     expect(g.reader.asked).toEqual([golden.vector.orderHash]);
   });
 
@@ -167,7 +168,7 @@ describe('V-C1…V-C6 on the golden Canton-source order (CAN-1863)', () => {
       },
       (check) => void passed.push(check),
     );
-    expect(passed).toHaveLength(6);
+    expect(passed).toHaveLength(7);
   });
 
   type Case = [name: string, mutate: (i: CantonIntent) => void, check: string, reason: string, run?: Parameters<ReturnType<typeof golden3>['run']>[0], party?: CantonParty | Error];
@@ -212,6 +213,9 @@ describe('V-C1…V-C6 on the golden Canton-source order (CAN-1863)', () => {
     ['V-C5: another party is registered for the fillerId', () => undefined, 'V-C5', 'OTHER', undefined, { ...ACTIVE, party: 'other::1220' }],
     ['V-C5: the registry cannot be read (N-12)', () => undefined, 'V-C5', 'OTHER', undefined, new GatewayError('CANTON_UNAVAILABLE', true, 'down')],
     ['V-C6: refundAfter − fillDeadline one second short of the proof window', () => undefined, 'V-C6', 'PROOF_WINDOW_TOO_SHORT', { requiredProofWindowSec: 3_601 }],
+    ['V-C7 TC-SDK-3408-01: the registry rotated the settlement factory the owner approved', (i) => void (i.settlementFactory = { contractId: '00sf', live: false }), 'V-C7', 'OTHER'],
+    ['V-C7 TC-SDK-3408-02: a filler-gateway before CAN-3408 says nothing of the factory', (i) => void delete i.settlementFactory, 'V-C7', 'OTHER'],
+    ['V-C7 TC-SDK-3408-03: the factory is null', (i) => void (i.settlementFactory = null), 'V-C7', 'OTHER'],
   ];
 
   // A rest parameter: jest reads a callback with more parameters than the row has columns as a `done` test.
@@ -226,7 +230,7 @@ describe('V-C1…V-C6 on the golden Canton-source order (CAN-1863)', () => {
     }
     const r = await refusal(g.run(overrides));
     expect({ check: r.check, reason: r.reason }).toEqual({ check, reason });
-    expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6'].slice(0, ['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6'].indexOf(check)));
+    expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7'].slice(0, ['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7'].indexOf(check)));
   });
 
   test('V-C1: a read that fails is unverifiable, never passed (N-12)', async () => {
@@ -258,6 +262,11 @@ describe('V-C1…V-C6 on the golden Canton-source order (CAN-1863)', () => {
     expect(isCantonIntent({ ...ok, allocation: { ...ok.allocation!, legs: [{ ...ok.allocation!.legs[0]!, amount: 1 }] } })).toBe(false);
     expect(isCantonIntent({ ...ok, allocation: { ...ok.allocation!, executors: [1] } })).toBe(false);
     expect(isCantonIntent({ ...ok, minReceived: { units: '1', decimals: '6' } })).toBe(false);
+    const { settlementFactory: _f, ...noFactory } = ok;
+    expect(isCantonIntent(noFactory)).toBe(true);
+    expect(isCantonIntent({ ...ok, settlementFactory: null })).toBe(true);
+    expect(isCantonIntent({ ...ok, settlementFactory: { contractId: '00sf', live: 'true' } })).toBe(false);
+    expect(isCantonIntent({ ...ok, settlementFactory: { live: true } })).toBe(false);
   });
 
   test('the registries come from the reader (CantonOperations.registries) when the input names none: a stand registrar', async () => {
@@ -330,15 +339,33 @@ async function verifierSetup(canton: { reader?: CantonSourceReader; party?: stri
     ...('party' in canton ? (canton.party ? { cantonParty: canton.party } : {}) : { cantonParty: PARTY }),
     ...(canton.reader === undefined && 'reader' in canton ? {} : { cantonSource: r }),
   });
-  return { verifier, input: { offer, issued, issuedAtMs: clock.now() }, dst, orderHash, intent };
+  return { verifier, input: { offer, issued, issuedAtMs: clock.now() }, dst, orderHash, intent, logger };
 }
 
 describe('TicketVerifier on a Canton source (CAN-1863)', () => {
-  test('V-C1…V-C6 run in place of V-E1…V-E4; V-T1 and V-E5 are read on the destination', async () => {
+  test('V-C1…V-C7 run in place of V-E1…V-E4; V-T1 and V-E5 are read on the destination', async () => {
     const h = await verifierSetup();
     const result = await h.verifier.verify(h.input);
     expect(result).toMatchObject({ ok: true });
-    expect(result.checks.map((c) => c.check)).toEqual(['form', 'V-T4', 'V-T2', 'V-T3', 'V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-T1', 'V-E5']);
+    expect(result.checks.map((c) => c.check)).toEqual(['form', 'V-T4', 'V-T2', 'V-T3', 'V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7', 'V-T1', 'V-E5']);
+  });
+
+  test('TC-SDK-3408-04: a rotated settlement factory declines the ticket before any delivery and warns the node operator', async () => {
+    const h = await verifierSetup();
+    h.intent.settlementFactory = { contractId: '00sf', live: false };
+    const result = await h.verifier.verify(h.input);
+    expect(result).toMatchObject({ ok: false, reason: 'OTHER', detail: expect.stringMatching(/^V-C7: payout-not-ready: .*00sf/) });
+    expect(result.checks.map((c) => c.check)).not.toContain('V-T1');
+    expect(h.logger.entries.filter((l) => l.level === 'warn' && l.message === 'tickets: issued ticket refused')).toEqual([
+      expect.objectContaining({ fields: expect.objectContaining({ check: 'V-C7', reason: 'OTHER' }) }),
+    ]);
+  });
+
+  test('TC-SDK-3408-05: a routine decline stays an info line, not a warning', async () => {
+    const h = await verifierSetup();
+    h.intent.allocation!.committed = false;
+    await h.verifier.verify(h.input);
+    expect(h.logger.entries.filter((l) => l.message === 'tickets: issued ticket refused').map((l) => l.level)).toEqual(['info']);
   });
 
   test('a delivery already on the destination router: V-E5 on the intent orderHash', async () => {

@@ -406,10 +406,16 @@ export interface CantonAllocation {
   settlementDeadline: DecString | null;
   legs: CantonAllocationLeg[];
 }
+/** The settlement factory the owner approved into the `SwapIntent` (CAN-3340), and whether it is still the registry's. */
+export interface CantonSettlementFactory {
+  contractId: string;
+  /** The cid is the registry's current settlement factory, read as settle reads it (CAN-3408). */
+  live: boolean;
+}
 /**
  * `GET /v1/filler/canton/intents/{orderHash}`: the live Canton-source `SwapIntent` naming the party as its
  * filler, as that party sees it, and its committed allocation (null when not live). The node checks it
- * before `ticket.receipt` (fillers.md V-C1…V-C6) and recomputes `orderHash` from these fields itself.
+ * before `ticket.receipt` (fillers.md V-C1…V-C7) and recomputes `orderHash` from these fields itself.
  */
 export interface CantonIntent {
   intentCid: string;
@@ -433,6 +439,8 @@ export interface CantonIntent {
   orderCreatedAt: DecString;
   allocationCid: string;
   allocation: CantonAllocation | null;
+  /** Absent from a filler-gateway before CAN-3408: V-C7 refuses then, as for a factory that is not live. */
+  settlementFactory?: CantonSettlementFactory | null;
 }
 
 // --- Public records (auction-and-draw §3.3–3.4) and the gateway identity.

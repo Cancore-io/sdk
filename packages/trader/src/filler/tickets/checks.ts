@@ -128,7 +128,7 @@ export class TicketVerifier {
     } catch (error) {
       if (!(error instanceof TicketRefusal)) throw error;
       this.record(checks, { check: error.check, status: 'failed', reason: error.reason, detail: error.detail }, orderHash, attempt);
-      this.options.logger.info('tickets: issued ticket refused', { orderHash, attempt, check: error.check, reason: error.reason, detail: error.detail });
+      this.options.logger[error.alert ? 'warn' : 'info']('tickets: issued ticket refused', { orderHash, attempt, check: error.check, reason: error.reason, detail: error.detail });
       return { ok: false, reason: error.reason, detail: `${error.check}: ${error.detail}`, checks };
     }
     return { ok: true, checks };
@@ -220,7 +220,7 @@ export class TicketVerifier {
       if (window < BigInt(policy.requiredProofWindowSec)) throw new TicketRefusal('V-E3', 'PROOF_WINDOW_TOO_SHORT', `refundAfter − fillDeadline = ${window} s < ${policy.requiredProofWindowSec} s`);
       pass('V-E3');
     } else {
-      // -- V-C1…V-C6: the committed give on Canton (canton-source.ts) -------------------------
+      // -- V-C1…V-C7: the committed give on Canton (canton-source.ts) -------------------------
       const { reader, party } = canton as { reader: CantonSourceReader; party: string };
       await checkCantonSource(
         { order: offer.order, ticket, party, fillerId: this.options.fillerId, requiredProofWindowSec: policy.requiredProofWindowSec, reader },

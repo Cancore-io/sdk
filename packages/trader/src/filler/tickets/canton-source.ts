@@ -1,6 +1,6 @@
 /**
  * The checks before `ticket.receipt` for a Canton source and an EVM-form
- * ticket (fillers.md §4.5 V-C1…V-C6, INV-10). On a Canton source there is no
+ * ticket (fillers.md §4.5 V-C1…V-C7, INV-10). On a Canton source there is no
  * escrow on a router: the owner's give is a committed allocation that only
  * `SwapIntent_SettleWithProof` — this filler's submission — can pay out, and
  * only strictly before `refundAfter`. Before the node advances funds on the
@@ -21,6 +21,7 @@
  * | V-C4 | the give is committed to this filler: the allocation `allocationCid` is live, of a pinned registry template, `committed`, authorized by the owner, executors exactly operator and owner, `settlementDeadline == refundAfter`, legs exactly `payout` to the node's party and `fee` to the operator | `ESCROW_NOT_OPEN` (not live), `ESCROW_MISMATCH` |
  * | V-C5 | the filler can be paid: `ticket.repayTo == keccak256(utf8(party))` (T-45), its `FillerRegistryEntry` is ACTIVE, and the instrument's pinned registry pays any party through a receipt-only allocation (`openReceipt`, T-9) | `TICKET_MISMATCH`, `OTHER` (detail `payout-not-ready`) |
  * | V-C6 | `refundAfter − fillDeadline ≥` the filler's own proof window for the destination, as V-E3 | `PROOF_WINDOW_TOO_SHORT` |
+ * | V-C7 | the settlement factory the owner approved into the intent is still the registry's (`settlementFactory.live`); absent on an older filler-gateway is a refusal too | `OTHER` (detail `payout-not-ready`), logged as a warning |
  *
  * `PAYOUT_NOT_READY` is a `TICKET_REFUSED` reason of filler-gateway, not a
  * decline code: like V-E4, V-C5 declines `OTHER` and names it in the detail.
@@ -29,6 +30,12 @@
  * registry whose receipt-only allocation needs nothing from its receiver
  * (`CantonTransferFactory.openReceipt`), and the same registry must be the
  * one the give is committed in (V-C4).
+ *
+ * V-C7 (CAN-3408): settle runs only the factory written into the SwapIntent
+ * (CAN-3340). Once the registry rotates it, settle fails until the owner signs
+ * a Renew, and an owner who never does withdraws the give after `refundAfter`
+ * while keeping the EVM delivery. A rotation after the delivery stays a
+ * residual risk (security.md §6.2); this check closes the one before it.
  */
 import {
   buildCantonSourceOrder,
@@ -105,7 +112,7 @@ export function intentOrder(intent: CantonIntent, originChainId: string): Canton
 const ORDER_FIELDS = ['user', 'originChainId', 'inputToken', 'inputAmount', 'destination', 'outputAsset', 'minReceived', 'recipient', 'createdAt', 'fillDeadline', 'feeBps', 'fillerId'] as const;
 
 /**
- * Runs V-C1…V-C6 in order; throws `TicketRefusal` at the first failure, calls
+ * Runs V-C1…V-C7 in order; throws `TicketRefusal` at the first failure, calls
  * `pass` for each that holds. A read that fails is a failure of the check
  * that needed it (N-12).
  */
@@ -172,6 +179,21 @@ export async function checkCantonSource(input: CantonSourceCheckInput, pass: (ch
     throw new TicketRefusal('V-C6', 'PROOF_WINDOW_TOO_SHORT', `refundAfter − fillDeadline = ${window} s < ${input.requiredProofWindowSec} s`);
   }
   pass('V-C6');
+
+  // -- V-C7: settle can still run its factory ------------------------------------------------------------
+  checkSettlementFactory(intent);
+  pass('V-C7');
+}
+
+/** V-C7: fail closed, an unknown liveness is no liveness. */
+function checkSettlementFactory(intent: CantonIntent): void {
+  const factory = intent.settlementFactory;
+  if (!factory) {
+    throw new TicketRefusal('V-C7', 'OTHER', 'payout-not-ready: filler-gateway does not say whether the intent’s settlement factory is live', true);
+  }
+  if (!factory.live) {
+    throw new TicketRefusal('V-C7', 'OTHER', `payout-not-ready: the intent’s settlement factory ${factory.contractId} is no longer the registry’s; settle fails until the owner renews it`, true);
+  }
 }
 
 /** V-C4: the allocation is exactly the commitment `IntentFactory_Open` makes (`SwapIntent.daml` legsOf, allocationSpec). */

@@ -338,7 +338,7 @@ ticket whose arrival is not recorded is refused as unverifiable. V1 does not che
 
 **Canton source** (an EVM-form ticket for an order whose `originChainId` is a `CANTON_ORIGIN_ID`). There is no
 escrow on a router: the owner's give is a committed allocation only `SwapIntent_SettleWithProof` — this filler's
-submission — pays out, strictly before `refundAfter`. V-C1…V-C6 run in place of V-E1…V-E4 (V-T1 and V-E5 stay,
+submission — pays out, strictly before `refundAfter`. V-C1…V-C7 run in place of V-E1…V-E4 (V-T1 and V-E5 stay,
 on the destination), reading through Cancore — `GET /v1/filler/canton/intents/{orderHash}` and
 `/party` — with `cantonSource` (a `CantonOperations`); the node has no Ledger API (operator decision T-1).
 What can be recomputed is: the order and its hash from the intent's own fields, the legs from its amount and fee
@@ -353,6 +353,14 @@ rate. What cannot — that the intent and its allocation are live, `committed`, 
 | V-C4 | the allocation `allocationCid` is live, a pinned registry template (`CANTON_ALLOCATION_TEMPLATES`), `committed`, the owner's, executors exactly operator and owner, `settlementDeadline == refundAfter`, legs exactly `payout` (`amount` less the fee, Numeric 10 half to even) to this party and `fee` to the operator | `ESCROW_NOT_OPEN` (not live), `ESCROW_MISMATCH` |
 | V-C5 | `ticket.repayTo == keccak256(utf8(party))`; the `FillerRegistryEntry` of the party is `ACTIVE`; the instrument's pinned registry pays any party through a receipt-only allocation (`openReceipt`, T-9) | `TICKET_MISMATCH`, `OTHER` (`payout-not-ready`) |
 | V-C6 | `refundAfter − fillDeadline ≥ requiredProofWindowSec` of the destination | `PROOF_WINDOW_TOO_SHORT` |
+| V-C7 | the settlement factory the owner approved into the intent is still the registry's (`settlementFactory.live`); a filler-gateway that does not say is a refusal too | `OTHER` (`payout-not-ready`), logged as a warning |
+
+V-C7 (CAN-3408). Settle runs only the factory written into the `SwapIntent` at Open, which the owner
+signed. Once the registry rotates that factory, settle fails until the owner signs a Renew; an owner
+who never does withdraws the give after `refundAfter` and keeps the delivery. So the node does not
+deliver for an intent whose factory is no longer the registry's: the ticket is declined and the
+refusal is logged as a warning (`tickets: issued ticket refused`, `check: V-C7`) for the node's
+operator to see. A rotation after the delivery is not caught here; it stays a known residual risk.
 
 A node without `cantonParty` and `cantonSource` declines a Canton source `OTHER` at `form`.
 
