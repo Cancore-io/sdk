@@ -500,8 +500,9 @@ does both for a bot made in **My bots**. Then run it either way:
   [section 7](#7-settling-trades), one process per bot.
 - **[`@cancore/botd`](../packages/botd/README.md)**, the bot daemon, which signs within limits you
   set and lets an AI agent trade through `@cancore/bot-mcp`. A release candidate built from source;
-  it cannot create a party or accept terms, so do both with `@cancore/client` before you import
-  the key ([botd, Install, step 4](../packages/botd/README.md#install)).
+  it creates the bot's party at its first unlock but does not accept terms, so accept them with
+  `@cancore/client` before you import the key
+  ([botd, Install, step 4](../packages/botd/README.md#install)).
 
 **Funding and withdrawing.** Fund a bot with an ordinary `send` from your account to the bot's
 `partyId` ([section 5](#5-funding-and-wallet-management)). Only the bot's key moves the bot's

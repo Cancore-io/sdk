@@ -10,7 +10,7 @@ import { emptyLimits, loadLimits, parseLimits } from './limits';
 import { check, checkTake, dcaConfig, DEFAULT_ORDERS_PER_HOUR, gridConfig, ordersLastHour } from './riskgate';
 import { dcaNext } from './engine/dca';
 import { gridNext, gridRefill, gridSlots } from './engine/grid';
-import { createEngine, pinnedVenue, type EngineOptions } from './engine/index';
+import { createEngine, NoAccountError, pinnedVenue, type EngineOptions } from './engine/index';
 import { assertNever, makeFailure, tradingNetwork } from './network';
 import { dec, fmt, SCALE } from './decimal';
 import { listen, RpcFault, type IpcServer } from './ipc/server';
@@ -723,7 +723,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
         return { strategyId: rec.strategyId };
       }
       case 'register': {
-        const partyId = await needEngine().register((p as Params<'register'>).inviteCode);
+        const partyId = await needEngine().register().catch((err: unknown) => { throw err instanceof NoAccountError ? new RpcFault(ERROR.INVALID_PARAMS, err.message) : err; });
         await mutate((s) => ({ ...s, partyId }));
         return { partyId };
       }
@@ -744,13 +744,13 @@ export function createDispatcher(deps: Deps): Dispatcher {
         bookLookups.clear();
         later(() => reconcile(unlocked));
         // First unlock of an account registered elsewhere (the web app): onboard it and learn its party.
-        // A new account needs `register` (owner) first; until then this fails quietly and is logged.
+        // A key with no account (none made in My bots) fails here quietly and is logged; `register` says why.
         if (!(await deps.state.load()).partyId) {
           const e = engine;
           later(async () => {
             const partyId = await e.onboard().catch(() => undefined);
             if (partyId) await mutate((s) => ({ ...s, partyId }));
-            await append({ ...settleEntry, decision: partyId ? 'allow' : 'error', params: { event: 'onboard' }, ...(!partyId && { reason: 'not registered: run cancore-bot register' }) });
+            await append({ ...settleEntry, decision: partyId ? 'allow' : 'error', params: { event: 'onboard' }, ...(!partyId && { reason: 'not onboarded: run cancore-bot register to see why' }) });
           });
         }
         stopTicks?.();

@@ -146,8 +146,8 @@ run, and must not be one character or a 1–4 character block repeated. The poli
 keystore is created; it is what stands between a copy of `keystore.json` and the key.
 
 **No key export.** There is no method, on either socket, that returns the key or the mnemonic.
-Secrets are typed at a TTY only: `init` and `unlock` (and `register`, for its invite code) refuse a
-pipe or an argument. The params of `unlock` and `register` are never written to the audit log, and
+Secrets are typed at a TTY only: `init` and `unlock` refuse a pipe or an argument. The params of
+`unlock` and `register` are never written to the audit log, and
 any key that looks like a secret (`passphrase`, `mnemonic`, `seed`, `private_key`, `secret`) is
 redacted from logged params.
 
@@ -164,8 +164,11 @@ a hash only if it saw bytes with exactly that hash, each once. A mismatch or an 
 refused and logged as `verify_failed`. Messages are held to their kind too: the daemon signs a text
 message (a terms text, for example) only if it is printable ASCII with newlines, and a login
 challenge only in the challenge's own format (the wallet signer's `signChallenge`); anything else
-is refused. That is why a new key's party topology, a binary hash, cannot be signed
-([Install](#install), step 6).
+is refused, with one exception. While the daemon onboards (`register`, or the first `unlock`), it
+signs one topology multihash (34 bytes: `0x12 0x20` and a sha2-256 digest): the signature that
+creates the bot's party ([Install](#install), step 6). The topology leg carries that hash and not the
+topology it is of, so the daemon cannot recompute it; the SDK signs it only for a party of the
+bot's own key.
 The SDK's own checks of what each DvP or transfer does run underneath. The API cannot move the pinned trust boundary either: the venue is `venuePartyId` from
 the config or the SDK's pin for the network, never what the API says. The platform-fee receiver is named
 by the API for each order and must be one of the SDK's Cancore fee pools for the network or a
@@ -373,13 +376,12 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
 
    A bot made from a program with `owner.bots.create`
    ([Run a bot](../../docs/run-a-bot.md#or-make-the-bot-from-a-program)) is the same account: the
-   same derivation path, and **Show key** shows the same key. It has no party yet, though, and the
-   daemon cannot create one (step 6). Set it up once with `@cancore/client`, signed in with the
-   bot's key, before the import: `onboard()` (its party and CC receipts,
-   [Run a bot, section 5](../../docs/run-a-bot.md#5-onboard)) and, where the stand requires terms,
-   `acceptTerms` ([section 8](../../docs/run-a-bot.md#8-first-trade)); the daemon does not accept
-   terms either. Then import its key, `deriveWalletKey(phrase, 'standard', N).seedHex` (`@cancore/wallet`), the same
-   way:
+   same derivation path, and **Show key** shows the same key. It has no party yet: the daemon
+   creates it at the first `unlock` (step 6). It has not accepted the terms either, and the daemon
+   does not accept terms: where the stand requires them, accept them once with `@cancore/client`,
+   signed in with the bot's key, before the import (`acceptTerms`,
+   [Run a bot, section 8](../../docs/run-a-bot.md#8-first-trade)). Then import its key,
+   `deriveWalletKey(phrase, 'standard', N).seedHex` (`@cancore/wallet`), the same way:
 
    ```sh
    sudo install -o cancore-bot -g cancore-bot -m 600 /dev/stdin /var/lib/cancore-bot/import.key  # paste, Ctrl-D
@@ -394,8 +396,9 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    keystore stores the raw key; a key has no phrase, and the wallet's **Show key** (behind your
    wallet password) gives the same key again.
 
-   `init` and `init --import` also create a keystore, but in v1 such a key cannot get a party from
-   the daemon (step 6), so it cannot trade:
+   `init` and `init --import` also create a keystore, but such a key has no account: the daemon
+   never signs one up (the sign-up takes a captcha), so `register` refuses it (step 6) and it
+   cannot trade:
 
    ```sh
    sudo -u cancore-bot cancore-bot init                         # a new phrase
@@ -422,15 +425,14 @@ sudo ln -sf /opt/cancore-bot/node_modules/.bin/cancore-* /usr/local/bin/
    sudo -u cancore-bot cancore-bot status
    ```
 
-   A bot from My bots, or one set up as in step 4, needs no `register`: the first `unlock` finds its party in the background
-   (`onboard()` of the SDK, with the daemon's signer; see
-   [Run a bot, section 5](../../docs/run-a-bot.md#5-onboard)), and `status` shows the `partyId`
-   from then on; it is the bot's address. `register` (it prompts for an invite code; Enter for none)
-   registers the account (an existing one is fine) and onboards it, but in v1 it completes only for
-   an account whose party already exists. A key from `init` or `init --import` gets an account and
-   no party: creating the party takes the key's signature over a binary topology hash, which the
-   daemon's signer guard refuses (`-32603 internal error`, `verify_failed` in the audit log).
-   Retrying fails the same way.
+   A bot from My bots, or one made from a program, needs no `register`: the first `unlock` onboards
+   it in the background (`onboard()` of the SDK, with the daemon's signer; see
+   [Run a bot, section 5](../../docs/run-a-bot.md#5-onboard)). It finds the bot's party, or creates
+   it for a bot made from a program, the bot's key signing its topology. `status` shows the
+   `partyId` from then on; it is the bot's address. `register` runs the same onboarding in the
+   foreground and prints `partyId`, or why it failed. It never creates an account: a key with none,
+   such as one from `init` or `init --import`, is refused with
+   `-32602 no Cancore account for this key: make the bot in the Cancore wallet (Settings → My bots), …`.
 
 7. **Fund the bot with CC**, a small amount, from your own wallet to the bot's `partyId`. CC arrives
    at once (the wallet enabled CC receipts). Any other token sent by a plain transfer arrives as an
@@ -575,11 +577,11 @@ config (`cancore-botd --config <path>` too).
 
 | Command | Does |
 | --- | --- |
-| `init` | new keystore from a new 24-word phrase: shown once, three random words asked back, then the passphrase twice; prints the public key. Refuses to overwrite an existing keystore. In v1 such a key cannot get a party, so it cannot trade. |
-| `init --import` | from a phrase you type (account 0 of it): use a phrase made for this bot, never your wallet's. The same v1 limit as `init`. |
+| `init` | new keystore from a new 24-word phrase: shown once, three random words asked back, then the passphrase twice; prints the public key. Refuses to overwrite an existing keystore. Such a key has no account (the daemon never signs one up), so it cannot trade. |
+| `init --import` | from a phrase you type (account 0 of it): use a phrase made for this bot, never your wallet's. The same limit as `init`. |
 | `init --import-key <file>` | the v1 path: from the 64-hex key "My bots" shows (or a program derived for a bot it made and set up); the file must be owned by `cancore-bot`, mode `0600` (no group/other bits), not a symlink |
 | `unlock` / `lock` | decrypt the key into the daemon / wipe it (lock also stops the strategies' loop and settlement until the next unlock) |
-| `register` | register the account (invite code prompted, Enter for none) and onboard it, print `partyId`; in v1 it completes only for an account whose party already exists (a bot from My bots, or one set up as in step 4, which does not need it) |
+| `register` | onboard the account made for this key (in My bots, or from a program): find or create its party, print `partyId`. The first `unlock` does the same in the background. Never creates an account: a key with none is refused, `-32602` (step 6) |
 | `status` | `locked`, `paused`, `pauseReason`, `partyId`, strategies, `version` |
 | `limits show` / `limits set <file>` | read / replace the limits (`limits set /dev/stdin < limits.json`) |
 | `pause [reason]` / `resume` | stop trading (below) / lift a pause, the owner's alone |
@@ -588,7 +590,7 @@ config (`cancore-botd --config <path>` too).
 | `audit verify` | re-walks the hash chain: `{ok, entries}` or `{ok: false, brokenAt}`; exit 3 if broken |
 | `install [--human <user>] [--exec <path>] [--dry-run]` | creates the group, user, directories and the systemd unit; `--dry-run` prints the plan and the unit |
 
-A terminal is needed for `init` (all forms), `unlock` and `register`. Exit codes: 0 ok, 1 error
+A terminal is needed for `init` (all forms) and `unlock`. Exit codes: 0 ok, 1 error
 (`cancore-bot: <code> <message>` on stderr, e.g. `cancore-bot: -32002 unlock failed`), 2 usage,
 3 broken audit chain. Answers are JSON on stdout, for example `status` while locked:
 `{"locked": true, "paused": false, "strategies": [], "version": "0.1.0-rc.0"}`.
@@ -880,7 +882,7 @@ sudo userdel -r cancore-agent      # the agent's user and its home, if you no lo
 | the daemon exits: `` venuePartyId, feeRecipientPartyId, instrumentAdmins and networkFeeRecipients need `network` in the config `` | a party pin without a network label | add `"network"`, the network the pins were written for; it must also be the network of `baseUrl` |
 | the daemon exits: `/etc/cancore-bot/config.json: writable by group or others` / `owned by uid …`, or `config: <field>: …` | the config's mode or owner, or an unknown key or a wrong type in it | `sudo chown root:root` and `sudo chmod 644` it; fix the field; restart |
 | `sudo cancore-bot …` fails with `env: 'node': No such file or directory`, or `install` with `<path> is owned by uid …: install cancore-botd and node where only root can write` | no system-wide Node (nvm's is on your own `PATH` only), or node or the package lives where a non-root user can write | a system-wide Node.js 20+ (`sudo node --version` must work), then [Install from source](#install-from-source-until-it-is-on-npm) again |
-| `a TTY is required to enter secrets` | `init`, `unlock` or `register` from a pipe or a script | run it in a terminal |
+| `a TTY is required to enter secrets` | `init` or `unlock` from a pipe or a script | run it in a terminal |
 | `keystore: passphrase rejected (<code>): …` | a new keystore's passphrase fails the policy | a longer one: 12+ characters, letters with digits or symbols, no common word or repeated pattern |
 | `keystore: … already exists; refusing to overwrite` | `init` on an existing keystore | move the old one aside only if you can recreate it: the key from **Show key**, or the phrase |
 | `-32002 unlock failed` | a wrong passphrase, or `keystore.json` missing, corrupt, or with another owner or mode (any group or other bit): the daemon answers the same for all of them | retry; `sudo ls -l /var/lib/cancore-bot/keystore.json` must show `-rw-------` and `cancore-bot`; a lost passphrase: [Lost passphrase](#lost-passphrase) |
@@ -891,8 +893,8 @@ sudo userdel -r cancore-agent      # the agent's user and its home, if you no lo
 | agent gets `socket_unavailable` | the agent's user is not in `cancore-bot-clients`, or the MCP client started in a login from before the install | `id cancore-agent` must list `cancore-bot-clients`; start the MCP client in a new login of that user |
 | every make `rate_limited`, every take `no_rule` | no limits set yet (`maxCommandsPerMinute` `0`, no `allowedPairs`) | set the limits (step 8) |
 | `order.make` `rate_limited` with `maxCommandsPerMinute` set | the daemon's hourly `ordersPerHour` budget is spent, or the network's per-person hourly limit answered 429 (the audit log then has the make as `error`, reason `rate_limited`) | wait for the hour to pass; lower `ordersPerHour` to leave room for orders placed elsewhere |
-| `register` fails with `-32603 internal error` and the audit log has `verify_failed` | a key from `init` or `init --import`: v1 cannot create its party (the signer guard refuses the topology signature); retrying fails the same way | use a bot made in My bots, or one made from a program and set up with `@cancore/client`, imported with `init --import-key` (step 4) |
-| after the first unlock, `status` shows no `partyId` and the audit log has `not registered: run cancore-bot register` | the account has no party (a key from `init` or `init --import`), or onboarding failed, for example with the API unreachable | a bot from My bots, or a bot made from a program after its first `onboard()` with `@cancore/client` (step 4); to retry, `lock` and `unlock` again |
+| `register` fails with `-32602 no Cancore account for this key: …` | a key from `init` or `init --import`: the daemon never signs an account up (the sign-up takes a captcha) | make the bot in My bots, or from a program, and import its key with `init --import-key` (step 4); `init` refuses to overwrite a keystore, so move the old one aside first |
+| after the first unlock, `status` shows no `partyId` and the audit log has `not onboarded: run cancore-bot register to see why` | the key has no account, or onboarding failed, for example with the API unreachable | `register`: it onboards again, or says why it cannot |
 | a token other than CC sent to the bot does not show in `trade_balances` | it waits as an offer the bot has to accept, and the daemon never accepts one | **Accept incoming** on the bot's row in My bots, or trade CC into that token |
 | a trade never settles, with `<id> admin for <network> not configured` | the SDK pins no instrument admin for that token on the network ([Networks](#networks)); on testnet that includes CC | allow pairs of the pinned tokens only (step 8), or add the admin with `instrumentAdmins` |
 | paused with `pauseReason: unbooked_fill` | a trade settled on the bot account that the daemon never booked (for example one made by hand in the web app on the bot's account); the limits cannot account for it, so the bot stops placing orders (orders already resting stay on the venue and can still fill; strategies continue after `resume`) | check the audit log and the account's orders, then `cancore-bot resume`; do not trade by hand on the bot account |

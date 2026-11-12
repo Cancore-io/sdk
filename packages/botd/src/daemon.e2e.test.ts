@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -54,18 +55,32 @@ function fakeApi() {
     pricesHold: undefined as Promise<void> | undefined,
     /** GET /auto-trader/pairs fails: no USD price anywhere. */
     pricesDown: false,
+    /** False: no account for the key (made in My bots or not at all), so its sign-in is refused. */
+    account: true,
+    /** False: the account has no Canton party yet, until a topology signed by its key is submitted. */
+    hasParty: true,
+    /** Every `METHOD path` asked for. */
+    routes: [] as string[],
     orders,
     async fetch(url: string, init: RequestInit): Promise<Response> {
       const { pathname } = new URL(url);
       const body = init.body ? JSON.parse(String(init.body)) : undefined;
       const route = `${init.method} ${pathname}`;
+      api.routes.push(route);
+      if (route === 'POST /auth/challenge' && !api.account) return json({ statusCode: 404, message: 'No Cancore account is linked to this wallet.', errorCode: 'ACCOUNT_NOT_FOUND' }, 404);
       if (route === 'POST /auth/challenge') return json({ challenge: 'Welcome to Cancore 2026-10-15 sig:1', expiresAt: Date.now() + 300_000 });
       if (route === 'POST /auth/login-signature') {
         publicKey = body.publicKey;
         party = `bot::${cantonFingerprint(publicKey)}`;
         return json({ token: `h.${Buffer.from(JSON.stringify({ sub: 'bot', exp: 4e9 })).toString('base64url')}.s`, user: { id: 'bot' } });
       }
-      if (route === 'GET /auth/me') return json({ id: 'bot', partyId: party, publicKey, roles: ['user'], status: 'ACTIVE' });
+      if (route === 'GET /auth/me') return json({ id: 'bot', partyId: api.hasParty ? party : null, publicKey, roles: ['user'], status: 'ACTIVE' });
+      if (route === 'POST /wallet/operations/prepare' && body.type === 'wallet.topology') {
+        const multihash = Buffer.concat([Buffer.from([0x12, 0x20]), createHash('sha256').update(`topology of ${party}`).digest()]).toString('base64');
+        pending.set('topology', { hash: multihash, bytes: '' });
+        return json({ operationId: 'topology', legs: [{ legId: 't1', kind: 'topology', hash: multihash }], meta: { partyId: party } });
+      }
+      if (route === 'POST /wallet/operations/prepare' && body.type === 'tokens.preapproval') return json({ operationId: 'preapproval', legs: [], meta: {} });
       if (route === 'GET /auto-trader/pairs') {
         api.atPrices?.();
         await api.pricesHold;
@@ -130,6 +145,7 @@ function fakeApi() {
         const ok = ed25519.verify(Buffer.from(body.signatures[0].signature, 'base64'), Buffer.from(op.hash, 'base64'), Buffer.from(publicKey, 'hex'));
         if (!ok) return json({ message: 'bad signature' }, 400);
         api.signed.push(op);
+        if (body.operationId === 'topology') api.hasParty = true;
         return json({ updateId: 'u1', outcome: 'committed' });
       }
       return json({ message: `no route ${route}` }, 404);
@@ -1013,4 +1029,31 @@ describe('cancore-botd end to end: owner release once the maker\'s order complet
       await deps.audit.close();
     }
   });
+});
+
+describe('register onboards the account made in My bots and never signs one up (CAN-2922)', () => {
+  it('refuses a key with no account, then gets the account its party: the topology multihash signed by the bot key', async () => {
+    const api = Object.assign(fakeApi(), { account: false, hasParty: false });
+    const { dir, config } = await botDir('botd-e2e-2922-', LIMITS);
+    const { deps, call } = await dispatcherOver(config, api);
+    const audited = () => readFileSync(paths(config).audit, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Record<string, unknown>);
+    try {
+      await expect(call('register', {}, true)).rejects.toMatchObject({ code: ERROR.INVALID_PARAMS, message: expect.stringMatching(/Settings → My bots.*cancore-bot init --import-key/) });
+      // The first unlock's own onboarding met the same refusal: logged, and nothing signed.
+      await until(() => audited().some((e) => e.reason === 'not onboarded: run cancore-bot register to see why'));
+      expect(api.signed).toEqual([]);
+
+      api.account = true;
+      const registered = await call('register', {}, true);
+      expect(registered).toMatchObject({ result: { partyId: expect.stringMatching(/^bot::1220/) } });
+      expect(registered).toMatchObject({ result: { partyId: readState(config).partyId } });
+      expect(api.signed).toHaveLength(1);
+      expect(Buffer.from(api.signed[0]!.hash, 'base64')).toHaveLength(34);
+      expect(api.routes).not.toContain('POST /auth/register');
+    } finally {
+      await call('lock', {}, true);
+      await deps.audit.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
 });
