@@ -18,13 +18,16 @@ export type TicketCheckId =
   | 'V-C3'
   | 'V-C4'
   | 'V-C5'
-  | 'V-C6';
+  | 'V-C6'
+  | 'V-C7';
 
 export class TicketRefusal extends Error {
   constructor(
     readonly check: TicketCheckId,
     readonly reason: DeclineReason,
     readonly detail: string,
+    /** A refusal the operator of the node must see: logged as a warning, not as a routine decline. */
+    readonly alert = false,
   ) {
     super(`${check}: ${reason} (${detail})`);
   }

@@ -211,7 +211,7 @@
     },
     "cantonIntent": {
       "type": "object",
-      "description": "A live SwapIntent of a Canton source that names the caller's party as its filler, as that party sees it (an observer), with its committed allocation as the operator reads it (an executor). What the node checks before ticket.receipt (fillers.md V-C1…V-C6); the node recomputes orderHash from these fields itself. 404 UNKNOWN_TICKET when no live SwapIntent with this orderHash names the party; 409 CANTON_NOT_READY when the fillerId has no party",
+      "description": "A live SwapIntent of a Canton source that names the caller's party as its filler, as that party sees it (an observer), with its committed allocation as the operator reads it (an executor). What the node checks before ticket.receipt (fillers.md V-C1…V-C7); the node recomputes orderHash from these fields itself. 404 UNKNOWN_TICKET when no live SwapIntent with this orderHash names the party; 409 CANTON_NOT_READY when the fillerId has no party",
       "required": ["intentCid", "templateId", "orderHash", "owner", "operator", "filler", "fillerId", "requestId", "asset", "amount", "destination", "minReceived", "feeRate", "fillDeadline", "refundAfter", "orderCreatedAt", "allocationCid", "allocation"],
       "properties": {
         "intentCid": { "type": "string", "minLength": 1 },
@@ -247,6 +247,17 @@
         "allocation": {
           "anyOf": [{ "$ref": "#/$defs/cantonAllocation" }, { "type": "null" }],
           "description": "the contract allocationCid names, by its AllocationV2 view; null when it is not live"
+        },
+        "settlementFactory": {
+          "anyOf": [
+            {
+              "type": "object",
+              "required": ["contractId", "live"],
+              "properties": { "contractId": { "type": "string", "minLength": 1 }, "live": { "type": "boolean" } }
+            },
+            { "type": "null" }
+          ],
+          "description": "SwapIntent.settlementFactoryCid, the factory settle runs (CAN-3340), and whether it is the registry's current settlement factory, read as settle reads it (CAN-3408). The node refuses the ticket (V-C7) when it is not live, null or absent"
         }
       }
     },

@@ -1,7 +1,9 @@
 /**
  * Canton → EVM end to end on the shared intent stand (operator decision Н-1,
- * meta docs/runbooks/intent-stand.md): CAN-1863 (V-C1…V-C6 before the
- * receipt) and CAN-2321 (the payout by SwapIntent_SettleWithProof). Every
+ * meta docs/runbooks/intent-stand.md): CAN-1863 (V-C1…V-C7 before the
+ * receipt), CAN-2321 (the payout by SwapIntent_SettleWithProof) and CAN-3408
+ * (V-C7: no delivery for an intent whose settlement factory the registry no
+ * longer holds). Every
  * component is the stand's own — Canton participant with cancore-intent and
  * cnrx-registry, trading and filler-gateway (decision T-1: the party's
  * operations go through Cancore), the attestor daemons, anvil with the
@@ -13,7 +15,7 @@
  *    pick of the stand filler, then the wallet operation intent.open — trading
  *    tickets only a picked order. The reads of test 1 open IntentFactory_Open
  *    directly as the custodial owner over the JSON Ledger API.
- * 3. trading tickets it to the picked filler (CAN-2326); the SDK runs V-C1…V-C6
+ * 3. trading tickets it to the picked filler (CAN-2326); the SDK runs V-C1…V-C7
  *    against GET /v1/filler/canton/intents/{orderHash}, receipts, fills on anvil.
  * 4. The attestors sign, filler-gateway delivers settle.attestations, the SDK
  *    runs intent.settle: checks the prepared SwapIntent_SettleWithProof, signs
@@ -135,9 +137,9 @@ async function active(party: string, templateId: string, pred: (a: Record<string
 }
 
 let commands = 0;
-async function submit(actAs: string[], command: Record<string, unknown>, readAs: string[] = []): Promise<Created[]> {
+async function submit(actAs: string[], command: Record<string, unknown> | Record<string, unknown>[], readAs: string[] = []): Promise<Created[]> {
   const res = await api<{ transactionTree?: { eventsById?: Record<string, unknown> } }>('/v2/commands/submit-and-wait-for-transaction-tree', {
-    commands: [command],
+    commands: Array.isArray(command) ? command : [command],
     commandId: `can-1863-${Date.now()}-${commands++}`,
     actAs,
     readAs,
@@ -312,6 +314,28 @@ async function openIntent(deadlines: { fillDeadline: number; refundAfter: number
   return { orderHash: built.orderHash.toLowerCase() as Hex, order: built.order, intentCid, feeBps: BigInt(built.order.feeBps as string) };
 }
 
+/**
+ * CAN-3408: the registrar rotates its settlement factory. The live CnrxAllocationRules is archived and an identical one
+ * created in one transaction, so there is never a second live one, and registry-api, which answers with the
+ * registrar's only live CnrxAllocationRules, names the new one from then on. An intent opened before keeps the old
+ * one as the settlement factory its owner approved. The specs after this one read the factory and the operator's pin
+ * at each call, so they follow the rotation; a pin trading cannot vouch for is never created here.
+ */
+async function rotateCnrxSettlementFactory(): Promise<{ retired: string; current: string }> {
+  const admin = E.CNRX_ADMIN_PARTY;
+  const ALLOCATION_RULES = `${CNRX}.Allocation:CnrxAllocationRules`;
+  const [rules] = await active(admin, ALLOCATION_RULES, (a) => a.admin === admin);
+  if (!rules) throw new Error('the stand has no CnrxAllocationRules of the registrar');
+  const guardian = String(rules.createArgument.guardian);
+  const rotation = [
+    exercise(ALLOCATION_RULES, rules.contractId, 'Archive', {}),
+    { CreateCommand: { templateId: ALLOCATION_RULES, createArguments: rules.createArgument } },
+  ];
+  const current = createdOf(await submit([admin, guardian], rotation), ':CnrxAllocationRules');
+  if (!current) throw new Error('the rotation created no CnrxAllocationRules');
+  return { retired: rules.contractId, current };
+}
+
 /** The party's free CNRX, in Numeric-10 units. */
 async function freeCnrx(party: string): Promise<bigint> {
   const holdings = await active(party, `${CNRX}.Holding:CnrxHolding`);
@@ -402,7 +426,7 @@ const until = async <T>(what: string, read: () => Promise<T | undefined>, timeou
   throw new Error(`timed out: ${what}${last ? ` (last error: ${String(last)})` : ''}\n${why()}`);
 };
 
-live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_SettleWithProof (CAN-2321)', () => {
+live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_SettleWithProof (CAN-2321)', () => {
   jest.setTimeout(20 * 60_000);
   const DST = 'eip155:11155111' as const;
   let QUOTED_OUT = 0n;
@@ -467,7 +491,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
   const checked = (orderHash: string) =>
     events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === 'ticket.checked' && String(e.orderHash).toLowerCase() === orderHash);
 
-  test('TC-SDK-1863-INT-01 TC-SDK-1863-INT-02: the reads V-C1…V-C6 take are the stand participant’s, and refuse what is not committed to this filler', async () => {
+  test('TC-SDK-1863-INT-01 TC-SDK-1863-INT-02: the reads V-C1…V-C7 take are the stand participant’s, and refuse what is not committed to this filler', async () => {
     const nowS = Math.floor(Date.now() / 1000);
     const opened = await openIntent({ fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 });
     const ops = createCantonOperations({
@@ -483,7 +507,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
       );
     // The live intent, as the participant holds it, passes every check.
     await run(opened.order);
-    expect(passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6']);
+    expect(passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
     // An offer that differs from the committed terms by one base unit: V-C2.
     await expect(run({ ...opened.order, minReceived: String(BigInt(opened.order.minReceived as string) + 1n) })).rejects.toMatchObject({ check: 'V-C2', reason: 'ESCROW_MISMATCH' });
     // No intent on the ledger names this filler for that hash: V-C1, through filler-gateway's 404.
@@ -493,7 +517,37 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
     expect(refusal).toMatchObject({ check: 'V-C1', reason: 'ESCROW_NOT_OPEN' });
   });
 
-  test('TC-SDK-1863-INT-07 TC-SDK-2321-INT-01: ticketed, checked V-C1…V-C6, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
+  test('TC-SDK-3408-STAND-01: an intent whose settlement factory the registry no longer holds is refused at V-C7, one on the live factory passes', async () => {
+    const nowS = Math.floor(Date.now() / 1000);
+    const deadlines = { fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 };
+    const rotated = await openIntent(deadlines);
+    const { retired } = await rotateCnrxSettlementFactory();
+    const live = await openIntent(deadlines);
+    const ops = createCantonOperations({
+      gatewayUrl: E.FILLER_GATEWAY_WS_URL, fillerId: E.STAND_FILLER_ID, gatewaySigner: E.FILLER_GATEWAY_SIGNER as Hex,
+      messageSigner: createTestTypedDataSigner(E.STAND_FILLER_MESSAGE_KEY as Hex), partySigner: signerOf(), participantUid: E.CANTON_PARTICIPANT_UID, registries: registries(),
+    });
+    const check = async (opened: Awaited<ReturnType<typeof openIntent>>) => {
+      const passed: string[] = [];
+      const ticket = { orderHash: opened.orderHash, repayTo: repayToFromParty(E.STAND_FILLER_CANTON_PARTY) };
+      const result = await checkCantonSource(
+        { order: opened.order as never, ticket: ticket as never, party: E.STAND_FILLER_CANTON_PARTY, fillerId: E.STAND_FILLER_ID, requiredProofWindowSec: MIN_PROOF_WINDOW_S, reader: ops },
+        (c) => void passed.push(c),
+      ).catch((e: unknown) => e);
+      return { result, passed };
+    };
+
+    const ok = await check(live);
+    expect(ok.result).toBeUndefined();
+    expect(ok.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
+
+    const refused = await check(rotated);
+    expect(refused.result).toBeInstanceOf(TicketRefusal);
+    expect(refused.result).toMatchObject({ check: 'V-C7', reason: 'OTHER', alert: true, detail: expect.stringContaining(`settlement factory ${retired} is no longer the registry’s`) });
+    expect(refused.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6']);
+  });
+
+  test('TC-SDK-1863-INT-07 TC-SDK-2321-INT-01: ticketed, checked V-C1…V-C7, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
     const before = await freeCnrx(E.STAND_FILLER_CANTON_PARTY);
     const opened = await openAsUser(`0x${'b0'.repeat(20)}`);
     expect(opened.amountOut).toBe(QUOTED_OUT.toString());
@@ -502,13 +556,13 @@ live('Canton → EVM on the intent stand: V-C1…V-C6 (CAN-1863) and SwapIntent_
       return intents.length > 0 ? true : undefined;
     }, 2 * 60_000);
 
-    // The receipt only after every check passed, V-C1…V-C6 among them (T-22).
+    // The receipt only after every check passed, V-C1…V-C7 among them (T-22).
     await until('the ticket of the Canton-source intent is receipted', async () => {
       const state = (await store.withOrder(opened.orderHash, (tx) => tx.getTicket(0)))?.state;
       return state === 'receipted' || state === 'filled' ? true : undefined;
     }, 5 * 60_000, diagnostics);
     expect(checked(opened.orderHash).map((e) => [e.detail?.check, e.detail?.status])).toEqual(
-      ['form', 'V-T4', 'V-T2', 'V-T3', 'V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-T1', 'V-E5'].map((c) => [c, 'passed']),
+      ['form', 'V-T4', 'V-T2', 'V-T3', 'V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7', 'V-T1', 'V-E5'].map((c) => [c, 'passed']),
     );
 
     const fill = await until('the fill on anvil is confirmed', async () => {

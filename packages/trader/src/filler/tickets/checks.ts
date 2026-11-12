@@ -33,7 +33,7 @@
  * the `EventSink` as stage `ticket.checked`.
  *
  * A Canton-form ticket (a Canton destination) is checked in `canton-ticket.ts`
- * (CAN-1867). A Canton source runs V-C1…V-C6 (`canton-source.ts`, CAN-1863)
+ * (CAN-1867). A Canton source runs V-C1…V-C7 (`canton-source.ts`, CAN-1863)
  * in place of V-E1…V-E4: there is no escrow on a router, the give is a
  * committed allocation on Canton; V-T1 and V-E5 are read on the EVM
  * destination for both sources. Not here: the draw (V-T5) is V2 (CAN-1848).
@@ -88,7 +88,7 @@ export interface TicketVerifierOptions {
   fillerId: string;
   /** The filler's Canton party, the payee of a Canton source. */
   cantonParty?: string;
-  /** The Canton-source reads through Cancore (V-C1…V-C6); without it a Canton source is declined. */
+  /** The Canton-source reads through Cancore (V-C1…V-C7); without it a Canton source is declined. */
   cantonSource?: CantonSourceReader;
   /** Pinned ticket signers (`FILLER_GATEWAYS[env].ticketSigners`). */
   ticketSigners: readonly Hex[];
@@ -128,7 +128,7 @@ export class TicketVerifier {
     } catch (error) {
       if (!(error instanceof TicketRefusal)) throw error;
       this.record(checks, { check: error.check, status: 'failed', reason: error.reason, detail: error.detail }, orderHash, attempt);
-      this.options.logger.info('tickets: issued ticket refused', { orderHash, attempt, check: error.check, reason: error.reason, detail: error.detail });
+      this.options.logger[error.alert ? 'warn' : 'info']('tickets: issued ticket refused', { orderHash, attempt, check: error.check, reason: error.reason, detail: error.detail });
       return { ok: false, reason: error.reason, detail: `${error.check}: ${error.detail}`, checks };
     }
     return { ok: true, checks };
@@ -220,7 +220,7 @@ export class TicketVerifier {
       if (window < BigInt(policy.requiredProofWindowSec)) throw new TicketRefusal('V-E3', 'PROOF_WINDOW_TOO_SHORT', `refundAfter − fillDeadline = ${window} s < ${policy.requiredProofWindowSec} s`);
       pass('V-E3');
     } else {
-      // -- V-C1…V-C6: the committed give on Canton (canton-source.ts) -------------------------
+      // -- V-C1…V-C7: the committed give on Canton (canton-source.ts) -------------------------
       const { reader, party } = canton as { reader: CantonSourceReader; party: string };
       await checkCantonSource(
         { order: offer.order, ticket, party, fillerId: this.options.fillerId, requiredProofWindowSec: policy.requiredProofWindowSec, reader },

@@ -250,7 +250,7 @@ export class GatewayRest {
   /**
    * `GET /v1/filler/canton/intents/{orderHash}`: the live Canton-source intent
    * naming this filler's party, with its committed allocation (CAN-1863). Its
-   * fields are checked by V-C1…V-C6, never trusted; here only its shape.
+   * fields are checked by V-C1…V-C7, never trusted; here only its shape.
    */
   async getCantonIntent(orderHash: Hex): Promise<CantonIntent> {
     if (!/^0x[0-9a-fA-F]{64}$/.test(orderHash)) throw new GatewayError('BAD_REQUEST', false, `orderHash ${orderHash} is not 32 bytes of hex`);
@@ -437,6 +437,8 @@ export function isCantonIntent(body: unknown): body is CantonIntent {
   if (!isObject(body.asset) || !strings(body.asset, ['admin', 'id'])) return false;
   if (!isObject(body.destination) || !strings(body.destination, ['chainId', 'token', 'recipient'])) return false;
   if (!isObject(body.minReceived) || typeof body.minReceived.units !== 'string' || !Number.isSafeInteger(body.minReceived.decimals)) return false;
+  const f = body.settlementFactory;
+  if (f !== undefined && f !== null && (!isObject(f) || typeof f.contractId !== 'string' || typeof f.live !== 'boolean')) return false;
   const a = body.allocation;
   if (a === null) return true;
   if (!isObject(a) || !strings(a, ['contractId', 'templateId', 'admin', 'settlementId']) || typeof a.committed !== 'boolean') return false;
