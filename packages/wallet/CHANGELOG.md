@@ -1,6 +1,6 @@
 # Changelog — `@cancore/wallet`
 
-## Unreleased
+## 0.4.3
 
 ### Changed — a CNRX factory must be signed by the registry's guardian (CAN-3132)
 

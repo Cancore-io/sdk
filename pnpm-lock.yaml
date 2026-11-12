@@ -291,7 +291,7 @@ importers:
         specifier: workspace:^0.2.0-rc.20
         version: link:../contracts
       '@cancore/wallet':
-        specifier: workspace:^0.4.0
+        specifier: workspace:^0.4.3
         version: link:../wallet
       '@canton-network/core-ledger-proto':
         specifier: ^1.13.0
