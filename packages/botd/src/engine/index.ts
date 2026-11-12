@@ -52,6 +52,13 @@ const INTENT_WINDOW_MS = 10 * 60_000;
 /** A call with no answer by then is given up (an order make becomes unconfirmed), so no tick hangs forever. */
 const FETCH_TIMEOUT_MS = 20_000;
 
+export class NoAccountError extends Error {
+  constructor() {
+    super('no Cancore account for this key: make the bot in the Cancore wallet (Settings → My bots), then import its key with `cancore-bot init --import-key <file>`');
+    this.name = 'NoAccountError';
+  }
+}
+
 /** The client key as it rides on the order. */
 export const intentTag = (key: string) => `cancore-botd:${key}`;
 /** How far the venue's clock may be behind ours when matching an order to an intent by its creation time. */
@@ -148,17 +155,14 @@ export function createEngine(options: EngineOptions): Engine {
         price: fmt((dec(quoteAmount) * SCALE) / dec(baseAmount)), expiresInSec: q.expiresInSec,
       };
     },
-    async register(inviteCode) {
-      try {
-        await acct.session.register(inviteCode ? { inviteCode } : {});
-      } catch (err) {
-        // Already registered: the key signs in, and onboarding is safe to repeat.
-        if ((err as { status?: number }).status !== 409) throw err;
-      }
-      return engine.onboard();
+    async register() {
+      // The account is made in the web app (My bots), never here: its sign-up wants a captcha the daemon cannot solve (CAN-2922).
+      return engine.onboard().catch((err: unknown) => {
+        throw (err as { errorCode?: unknown }).errorCode === 'ACCOUNT_NOT_FOUND' ? new NoAccountError() : err;
+      });
     },
     async onboard() {
-      const { partyId } = await acct.onboard();
+      const { partyId } = await guarded.onboarding(() => acct.onboard());
       if (!partyId) throw new Error('onboarding finished without a party');
       return partyId;
     },

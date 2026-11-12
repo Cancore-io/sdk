@@ -3,9 +3,13 @@ import type { BotSigner } from '../types';
 
 const signer = { public_key: 'ab', signMessage: async () => 's', signPreparedHash: async () => 's', destroy: () => undefined } as BotSigner;
 
-async function engineOver(acct: Record<string, unknown>) {
+type Acct = Record<string, unknown>;
+
+/** An engine over a fake account; a function gets the options the engine hands the SDK, its guarded signer among them. */
+async function engineOver(acct: Acct | ((options: { signer: BotSigner }) => Acct)) {
   jest.resetModules();
-  jest.doMock('@cancore/client/selfcustody', () => ({ ...jest.requireActual('@cancore/client/selfcustody'), createSelfCustody: () => acct }));
+  const createSelfCustody = (options: { signer: BotSigner }) => (typeof acct === 'function' ? acct(options) : acct);
+  jest.doMock('@cancore/client/selfcustody', () => ({ ...jest.requireActual('@cancore/client/selfcustody'), createSelfCustody }));
   const { createEngine } = await import('./index');
   return createEngine({ signer, baseUrl: 'https://api.cancore.io', hooks: { onSettled: () => undefined, onEnded: () => undefined, onVerifyFailed: () => undefined } });
 }
@@ -99,21 +103,41 @@ describe('engine.quote', () => {
   });
 });
 
-describe('engine.register', () => {
-  it('registers with the invite code, treats 409 as already registered, then onboards', async () => {
-    const registered: unknown[] = [];
-    let fail = false;
-    const acct = {
-      session: { register: async (i: unknown) => { registered.push(i); if (fail) throw Object.assign(new Error('conflict'), { status: 409 }); } },
-      onboard: async () => ({ partyId: 'bot::1220' }),
-    };
-    const e = await engineOver(acct);
-    expect(await e.register('INV')).toBe('bot::1220');
-    expect(registered).toEqual([{ inviteCode: 'INV' }]);
-    fail = true;
+describe('engine.register (CAN-2922)', () => {
+  it('onboards the account made in My bots and never signs one up', async () => {
+    const signUps: unknown[] = [];
+    const e = await engineOver({ session: { register: async (i: unknown) => signUps.push(i) }, onboard: async () => ({ partyId: 'bot::1220' }) });
     expect(await e.register()).toBe('bot::1220');
-    acct.session.register = async () => { throw Object.assign(new Error('bad invite'), { status: 400 }); };
-    await expect(e.register('X')).rejects.toThrow(/bad invite/);
+    expect(signUps).toEqual([]);
+  });
+
+  it('refuses a key with no account, naming My bots and --import-key; any other failure passes as it is', async () => {
+    let failure: unknown = Object.assign(new Error('POST /auth/challenge → 404'), { status: 404, errorCode: 'ACCOUNT_NOT_FOUND' });
+    const e = await engineOver({ onboard: async () => Promise.reject(failure) });
+    const { NoAccountError } = await import('./index');
+    await expect(e.register()).rejects.toBeInstanceOf(NoAccountError);
+    await expect(e.register()).rejects.toThrow(/Settings → My bots.*cancore-bot init --import-key <file>/);
+    failure = Object.assign(new Error('POST /auth/challenge → 404'), { status: 404, errorCode: 'NOT_FOUND' });
+    await expect(e.register()).rejects.toBe(failure);
+  });
+});
+
+describe('engine.onboard (CAN-2922)', () => {
+  const multihash = `\x12\x20${'\xab'.repeat(32)}`;
+
+  it("signs the new party's topology multihash while onboarding, and refuses the same bytes outside it", async () => {
+    let guarded!: BotSigner;
+    const e = await engineOver((options) => {
+      guarded = options.signer;
+      return { onboard: async () => ({ partyId: `bot::${await guarded.signMessage(multihash)}` }) };
+    });
+    expect(await e.onboard()).toBe('bot::s');
+    await expect(guarded.signMessage(multihash)).rejects.toThrow(/^verify_failed/);
+  });
+
+  it('an onboarding that ends without a party is an error', async () => {
+    const e = await engineOver({ onboard: async () => ({ partyId: null }) });
+    await expect(e.onboard()).rejects.toThrow(/without a party/);
   });
 });
 

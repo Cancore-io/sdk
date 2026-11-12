@@ -4,6 +4,8 @@ import { join } from 'path';
 import { bytesToHex, ed25519PublicKeyFromSeed } from '@cancore/wallet';
 import { confirmBackup, main, readKeyFile } from './cli';
 import { createKeystore, generateMnemonic } from './keystore';
+import { listen } from './ipc/server';
+import { JSONRPC_VERSION, type RpcRequest } from './protocol/index';
 
 // Each prompt answers 'a': the CLI asks for the passphrase twice, then the keystore applies the policy.
 jest.mock('readline', () => ({
@@ -88,5 +90,28 @@ describe('cancore-bot init with a weak passphrase', () => {
     expect(err.join('')).toMatch(/^cancore-bot: keystore: passphrase rejected \(too-short\): use at least 12 characters/m);
     expect(err.join('')).not.toMatch(/\n\s+at /);
     expect(() => readFileSync(join(dir, 'keystore.json'))).toThrow();
+  });
+});
+
+describe('cancore-bot register (CAN-2922)', () => {
+  it('asks nothing, not even an invite code, and sends the daemon a register with no params', async () => {
+    const ownerSocket = join(dir, 'owner.sock');
+    const cfg = join(dir, 'config.json');
+    writeFileSync(cfg, JSON.stringify({ stateDir: dir, ownerSocket }), { mode: 0o600 });
+    const asked: RpcRequest[] = [];
+    const server = await listen(ownerSocket, async (r) => (asked.push(r), { jsonrpc: JSONRPC_VERSION, id: r.id, result: { partyId: 'bot::1220' } }));
+    const tty = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    const out: string[] = [];
+    const write = jest.spyOn(process.stdout, 'write').mockImplementation((s) => (out.push(String(s)), true));
+    try {
+      expect(await main(['register', '--config', cfg])).toBe(0);
+    } finally {
+      write.mockRestore();
+      Object.defineProperty(process.stdin, 'isTTY', { value: tty, configurable: true });
+      await server.close();
+    }
+    expect(asked).toEqual([expect.objectContaining({ method: 'register', params: {} })]);
+    expect(JSON.parse(out.join(''))).toEqual({ partyId: 'bot::1220' });
   });
 });

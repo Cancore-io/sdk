@@ -16,7 +16,7 @@ const USAGE = `usage: cancore-bot [--config <path>] <command>
   init --import            ... from an existing phrase instead (never your wallet's)
   init --import-key <file> ... from the 64-hex key Cancore "My bots" gives (file mode 0600)
   unlock | lock            decrypt / wipe the key in the daemon
-  register                 register the account (invite code prompted) and onboard its party
+  register                 onboard the account made in My bots (its party); never signs one up
   status
   limits show | limits set <file.json>
   pause [reason] | resume
@@ -126,11 +126,9 @@ export async function main(argv: string[]): Promise<number> {
         }
         return 0;
       }
-      case 'register': {
-        const inviteCode = (await promptSecret('invite code (Enter for none): ')).trim();
-        print(await rpc(config, 'register', inviteCode ? { inviteCode } : {}));
+      case 'register':
+        print(await rpc(config, 'register', {}));
         return 0;
-      }
       case 'unlock':
         print(await rpc(config, 'unlock', { passphrase: await promptSecret('passphrase: ') }));
         return 0;

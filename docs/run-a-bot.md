@@ -105,8 +105,8 @@ if (env.RESUME_BOT_ID) console.log('running', (await owner.bots.resume(env.RESUM
   its own first `onboard()` ([section 5](#5-onboard)), and only then has an address to fund.
 - **Nor has it accepted the terms.** The wallet accepts them for a bot it makes; a bot made here
   accepts them itself, with its own key ([section 8](#8-first-trade)).
-- **For `cancore-botd`**, do both once with this package before you import the key: the daemon
-  cannot create a party and does not accept terms
+- **For `cancore-botd`**, accept the terms once with this package before you import the key: the
+  daemon onboards the bot at its first unlock, party included, but does not accept terms
   ([botd, Install, step 4](../packages/botd/README.md#install)).
 - **Your own session, and only yours.** An app-session grant is refused, and so is a bot: a bot
   account cannot make bots. The owner must be an active self-custody account. A sixth bot is

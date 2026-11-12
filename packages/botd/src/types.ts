@@ -178,8 +178,8 @@ export interface Engine {
   findIntent(intent: OrderIntent, known: string[]): Promise<string | undefined>;
   /** A pool quote, with the token that would execute it stripped. */
   quote(params: Params<'quote'>): Promise<Result<'quote'>>;
-  /** Registers the account (an existing one is fine) and onboards its party; resolves with the party id. */
-  register(inviteCode?: string): Promise<string>;
+  /** Onboards the account made for this key in the web app, never signing one up; NoAccountError when there is none. Resolves with the party id. */
+  register(): Promise<string>;
   /** Onboards an already registered account; resolves with the party id. */
   onboard(): Promise<string>;
   /** Queues the taker side on the settlement loop; resolves once queued, not once settled. */

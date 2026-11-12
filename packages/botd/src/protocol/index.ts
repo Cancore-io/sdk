@@ -49,8 +49,8 @@ export const PARAMS = {
     .strict(),
   // owner
   unlock: z.object({ passphrase: z.string().min(1) }).strict(),
-  /** Registers the bot's account (with an invite code, if the stand needs one) and onboards its party. */
-  register: z.object({ inviteCode: z.string().min(1).max(200).optional() }).strict(),
+  /** Onboards the bot's account, made in the web app (My bots): the daemon never signs one up (CAN-2922). */
+  register: z.object({}).strict(),
   lock: z.object({}).strict(),
   resume: z.object({}).strict(),
   'limits.set': z.object({ limits: z.record(z.string(), z.unknown()) }).strict(),
