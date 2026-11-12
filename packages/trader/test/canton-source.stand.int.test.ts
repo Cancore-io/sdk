@@ -49,7 +49,7 @@ const KEYS = [
   'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET', 'CANTON_PARTICIPANT_UID', 'CANTON_ORIGIN_ID',
   'CNRX_ADMIN_PARTY', 'CANTON_TRANSFER_FACTORIES_JSON',
   'STAND_FILLER_ID', 'STAND_FILLER_MESSAGE_KEY', 'STAND_FILLER_EVM_KEY', 'STAND_FILLER_CANTON_PARTY', 'STAND_FILLER_CANTON_PARTY_KEY', 'STAND_FILLER_REGISTRY_ENTRY_CID',
-  'STAND_OWNER_PARTY', 'STAND_ROUTE_OUTPUT_TOKEN', 'STAND_ROUTE_OUTPUT_DECIMALS', 'STAND_INTENT_FACTORY_CID', 'STAND_CNRX_FACTORY_PIN_CID',
+  'STAND_OWNER_PARTY', 'STAND_ROUTE_OUTPUT_TOKEN', 'STAND_ROUTE_OUTPUT_DECIMALS', 'STAND_INTENT_FACTORY_CID',
   'TRADING_URL', 'GATEWAY_URL', 'STAND_USER_TOKEN_URL', 'STAND_USER_CLIENT_ID', 'STAND_USER_CLIENT_SECRET', 'STAND_USER_NAME', 'STAND_USER_PASSWORD',
   'INTENT_OPERATOR_PARTY_ID', 'INTENT_BOOK_GUARDIAN_PARTY', 'INTENT_ATTESTOR_GOVERNOR_PARTY', 'INTENT_ATTESTOR_REGISTRY_CID', 'INTENT_ATTESTOR_SET_COMMITMENT',
 ] as const;
@@ -86,6 +86,7 @@ const INTENT = '#cancore-intent:Intent.SwapIntent';
 const BOOK_ROOT = '#cancore-intent:Intent.BookRoot:BookRoot';
 const FILL_ROOT = '#cancore-intent:Intent.BookRoot:FillRoot';
 const CNRX = '#cnrx-registry:Cnrx';
+const FACTORY_PIN = '#cancore-intent:Intent.RegistryFactoryPin:RegistryFactoryPin';
 const BURN_MINT = '#splice-api-token-burn-mint-v1:Splice.Api.Token.BurnMintV1:BurnMintFactory';
 // SwapIntent validTerms: refundAfter − fillDeadline ∈ [30 min, 4 h].
 const MIN_PROOF_WINDOW_S = 30 * 60;
@@ -248,6 +249,25 @@ async function bookOf(kind: 'IntentBook' | 'FillBook', shard: string): Promise<s
   return cid;
 }
 
+/**
+ * The operator's live RegistryFactoryPin of CNRX whose allocation and settlement factory are the registrar's
+ * CnrxAllocationRules, as cancore-intent 0.5.0+ Open requires (CAN-3172). Read at the call, not taken from the stand
+ * env: trading may rotate the operator's pins on any step (CAN-3505).
+ */
+async function cnrxFactoryPin(): Promise<string> {
+  const admin = E.CNRX_ADMIN_PARTY;
+  const operator = E.INTENT_OPERATOR_PARTY_ID;
+  const [rules] = await active(admin, `${CNRX}.Allocation:CnrxAllocationRules`, (a) => a.admin === admin);
+  if (!rules) throw new Error('the stand has no CnrxAllocationRules of the registrar');
+  const [pin] = await active(operator, FACTORY_PIN, (a) => {
+    const instrument = a.instrumentId as { admin?: string; id?: string };
+    return a.operator === operator && instrument.admin === admin && instrument.id === 'CNRX'
+      && a.allocationFactory === rules.contractId && a.settlementFactory === rules.contractId;
+  });
+  if (!pin) throw new Error('no live RegistryFactoryPin of the operator holds CnrxAllocationRules: the stand pins one at bring-up (meta CAN-3505)');
+  return pin.contractId;
+}
+
 /** IntentFactory_Open by the custodial owner: the give committed to the stand filler, the intent created. */
 async function openIntent(deadlines: { fillDeadline: number; refundAfter: number }) {
   const owner = E.STAND_OWNER_PARTY;
@@ -279,8 +299,7 @@ async function openIntent(deadlines: { fillDeadline: number; refundAfter: number
     attestorSetCommitment: ledgerHex(E.INTENT_ATTESTOR_SET_COMMITMENT),
     inputHoldingCids: holdings, allocExtraArgs: { context: { values: await cnrxPauseContext() }, meta: { values: {} } },
     fillerEntryCid: E.STAND_FILLER_REGISTRY_ENTRY_CID, intentBookCid, attestorRegistryCid: E.INTENT_ATTESTOR_REGISTRY_CID,
-    // The operator's pin of CNRX the stand created; cancore-intent 0.5.0+ refuses an Open without it (CAN-3505).
-    factoryPin: E.STAND_CNRX_FACTORY_PIN_CID,
+    factoryPin: await cnrxFactoryPin(),
   };
   const events = await submit([owner], exercise(`${INTENT}:IntentFactory`, factory.contractId, 'IntentFactory_Open', fields), [E.INTENT_OPERATOR_PARTY_ID, E.CNRX_ADMIN_PARTY, E.INTENT_ATTESTOR_GOVERNOR_PARTY]);
   const intentCid = createdOf(events, ':SwapIntent');
