@@ -318,8 +318,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
     onSettled: (orderId) => later(() => settleOrder(orderId)),
     onEnded: (orderId, reason) => later(() => endOrder(orderId, reason)),
     onVerifyFailed: (detail) => later(() => append({ ...settleEntry, decision: 'deny', reason: 'verify_failed', params: { detail } })),
-    onTakeFailed: (orderId, errorName) =>
-      later(() => append({ ...settleEntry, decision: 'error', reason: /^\w{1,64}$/.test(errorName) ? errorName : 'Error', params: { orderId, event: 'take_failed' } })),
+    onTakeFailed: (orderId, errorName) => later(() => append({ ...settleEntry, decision: 'error', reason: /^\w{1,64}$/.test(errorName) ? errorName : 'Error', params: { orderId, event: 'take_failed' } })),
+    onTopologySigned: (multihash) => append({ ...settleEntry, decision: 'allow', params: { event: 'topology', multihash } }),
   };
 
   /** Per-intent lookup state, in memory: failed lookups back off, an empty one is confirmed once more. */
@@ -750,7 +750,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
           later(async () => {
             const partyId = await e.onboard().catch(() => undefined);
             if (partyId) await mutate((s) => ({ ...s, partyId }));
-            await append({ ...settleEntry, decision: partyId ? 'allow' : 'error', params: { event: 'onboard' }, ...(!partyId && { reason: 'not onboarded: run cancore-bot register to see why' }) });
+            await append({ ...settleEntry, decision: partyId ? 'allow' : 'error', params: { event: 'onboard', ...(partyId && { partyId }) }, ...(!partyId && { reason: 'not onboarded: run cancore-bot register to see why' }) });
           });
         }
         stopTicks?.();

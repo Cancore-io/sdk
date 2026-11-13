@@ -1826,6 +1826,8 @@ describe('onboarding', () => {
     await w.tick();
     expect(w.state().partyId).toBe('bot::1220');
     expect(await w.call('status')).toMatchObject({ result: { partyId: 'bot::1220' } });
+    // Review F-1 of CAN-2922: the onboarding's record names the party it found or made.
+    expect(w.audited).toContainEqual(expect.objectContaining({ decision: 'allow', params: { event: 'onboard', partyId: 'bot::1220' } }));
   });
 
   it('register is owner-only', async () => {

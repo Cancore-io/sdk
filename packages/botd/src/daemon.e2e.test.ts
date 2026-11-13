@@ -1049,6 +1049,9 @@ describe('register onboards the account made in My bots and never signs one up (
       expect(registered).toMatchObject({ result: { partyId: readState(config).partyId } });
       expect(api.signed).toHaveLength(1);
       expect(Buffer.from(api.signed[0]!.hash, 'base64')).toHaveLength(34);
+      // Review F-1: the multihash the key signed on the API's word is on the record.
+      const multihash = Buffer.from(api.signed[0]!.hash, 'base64').toString('hex');
+      expect(audited()).toContainEqual(expect.objectContaining({ method: 'settle', decision: 'allow', params: { event: 'topology', multihash } }));
       expect(api.routes).not.toContain('POST /auth/register');
     } finally {
       await call('lock', {}, true);
