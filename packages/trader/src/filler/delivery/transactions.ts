@@ -356,6 +356,12 @@ export class TransactionDriver {
     }
   }
 
+  /** Whether `receipt`'s block is currently the canonical block at its height. */
+  async isCanonical(receipt: Pick<TransactionReceipt, 'blockNumber' | 'blockHash'>): Promise<boolean> {
+    const canonical = await this.options.client.block(receipt.blockNumber);
+    return canonical.hash === receipt.blockHash;
+  }
+
   /** Whether any endpoint's node knows `hash` (mempool or chain). */
   async known(hash: Hex): Promise<boolean> {
     return (await this.options.client.request<unknown>('eth_getTransactionByHash', [hash])) !== null;

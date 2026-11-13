@@ -727,8 +727,7 @@ export class Executor {
     for (const tx of [...txs].reverse()) {
       const receipt = await t.driver.receipt(tx.hash);
       if (!receipt) continue;
-      const canonical = await t.driver.client.block(receipt.blockNumber);
-      if (canonical.hash !== receipt.blockHash) break; // a reorg is under way: look again next tick
+      if (!(await t.driver.isCanonical(receipt))) break; // a reorg is under way: look again next tick
       const depth = (await t.driver.client.head()) - receipt.blockNumber + 1n;
       return this.included(t, tx, receipt, depth, txs);
     }
@@ -928,6 +927,10 @@ export class Executor {
     const receipt = hash ? await t.driver.receipt(hash) : undefined;
     if (!hash || !receipt) {
       this.options.logger.warn('delivery: the router holds the fill, its receipt is not visible yet', { orderHash: fill.orderHash, chain: t.driver.chain, txHash: hash });
+      return false;
+    }
+    if (!(await t.driver.isCanonical(receipt))) {
+      this.options.logger.warn('delivery: the fill receipt is not canonical yet', { orderHash: fill.orderHash, chain: t.driver.chain, txHash: hash, block: receipt.blockNumber.toString() });
       return false;
     }
     const ours = txs.find((x) => x.hash === hash) ?? { ...fill, hash };
