@@ -55,7 +55,7 @@ import type { FillSigner } from '../signer';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, TicketRecord } from '../store';
 import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from '../tickets/terms';
 import { CantonDelivery } from './canton';
-import { FeeCeilingError, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
+import { FeeCeilingError, isCanonicalFillReceipt, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
 import { reasonOf, retryableEstimateFailure, revertName } from './reverts';
 import { awaitValidFrom } from './validFrom';
 
@@ -930,6 +930,7 @@ export class Executor {
       this.options.logger.warn('delivery: the router holds the fill, its receipt is not visible yet', { orderHash: fill.orderHash, chain: t.driver.chain, txHash: hash });
       return false;
     }
+    if (!(await isCanonicalFillReceipt(t.driver, hash, receipt, this.options.logger, fill.orderHash))) return false;
     const ours = txs.find((x) => x.hash === hash) ?? { ...fill, hash };
     return this.included(t, ours, receipt, head - receipt.blockNumber + 1n, txs);
   }

@@ -382,3 +382,27 @@ export class TransactionDriver {
     }
   }
 }
+
+/**
+ * A receipt is only usable once its transaction hash and its block hash are canonical:
+ * a log can name a transaction whose receipt points at a reorged block, and acting on
+ * it would record a phantom inclusion.
+ */
+export async function isCanonicalFillReceipt(
+  driver: TransactionDriver,
+  hash: Hex,
+  receipt: TransactionReceipt,
+  logger: Logger,
+  orderHash: Hex | undefined,
+): Promise<boolean> {
+  if (receipt.hash.toLowerCase() !== hash) {
+    logger.warn('delivery: the fill receipt hash does not match the logged transaction', { orderHash, chain: driver.chain, txHash: hash, receiptHash: receipt.hash });
+    return false;
+  }
+  const canonical = await driver.client.block(receipt.blockNumber);
+  if (canonical.hash !== receipt.blockHash) {
+    logger.warn('delivery: the fill receipt is not canonical yet', { orderHash, chain: driver.chain, txHash: hash, block: receipt.blockNumber.toString() });
+    return false;
+  }
+  return true;
+}
