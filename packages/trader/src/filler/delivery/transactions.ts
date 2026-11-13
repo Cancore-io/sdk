@@ -356,6 +356,12 @@ export class TransactionDriver {
     }
   }
 
+  /** Whether `receipt`'s block is currently the canonical block at its height. */
+  async isCanonical(receipt: Pick<TransactionReceipt, 'blockNumber' | 'blockHash'>): Promise<boolean> {
+    const canonical = await this.options.client.block(receipt.blockNumber);
+    return canonical.hash === receipt.blockHash;
+  }
+
   /** Whether any endpoint's node knows `hash` (mempool or chain). */
   async known(hash: Hex): Promise<boolean> {
     return (await this.options.client.request<unknown>('eth_getTransactionByHash', [hash])) !== null;
@@ -381,28 +387,4 @@ export class TransactionDriver {
       throw new ChainReadError(this.chain, 'malformed', message(error), { cause: error });
     }
   }
-}
-
-/**
- * A receipt is only usable once its transaction hash and its block hash are canonical:
- * a log can name a transaction whose receipt points at a reorged block, and acting on
- * it would record a phantom inclusion.
- */
-export async function isCanonicalFillReceipt(
-  driver: TransactionDriver,
-  hash: Hex,
-  receipt: TransactionReceipt,
-  logger: Logger,
-  orderHash: Hex | undefined,
-): Promise<boolean> {
-  if (receipt.hash.toLowerCase() !== hash) {
-    logger.warn('delivery: the fill receipt hash does not match the logged transaction', { orderHash, chain: driver.chain, txHash: hash, receiptHash: receipt.hash });
-    return false;
-  }
-  const canonical = await driver.client.block(receipt.blockNumber);
-  if (canonical.hash !== receipt.blockHash) {
-    logger.warn('delivery: the fill receipt is not canonical yet', { orderHash, chain: driver.chain, txHash: hash, block: receipt.blockNumber.toString() });
-    return false;
-  }
-  return true;
 }

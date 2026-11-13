@@ -810,6 +810,68 @@ describe('review sdk#65', () => {
   });
 });
 
+describe('CAN-2894: executedFill canonicality', () => {
+  const otherHash = `0x${'ab'.repeat(32)}` as Hex;
+  const staleBlockHash = `0x${'cd'.repeat(32)}` as Hex;
+
+  function interceptLoggedFill(w: Awaited<ReturnType<typeof world>>, overrideBlockHash?: Hex) {
+    const origRequest = w.dst.request.bind(w.dst);
+    let sentHash: string | undefined;
+    w.dst.request = async <T = unknown>(req: { method: string; params?: readonly unknown[] }): Promise<T> => {
+      if (req.method === 'eth_getTransactionReceipt') {
+        const hash = String(req.params?.[0]).toLowerCase();
+        if (hash === sentHash) return null as T;
+        if (hash === otherHash && sentHash) {
+          const real = await origRequest<Record<string, unknown> | null>({ method: 'eth_getTransactionReceipt', params: [sentHash] });
+          return (real ? { ...real, transactionHash: otherHash, ...(overrideBlockHash ? { blockHash: overrideBlockHash } : {}) } : null) as T;
+        }
+      }
+      if (req.method === 'eth_getLogs') {
+        const logs = await origRequest<Array<{ transactionHash?: string }>>(req);
+        return logs.map((l) => ({ ...l, transactionHash: otherHash })) as T;
+      }
+      return origRequest<T>(req);
+    };
+    return (txHash: Hex) => {
+      sentHash = txHash.toLowerCase();
+    };
+  }
+
+  test('rejects a receipt whose blockHash differs from the canonical block; nonce stays tracked', async () => {
+    const w = await world();
+    const setSent = interceptLoggedFill(w, staleBlockHash);
+    const executor = w.executor();
+    await executor.start();
+    const sent = await executor.deliver(w.orderHash, 0);
+    expect(sent.txHash).toBeDefined();
+    setSent(sent.txHash!);
+    await w.tick(8_000);
+
+    expect(w.dst.router(DST_ROUTER).filled.has(w.orderHash.toLowerCase())).toBe(true);
+    expect(await fillOf(w)).toMatchObject({ state: 'sent' });
+    expect(w.stages('fill.included')).toHaveLength(0);
+    expect(await w.store.nonces.listOpen(DST, fillSigner.address.toLowerCase() as Hex)).toHaveLength(1);
+    expect(w.logger.entries.some((e) => e.message === 'delivery: the fill receipt is not canonical yet')).toBe(true);
+    executor.stop();
+  });
+
+  test('includes and confirms when the logged receipt blockHash matches the canonical block', async () => {
+    const w = await world();
+    const setSent = interceptLoggedFill(w);
+    const executor = w.executor();
+    await executor.start();
+    const sent = await executor.deliver(w.orderHash, 0);
+    expect(sent.txHash).toBeDefined();
+    setSent(sent.txHash!);
+    await w.tick(8_000);
+
+    expect(await fillOf(w)).toMatchObject({ state: 'confirmed', txRef: otherHash });
+    expect(w.stages('fill.included')).toHaveLength(1);
+    expect(await w.store.nonces.listOpen(DST, fillSigner.address.toLowerCase() as Hex)).toHaveLength(0);
+    executor.stop();
+  });
+});
+
 // CAN-2893: property harness for finality depth and tags (RX-1, RX-2 of the CAN-2808 audit).
 /** Fixed, so a failing draw replays from the seed its message prints. */
 const SEED = 0xca2893;

@@ -55,7 +55,7 @@ import type { FillSigner } from '../signer';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, TicketRecord } from '../store';
 import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from '../tickets/terms';
 import { CantonDelivery } from './canton';
-import { FeeCeilingError, isCanonicalFillReceipt, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
+import { FeeCeilingError, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
 import { reasonOf, retryableEstimateFailure, revertName } from './reverts';
 import { awaitValidFrom } from './validFrom';
 
@@ -727,8 +727,7 @@ export class Executor {
     for (const tx of [...txs].reverse()) {
       const receipt = await t.driver.receipt(tx.hash);
       if (!receipt) continue;
-      const canonical = await t.driver.client.block(receipt.blockNumber);
-      if (canonical.hash !== receipt.blockHash) break; // a reorg is under way: look again next tick
+      if (!(await t.driver.isCanonical(receipt))) break; // a reorg is under way: look again next tick
       const depth = (await t.driver.client.head()) - receipt.blockNumber + 1n;
       return this.included(t, tx, receipt, depth, txs);
     }
@@ -930,7 +929,10 @@ export class Executor {
       this.options.logger.warn('delivery: the router holds the fill, its receipt is not visible yet', { orderHash: fill.orderHash, chain: t.driver.chain, txHash: hash });
       return false;
     }
-    if (!(await isCanonicalFillReceipt(t.driver, hash, receipt, this.options.logger, fill.orderHash))) return false;
+    if (!(await t.driver.isCanonical(receipt))) {
+      this.options.logger.warn('delivery: the fill receipt is not canonical yet', { orderHash: fill.orderHash, chain: t.driver.chain, txHash: hash, block: receipt.blockNumber.toString() });
+      return false;
+    }
     const ours = txs.find((x) => x.hash === hash) ?? { ...fill, hash };
     return this.included(t, ours, receipt, head - receipt.blockNumber + 1n, txs);
   }
