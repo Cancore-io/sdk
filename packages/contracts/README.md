@@ -61,7 +61,7 @@ helpers, the events); `ATTESTOR_SET_ABI` is the set on its own (`getAttestorSet`
 `currentSetId`, `isMember`, `revokedAttestors`), which `CancoreRouter` inherits. A test pins what
 the taker client relies on: those views and calls, the events `IntentOpened`, `Filled`,
 `Settled` and `Refunded`, and the 12-field `Order` tuple in the order of `ORDER_TYPES`, whose
-type hash is the router's `ORDER_TYPEHASH`. Router addresses are not in this package yet.
+type hash is the router's `ORDER_TYPEHASH`. Router addresses per environment are in `DEPLOYMENTS` (`router`, `routerBlock`).
 
 ### Orders, the Permit2 witness, the fee
 
@@ -465,6 +465,8 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.24` — the testnet intent routers (CAN-2529): `router` and `routerBlock` on every
+  `DEPLOYMENTS.testnet` row (Sepolia, BNB testnet, Arbitrum Sepolia, Robinhood testnet, Base Sepolia). Additive.
 - `0.2.0-rc.22` — `CantonIntent.settlementFactory` (CAN-3408): the settlement factory the owner
   approved into the `SwapIntent` (CAN-3340) and `live`, whether it is still the registry's current
   one, as settle reads it (`CantonSettlementFactory`; `$defs/cantonIntent.settlementFactory`).
