@@ -364,7 +364,8 @@ answers the new `routes.state`. A listed route that is not approved refuses the 
 `ROUTE_NOT_APPROVED` (403) and nothing changes. Both are REST only, rate class `service`.
 
 `FILLER_GATEWAYS` is where the gateway key and the ticket signers of each environment are
-published. It is empty in the RC: no gateway key exists yet.
+published. No gateway key exists yet; the ticket signers of devnet and testnet are the ones their
+routers register.
 
 ## Reverts
 
@@ -466,7 +467,8 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 ## Changes
 
 - `0.2.0-rc.24` — the testnet intent routers (CAN-2529): `router` and `routerBlock` on every
-  `DEPLOYMENTS.testnet` row (Sepolia, BNB testnet, Arbitrum Sepolia, Robinhood testnet, Base Sepolia). Additive.
+  `DEPLOYMENTS.testnet` row (Sepolia, BNB testnet, Arbitrum Sepolia, Robinhood testnet, Base Sepolia), and the
+  ticket signer they register in `FILLER_GATEWAYS.testnet.ticketSigners`. Additive.
 - `0.2.0-rc.23` — the recipient of a Canton delivery (CAN-1867): decline reason
   `RECIPIENT_NOT_READY` — the recipient of the order no longer accepts its instrument, so the filler
   refuses the Canton-form ticket before `ticket.receipt` (never a violation of the filler). REST read

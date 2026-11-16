@@ -39,6 +39,8 @@ interface Installed {
   devnet: EvmDeployment[];
   ticketSigners: string[];
   sepoliaRouter: string | undefined;
+  testnet: EvmDeployment[];
+  testnetTicketSigners: string[];
 }
 
 /** What the installed package exports, read by a plain `node` in the consumer project (ESM, no jest transform). */
@@ -52,7 +54,7 @@ const readInstalled = (dir: string): Installed =>
         `import { DEPLOYMENTS, FILLER_GATEWAYS, deploymentOf } from '@cancore/contracts';
          import { readFileSync } from 'node:fs';
          const { version } = JSON.parse(readFileSync('node_modules/@cancore/contracts/package.json', 'utf8'));
-         console.log(JSON.stringify({ version, devnet: DEPLOYMENTS.devnet, ticketSigners: FILLER_GATEWAYS.devnet.ticketSigners, sepoliaRouter: deploymentOf('devnet', 'sepolia')?.router }));`,
+         console.log(JSON.stringify({ version, devnet: DEPLOYMENTS.devnet, ticketSigners: FILLER_GATEWAYS.devnet.ticketSigners, sepoliaRouter: deploymentOf('devnet', 'sepolia')?.router, testnet: DEPLOYMENTS.testnet, testnetTicketSigners: FILLER_GATEWAYS.testnet.ticketSigners }));`,
       ],
       { cwd: dir, encoding: 'utf8' },
     ),
@@ -105,26 +107,60 @@ live('CAN-2331: dev routers of the installed @cancore/contracts on their chains'
   });
 
   test('TC-SDK-2331-03: every RPC is on the chain the deployment names, and every router has code there', async () => {
-    for (const d of installed.devnet) expect(BigInt(await rpc<string>(d.network, 'eth_chainId', []))).toBe(BigInt(d.chainId));
-    const lengths: number[] = [];
-    for (const d of routed()) {
-      const code = await rpc<string>(d.network, 'eth_getCode', [d.router, 'latest']);
-      expect(code.length).toBeGreaterThan(2);
-      lengths.push((code.length - 2) / 2);
-    }
-    // One router build on every chain: immutables differ, the length does not.
-    expect(new Set(lengths).size).toBe(1);
+    await expectRoutersOnChain(installed.devnet);
   });
 
   test("TC-SDK-2331-04: the environment's ticket signers are ticket signers of every devnet router", async () => {
-    expect(CANCORE_ROUTER_ABI.some((e) => e.type === 'function' && e.name === 'ticketSigners')).toBe(true);
-    expect(installed.ticketSigners.length).toBeGreaterThan(0);
-    for (const d of routed()) {
-      for (const signer of installed.ticketSigners) {
-        const data = `${selector('ticketSigners(address)')}${signer.slice(2).toLowerCase().padStart(64, '0')}`;
-        const answer = await rpc<string>(d.network, 'eth_call', [{ to: d.router, data }, 'latest']);
-        expect(BigInt(answer)).toBe(1n);
-      }
-    }
+    await expectTicketSigners(routed(), installed.ticketSigners);
   });
 });
+
+live('CAN-2529: testnet routers of the installed @cancore/contracts on their chains', () => {
+  jest.setTimeout(120_000);
+  const installed = INSTALLED ? readInstalled(INSTALLED) : ({} as Installed);
+  const manifest = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as { version: string };
+  const routed = (): EvmDeployment[] => installed.testnet.filter((d) => d.router !== undefined);
+
+  test('TC-SDK-2529-01: the installed testnet rows and signers are the ones of this source (when the installed version is this manifest)', () => {
+    if (installed.version !== manifest.version) {
+      expect(installed.version).toMatch(/^0\.2\.0-rc\.\d+$/);
+      return;
+    }
+    const pick = (rows: readonly EvmDeployment[]) => rows.map(({ network, chainId, router, routerBlock }) => ({ network, chainId, router, routerBlock }));
+    expect(pick(installed.testnet)).toEqual(pick(SOURCE_DEPLOYMENTS.testnet));
+    expect(routed()).toHaveLength(installed.testnet.length);
+    expect(installed.testnetTicketSigners).toEqual([...SOURCE_GATEWAYS.testnet.ticketSigners]);
+  });
+
+  test('TC-SDK-2529-02: every testnet RPC is on the chain the deployment names, and every router has code there', async () => {
+    await expectRoutersOnChain(installed.testnet);
+  });
+
+  test("TC-SDK-2529-03: the testnet ticket signers are ticket signers of every testnet router", async () => {
+    await expectTicketSigners(routed(), installed.testnetTicketSigners);
+  });
+});
+
+async function expectRoutersOnChain(rows: readonly EvmDeployment[]): Promise<void> {
+  for (const d of rows) expect(BigInt(await rpc<string>(d.network, 'eth_chainId', []))).toBe(BigInt(d.chainId));
+  const lengths: number[] = [];
+  for (const d of rows.filter((r) => r.router !== undefined)) {
+    const code = await rpc<string>(d.network, 'eth_getCode', [d.router, 'latest']);
+    expect(code.length).toBeGreaterThan(2);
+    lengths.push((code.length - 2) / 2);
+  }
+  // One router build on every chain: immutables differ, the length does not.
+  if (lengths.length > 0) expect(new Set(lengths).size).toBe(1);
+}
+
+async function expectTicketSigners(rows: readonly EvmDeployment[], signers: readonly string[]): Promise<void> {
+  expect(CANCORE_ROUTER_ABI.some((e) => e.type === 'function' && e.name === 'ticketSigners')).toBe(true);
+  if (rows.length > 0) expect(signers.length).toBeGreaterThan(0);
+  for (const d of rows) {
+    for (const signer of signers) {
+      const data = `${selector('ticketSigners(address)')}${signer.slice(2).toLowerCase().padStart(64, '0')}`;
+      const answer = await rpc<string>(d.network, 'eth_call', [{ to: d.router, data }, 'latest']);
+      expect(BigInt(answer)).toBe(1n);
+    }
+  }
+}

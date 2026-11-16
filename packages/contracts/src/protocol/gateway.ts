@@ -80,7 +80,8 @@ export interface FillerGateway {
  */
 export const FILLER_GATEWAYS: Readonly<Record<DeploymentEnv, FillerGateway>> = {
   mainnet: { gateway: null, ticketSigners: [] },
-  testnet: { gateway: null, ticketSigners: [] },
+  // The ticket signer every testnet router registers (evm-contracts deployments/router/testnet/*.input.json, CAN-2529).
+  testnet: { gateway: null, ticketSigners: ['0xf00280bda2ec272d5a650e759a658d06f457d7e5'] },
   // The ticket signer every dev router registers (evm-contracts deployments/router/dev/*.input.json, CAN-2331).
   // The gateway key is published with the gateway release.
   devnet: { gateway: null, ticketSigners: ['0x9a3fc3f44cddbdfb036a8c8a528a903d0c835c1c'] },

@@ -138,9 +138,10 @@ describe('the encoder refuses what it cannot encode faithfully', () => {
   });
 });
 
-test('the published gateway keys: devnet names the ticket signer of its routers, the rest are empty; the protocol major is "1"', () => {
+test('the published gateway keys: devnet and testnet name the ticket signer of their routers, mainnet is empty; the protocol major is "1"', () => {
   expect(PROTOCOL_VERSION).toBe('1');
-  for (const env of ['mainnet', 'testnet'] as const) expect(FILLER_GATEWAYS[env]).toEqual({ gateway: null, ticketSigners: [] });
+  expect(FILLER_GATEWAYS.mainnet).toEqual({ gateway: null, ticketSigners: [] });
+  expect(FILLER_GATEWAYS.testnet).toEqual({ gateway: null, ticketSigners: ['0xf00280bda2ec272d5a650e759a658d06f457d7e5'] });
   expect(FILLER_GATEWAYS.devnet).toEqual({ gateway: null, ticketSigners: ['0x9a3fc3f44cddbdfb036a8c8a528a903d0c835c1c'] });
 });
 
