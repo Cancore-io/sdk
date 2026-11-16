@@ -12,16 +12,15 @@
  */
 import type { Hex } from '@cancore/contracts';
 import { ed25519 } from '@noble/curves/ed25519';
-import { secp256k1 } from '@noble/curves/secp256k1';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import type { CantonTransferFactory } from '../src/filler/canton/factories';
 import { CantonRefusal } from '../src/filler/canton/legs';
 import { createCantonOperations, type CantonOperations } from '../src/filler/canton/operations';
 import { GatewayError } from '../src/filler/errors';
 import { createSealer } from '../src/filler/protocol/envelope';
-import { gatewayMessageDigest, verifyGatewayObject } from '../src/filler/protocol/frames';
+import { verifyGatewayObject } from '../src/filler/protocol/frames';
 import { systemClock, type HttpFetch, type HttpResponse } from '../src/filler/runtime';
-import { createTestTypedDataSigner } from '../src/filler/testing';
+import { createTestGatewaySigner, createTestTypedDataSigner } from '../src/filler/testing';
 import { activeContracts, cantonToken, env, ledger } from './stand/canton-ledger';
 import { standSuite } from './stand/filler-gateway';
 
@@ -34,10 +33,10 @@ const REQUIRED = [
 
 /** The relay's own signing key: a test key the SDK pins as filler-gateway's in INT-02/03, never the stand's. */
 const RELAY_KEY: Hex = `0x${'52'.repeat(32)}`;
-const RELAY_SIGNER = createTestTypedDataSigner(RELAY_KEY).address as Hex;
+const RELAY = createTestGatewaySigner(RELAY_KEY);
 const HOLDING_V1 = '#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding';
 
-type Frame = Record<string, unknown>;
+type Frame = { type: string } & Record<string, unknown>;
 type Body = { status: number; frame: Frame };
 
 /** What a case changes on the way: the sealed request out, the verified answer back, or the answer instead of filler-gateway. */
@@ -54,13 +53,6 @@ interface Party {
 }
 
 const isBody = (x: Frame | Body): x is Body => typeof x.status === 'number' && typeof x.frame === 'object';
-
-const signRelay = (frame: Frame): Frame => {
-  const { sig: _old, ...body } = frame;
-  const digest = gatewayMessageDigest(body);
-  const sig = secp256k1.sign(hexToBytes(digest.slice(2)), hexToBytes(RELAY_KEY.slice(2)), { lowS: true });
-  return { ...body, sig: `0x${bytesToHex(sig.toCompactRawBytes())}${(27 + sig.recovery).toString(16)}` };
-};
 
 const respond = (status: number, frame: Frame): HttpResponse => {
   const text = JSON.stringify(frame);
@@ -80,7 +72,7 @@ function relayFetch(prefix: Party['prefix'], relay: Relay, seen: string[]): Http
       if (changed) body = JSON.stringify(await reseal(changed as never));
     }
     const own = body !== undefined && relay.instead ? relay.instead(path, JSON.parse(body) as Frame) : undefined;
-    if (own) return respond(own.status, signRelay(own.frame));
+    if (own) return respond(own.status, RELAY.sign(own.frame));
     const response = await fetch(url, { method: request.method, headers: { ...request.headers }, ...(body !== undefined ? { body } : {}) });
     const text = await response.text();
     let parsed: unknown;
@@ -96,7 +88,7 @@ function relayFetch(prefix: Party['prefix'], relay: Relay, seen: string[]): Http
     }
     const changed = relay.answer ? relay.answer(path, parsed as Frame) : (parsed as Frame);
     const answer: Body = isBody(changed) ? changed : { status: response.status, frame: changed };
-    return respond(answer.status, signRelay(answer.frame));
+    return respond(answer.status, RELAY.sign(answer.frame));
   };
 }
 
@@ -107,7 +99,7 @@ function operations(prefix: Party['prefix'], relay?: Relay, seen: string[] = [])
   const ops = createCantonOperations({
     gatewayUrl: env('FILLER_GATEWAY_WS_URL'),
     fillerId: env(`${prefix}_ID`),
-    gatewaySigner: relay ? RELAY_SIGNER : (env('FILLER_GATEWAY_SIGNER') as Hex),
+    gatewaySigner: relay ? RELAY.address : (env('FILLER_GATEWAY_SIGNER') as Hex),
     messageSigner: createTestTypedDataSigner(env(`${prefix}_MESSAGE_KEY`) as Hex),
     partySigner: {
       publicKey: `0x${bytesToHex(ed25519.getPublicKey(seed))}` as Hex,
@@ -233,11 +225,10 @@ standSuite('CAN-2352: the Canton operations client against the real filler-gatew
         return { status: 400, frame: { type: 'error', fillerId: env('STAND_FILLER_ID'), sentAt: Date.now(), re: m.id, code: 'CANTON_REFUSED', message: 'relay: refused for good' } };
       },
     });
-    const untouched = await cnrxOnLedger(receiver);
+    // The relay answers the submit itself, never forwarding it: what this half shows is that a final refusal is not retried.
     const error = await failure(refused.ops.transfer({ asset: cnrx(), amount: '0.2354', toParty: receiver }));
     expect(error).toBeInstanceOf(GatewayError);
     expect((error as GatewayError).code).toBe('CANTON_REFUSED');
     expect(finalSubmits).toHaveLength(1);
-    expect(created(untouched, await cnrxOnLedger(receiver))).toEqual([]);
   }, 300_000);
 });
