@@ -180,7 +180,8 @@ export function createEngine(options: EngineOptions): Engine {
       return (loop ?? last)?.mayBeTrade(orderId) ?? false;
     },
     async cancel(orderId) {
-      await acct.swap.cancel(orderId);
+      // Conditional: the venue refuses a taken or closed order (409 ORDER_NOT_OPEN), so a cancel and an accept never both land.
+      await acct.swap.cancel(orderId, { ifOpen: true });
     },
     async order(orderId) {
       const o = await acct.swap.get(orderId);
