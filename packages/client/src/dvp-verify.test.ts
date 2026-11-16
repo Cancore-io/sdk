@@ -2,7 +2,7 @@ import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
 import type { Create, PreparedTransaction } from '@canton-network/core-ledger-proto';
 import { acceptTransferLeg, allocationTree, createNode, DEV, exercise, factoryContract, factoryTransferLeg, holding, OFFER_CID, preapprovalContract, preapprovalProposalLeg, prepared, proposalAccept, remade, proposalCreate, selfSendLeg, spend, spendTransfer, v, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
 import { DEFAULT_INSTRUMENT_ADMINS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf } from './dvp-admins';
-import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyAcceptPrepared, verifyConsolidatePrepared, verifyDvpPrepared, verifyFeePrepared, verifyPreapprovalSetupPrepared, verifySelfSendPrepared, verifySendPrepared, type AcceptTerms, type ConsolidateTerms, type DvpTerms, type PreapprovalSetupTerms, type SelfSendTerms, type SendTerms } from './dvp-verify';
+import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyAcceptPrepared, verifyConsolidatePrepared, verifyDvpPrepared, verifyFeePrepared, verifyPreapprovalSetupPrepared, verifySelfSendPrepared, verifySendPrepared, type AcceptTerms, type ConsolidateTerms, type DvpOperation, type DvpTerms, type PreapprovalSetupTerms, type SelfSendTerms, type SendTerms } from './dvp-verify';
 
 const MAKER = 'maker::1220aa';
 const TAKER = 'taker::1220bb';
@@ -1088,5 +1088,70 @@ describe('what a second, hostile reading of these verifiers found (CAN-2249)', (
     const regMergeTerms: ConsolidateTerms = { party: BOT, admins: [CBTC.admin], dso: [DEV.dso], instrument: 'CBTC', maxFee: '0.5', feeRecipients: [DEV.venue] };
     await expect(verifyConsolidatePrepared([await regMerge(), await ccFee()], regMergeTerms)).resolves.toBeUndefined();
     await refusedWith(verifyConsolidatePrepared([await regMerge(), await ccFee()], { ...regMergeTerms, dso: undefined }), /leg 1 sends through a preapproval the instrument admin did not sign/);
+  });
+});
+
+describe('every node of an honest DvP transaction, not only the ones the cases above name (AUD-SDK-01, CAN-2620)', () => {
+  type Leg = Awaited<ReturnType<typeof prepared>>;
+  type TxNode = NonNullable<PreparedTransaction['transaction']>['nodes'][number];
+  const nodesOf = async (leg: Leg) => {
+    let nodes: TxNode[] = [];
+    await remade(leg, (d) => { nodes = d.transaction!.nodes; });
+    return nodes;
+  };
+  // The code a node runs: the template of a create, an exercise or a fetch.
+  const runOf = (n: TxNode) => {
+    const type = n.versionedNode.oneofKind === 'v1' ? n.versionedNode.v1.nodeType : undefined;
+    return type?.oneofKind === 'create' ? type.create : type?.oneofKind === 'exercise' ? type.exercise : type?.oneofKind === 'fetch' ? type.fetch : undefined;
+  };
+  const withdraw = (legId: keyof typeof LEGS) => {
+    const leg = LEGS[legId]!;
+    const { nodes, inputs } = withdrawTree({ executor: VENUE, swapId: 'swap-1', legId, leg });
+    return prepared(leg.sender, nodes, inputs);
+  };
+  const pinned = (party: string) => terms(party, { pinnedAdmins: { [instrumentKey(CC.id)]: [CC.admin], [instrumentKey(CBTC.id)]: [CBTC.admin] } });
+  const honest = async (): Promise<Array<[DvpOperation, Leg[], DvpTerms]>> => [
+    ['dvpCreateProposal', [await create()], terms(MAKER)],
+    ['dvpAcceptProposal', [await accept()], terms(TAKER)],
+    ['dvpAllocateLeg', [await fund('leg-counter'), await fund('leg-fee')], terms(TAKER)],
+    ['dvpAllocateLeg', [await fund('leg-main')], terms(MAKER)],
+    ['dvpWithdrawAllocation', [await withdraw('leg-counter')], pinned(TAKER)],
+    ['dvpWithdrawAllocation', [await withdraw('leg-main')], pinned(MAKER)],
+  ];
+
+  test('a copy of any node that hangs from no command is refused, in every operation and every transaction of it', async () => {
+    let strays = 0;
+    for (const [operation, legs, t] of await honest()) {
+      await expect(verifyDvpPrepared(operation, legs, t)).resolves.toBeUndefined();
+      for (const [at, leg] of legs.entries()) {
+        for (const [i, original] of (await nodesOf(leg)).entries()) {
+          const stray = await remade(leg, (d) => {
+            const copy = structuredClone(original);
+            copy.nodeId = `stray-${i}`;
+            // A create keeps no id of its own twice: that is refused before the tree is walked.
+            const run = copy.versionedNode.oneofKind === 'v1' ? copy.versionedNode.v1.nodeType : undefined;
+            if (run?.oneofKind === 'create') run.create.contractId = `5e${String(i).padStart(66, '0')}`;
+            d.transaction!.nodes.push(copy);
+          });
+          await refused(verifyDvpPrepared(operation, legs.map((l, j) => (j === at ? stray : l)), t), /carries nodes outside its command/);
+          strays++;
+        }
+      }
+    }
+    expect(strays).toBeGreaterThan(10);
+  });
+
+  test('any node of a proposal step that runs code from an unpinned package is refused, wherever it sits in the tree', async () => {
+    for (const [operation, [leg], t] of (await honest()).filter(([op]) => op === 'dvpCreateProposal' || op === 'dvpAcceptProposal')) {
+      const nodes = await nodesOf(leg!);
+      for (const i of nodes.keys()) {
+        const foreign = await remade(leg!, (d) => {
+          const run = runOf(d.transaction!.nodes[i]!);
+          expect(run?.templateId).toBeDefined();
+          run!.templateId!.packageId = 'ee'.repeat(32);
+        });
+        await refused(verifyDvpPrepared(operation, [foreign], t), new RegExp(`node ${nodes[i]!.nodeId} runs code from an untrusted package`));
+      }
+    }
   });
 });
