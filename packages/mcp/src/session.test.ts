@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadGrant, saveGrant } from './grant';
@@ -271,4 +271,46 @@ test('a revoke that fails still reconnects and says the old grant may be alive',
   expect(result.status).toBe('granted');
   expect(String(result.warning)).toMatch(/revoke it in the wallet/);
   expect(loadGrant(path, API)?.token).toBe('new');
+});
+
+// CAN-2628, the MCP Agent column of the sdk audit's authorization matrix. The agent holds no key:
+// every money operation is a request the owner signs in the wallet. So the column comes down to two
+// rules, held for every tool the contract announces (connect_wallet is how a grant is obtained):
+// with no grant nothing reaches the API, and with one each call carries the grant and nothing else.
+describe('every agent tool, not only the one above (CAN-2628)', () => {
+  const ORDER = { sourceNetwork: 'canton', sourceTokenAddress: 'CC', sourceAmount: '5', targetNetwork: 'base', targetTokenAddress: '0x1', targetAmount: '1' };
+  const tools: Record<string, (s: CancoreSession) => Promise<Record<string, unknown>>> = {
+    cancore_propose_autotrade: (s) => s.proposeAutotrade({ sourceTokenName: 'CC', targetTokenName: 'CBTC', sourceAmount: '5' }),
+    cancore_propose_order: (s) => s.proposeOrder(ORDER),
+    cancore_propose_transfer: (s) => s.proposeTransfer({ receiverPartyId: 'alice::ns', amount: '1.5' }),
+    cancore_intent_status: (s) => s.intentStatus('int_1'),
+    cancore_list_intents: (s) => s.listIntents(),
+    cancore_get_balances: (s) => s.getBalances(),
+  };
+
+  test('the list is the whole contract but connect_wallet', () => {
+    const contract = JSON.parse(readFileSync(join(__dirname, '..', 'contract', 'agent-tools.contract.json'), 'utf8')) as { name: string }[];
+    expect([...Object.keys(tools), 'cancore_connect_wallet'].sort()).toEqual(contract.map((t) => t.name).sort());
+  });
+
+  test.each(Object.entries(tools))('%s with no grant sends nothing and says how to get one', async (_tool, run) => {
+    const { fetchImpl, calls } = recordingFetch({ status: 200, body: {} });
+
+    const result = await run(session(tempPath(), fetchImpl));
+
+    expect(result.error).toMatch(/cancore_connect_wallet/);
+    expect(calls).toHaveLength(0);
+  });
+
+  test.each(Object.entries(tools))('%s with a grant sends one request, the grant as its bearer', async (_tool, run) => {
+    const path = tempPath();
+    saveGrant(path, API, { token: 'tok', scopes: ['agent:propose'], appName: 'Claude' });
+    const { fetchImpl, calls } = recordingFetch({ status: 200, body: { id: 'int_1', status: 'pending' } });
+
+    await run(session(path, fetchImpl));
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url.startsWith(`${API}/`)).toBe(true);
+    expect(calls[0]?.headers.authorization).toBe('Bearer tok');
+  });
 });
