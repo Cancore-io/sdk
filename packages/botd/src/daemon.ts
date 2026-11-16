@@ -193,8 +193,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
   };
   const settleEntry = { method: 'settle' as const, riskClass: 'trade' as const };
   /**
-   * Cancels one of our resting orders. Read open → cancelled and unbooked. Read taken/settling/ended → kept:
-   * the venue may accept a cancel while an HTLC still executes. Status unreadable (twice) → the cancel is
+   * Cancels one of our resting orders. Read open → cancelled and unbooked. Read taken/settling/ended, or refused
+   * by the venue as no longer open → kept: it may be a trade. Status unreadable (twice) → the cancel is
    * still sent to stop the exposure, but the order stays booked until reconcile sees how it ended.
    */
   async function cancelResting(e: Engine, orderId: string, byDaemon: boolean): Promise<'cancelled' | 'kept' | 'sent' | 'failed'> {
@@ -204,12 +204,12 @@ export function createDispatcher(deps: Deps): Dispatcher {
     // Recorded before the request: however it ends, reconcile then knows the daemon cancelled it, not the user.
     let marked = false;
     if (byDaemon) await mutate((s) => ((marked = !s.daemonCancels?.[orderId]), { ...s, daemonCancels: { ...s.daemonCancels, [orderId]: deps.now() } }));
-    const sent = await e.cancel(orderId).then(() => true, () => false);
-    if (!sent) {
-      // Not sent: the mark must not hide a later manual cancel of this order.
+    const outcome = await e.cancel(orderId).then(() => 'sent' as const, (err: unknown) => ((err as { errorCode?: unknown } | undefined)?.errorCode === 'ORDER_NOT_OPEN' ? 'kept' : 'failed'));
+    if (outcome !== 'sent') {
+      // Not applied: the mark must not hide a later manual cancel of this order.
       // Only a mark this call set: an earlier daemon cancel of this order may still be in flight.
       if (marked) await mutate((s) => ({ ...s, daemonCancels: Object.fromEntries(Object.entries(s.daemonCancels ?? {}).filter(([id]) => id !== orderId)) }));
-      return 'failed';
+      return outcome;
     }
     if (!info) return 'sent';
     // Read again: a taker who accepted between the read and the cancel makes it a trade, even if the cancel was taken.

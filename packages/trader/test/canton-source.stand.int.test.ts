@@ -5,7 +5,9 @@
  * (V-C7: no delivery for an intent whose settlement factory the registry no
  * longer holds). CAN-1863 INT-03…06 hold single checks to the stand's own
  * reads: V-C3 against the stand router, V-C5 with a registry not pinned as
- * paying, V-C1 while the participant is down, V-C6 at its exact bound. Every
+ * paying, V-C1 while the participant is down, V-C6 at its exact bound.
+ * CAN-2321 INT-06: the filler's first settle submit answer is lost on the
+ * way back; the payout of INT-01 comes from its retry. Every
  * component is the stand's own — Canton participant with cancore-intent and
  * cnrx-registry, trading and filler-gateway (decision T-1: the party's
  * operations go through Cancore), the attestor daemons, anvil with the
@@ -440,6 +442,18 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
   const events = createRecordingEventSink();
   const logger = createRecordingLogger();
   let filler: Filler;
+  /** Every `canton.submit` the filler sent, in order: the first one's answer is lost on the way back (TC-SDK-2321-INT-06). */
+  const submits: Array<{ operationId: string; answered: boolean }> = [];
+  const losingFirstSubmitAnswer: HttpFetch = async (url, request) => {
+    const response = await fetch(url, { method: request.method, headers: { ...request.headers }, ...(request.body !== undefined ? { body: request.body } : {}) });
+    if (new URL(url).pathname !== '/v1/filler/canton/submit') return response;
+    const operationId = String((JSON.parse(request.body ?? '{}') as { operationId?: unknown }).operationId);
+    const answered = submits.length > 0;
+    submits.push({ operationId, answered });
+    // The submit reached Cancore; the connection drops before its answer does.
+    if (!answered) throw new TypeError('fetch failed: the connection to filler-gateway dropped');
+    return response;
+  };
 
   beforeAll(async () => {
     QUOTED_OUT = 10n ** BigInt(Math.max(0, Number(E.STAND_ROUTE_OUTPUT_DECIMALS) - 2));
@@ -465,6 +479,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
       events,
       logger,
       webSocket: globalWebSocket,
+      fetch: losingFirstSubmitAnswer,
     });
     // The stand filler prices the Canton-source route only: 0.01 of the output token for any give, under
     // the "too good" ceiling of the reference price (FS-4), firm a minute past the quote's own life
@@ -635,5 +650,15 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
     expect((await freeCnrx(E.STAND_FILLER_CANTON_PARTY)) - before).toBe(payout);
     const registered: CantonParty = await filler.canton!.party();
     expect(registered.registry.state).toBe('ACTIVE');
+  });
+
+  // CAN-2321: the payout of TC-SDK-2321-INT-01 went through a lost submit answer.
+  test('TC-SDK-2321-INT-06: the answer of the settle submit is lost — the SDK submits again under the same operationId and the party is paid once', () => {
+    const settle = submits.filter((x) => x.operationId === submits[0]?.operationId);
+    expect(submits[0]).toMatchObject({ answered: false });
+    expect(settle.length).toBeGreaterThanOrEqual(2);
+    expect(settle.at(-1)).toMatchObject({ answered: true });
+    expect(new Set(submits.map((x) => x.operationId)).size).toBe(1);
+    // One payout: TC-SDK-2321-INT-01 held the party's CNRX to exactly the net of the give, and the intent is consumed.
   });
 });

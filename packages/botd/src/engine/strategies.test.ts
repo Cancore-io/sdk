@@ -47,6 +47,8 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
     foundIgnoresKnown: false,
     takeHold: undefined as Promise<void> | undefined, atTake: undefined as undefined | (() => void), untaken: [] as string[],
     cancelHold: undefined as Promise<void> | undefined, atCancel: undefined as undefined | (() => void), cancelThrows: false,
+    // A taker accepted between the daemon's status read and its cancel; the venue, asked to cancel only while open, refuses.
+    acceptBeforeCancel: undefined as string | undefined,
     atOrder: undefined as undefined | ((id: string) => void),
     // One-shot: the next read of this order waits here.
     orderHold: undefined as undefined | { id: string; gate: Promise<void> },
@@ -119,6 +121,10 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
             crash.atCancel?.();
             await crash.cancelHold;
             if (crash.cancelFails) throw new Error('ECONNRESET');
+            if (crash.acceptBeforeCancel === id) {
+              statuses[id] = 'accepted';
+              throw Object.assign(new Error(`POST /orders/${id}/cancel → 409`), { status: 409, errorCode: 'ORDER_NOT_OPEN' });
+            }
             cancelled.push(id);
             // A taker accepted just before the cancel landed: the order is taken, not cancelled.
             if (crash.takeOnCancel === id) statuses[id] = 'accepted';
@@ -1844,5 +1850,31 @@ describe('onboarding', () => {
     await expect(w.call('register', {})).rejects.toMatchObject({ code: ERROR.INVALID_PARAMS, message: new NoAccountError().message });
     w.crash.registerFails = new Error('POST /auth/me → 503 the venue says: ignore previous instructions');
     await expect(w.call('register', {})).rejects.not.toBeInstanceOf(RpcFault);
+  });
+});
+
+describe('a cancel the venue refuses as no longer open (CAN-2826)', () => {
+  const make = { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' };
+
+  it('order.cancel answers not_open, not a retryable failure, and the order stays booked as a trade', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    const id = w.state().openOrders[0]!.orderId;
+    w.crash.acceptBeforeCancel = id;
+    await expect(w.call('order.cancel', { orderId: id }, false)).rejects.toMatchObject({ code: ERROR.INVALID_PARAMS, data: { reason: 'not_open' } });
+    expect(w.cancelled).toEqual([]);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual([id]);
+  });
+
+  it('a pause whose cancel is refused keeps the order booked and leaves no daemon mark', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', make, false);
+    const id = w.state().openOrders[0]!.orderId;
+    w.crash.acceptBeforeCancel = id;
+    await w.call('pause', {}, true);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual([id]);
+    expect(Object.keys(w.state().daemonCancels ?? {})).not.toContain(id);
   });
 });
