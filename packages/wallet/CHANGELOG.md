@@ -1,5 +1,17 @@
 # Changelog — `@cancore/wallet`
 
+## 0.4.4
+
+### Added — the DA Utilities allocation template in the CBTC pin (CAN-3587)
+
+- `CantonTransferFactory.allocationPackageId`: the package of `allocation` when it is not `packageId`;
+  `registriesProblem` takes it only as 64 lowercase hex, like `holdingPackageId` and `preapprovalPackageId`.
+- `allocationTemplateOf(f)`: the V2 allocation template of a registry entry, `<package>:<module>:<entity>`, read from
+  `allocationPackageId` and falling back to `packageId`; `CANTON_ALLOCATION_TEMPLATES` is built from it.
+- The DA Utilities 0.9.2 entry (CBTC) pins `Utility.Registry.V0.Holding.AllocationV2:AllocationV2` of
+  utility-registry-v0 0.8.2 (`8c654487d9f5fb195fbcdd7b44cd8e365b1ea39c15ae62ce6c7a48343f1210dd`) and
+  `openReceipt: true`, so a committed CBTC allocation is recognised as the escrow of a Canton-source intent.
+
 ## 0.4.3
 
 ### Changed — a CNRX factory must be signed by the registry's guardian (CAN-3132)
