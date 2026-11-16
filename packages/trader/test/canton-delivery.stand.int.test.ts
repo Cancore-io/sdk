@@ -47,6 +47,7 @@ import { RouterEventWatcher, type RouterEventUpdate } from '../src/filler/chain/
 import { hashOrder } from '../src/filler/chain/hashes';
 import { INTENT_STATUS, RouterReader } from '../src/filler/chain/router';
 import type { EvmChainId } from '../src/filler/chains';
+import { cantonFillRef } from '../src/filler/delivery/canton';
 import { createFiller, type Filler } from '../src/filler/filler';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { WebSocketFactory } from '../src/filler/runtime';
@@ -63,7 +64,7 @@ const REQUIRED = [
   'MAKER_EVM_KEY', 'STAND_CANTON_RECIPIENT_PARTY', 'STAND_FILLER_CANTON_PARTY', 'STAND_FILLER_CANTON_PARTY_KEY', 'STAND_FILLER_EVM_KEY',
   'STAND_FILLER_ID', 'STAND_FILLER_MESSAGE_KEY', 'STAND_FILLER_REPAY_TO', 'STAND_USER_CLIENT_ID', 'STAND_USER_CLIENT_SECRET',
   'STAND_USER_NAME', 'STAND_USER_PASSWORD', 'STAND_USER_TOKEN_URL', 'TICKET_SIGNERS', 'PERMIT2_ADDRESS',
-  'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET',
+  'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET', 'INTENT_OPERATOR_PARTY_ID',
 ] as const;
 
 const abi = (entries: unknown) => entries as unknown as readonly AbiEntry[];
@@ -400,8 +401,9 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
 
     const fillerId = fillerIdHash(env('STAND_FILLER_ID')).toLowerCase();
     const attestations = await attestationsOf(env('EVM_CHAIN_ID'), orderHash);
-    expect(attestations.map(({ attestor, proof }) => ({ attestor, orderHash: proof.orderHash.toLowerCase(), fillerId: proof.fillerId.toLowerCase(), repayTo: proof.repayTo.toLowerCase() }))).toEqual(
-      attestations.map(({ attestor }) => ({ attestor, orderHash, fillerId, repayTo })),
+    const fillRef = cantonFillRef(fillUpdateId).toLowerCase();
+    expect(attestations.map(({ attestor, proof }) => ({ attestor, orderHash: proof.orderHash.toLowerCase(), fillRef: proof.fillRef.toLowerCase(), fillerId: proof.fillerId.toLowerCase(), repayTo: proof.repayTo.toLowerCase() }))).toEqual(
+      attestations.map(({ attestor }) => ({ attestor, orderHash, fillRef, fillerId, repayTo })),
     );
   }, 5 * 60_000);
 

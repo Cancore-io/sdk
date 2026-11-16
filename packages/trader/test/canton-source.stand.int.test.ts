@@ -49,7 +49,7 @@ import type { HttpFetch, WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
 import { checkCantonSource, intentOrder } from '../src/filler/tickets/canton-source';
 import { TicketRefusal } from '../src/filler/tickets/refusal';
-import { attestationsOf, bytes32Hex, ledgerEffects } from './stand/attestors';
+import { attestationsOf, ledgerEffects } from './stand/attestors';
 
 const ENV_FILE = process.env.CANCORE_INTENT_STAND_ENV ?? process.env.INTENT_STAND_ENV;
 const KEYS = [
@@ -669,7 +669,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
     const settle = (await ledgerEffects(api, settlement.updateId, E.INTENT_OPERATOR_PARTY_ID)).find((e) => e.ExercisedEvent?.choice === 'SwapIntent_SettleWithProof')?.ExercisedEvent;
     if (!settle) throw new Error(`update ${settlement.updateId} holds no SwapIntent_SettleWithProof`);
     const { proof, bundle } = settle.choiceArgument as { proof: { orderHash: unknown; repayTo: unknown }; bundle: Array<{ pubKey: string; sig: string }> };
-    expect([bytes32Hex(proof.orderHash), bytes32Hex(proof.repayTo)]).toEqual([orderHash, repayTo]);
+    expect([hexOf(proof.orderHash), hexOf(proof.repayTo)]).toEqual([orderHash, repayTo]);
     const sigEntry = (pubKey: string, sig: string) => `${pubKey.replace(/^0x/i, '').toLowerCase()}:${sig.replace(/^0x/i, '').toLowerCase()}`;
     const daemonEntries = attestations.map((a) => sigEntry(a.pubKey ?? '', a.signature));
     expect(bundle.length).toBeGreaterThan(0);
