@@ -50,7 +50,7 @@ import {
   type TicketJson,
 } from '@cancore/contracts';
 import { canonicalDecimal, scaled } from '../canton/checks';
-import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../canton/factories';
+import { allocationTemplateOf, CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../canton/factories';
 import { GatewayError } from '../errors';
 import { TicketRefusal, type TicketCheckId } from './refusal';
 
@@ -209,7 +209,7 @@ function checkAllocation(
   };
   if (!a) throw new TicketRefusal('V-C4', 'ESCROW_NOT_OPEN', 'the committed allocation is not live');
   if (a.contractId !== intent.allocationCid) mismatch('the allocation read is not the intent’s allocationCid');
-  const registry = (registries[intent.asset.admin] ?? []).find((f) => f.allocation !== undefined && a.templateId === `${f.packageId}:${f.allocation}`);
+  const registry = (registries[intent.asset.admin] ?? []).find((f) => allocationTemplateOf(f) === a.templateId);
   if (!registry) return mismatch(`the allocation ${a.templateId} is not a pinned allocation of the admin ${intent.asset.admin}`);
   if (a.admin !== intent.asset.admin) mismatch('the allocation is of another instrument admin');
   if (a.committed !== true) mismatch('the allocation is not committed: the owner could withdraw it before refundAfter');

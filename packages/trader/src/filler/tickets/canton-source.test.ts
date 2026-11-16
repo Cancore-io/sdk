@@ -15,7 +15,7 @@ import {
   type TicketJson,
   type TicketOffer,
 } from '@cancore/contracts';
-import { CANTON_ALLOCATION_TEMPLATES, CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../canton/factories';
+import { allocationTemplateOf, CANTON_ALLOCATION_TEMPLATES, CANTON_TRANSFER_FACTORIES, registriesProblem, type CantonTransferFactory } from '../canton/factories';
 import { FillerChains, type ChainConfig } from '../chain';
 import { GatewayError } from '../errors';
 import { isCantonIntent } from '../protocol/rest';
@@ -26,6 +26,10 @@ import { TicketVerifier } from './checks';
 import { TicketRefusal } from './refusal';
 
 const PARTY = 'filler-acme::12206c81aa';
+const CBTC_ADMIN = 'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff';
+/** utility-registry-v0 0.8.2: the package of every committed CBTC allocation devnet holds (backend run 43920493880). */
+const DA_ALLOCATION_PKG = '8c654487d9f5fb195fbcdd7b44cd8e365b1ea39c15ae62ce6c7a48343f1210dd';
+const DA_APP_0_9_2 = '1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b274b8c0';
 const OPERATOR = 'cancore-intent-operator::1220ee';
 const ALLOCATION_TEMPLATE = `${'ab'.repeat(32)}:Cnrx.Allocation:CnrxAllocationV2`;
 /** A registry pinned like cnrx-registry: its V2 allocation, a receipt allocation open to any party. */
@@ -247,10 +251,10 @@ describe('V-C1…V-C7 on the golden Canton-source order (CAN-1863, CAN-3408)', (
     expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4']);
   });
 
-  test('V-C5 (T-9): the pinned dev CNRX registry pays any party; DA Utilities (CBTC) is not pinned as one', () => {
+  test('V-C5 (T-9) TC-SDK-3587-01: the pinned dev CNRX registry and DA Utilities 0.9.2 (CBTC) pay any party; 0.8.2 commits no allocation', () => {
     const pinned = (admin: string) => CANTON_TRANSFER_FACTORIES[admin]?.map((f) => f.openReceipt === true);
     expect(pinned('cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b')).toEqual([true, true, true]);
-    expect(pinned('cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff')).toEqual([false, false]);
+    expect(pinned(CBTC_ADMIN)).toEqual([true, false]);
   });
 
   test('the read is shape-checked before any check: a non-string field is BAD_RESPONSE, not a TypeError', () => {
@@ -283,6 +287,61 @@ describe('V-C1…V-C7 on the golden Canton-source order (CAN-1863, CAN-3408)', (
 
   test('V-C6: exactly the required window passes', async () => {
     await expect(golden3().run({ requiredProofWindowSec: 3_600 })).resolves.toBeUndefined();
+  });
+});
+
+describe('V-C4 and V-C5 on a DA Utilities CBTC give (CAN-3587)', () => {
+  /** A CBTC intent of the golden terms, its give committed in the allocation `templateId`; checked against the published pins unless `registries` names others. */
+  function cbtc(templateId: string, registries?: Readonly<Record<string, readonly CantonTransferFactory[]>>) {
+    const input = { ...golden.vector.input, instrumentAdmin: CBTC_ADMIN, instrumentId: 'CBTC' };
+    const built = buildCantonSourceOrder(input);
+    const intent = intentOf(input, built.orderHash, GOLDEN_LEGS, String(input.fillDeadline + 3_600));
+    intent.allocation!.templateId = templateId;
+    const passed: string[] = [];
+    const run = () =>
+      checkCantonSource(
+        {
+          order: built.order as unknown as OrderJson,
+          ticket: { orderHash: built.orderHash, repayTo: repayToFromParty(PARTY) } as TicketJson,
+          party: PARTY, fillerId: 'acme', requiredProofWindowSec: 2_700, reader: reader(intent),
+          ...(registries ? { registries } : {}),
+        },
+        (check) => void passed.push(check),
+      );
+    return { run, passed };
+  }
+
+  test('TC-SDK-3587-02: a committed AllocationV2 of utility-registry-v0 passes V-C1…V-C7 on the published pin', async () => {
+    const g = cbtc(`${DA_ALLOCATION_PKG}:Utility.Registry.V0.Holding.AllocationV2:AllocationV2`);
+    await g.run();
+    expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
+  });
+
+  test.each([
+    ['TC-SDK-3587-03: the AllocationV2 template under the app package, not utility-registry-v0', `${DA_APP_0_9_2}:Utility.Registry.V0.Holding.AllocationV2:AllocationV2`],
+    ['TC-SDK-3587-04: a DvpLegAllocation of utility-registry-v0, not the committed V2 allocation', `${DA_ALLOCATION_PKG}:Utility.Registry.V0.Holding.Allocation:DvpLegAllocation`],
+    ['TC-SDK-3587-05: a CNRX allocation template under the CBTC admin', `${'ab'.repeat(32)}:Cnrx.Allocation:CnrxAllocationV2`],
+  ])('%s is refused at V-C4', async (_name, templateId) => {
+    const g = cbtc(templateId);
+    const r = await refusal(g.run());
+    expect({ check: r.check, reason: r.reason }).toEqual({ check: 'V-C4', reason: 'ESCROW_MISMATCH' });
+    expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3']);
+  });
+
+  test('TC-SDK-3587-06: a DA pin not marked as paying any party declines V-C5 payout-not-ready', async () => {
+    const closed = { [CBTC_ADMIN]: (CANTON_TRANSFER_FACTORIES[CBTC_ADMIN] ?? []).map((f) => ({ ...f, openReceipt: false })) };
+    const g = cbtc(`${DA_ALLOCATION_PKG}:Utility.Registry.V0.Holding.AllocationV2:AllocationV2`, closed);
+    const r = await refusal(g.run());
+    expect(r).toMatchObject({ check: 'V-C5', reason: 'OTHER', detail: expect.stringMatching(/^payout-not-ready: .*T-9/) });
+    expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4']);
+  });
+
+  test('TC-SDK-3587-07: the allocation template is read from allocationPackageId, falling back to packageId', () => {
+    expect(CANTON_ALLOCATION_TEMPLATES[CBTC_ADMIN]).toEqual([`${DA_ALLOCATION_PKG}:Utility.Registry.V0.Holding.AllocationV2:AllocationV2`]);
+    expect(allocationTemplateOf(registryOf(true))).toBe(ALLOCATION_TEMPLATE);
+    const [da] = CANTON_TRANSFER_FACTORIES[CBTC_ADMIN] ?? [];
+    expect(registriesProblem({ [CBTC_ADMIN]: [{ ...da, allocationPackageId: 'utility-registry-v0' }] })).toMatch(/allocationPackageId: expected 64 lowercase hex/);
+    expect(registriesProblem({ [CBTC_ADMIN]: [da] })).toBeUndefined();
   });
 });
 
