@@ -29,7 +29,7 @@ const REQUIRED = [
   'FILLER_GATEWAY_WS_URL', 'FILLER_GATEWAY_SIGNER', 'CANTON_PARTICIPANT_UID', 'CNRX_ADMIN_PARTY', 'CANTON_TRANSFER_FACTORIES_JSON',
   'STAND_FILLER_ID', 'STAND_FILLER_MESSAGE_KEY', 'STAND_FILLER_CANTON_PARTY', 'STAND_FILLER_CANTON_PARTY_KEY',
   'STAND_FILLER2_ID', 'STAND_FILLER2_MESSAGE_KEY', 'STAND_FILLER2_CANTON_PARTY', 'STAND_FILLER2_CANTON_PARTY_KEY',
-  'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET',
+  'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET', 'STAND_CANTON_RECIPIENT_PARTY',
 ] as const;
 
 /** The relay's own signing key: a test key the SDK pins as filler-gateway's in INT-02/03, never the stand's. */
@@ -120,14 +120,17 @@ function operations(prefix: Party['prefix'], relay?: Relay, seen: string[] = [])
   return { ops, prefix, signed: () => signatures };
 }
 
-/** The unlocked CNRX holdings of `party` on the participant, read through the token standard, not through Cancore. */
+/**
+ * The CNRX holdings of `party` on the participant, read through the token standard, not through Cancore. Locked
+ * ones count too: a received CNRX its guardian has not marked yet may carry a lock, and is still the delivery.
+ */
 async function cnrxOnLedger(party: string): Promise<Map<string, string>> {
   type View = { owner?: string; instrumentId?: { admin?: string; id?: string }; amount?: string; lock?: unknown };
   const events = await activeContracts(party, { InterfaceFilter: { value: { interfaceId: HOLDING_V1, includeInterfaceView: true, includeCreatedEventBlob: false } } }, await cantonToken());
   const held = new Map<string, string>();
   for (const event of events) {
     const view = event.interfaceViews?.[0]?.viewValue as View | undefined;
-    if (view?.owner === party && view.instrumentId?.admin === env('CNRX_ADMIN_PARTY') && view.instrumentId?.id === 'CNRX' && !view.lock) held.set(event.contractId, String(view.amount));
+    if (view?.owner === party && view.instrumentId?.admin === env('CNRX_ADMIN_PARTY') && view.instrumentId?.id === 'CNRX') held.set(event.contractId, String(view.amount));
   }
   return held;
 }
@@ -139,13 +142,17 @@ const failure = async (run: Promise<unknown>): Promise<unknown> => run.then(() =
 const cnrx = () => ({ admin: env('CNRX_ADMIN_PARTY'), id: 'CNRX' });
 
 standSuite('CAN-2352: the Canton operations client against the real filler-gateway → trading bridge', REQUIRED, () => {
-  test('TC-SDK-2352-INT-01: party.allocate and holdings.transfer — prepared by Cancore, checked and signed by the SDK, submitted; the party and the receiver’s holding are on the participant', async () => {
-    const { ops } = operations('STAND_FILLER');
+  test('TC-SDK-2352-INT-01: party.allocate of a filler that has its party is refused by Cancore before anything is signed; holdings.transfer — prepared by Cancore, checked and signed by the SDK, submitted; the receiver’s holding is on the participant', async () => {
+    const filler = operations('STAND_FILLER');
+    const { ops } = filler;
     const party = env('STAND_FILLER_CANTON_PARTY');
-    const receiver = env('STAND_FILLER2_CANTON_PARTY');
+    const receiver = env('STAND_CANTON_RECIPIENT_PARTY');
 
-    const allocated = await ops.allocateParty();
-    expect(allocated).toMatchObject({ op: 'party.allocate', result: { partyId: party } });
+    // Every stand filler is onboarded with its party; a second allocation is Cancore staff's, never the node's.
+    const allocated = await failure(ops.allocateParty());
+    expect(allocated).toBeInstanceOf(GatewayError);
+    expect((allocated as GatewayError).code).toBe('NOT_ELIGIBLE');
+    expect(filler.signed()).toBe(0);
     const token = await cantonToken();
     const details = await ledger<{ partyDetails?: Array<{ party: string; isLocal?: boolean }> }>(`/v2/parties/${encodeURIComponent(party)}`, token);
     expect(details.partyDetails?.map((d) => d.party)).toContain(party);
@@ -154,6 +161,7 @@ standSuite('CAN-2352: the Canton operations client against the real filler-gatew
     const sent = await ops.transfer({ asset: cnrx(), amount: '0.2352', toParty: receiver });
     expect(sent).toMatchObject({ op: 'holdings.transfer', result: { outcome: 'COMPLETED' } });
     expect(created(before, await cnrxOnLedger(receiver))).toEqual(['0.2352']);
+    expect(filler.signed()).toBeGreaterThan(0);
   }, 240_000);
 
   const tampers: Array<{ name: string; relay: Relay; refusal: RegExp }> = [
@@ -194,7 +202,7 @@ standSuite('CAN-2352: the Canton operations client against the real filler-gatew
   }, 180_000);
 
   test('TC-SDK-2352-INT-03: a lost submit answer is retried under the same operationId — one transaction; a final refusal is not retried', async () => {
-    const receiver = env('STAND_FILLER2_CANTON_PARTY');
+    const receiver = env('STAND_CANTON_RECIPIENT_PARTY');
     const submits: string[] = [];
     let lost = false;
     const once = operations('STAND_FILLER', {
