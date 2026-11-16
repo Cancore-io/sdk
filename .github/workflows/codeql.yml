@@ -27,7 +27,11 @@ jobs:
     #   - https://gh.io/supported-runners-and-hardware-resources
     #   - https://gh.io/using-larger-runners (GitHub.com only)
     # Consider using larger runners or machines with greater resources for possible analysis time improvements.
-    runs-on: ${{ (matrix.language == 'swift' && 'macos-latest') || 'ubuntu-latest' }}
+    # ubuntu-latest, not the cancore-runners standard (CAN-1120): this public repository's pull_request trigger runs
+    # code from forks. The matrix has no swift, so no macOS runner is needed.
+    runs-on: ubuntu-latest
+    # A hung analysis must not hold a public runner (packages/workflows.test.ts, group 4).
+    timeout-minutes: 60
     permissions:
       # required for all workflows
       security-events: write
