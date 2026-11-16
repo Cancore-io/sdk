@@ -28,6 +28,7 @@ const REQUIRED = [
   'FILLER_GATEWAY_WS_URL', 'FILLER_GATEWAY_SIGNER', 'CANTON_PARTICIPANT_UID', 'CNRX_ADMIN_PARTY', 'CANTON_TRANSFER_FACTORIES_JSON',
   'STAND_FILLER_ID', 'STAND_FILLER_MESSAGE_KEY', 'STAND_FILLER_CANTON_PARTY', 'STAND_FILLER_CANTON_PARTY_KEY',
   'STAND_FILLER2_ID', 'STAND_FILLER2_MESSAGE_KEY', 'STAND_FILLER2_CANTON_PARTY', 'STAND_FILLER2_CANTON_PARTY_KEY',
+  'STAND_FILLER3_ID', 'STAND_FILLER3_MESSAGE_KEY', 'STAND_FILLER3_CANTON_PARTY_KEY',
   'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET', 'STAND_CANTON_RECIPIENT_PARTY',
 ] as const;
 
@@ -48,7 +49,7 @@ interface Relay {
 }
 
 interface Party {
-  prefix: 'STAND_FILLER' | 'STAND_FILLER2';
+  prefix: 'STAND_FILLER' | 'STAND_FILLER2' | 'STAND_FILLER3';
   signed: () => number;
 }
 
@@ -134,21 +135,20 @@ const failure = async (run: Promise<unknown>): Promise<unknown> => run.then(() =
 const cnrx = () => ({ admin: env('CNRX_ADMIN_PARTY'), id: 'CNRX' });
 
 standSuite('CAN-2352: the Canton operations client against the real filler-gateway → trading bridge', REQUIRED, () => {
-  test('TC-SDK-2352-INT-01: party.allocate of a filler that has its party is refused by Cancore before anything is signed; holdings.transfer — prepared by Cancore, checked and signed by the SDK, submitted; the receiver’s holding is on the participant', async () => {
+  test('TC-SDK-2352-INT-01: party.allocate of a filler with a message key and no party — prepared by Cancore, signed by the SDK with the party key, the party on the participant; holdings.transfer — prepared by Cancore, checked and signed by the SDK, submitted; the receiver’s holding is on the participant', async () => {
+    // The stand seeds STAND_FILLER3 with a message key and no party (meta intent-stand-filler.mjs): its first op is its own allocation.
+    const newcomer = operations('STAND_FILLER3');
+    const allocated = await newcomer.ops.allocateParty();
+    expect(allocated).toMatchObject({ op: 'party.allocate', result: { partyId: expect.stringMatching(/::/) } });
+    expect(newcomer.signed()).toBeGreaterThan(0);
+    const partyId = allocated.result.partyId;
+    const token = await cantonToken();
+    const details = await ledger<{ partyDetails?: Array<{ party: string }> }>(`/v2/parties/${encodeURIComponent(partyId)}`, token);
+    expect(details.partyDetails?.map((d) => d.party)).toContain(partyId);
+
     const filler = operations('STAND_FILLER');
     const { ops } = filler;
-    const party = env('STAND_FILLER_CANTON_PARTY');
     const receiver = env('STAND_CANTON_RECIPIENT_PARTY');
-
-    // Every stand filler is onboarded with its party; a second allocation is Cancore staff's, never the node's.
-    const allocated = await failure(ops.allocateParty());
-    expect(allocated).toBeInstanceOf(GatewayError);
-    expect((allocated as GatewayError).code).toBe('NOT_ELIGIBLE');
-    expect(filler.signed()).toBe(0);
-    const token = await cantonToken();
-    const details = await ledger<{ partyDetails?: Array<{ party: string; isLocal?: boolean }> }>(`/v2/parties/${encodeURIComponent(party)}`, token);
-    expect(details.partyDetails?.map((d) => d.party)).toContain(party);
-
     const before = await cnrxOnLedger(receiver);
     const sent = await ops.transfer({ asset: cnrx(), amount: '0.2352', toParty: receiver });
     expect(sent).toMatchObject({ op: 'holdings.transfer', result: { outcome: 'COMPLETED' } });
