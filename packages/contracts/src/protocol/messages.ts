@@ -29,6 +29,7 @@ export const DECLINE_REASONS = [
   'NO_INVENTORY', 'RISK_LIMIT', 'PRICE_MOVED', 'PAUSED', 'OTHER',
   'TICKET_SIGNER_UNKNOWN', 'TICKET_MISMATCH', 'TICKET_TTL_TOO_SHORT', 'TICKET_ISSUED_LATE', 'TICKET_BEYOND_DEADLINE',
   'ESCROW_NOT_OPEN', 'ESCROW_MISMATCH', 'PROOF_WINDOW_TOO_SHORT', 'SKEW_MARGIN_TOO_SHORT', 'DRAW_MISMATCH',
+  'RECIPIENT_NOT_READY',
 ] as const;
 export const ERROR_CODES = [
   'BAD_REQUEST', 'UNAUTHENTICATED', 'UNSUPPORTED_VERSION', 'UNSUPPORTED_TYPE', 'BAD_SIGNATURE',
@@ -441,6 +442,22 @@ export interface CantonIntent {
   allocation: CantonAllocation | null;
   /** Absent from a filler-gateway before CAN-3408: V-C7 refuses then, as for a factory that is not live. */
   settlementFactory?: CantonSettlementFactory | null;
+}
+
+/**
+ * `GET /v1/filler/canton/recipient-readiness/{orderHash}`: whether the recipient of the party's live `DeliveryOrder`
+ * for `orderHash` accepts its instrument through the order's `validUntil` — Cancore's read of the recipient's transfer
+ * preapproval, the one trading's pre-ticket checks use. The party cannot read it on its own participant. The node
+ * refuses a Canton-form ticket with `RECIPIENT_NOT_READY` when `ready` is false (fillers.md V-R1).
+ */
+export interface CantonRecipientReadiness {
+  orderHash: Hex;
+  deliveryOrderCid: string;
+  recipient: string;
+  asset: CantonAsset;
+  ready: boolean;
+  /** Why not; null when ready. Open (V-2): an unknown value reads as not ready. */
+  reason: 'RECIPIENT_NOT_READY' | 'INSTRUMENT_NOT_SUPPORTED' | (string & {}) | null;
 }
 
 // --- Public records (auction-and-draw §3.3–3.4) and the gateway identity.

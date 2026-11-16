@@ -66,7 +66,7 @@
     "futureEnumValue": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$", "description": "a value added to an open enum within v1 (V-2); the receiver treats it as OTHER/generic. Every protocol enum is `anyOf: [{enum: known values}, futureEnumValue]`" },
     "declineReason": {
       "anyOf": [
-        { "enum": ["NO_INVENTORY", "RISK_LIMIT", "PRICE_MOVED", "PAUSED", "OTHER", "TICKET_SIGNER_UNKNOWN", "TICKET_MISMATCH", "TICKET_TTL_TOO_SHORT", "TICKET_ISSUED_LATE", "TICKET_BEYOND_DEADLINE", "ESCROW_NOT_OPEN", "ESCROW_MISMATCH", "PROOF_WINDOW_TOO_SHORT", "SKEW_MARGIN_TOO_SHORT", "DRAW_MISMATCH"] },
+        { "enum": ["NO_INVENTORY", "RISK_LIMIT", "PRICE_MOVED", "PAUSED", "OTHER", "TICKET_SIGNER_UNKNOWN", "TICKET_MISMATCH", "TICKET_TTL_TOO_SHORT", "TICKET_ISSUED_LATE", "TICKET_BEYOND_DEADLINE", "ESCROW_NOT_OPEN", "ESCROW_MISMATCH", "PROOF_WINDOW_TOO_SHORT", "SKEW_MARGIN_TOO_SHORT", "DRAW_MISMATCH", "RECIPIENT_NOT_READY"] },
         { "$ref": "#/$defs/futureEnumValue" }
       ]
     },
