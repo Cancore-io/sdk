@@ -276,6 +276,16 @@ export class GatewaySession {
     return undefined;
   }
 
+  /** A stale `auth.ok` opens no session at all: the host clock is what is off, so that is said as an error of its own. */
+  private dropped(reason: 'stale' | 'replayed', frame: { type: string; id?: string; sentAt: number }): void {
+    this.options.logger.warn('filler-gateway: frame dropped', { reason, type: frame.type, id: frame.id });
+    if (reason !== 'stale' || frame.type !== 'auth.ok') return;
+    this.options.logger.error('filler-gateway: auth.ok is stale, the host clock is off filler-gateway\'s by more than maxMessageAgeMs; no session until it is corrected', {
+      skewMs: this.options.clock.now() - frame.sentAt,
+      maxMessageAgeMs: this.options.maxMessageAgeMs,
+    });
+  }
+
   private onMessage(text: string): void {
     const check = verifyGatewayText(text, { gatewaySigner: this.options.gatewaySigner, fillerId: this.options.fillerId });
     if (!check.ok) {
@@ -285,7 +295,7 @@ export class GatewaySession {
     const { frame } = check.verified;
     const stale = this.staleOrReplayed(frame, check.verified.id);
     if (stale) {
-      this.options.logger.warn('filler-gateway: frame dropped', { reason: stale, type: frame.type, id: frame.id });
+      this.dropped(stale, frame);
       return;
     }
     this.lastInboundMs = this.options.clock.now();

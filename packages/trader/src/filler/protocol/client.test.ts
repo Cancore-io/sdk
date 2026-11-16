@@ -741,6 +741,17 @@ describe('frames after login', () => {
     expect(h.logger.entries.filter((l) => l.fields?.reason === 'replayed')).toHaveLength(1);
   });
 
+  test('TC-SDK-2151-03: an auth.ok stale on arrival — the session does not open and the clock skew is logged as an error', async () => {
+    const h = harness();
+    void h.client.start();
+    const socket = await h.connected();
+    socket.open();
+    socket.receive(h.gateway.frame({ type: 'auth.ok', id: 'g-ok-skewed', fillerId: FILLER, heartbeatIntervalMs: 60_000, sentAt: h.clock.now() - 45_000 }));
+    await settle();
+    expect(h.client.connected).toBe(false);
+    expect(h.logger.entries).toContainEqual(expect.objectContaining({ level: 'error', fields: { skewMs: 45_000, maxMessageAgeMs: 30_000 } }));
+  });
+
   test('TC-SDK-2151-03: filler-gateway numbering its pings per session — ping-1 of the next session is answered, not dropped as replayed', async () => {
     const h = harness({ heartbeatIntervalMs: 600_000 });
     void h.client.start();
