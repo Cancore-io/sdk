@@ -249,3 +249,13 @@ describe('engine.balances (CAN-3087)', () => {
     expect(await e.balances(['CBTC'])).toEqual([{ instrument: 'CBTC', amount: '0.00000005' }]);
   });
 });
+
+describe('engine.cancel (CAN-2826)', () => {
+  it('cancels only while the order is open, so a taker\'s accept and the cancel never both land', async () => {
+    const calls: unknown[][] = [];
+    const e = await engineOver({ swap: { cancel: async (...args: unknown[]) => (calls.push(args), order({ id: 'o1', status: 'cancelled' })) } });
+    await e.cancel('o1');
+    expect(calls).toEqual([['o1', { ifOpen: true }]]);
+  });
+});
+
