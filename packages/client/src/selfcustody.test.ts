@@ -14,7 +14,6 @@ import {
   legalConsentMessage,
   newPreimage,
   SettleError,
-  sha256Hex,
   UnexpectedLegError,
   UnverifiedTransactionError,
   type IncomingTransfer,
@@ -3354,8 +3353,11 @@ describe('self-custody HTLC: Flow B, accept-counter and refund sign only what th
     await acct.acceptCounter('s1', { ...expectation, hashLock });
     await expect(acct.claimCounter('s1', preimage)).resolves.toMatchObject({ status: 'both_claimed' });
 
-    expect(asked.map((a) => a.type)).toEqual(['htlc.flow-b-create', 'htlc.accept-counter']);
-    expect(await sha256Hex(preimage)).toBe(hashLock);
+    // The lock the account asked the venue to open is the one newPreimage made, and the accept names only the swap.
+    expect(asked).toEqual([
+      { type: 'htlc.flow-b-create', params: expect.objectContaining({ hashLock }) },
+      { type: 'htlc.accept-counter', params: { swapId: 's1' } },
+    ]);
     expect(claimed).toEqual([{ preimage }]);
     // Neither ceremony carried the preimage: the venue learns it from the claim alone.
     expect(JSON.stringify(asked)).not.toContain(preimage);
