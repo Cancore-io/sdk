@@ -254,23 +254,33 @@ export function standEvmOrder(salt: number): { order: OrderJson; orderHash: Hex;
 /** The stand's ticket signer: anvil's default mnemonic, index 16 (TICKETSIGNER of the runbook) — a test key. */
 export const STAND_TICKET_SIGNER_KEY: Hex = '0xea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0';
 
-/**
- * Offers an EVM-form ticket of `o` to `s`, waits for the intent ack and issues the ticket signed by `signerKey`, as
- * trading would; returns the ticket-events cursor taken before the offer.
- */
-export async function issueEvmTicket(s: StandFiller, o: { order: OrderJson; orderHash: Hex; nowS: number }, signerKey: Hex): Promise<string> {
+/** Offers an EVM-form ticket of `o` to `s` and waits for the intent ack; returns the ticket-events cursor taken before the offer and the intent. */
+export async function offerEvmTicket(s: StandFiller, o: { order: OrderJson; orderHash: Hex; nowS: number }): Promise<{ from: string; intent: TicketIntentMessage }> {
   const from = await cursor(STREAMS.ticketEvents);
   await command(STREAMS.tickets, 'ticket.offer', offerCommand(o, { destination: standChain(), form: 'evm' }));
   const acked = await until('the intent acked', async () => {
     const t = await s.store.withOrder(o.orderHash, (tx) => tx.getTicket(0));
     return t?.intentAck ? t : undefined;
   }, 60_000, s.diagnostics);
-  const intent = acked.intent as TicketIntentMessage;
+  return { from, intent: acked.intent as TicketIntentMessage };
+}
+
+/** Issues the acked EVM-form ticket of `o` for `intent`, signed by `signerKey`, as trading would. */
+export async function issueAckedTicket(o: { orderHash: Hex; nowS: number }, intent: TicketIntentMessage, signerKey: Hex): Promise<void> {
   const fillTicket = {
     orderHash: o.orderHash, fillerId: fillerIdHash(env('STAND_FILLER_ID')), deliveryKey: intent.deliveryKey, repayTo: intent.repayTo, attempt: 0, validFrom: String(o.nowS), validUntil: String(o.nowS + 900),
   };
   const ticketSig = await createTestTypedDataSigner(signerKey).signTypedData({ domain: FILL_TICKET_DOMAIN, types: FILL_TICKET_TYPES, primaryType: 'FillTicket', message: fillTicket });
   await command(STREAMS.tickets, 'ticket.issue', { orderHash: o.orderHash, attempt: 0, ticketSig, deliveryKey: intent.deliveryKey, repayTo: intent.repayTo });
+}
+
+/**
+ * Offers an EVM-form ticket of `o` to `s`, waits for the intent ack and issues the ticket signed by `signerKey`, as
+ * trading would; returns the ticket-events cursor taken before the offer.
+ */
+export async function issueEvmTicket(s: StandFiller, o: { order: OrderJson; orderHash: Hex; nowS: number }, signerKey: Hex): Promise<string> {
+  const { from, intent } = await offerEvmTicket(s, o);
+  await issueAckedTicket(o, intent, signerKey);
   return from;
 }
 
@@ -330,6 +340,8 @@ export interface StandFillerOptions {
   gatewaySigner?: Hex;
   /** EVM endpoints of the stand chain; anvil by default. */
   rpc?: EvmRpc[];
+  /** The proof window the filler requires on the stand chain (V-E3); the stand's CANTON_PROOF_WINDOW_S by default. */
+  requiredProofWindowSec?: number;
   store?: InMemoryFillerStore;
 }
 
@@ -358,7 +370,7 @@ export function standFiller(options: StandFillerOptions = {}): StandFiller {
     quoteSigner: createTestTypedDataSigner(env('STAND_FILLER_MESSAGE_KEY') as Hex),
     fillSigners: { [chain]: createTestFillSigner(env('STAND_FILLER_EVM_KEY') as Hex) },
     rpc: { [chain]: options.rpc ?? [httpRpc(env('EVM_RPC_URL'))] },
-    chains: { [chain]: { router: standRouter(), openConfirmations: 1, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: proofWindowSec, sendGuardSec: 10, minGasWei: 0n, fillConfirmations: 1 } },
+    chains: { [chain]: { router: standRouter(), openConfirmations: 1, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: options.requiredProofWindowSec ?? proofWindowSec, sendGuardSec: 10, minGasWei: 0n, fillConfirmations: 1 } },
     tickets: { deltaIssueMs: 3_000 },
     canton: {
       party: env('STAND_FILLER_CANTON_PARTY'),

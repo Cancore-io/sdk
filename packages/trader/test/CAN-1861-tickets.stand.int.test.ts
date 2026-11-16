@@ -1,14 +1,15 @@
 /**
  * CAN-1861, the ticket desk against the real filler-gateway of the intent stand: the hook's declines, the checks
  * of an issued EVM-form ticket that refuse it, an offer delivered twice, a hook that never answers, a foreign
- * ticket signature and the expiries. trading is played on the Redis Streams (test/stand/filler-gateway.ts); the
+ * ticket signature, the expiries and a node restarted mid-ticket. trading is played on the Redis Streams (test/stand/filler-gateway.ts); the
  * full path to the receipt is TC-SDK-1861-INT-01 in canton-delivery.stand.int.test.ts.
  *
  *   INTENT_STAND_ENV=<stand env> npx jest --selectProjects int --runInBand packages/trader/test/CAN-1861-tickets.stand.int.test.ts
  */
 import type { Hex } from '@cancore/contracts';
+import type { EvmRpc } from '../src/filler/rpc';
 import { OFFER_DECLINE_REASONS, type TicketOfferDecision } from '../src/filler/tickets/desk';
-import { createTestTypedDataSigner } from '../src/filler/testing';
+import { createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
 import { env } from './stand/canton-ledger';
 import {
   command,
@@ -16,7 +17,9 @@ import {
   eventsAfter,
   GATEWAY_KEYS,
   httpRpc,
+  issueAckedTicket,
   issueEvmTicket,
+  offerEvmTicket,
   offerCommand,
   ofOrder,
   openOnStand,
@@ -157,4 +160,85 @@ standSuite('CAN-1861: the ticket desk against the real filler-gateway', [...GATE
       await blind.filler.stop();
     }
   }, 180_000);
+
+  test('TC-SDK-1861-INT-03: the filler requires a longer proof window than the stand router leaves — V-E3 refuses PROOF_WINDOW_TOO_SHORT, no receipt', async () => {
+    const strict = standFiller({ offer: offerHook, requiredProofWindowSec: 10 * 365 * 86_400 });
+    stand = strict;
+    await strict.filler.start();
+    try {
+      // V-E3 is read after V-E2: only an open escrow lets the ticket reach it.
+      const o = standEvmOrder(122);
+      await openOnStand(o);
+      const from = await issueEvmTicket(strict, o, STAND_TICKET_SIGNER_KEY);
+      expect((await declined(o.orderHash, from)).data).toMatchObject({ reason: 'PROOF_WINDOW_TOO_SHORT' });
+      expect((await eventsAfter(STREAMS.ticketEvents, from, ofOrder(o.orderHash))).map((e) => e.kind)).not.toContain('ticket.receipt');
+    } finally {
+      await strict.filler.stop();
+    }
+  }, 180_000);
+
+  /** The receipt filler-gateway records for `orderHash` after `from`, once the restarted node sends it. */
+  const receiptedOnce = async (orderHash: Hex, from: string, s: StandFiller) => {
+    await until('ticket.receipt at filler-gateway', async () => (await eventsAfter(STREAMS.ticketEvents, from, (e) => ofOrder(orderHash)(e) && e.kind === 'ticket.receipt'))[0], 120_000, s.diagnostics);
+    await sleep(3_000);
+    const kinds = (await eventsAfter(STREAMS.ticketEvents, from, ofOrder(orderHash))).map((e) => e.kind);
+    expect(kinds.filter((k) => k === 'ticket.intent')).toHaveLength(1);
+    expect(kinds.filter((k) => k === 'ticket.receipt')).toHaveLength(1);
+    expect(kinds.filter((k) => k === 'ticket.declined')).toEqual([]);
+  };
+
+  /** A process that died: whatever it still had in flight never finishes. */
+  const crash = async (s: StandFiller) => {
+    await Promise.race([s.filler.stop(), sleep(10_000)]);
+  };
+
+  test('TC-SDK-1861-INT-07: the node dies with the intent sent, before the ticket — restarted on the same store it takes the ticket to one receipt', async () => {
+    const store = new InMemoryFillerStore();
+    const first = standFiller({ offer: offerHook, store });
+    stand = first;
+    await first.filler.start();
+    const o = standEvmOrder(130);
+    await openOnStand(o);
+    const { from, intent } = await offerEvmTicket(first, o);
+    expect((await ticket(first, o.orderHash))?.state).toMatch(/^intent-(sent|acked)$/);
+    await crash(first);
+
+    const second = standFiller({ offer: offerHook, store });
+    stand = second;
+    await second.filler.start();
+    try {
+      await issueAckedTicket(o, intent, STAND_TICKET_SIGNER_KEY);
+      await receiptedOnce(o.orderHash, from, second);
+      expect(asked.get(o.orderHash)).toBe(1);
+    } finally {
+      await second.filler.stop();
+    }
+  }, 300_000);
+
+  test('TC-SDK-1861-INT-07: the node dies in the checks (CHECKING) — restarted on the same store it finishes them and sends one receipt', async () => {
+    const store = new InMemoryFillerStore();
+    const anvil = httpRpc(env('EVM_RPC_URL'));
+    let dead = false;
+    // Once the node is dead its reads never come back: nothing it started can still write to the store.
+    const dying: EvmRpc = { label: 'stand-anvil-dying', request: <T>(r: { method: string; params?: readonly unknown[] }) => (dead ? new Promise<T>(() => undefined) : anvil.request<T>(r)) };
+    const first = standFiller({ offer: offerHook, store, rpc: [dying] });
+    stand = first;
+    await first.filler.start();
+    const o = standEvmOrder(131);
+    await openOnStand(o);
+    const { from, intent } = await offerEvmTicket(first, o);
+    dead = true;
+    await issueAckedTicket(o, intent, STAND_TICKET_SIGNER_KEY);
+    await until('the checks started', async () => ((await ticket(first, o.orderHash))?.state === 'checking' ? true : undefined), 60_000, first.diagnostics);
+    await crash(first);
+
+    const second = standFiller({ offer: offerHook, store });
+    stand = second;
+    await second.filler.start();
+    try {
+      await receiptedOnce(o.orderHash, from, second);
+    } finally {
+      await second.filler.stop();
+    }
+  }, 300_000);
 });
