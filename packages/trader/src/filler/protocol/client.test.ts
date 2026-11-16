@@ -94,6 +94,7 @@ function harness(options: { random?: () => number; tokenTtlMs?: number; heartbea
       reconnect: { initialDelayMs: 500, maxDelayMs: 30_000 },
       heartbeatMisses: 3,
       loginTimeoutMs: 15_000,
+      maxMessageAgeMs: 30_000,
     },
     client,
   );
@@ -661,7 +662,7 @@ describe('heartbeat and reconnect', () => {
       {
         url: URL_, fillerId: FILLER, gatewaySigner: h.gateway.address, tokens: h.rest, seal: h.client.seal, clock: h.clock, logger: h.logger,
         webSocket: () => { calls++; throw new Error('ECONNREFUSED'); },
-        random: () => 0, nextId: () => 'x', reconnect: { initialDelayMs: 500, maxDelayMs: 30_000 }, heartbeatMisses: 3, loginTimeoutMs: 15_000,
+        random: () => 0, nextId: () => 'x', reconnect: { initialDelayMs: 500, maxDelayMs: 30_000 }, heartbeatMisses: 3, loginTimeoutMs: 15_000, maxMessageAgeMs: 30_000,
       },
       h.client,
     );
@@ -698,6 +699,35 @@ describe('frames after login', () => {
     await settle();
     expect(offers).toHaveLength(0);
     expect(h.logger.entries).toContainEqual(expect.objectContaining({ fields: { reason: 'other-fillerId', type: 'ticket.offer' } }));
+  });
+
+  test('TC-SDK-2151-03: a frame whose sentAt is more than maxMessageAgeMs from its arrival is dropped as stale, either way', async () => {
+    const h = harness();
+    const offers = record(h, 'ticket.offer');
+    void h.client.start();
+    const socket = await h.login();
+    socket.receive(h.offer({ id: 'old', sentAt: h.clock.now() - 30_001 }));
+    socket.receive(h.offer({ id: 'ahead', sentAt: h.clock.now() + 30_001 }));
+    socket.receive(h.offer({ id: 'edge', sentAt: h.clock.now() - 30_000 }));
+    await settle();
+    expect(offers.map((o) => o.frame.id)).toEqual(['edge']);
+    expect(h.logger.entries.filter((l) => l.fields?.reason === 'stale').map((l) => l.fields?.id)).toEqual(['old', 'ahead']);
+  });
+
+  test('TC-SDK-2151-03: a frame reusing the id of one taken with other content is dropped as replayed; the id is forgotten only after messageIdRetainUntil', async () => {
+    const h = harness();
+    const offers = record(h, 'ticket.offer');
+    void h.client.start();
+    const socket = await h.login();
+    socket.receive(h.offer({ id: 'g-1' }));
+    socket.receive(h.offer({ id: 'g-1', attempt: 2 }));
+    await settle();
+    expect(offers).toHaveLength(1);
+    expect(h.logger.entries).toContainEqual(expect.objectContaining({ fields: { reason: 'replayed', type: 'ticket.offer', id: 'g-1' } }));
+    h.clock.advance(30_001);
+    socket.receive(h.offer({ id: 'g-1', attempt: 3 }));
+    await settle();
+    expect(offers.map((o) => o.frame.attempt)).toEqual([1, 3]);
   });
 
   test('a frame cut mid-way is dropped and the session stays up', async () => {

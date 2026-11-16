@@ -331,6 +331,10 @@ export interface StandFillerOptions {
   /** EVM endpoints of the stand chain; anvil by default. */
   rpc?: EvmRpc[];
   store?: InMemoryFillerStore;
+  /** The socket to filler-gateway; the native one by default. */
+  webSocket?: WebSocketFactory;
+  /** `transport.maxMessageAgeMs`; the SDK's default otherwise. */
+  maxMessageAgeMs?: number;
 }
 
 export interface StandFiller {
@@ -368,7 +372,8 @@ export function standFiller(options: StandFillerOptions = {}): StandFiller {
       registries: JSON.parse(env('CANTON_TRANSFER_FACTORIES_JSON')) as Record<string, CantonTransferFactory[]>,
     },
     store,
-    webSocket: nativeWebSocket,
+    webSocket: options.webSocket ?? nativeWebSocket,
+    ...(options.maxMessageAgeMs === undefined ? {} : { transport: { maxMessageAgeMs: options.maxMessageAgeMs } }),
     logger,
     events,
   });

@@ -27,6 +27,7 @@ import {
 import {
   DEFAULT_HEARTBEAT_MISSES,
   DEFAULT_LOGIN_TIMEOUT_MS,
+  DEFAULT_MAX_MESSAGE_AGE_MS,
   DEFAULT_RECONNECT,
   GatewaySession,
   type ReconnectPolicy,
@@ -152,6 +153,8 @@ export interface TransportOptions {
   loginTimeoutMs?: number;
   /** `GET /v1/filler/tickets` poll interval while disconnected. Default 2 s. */
   restPollIntervalMs?: number;
+  /** filler-gateway's `maxMessageAgeMs` (`GET /v1/gateway`): older frames and reused frame ids are dropped. Default 30 s, filler-gateway's own default. */
+  maxMessageAgeMs?: number;
   /** Jitter source in `[0, 1)`. Default `Math.random`. */
   random?: () => number;
 }
@@ -458,6 +461,7 @@ function validateTransport(transport: TransportOptions): void {
   positive('heartbeatMisses', transport.heartbeatMisses);
   positive('loginTimeoutMs', transport.loginTimeoutMs);
   positive('restPollIntervalMs', transport.restPollIntervalMs);
+  positive('maxMessageAgeMs', transport.maxMessageAgeMs);
   if (transport.random !== undefined && typeof transport.random !== 'function') throw new FillerConfigError('transport.random', 'expected a function');
 }
 
@@ -545,6 +549,7 @@ export function createFiller(config: FillerConfig): Filler {
       reconnect: { ...DEFAULT_RECONNECT, ...transport.reconnect },
       heartbeatMisses: transport.heartbeatMisses ?? DEFAULT_HEARTBEAT_MISSES,
       loginTimeoutMs: transport.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS,
+      maxMessageAgeMs: transport.maxMessageAgeMs ?? DEFAULT_MAX_MESSAGE_AGE_MS,
     },
     protocol,
   );
