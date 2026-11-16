@@ -35,7 +35,7 @@ import { hashOrder } from '../../src/filler/chain/hashes';
 import type { EvmChainId } from '../../src/filler/chains';
 import { createFiller, type Filler, type QuoteRequestHook, type ReconfirmHook, type TicketOfferHook } from '../../src/filler/filler';
 import type { EvmRpc } from '../../src/filler/rpc';
-import type { WebSocketFactory } from '../../src/filler/runtime';
+import type { HttpFetch, WebSocketFactory } from '../../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../../src/filler/testing';
 import { env } from './canton-ledger';
 
@@ -254,10 +254,16 @@ export function standEvmOrder(salt: number): { order: OrderJson; orderHash: Hex;
 /** The stand's ticket signer: anvil's default mnemonic, index 16 (TICKETSIGNER of the runbook) — a test key. */
 export const STAND_TICKET_SIGNER_KEY: Hex = '0xea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0';
 
+/** Offers an EVM-form ticket of `o`, as trading would; returns the ticket-events cursor taken before the offer. */
+export async function offerEvmOrder(o: { order: OrderJson; orderHash: Hex; nowS: number }, over: { acceptBy?: number } = {}): Promise<string> {
+  const from = await cursor(STREAMS.ticketEvents);
+  await command(STREAMS.tickets, 'ticket.offer', offerCommand(o, { ...over, destination: standChain(), form: 'evm' }));
+  return from;
+}
+
 /** Offers an EVM-form ticket of `o` to `s` and waits for the intent ack; returns the ticket-events cursor taken before the offer and the intent. */
 export async function offerEvmTicket(s: StandFiller, o: { order: OrderJson; orderHash: Hex; nowS: number }): Promise<{ from: string; intent: TicketIntentMessage }> {
-  const from = await cursor(STREAMS.ticketEvents);
-  await command(STREAMS.tickets, 'ticket.offer', offerCommand(o, { destination: standChain(), form: 'evm' }));
+  const from = await offerEvmOrder(o);
   const acked = await until('the intent acked', async () => {
     const t = await s.store.withOrder(o.orderHash, (tx) => tx.getTicket(0));
     return t?.intentAck ? t : undefined;
@@ -343,6 +349,10 @@ export interface StandFillerOptions {
   /** The proof window the filler requires on the stand chain (V-E3); the stand's CANTON_PROOF_WINDOW_S by default. */
   requiredProofWindowSec?: number;
   store?: InMemoryFillerStore;
+  /** The socket to filler-gateway; the native one by default. */
+  webSocket?: WebSocketFactory;
+  /** The REST transport to filler-gateway; the global fetch by default. */
+  fetch?: HttpFetch;
 }
 
 export interface StandFiller {
@@ -380,7 +390,8 @@ export function standFiller(options: StandFillerOptions = {}): StandFiller {
       registries: JSON.parse(env('CANTON_TRANSFER_FACTORIES_JSON')) as Record<string, CantonTransferFactory[]>,
     },
     store,
-    webSocket: nativeWebSocket,
+    webSocket: options.webSocket ?? nativeWebSocket,
+    ...(options.fetch ? { fetch: options.fetch } : {}),
     logger,
     events,
   });
