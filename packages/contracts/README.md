@@ -467,6 +467,12 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 - `0.2.0-rc.24` — the testnet intent routers (CAN-2529): `router` and `routerBlock` on every
   `DEPLOYMENTS.testnet` row (Sepolia, BNB testnet, Arbitrum Sepolia, Robinhood testnet, Base Sepolia). Additive.
+- `0.2.0-rc.23` — the recipient of a Canton delivery (CAN-1867): decline reason
+  `RECIPIENT_NOT_READY` — the recipient of the order no longer accepts its instrument, so the filler
+  refuses the Canton-form ticket before `ticket.receipt` (never a violation of the filler). REST read
+  `GET /v1/filler/canton/recipient-readiness/{orderHash}` (`CantonRecipientReadiness`;
+  `$defs/cantonRecipientReadiness`): Cancore's read of that recipient's transfer preapproval for the
+  party's live `DeliveryOrder`, which the party cannot read on its own participant (V-R1). Additive.
 - `0.2.0-rc.22` — `CantonIntent.settlementFactory` (CAN-3408): the settlement factory the owner
   approved into the `SwapIntent` (CAN-3340) and `live`, whether it is still the registry's current
   one, as settle reads it (`CantonSettlementFactory`; `$defs/cantonIntent.settlementFactory`).
