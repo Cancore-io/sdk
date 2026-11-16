@@ -24,6 +24,7 @@
     { "method": "GET", "path": "/v1/filler/canton/holdings", "auth": "bearer", "query": "#/$defs/pageQuery", "response": "#/$defs/cantonHoldingList" },
     { "method": "GET", "path": "/v1/filler/canton/delivery-orders", "auth": "bearer", "query": "#/$defs/pageQuery", "response": "#/$defs/cantonDeliveryOrderList" },
     { "method": "GET", "path": "/v1/filler/canton/intents/{orderHash}", "auth": "bearer", "response": "#/$defs/cantonIntent" },
+    { "method": "GET", "path": "/v1/filler/canton/recipient-readiness/{orderHash}", "auth": "bearer", "response": "#/$defs/cantonRecipientReadiness" },
     { "method": "GET", "path": "/v1/filler/routes", "auth": "bearer", "response": "messages.schema.json#/$defs/routes.state" },
     { "method": "POST", "path": "/v1/filler/routes", "auth": "bearer", "request": "messages.schema.json#/$defs/routes.set", "response": "messages.schema.json#/$defs/routes.state" }
   ],
@@ -208,6 +209,19 @@
       "description": "The live DeliveryOrders naming the party as filler, oldest first",
       "required": ["items", "nextCursor"],
       "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/cantonDeliveryOrder" } }, "nextCursor": { "type": ["string", "null"] } }
+    },
+    "cantonRecipientReadiness": {
+      "type": "object",
+      "description": "Whether the recipient of the caller party's live DeliveryOrder for orderHash accepts its instrument through the order's validUntil: Cancore's read of the recipient's transfer preapproval, the read trading's pre-ticket checks use. The node refuses a Canton-form ticket with RECIPIENT_NOT_READY when ready is false (fillers.md V-R1). 404 UNKNOWN_TICKET when no live DeliveryOrder with this orderHash names the party; 409 CANTON_NOT_READY when the fillerId has no party; 503 CANTON_UNAVAILABLE when the ledger cannot be read",
+      "required": ["orderHash", "deliveryOrderCid", "recipient", "asset", "ready", "reason"],
+      "properties": {
+        "orderHash": { "$ref": "messages.schema.json#/$defs/bytes32" },
+        "deliveryOrderCid": { "type": "string", "minLength": 1 },
+        "recipient": { "type": "string", "minLength": 1, "description": "DeliveryOrder.recipient" },
+        "asset": { "$ref": "messages.schema.json#/$defs/cantonAsset", "description": "DeliveryOrder.instrumentId" },
+        "ready": { "type": "boolean" },
+        "reason": { "anyOf": [{ "enum": ["RECIPIENT_NOT_READY", "INSTRUMENT_NOT_SUPPORTED", null] }, { "$ref": "messages.schema.json#/$defs/futureEnumValue" }], "description": "why not; null when ready" }
+      }
     },
     "cantonIntent": {
       "type": "object",
