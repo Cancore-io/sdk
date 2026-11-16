@@ -332,6 +332,7 @@ export function createFakeGatewayLogin(gateway: TestGatewaySigner, options: Fake
   /** Every token issued, with its expiry; `revoke` deletes one. */
   const tokens = new Map<string, number>();
   let challenges = 0;
+  let sessions = 0;
   const routes: Record<string, FakeRoute> = {
     'GET /v1/filler/auth/challenge': (request) => {
       const fillerId = new URL(request.url).searchParams.get('fillerId');
@@ -361,7 +362,8 @@ export function createFakeGatewayLogin(gateway: TestGatewaySigner, options: Fake
       return false;
     }
     socket.open();
-    socket.receive(gateway.frame({ type: 'auth.ok', id: `g-ok-${token}`, fillerId: options.fillerId, heartbeatIntervalMs: options.heartbeatIntervalMs ?? 60_000 }));
+    sessions += 1;
+    socket.receive(gateway.frame({ type: 'auth.ok', id: `g-ok-${token}-${sessions}`, fillerId: options.fillerId, heartbeatIntervalMs: options.heartbeatIntervalMs ?? 60_000 }));
     return true;
   };
   return {

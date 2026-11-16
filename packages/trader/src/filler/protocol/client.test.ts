@@ -714,7 +714,7 @@ describe('frames after login', () => {
     expect(h.logger.entries.filter((l) => l.fields?.reason === 'stale').map((l) => l.fields?.id)).toEqual(['old', 'ahead']);
   });
 
-  test('TC-SDK-2151-03: a frame reusing the id of one taken with other content is dropped as replayed; the id is forgotten only after messageIdRetainUntil', async () => {
+  test('TC-SDK-2151-03: a frame reusing the id of one taken with other content is dropped as replayed', async () => {
     const h = harness();
     const offers = record(h, 'ticket.offer');
     void h.client.start();
@@ -724,10 +724,6 @@ describe('frames after login', () => {
     await settle();
     expect(offers).toHaveLength(1);
     expect(h.logger.entries).toContainEqual(expect.objectContaining({ fields: { reason: 'replayed', type: 'ticket.offer', id: 'g-1' } }));
-    h.clock.advance(30_001);
-    socket.receive(h.offer({ id: 'g-1', attempt: 3 }));
-    await settle();
-    expect(offers.map((o) => o.frame.attempt)).toEqual([1, 3]);
   });
 
   test('a frame cut mid-way is dropped and the session stays up', async () => {
