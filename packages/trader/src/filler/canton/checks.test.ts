@@ -381,7 +381,8 @@ describe('holdings.transfer of CBTC: a DA Utilities transfer through the receive
         }),
         extraArgs: v.record({}),
       }),
-      actingParties: [ME], signatories: [RECEIVER, DA_OPERATOR], stakeholders: [RECEIVER, DA_OPERATOR], consuming: false, children: nodes.map((n) => n.nodeId),
+      actingParties: [ME], signatories: [RECEIVER, DA_OPERATOR], stakeholders: [RECEIVER, DA_OPERATOR], consuming: false,
+      children: nodes.filter((n) => !nodes.some((m) => m.kind === 'exercise' && m.children.includes(n.nodeId))).map((n) => n.nodeId),
     };
     return { ...tx([root, ...nodes]), inputContracts: inputs };
   };
@@ -417,6 +418,37 @@ describe('holdings.transfer of CBTC: a DA Utilities transfer through the receive
     test('TC-SDK-2931-55: the direct transfer through a 0.9.2 preapproval passes with the holdings and the record of its own release', () => {
       expect(() => check(prepared, [transfer(honest092(), inputs(HOLDING_0_3_2), PREAPPROVAL_0_9_2)])).not.toThrow();
     });
+
+    const EVENTS_V2 = 'ee'.repeat(32);
+    /** The registrar's `EventLog_HoldingsChange` on `holdingCid`, a holding of `owner`, through Splice's TransferEventsV2 `EventLog`. */
+    const eventLog = (nodeId: string, holdingCid: string, owner: string, o: { consuming?: boolean; holdingPkg?: string; children?: string[] } = {}): TransactionNode => ({
+      nodeId, kind: 'exercise', contractId: holdingCid, packageName: 'utility-registry-holding-v0', templateId: holdingTemplate(o.holdingPkg ?? HOLDING_0_3_2),
+      interfaceId: `${EVENTS_V2}:Splice.Api.Token.TransferEventsV2:EventLog`, choice: 'EventLog_HoldingsChange', chosenValue: v.record({ admin: v.party(CBTC) }),
+      actingParties: [CBTC], signatories: [DA_OPERATOR, CBTC, owner], stakeholders: [DA_OPERATOR, CBTC, owner], consuming: o.consuming ?? false, children: o.children ?? [],
+    });
+    const changeCid = `4${'e'.repeat(67)}`;
+    const receivedCid = `3${'e'.repeat(67)}`;
+    const logged = (log: TransactionNode, extra: TransactionNode[] = []) => transfer([...honest092(), eventLog('6', receivedCid, RECEIVER), log, ...extra], inputs(HOLDING_0_3_2), PREAPPROVAL_0_9_2);
+
+    test('TC-SDK-2931-60: the 0.9.2 transfer passes with the registrar’s EventLog_HoldingsChange on the sender’s change and on the receiver’s holding', () => {
+      expect(() => check(prepared, [logged(eventLog('7', changeCid, ME))])).not.toThrow();
+    });
+
+    test('TC-SDK-2931-61: devnet’s 0.9.2 pin names EventLog_HoldingsChange on Holding as its one service choice; 0.8.2 names none', () => {
+      const [pin092, pin082] = CANTON_TRANSFER_FACTORIES[CBTC] ?? [];
+      expect(pin092).toMatchObject({ packageId: APP_0_9_2, serviceChoices: ['Utility.Registry.Holding.V0.Holding:Holding.EventLog_HoldingsChange'] });
+      expect(pin082).toMatchObject({ packageId: APP_PKG, serviceChoices: [] });
+    });
+
+    test.each([
+      ['TC-SDK-2931-62: the same choice, consuming, on the sender’s change', () => logged(eventLog('7', changeCid, ME, { consuming: true }))],
+      ['TC-SDK-2931-63: the same choice on a Holding of a package the pin does not name', () => logged(eventLog('7', changeCid, ME, { holdingPkg: 'dd'.repeat(32) }))],
+      ['TC-SDK-2931-64: the event log archiving another holding of the sender under it', () => logged(eventLog('7', changeCid, ME, { children: ['8'] }), [archive('8', 'h3', HOLDING_0_3_2)])],
+      [
+        'TC-SDK-2931-65: the same choice under 0.8.2’s pin, which has no event log',
+        () => transfer([...honest(), eventLog('6', changeCid, ME, { holdingPkg: HOLDING_PKG })]),
+      ],
+    ])('%s: refused', (_name, build) => refused(() => check(prepared, [build()]), /a contract of the sender that is not a stated input/));
 
     test.each([
       ['TC-SDK-2931-56: a 0.9.2 transfer spending holdings of 0.8.2’s holding package', () => transfer(honest092(), inputs(HOLDING_PKG), PREAPPROVAL_0_9_2), /not a holding of the pinned registry/],
