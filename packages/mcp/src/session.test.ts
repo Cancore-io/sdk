@@ -36,19 +36,6 @@ function session(grantPath: string, fetchImpl: typeof globalThis.fetch): Cancore
   return new CancoreSession({ apiBaseUrl: API, appBaseUrl: APP, appName: 'Claude', grantPath }, { fetchImpl });
 }
 
-test('with no grant, nothing is sent and the answer says how to get one', async () => {
-  const { fetchImpl, calls } = recordingFetch({ status: 200, body: {} });
-
-  const result = await session(tempPath(), fetchImpl).proposeAutotrade({
-    sourceTokenName: 'CC',
-    targetTokenName: 'CBTC',
-    sourceAmount: '5',
-  });
-
-  expect(result.error).toMatch(/cancore_connect_wallet/);
-  expect(calls).toHaveLength(0);
-});
-
 test('an auto-trade goes out as a kind envelope, with the grant as a bearer token', async () => {
   const path = tempPath();
   saveGrant(path, API, { token: 'tok', scopes: ['agent:propose'], appName: 'Claude' });
@@ -276,8 +263,9 @@ test('a revoke that fails still reconnects and says the old grant may be alive',
 // CAN-2628, the MCP Agent column of the sdk audit's authorization matrix. The agent holds no key:
 // every money operation is a request the owner signs in the wallet. So the column comes down to two
 // rules, held for every tool the contract announces (connect_wallet is how a grant is obtained):
-// with no grant nothing reaches the API, and with one each call carries the grant and nothing else.
-describe('every agent tool, not only the one above (CAN-2628)', () => {
+// with no grant nothing reaches the API, and with one each call sends one request to the stand, the
+// grant as its bearer.
+describe('every agent tool (CAN-2628)', () => {
   const ORDER = { sourceNetwork: 'canton', sourceTokenAddress: 'CC', sourceAmount: '5', targetNetwork: 'base', targetTokenAddress: '0x1', targetAmount: '1' };
   const tools: Record<string, (s: CancoreSession) => Promise<Record<string, unknown>>> = {
     cancore_propose_autotrade: (s) => s.proposeAutotrade({ sourceTokenName: 'CC', targetTokenName: 'CBTC', sourceAmount: '5' }),
