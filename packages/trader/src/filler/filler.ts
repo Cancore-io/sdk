@@ -153,7 +153,7 @@ export interface TransportOptions {
   loginTimeoutMs?: number;
   /** `GET /v1/filler/tickets` poll interval while disconnected. Default 2 s. */
   restPollIntervalMs?: number;
-  /** filler-gateway's `maxMessageAgeMs` (`GET /v1/gateway`): older frames and reused frame ids are dropped. Default 30 s, filler-gateway's own default. */
+  /** How far a frame's `sentAt` may be from its arrival, and how long a frame id stays taken: set it to filler-gateway's `maxMessageAgeMs` (`GET /v1/gateway`, which the SDK does not read); a smaller one drops frames filler-gateway counts fresh. Default 30 s, filler-gateway's own. */
   maxMessageAgeMs?: number;
   /** Jitter source in `[0, 1)`. Default `Math.random`. */
   random?: () => number;

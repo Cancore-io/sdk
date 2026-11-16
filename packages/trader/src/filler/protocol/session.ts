@@ -47,6 +47,12 @@ export interface ReconnectPolicy {
 export const DEFAULT_RECONNECT: ReconnectPolicy = { initialDelayMs: 500, maxDelayMs: 30_000 };
 export const DEFAULT_HEARTBEAT_MISSES = 3;
 export const DEFAULT_LOGIN_TIMEOUT_MS = 15_000;
+/**
+ * Frames that stay on their session (protocol §3.5): filler-gateway numbers its pings per session (`ping-1` again on
+ * every new one), so their ids are taken per connection, not across reconnects.
+ */
+const SESSION_SCOPED_TYPES: ReadonlySet<string> = new Set(['auth.ok', 'ping', 'pong']);
+
 /** filler-gateway's own default `maxMessageAgeMs` (FILLER_GATEWAY_MAX_MESSAGE_AGE_MS). */
 export const DEFAULT_MAX_MESSAGE_AGE_MS = 30_000;
 
@@ -108,7 +114,7 @@ export interface SessionOptions {
   heartbeatMisses: number;
   /** How long a connect — the REST login and the socket — may take to reach `auth.ok`. Default 15 s. */
   loginTimeoutMs: number;
-  /** `GET /v1/gateway` `maxMessageAgeMs`: a frame whose `sentAt` is further from arrival is stale and dropped (T-6). */
+  /** `transport.maxMessageAgeMs` (filler-gateway's, as configured): a frame whose `sentAt` is further from arrival is stale and dropped (T-6). */
   maxMessageAgeMs: number;
 }
 
@@ -257,15 +263,16 @@ export class GatewaySession {
   }
 
   /** `stale` or `replayed` for a frame filler-gateway signed but must not be acted on (§3.4 checks 3 and 4). */
-  private staleOrReplayed(frame: { id?: unknown; sentAt: number }, raw: Hex): 'stale' | 'replayed' | undefined {
+  private staleOrReplayed(frame: { type: string; id?: unknown; sentAt: number }, raw: Hex): 'stale' | 'replayed' | undefined {
     const now = this.options.clock.now();
     const maxAge = this.options.maxMessageAgeMs;
     if (Math.abs(now - frame.sentAt) > maxAge) return 'stale';
     for (const [id, taken] of this.takenIds) if (taken.until < now) this.takenIds.delete(id);
     if (typeof frame.id !== 'string') return undefined;
-    const taken = this.takenIds.get(frame.id);
+    const key = SESSION_SCOPED_TYPES.has(frame.type) ? `${this.generation}/${frame.id}` : frame.id;
+    const taken = this.takenIds.get(key);
     if (taken) return taken.raw === raw ? undefined : 'replayed';
-    this.takenIds.set(frame.id, { until: messageIdRetainUntil(frame.sentAt, now, maxAge), raw });
+    this.takenIds.set(key, { until: messageIdRetainUntil(frame.sentAt, now, maxAge), raw });
     return undefined;
   }
 

@@ -53,6 +53,7 @@ import type { WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
 import { activeContracts, cantonToken, env } from './stand/canton-ledger';
 import { cursor, eventsAfter, ofOrder, STREAMS } from './stand/filler-gateway';
+import { standToken } from './stand/keycloak';
 
 const STAND = process.env.INTENT_STAND_ENV;
 /** Every key this spec reads (Cancore-io/meta docs/runbooks/intent-stand.md); TRADING_URL or GATEWAY_URL besides. */
@@ -93,25 +94,6 @@ const signDigest = (key: Hex, digest: Hex): Hex => {
   const sig = secp256k1.sign(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)), { lowS: true });
   return `0x${bytesToHex(sig.toCompactRawBytes())}${(27 + sig.recovery).toString(16)}`;
 };
-
-/**
- * The stand user's bearer token, fresh per call (a token lives minutes, the run
- * longer): a password grant for STAND_USER_NAME (a Keycloak username) through
- * the gateway's own client (CAN-2380 admits it).
- */
-async function userToken(): Promise<string> {
-  const form = new URLSearchParams({
-    grant_type: 'password',
-    client_id: env('STAND_USER_CLIENT_ID'),
-    client_secret: env('STAND_USER_CLIENT_SECRET'),
-    username: env('STAND_USER_NAME'),
-    password: env('STAND_USER_PASSWORD'),
-    scope: 'openid',
-  });
-  const response = await fetch(env('STAND_USER_TOKEN_URL'), { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form });
-  if (!response.ok) throw new Error(`stand user login: ${response.status}`);
-  return ((await response.json()) as { access_token: string }).access_token;
-}
 
 /**
  * The unlocked holdings of `party` in `asset` on the ledger itself (JSON Ledger API v2, the active contracts of
@@ -235,7 +217,7 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     const api = async <T>(path: string, body: unknown): Promise<T> => {
       let last = '';
       for (const base of bases) {
-        const response = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${await userToken()}` }, body: JSON.stringify(body) });
+        const response = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${await standToken('user')}` }, body: JSON.stringify(body) });
         const text = await response.text();
         if (response.ok) return JSON.parse(text) as T;
         last = `${base}${path}: ${response.status} ${text.slice(0, 500)}`;
