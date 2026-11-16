@@ -46,7 +46,7 @@ export interface CreatedEvent {
 
 /** The created events of the contracts `party` sees under `filter`, active at the ledger end. */
 export async function activeContracts(party: string, filter: IdentifierFilter, token: string): Promise<CreatedEvent[]> {
-  const { offset } = await ledger<{ offset: number }>('/v2/state/ledger-end', token);
+  const offset = await ledgerEnd(token);
   type Row = { contractEntry?: { JsActiveContract?: { createdEvent?: CreatedEvent } } };
   // eventFormat alone: the participant refuses it beside the older top-level verbose/filter.
   const rows = await ledger<Row[]>('/v2/state/active-contracts', token, {
