@@ -1,7 +1,7 @@
 // Internal: the few byte conversions hash.ts and draw.ts share. Not exported
 // from the package — a consumer has @noble/hashes for this.
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { Hex } from './typedData';
 
 export const toHex = (bytes: Uint8Array): Hex => `0x${bytesToHex(bytes)}`;

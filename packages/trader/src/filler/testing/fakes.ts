@@ -6,8 +6,8 @@
  * sinks that record what the SDK logged and emitted.
  */
 import { FILLER_WS_BEARER_PREFIX, FILLER_WS_SUBPROTOCOL, hashTypedData, type Hex, type TypedDataInput } from '@cancore/contracts';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { FillerEvent, EventSink } from '../events';
 import type { EvmRpc, EvmRpcRequest } from '../rpc';
 import { gatewayMessageDigest } from '../protocol/frames';
@@ -186,6 +186,15 @@ export function createFakeWebSocketFactory(): { factory: WebSocketFactory; socke
 // ---------------------------------------------------------------------------
 
 /**
+ * Signs a 32-byte digest as is → `0x` + 65 bytes `r ‖ s ‖ v`, low-s, `v ∈ {27, 28}`.
+ * `prehash: false` is load-bearing: noble v2 ECDSA hashes its input by default.
+ */
+export function signRsv(digest: Uint8Array, key: Uint8Array): Hex {
+  const sig = secp256k1.sign(digest, key, { prehash: false, lowS: true, format: 'recovered' });
+  return `0x${bytesToHex(sig.subarray(1))}${(27 + sig[0]!).toString(16)}`;
+}
+
+/**
  * A `TypedDataSigner` over a private key the test supplies — the reference
  * behaviour of the contract: 65 bytes, low-s, `v ∈ {27, 28}`. Test keys only;
  * a filler node builds its signers from `.env`.
@@ -196,8 +205,7 @@ export function createTestTypedDataSigner(privateKey: Hex): TypedDataSigner {
   return {
     address,
     async signTypedData(input: TypedDataInput): Promise<Hex> {
-      const signature = secp256k1.sign(hexToBytes(hashTypedData(input).slice(2)), key, { lowS: true });
-      return `0x${bytesToHex(signature.toCompactRawBytes())}${(27 + signature.recovery).toString(16)}`;
+      return signRsv(hexToBytes(hashTypedData(input).slice(2)), key);
     },
   };
 }
@@ -254,8 +262,7 @@ export function createTestGatewaySigner(privateKey: Hex, clock: Clock = { now: (
   const sign = <T extends FrameBody>(body: T): T & { sig: Hex } => {
     const { sig: _sig, ...unsigned } = body;
     const digest = gatewayMessageDigest(unsigned);
-    const signature = secp256k1.sign(hexToBytes(digest.slice(2)), key, { lowS: true });
-    const sig: Hex = `0x${bytesToHex(signature.toCompactRawBytes())}${(27 + signature.recovery).toString(16)}`;
+    const sig = signRsv(hexToBytes(digest.slice(2)), key);
     return { ...(unsigned as T), sig };
   };
   return {

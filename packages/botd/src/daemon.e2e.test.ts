@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ed25519 } from '@noble/curves/ed25519';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { cantonFingerprint } from '@cancore/wallet';
 import { selfSendLeg } from '../../client/src/dvp-prepared.fixture';
 import { DEFAULT_INSTRUMENT_ADMINS } from '../../client/src/dvp-admins';

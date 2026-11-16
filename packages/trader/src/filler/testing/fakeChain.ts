@@ -13,8 +13,8 @@
  * failover tests. Test use only.
  */
 import { CANCORE_ROUTER_ABI, IBURN_MINT_ERC20_ABI, type FillProof, type FillTicket, type Hex, type Order } from '@cancore/contracts';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { decodeParams, encodeEventLog, encodeFunctionResult, selectorOf, topicOf, type AbiEntry } from '../chain/abi';
 import { BLOCKLIST_VIEWS } from '../chain/erc20';
 import { decodeSignedTransaction, type DecodedTransaction } from './transactions';

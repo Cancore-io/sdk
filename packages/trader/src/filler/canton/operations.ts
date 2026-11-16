@@ -30,7 +30,7 @@ import type {
   Hex,
 } from '@cancore/contracts';
 import { encodeCantonAmount } from '@cancore/contracts';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { GatewayError } from '../errors';
 import { FillerConfigError } from '../errors';
 import { createSealer, type Sealer, type Unsealed } from '../protocol/envelope';

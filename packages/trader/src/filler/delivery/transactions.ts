@@ -26,8 +26,8 @@
  * transaction and broadcasts it. Nothing here logs a raw transaction (S8).
  */
 import type { Hex } from '@cancore/contracts';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { evmChainNumber, type EvmChainId } from '../chains';
 import { ChainReadError, quantity, toQuantity, type ChainClient } from '../chain/client';
 import type { Logger } from '../runtime';

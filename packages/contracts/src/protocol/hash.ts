@@ -3,7 +3,7 @@
  * the two protocol hashes built on them. No signing here: a digest is what a
  * consumer hands its own secp256k1 implementation (protocol §3.3, SDK §7).
  */
-import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
+import { concatBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { beBytes, hexBytes, keccak, toHex, uint } from './bytes';
 import type { Hex, UintLike } from './typedData';
 

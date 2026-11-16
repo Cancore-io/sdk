@@ -1,5 +1,13 @@
 # Changelog — `@cancore/wallet`
 
+## Unreleased
+
+### Changed — `@noble/curves` and `@noble/hashes` 2.x (CAN-3207)
+
+- Runtime dependencies `@noble/curves` `^1.9.7` → `^2.4.0` and `@noble/hashes` `^1.8.0` → `^2.4.0`. No public
+  type or signature changes: noble stays internal. The 2.x line is ESM-only and needs Node ≥ 20.19, inside the
+  package's `engines.node >= 26`. Ed25519 output is unchanged (the RFC 8032 KAT still passes).
+
 ## 0.4.3
 
 ### Changed — a CNRX factory must be signed by the registry's guardian (CAN-3132)

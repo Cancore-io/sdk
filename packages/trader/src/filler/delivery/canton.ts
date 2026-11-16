@@ -41,8 +41,8 @@
  *   replica takes over another's pending fill once its lease has expired.
  */
 import { type Hex, type TicketIssuedCanton } from '@cancore/contracts';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { CantonRefusal } from '../canton/legs';
 import { CantonSubmitUnknown, type CantonOperations } from '../canton/operations';
 import { GatewayError } from '../errors';

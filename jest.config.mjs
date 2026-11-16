@@ -7,7 +7,11 @@
  *
  * @type {import('jest').Config}
  */
-const transform = { '^.+\\.ts$': ['@swc/jest', { jsc: { target: 'es2022' } }] };
+const swc = ['@swc/jest', { jsc: { target: 'es2022' } }];
+// noble v2 ships ESM only and jest runs CommonJS, so @noble/* is the one dependency swc
+// transpiles; every other package under node_modules stays as published (CAN-3207).
+const transform = { '^.+\\.ts$': swc, '/node_modules/(\\.pnpm/[^/]+/node_modules/)?@noble/.+\\.js$': swc };
+const transformIgnorePatterns = ['/node_modules/(?!(\\.pnpm/@noble\\+[^/]+/node_modules/)?@noble/)'];
 
 // A package importing a sibling tests against the sibling's source: `dist/`
 // does not exist until the build, which runs after the tests.
@@ -36,6 +40,7 @@ const nodeProject = {
   testPathIgnorePatterns: ['/node_modules/', '<rootDir>/packages/wallet/src/web/', '\\.int\\.test\\.ts$'],
   testMatch: ['**/*.test.ts'],
   transform,
+  transformIgnorePatterns,
   moduleNameMapper,
 };
 
@@ -51,6 +56,7 @@ const intProject = {
   roots: ['<rootDir>/packages'],
   testMatch: ['**/*.int.test.ts'],
   transform,
+  transformIgnorePatterns,
   moduleNameMapper,
 };
 
@@ -62,6 +68,7 @@ const webProject = {
   testMatch: ['**/*.test.ts'],
   setupFiles: ['<rootDir>/jest.setup.web.cjs'],
   transform,
+  transformIgnorePatterns,
 };
 
 export default {

@@ -37,9 +37,9 @@ import {
   type Hex,
   type OrderJson,
 } from '@cancore/contracts';
-import { ed25519 } from '@noble/curves/ed25519';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { CantonTransferFactory } from '../src/filler/canton/factories';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { ChainClient } from '../src/filler/chain/client';
@@ -53,6 +53,7 @@ import type { WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
 import { activeContracts, cantonToken, env } from './stand/canton-ledger';
 import { cursor, eventsAfter, ofOrder, STREAMS } from './stand/filler-gateway';
+import { signRsv } from '../src/filler/testing/fakes';
 
 const STAND = process.env.INTENT_STAND_ENV;
 /** Every key this spec reads (Cancore-io/meta docs/runbooks/intent-stand.md); TRADING_URL or GATEWAY_URL besides. */
@@ -89,10 +90,7 @@ const nativeWebSocket: WebSocketFactory = (url, h, protocols) => {
   return { send: (t) => ws.send(t), close: (c, r) => ws.close(c, r) };
 };
 
-const signDigest = (key: Hex, digest: Hex): Hex => {
-  const sig = secp256k1.sign(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)), { lowS: true });
-  return `0x${bytesToHex(sig.toCompactRawBytes())}${(27 + sig.recovery).toString(16)}`;
-};
+const signDigest = (key: Hex, digest: Hex): Hex => signRsv(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)));
 
 /**
  * The stand user's bearer token, fresh per call (a token lives minutes, the run

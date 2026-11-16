@@ -1,7 +1,7 @@
 import { FILLER_PROTOCOL_DOMAIN, FILLER_QUOTE_TYPES, hashTypedData, requestIdHash, type Hex, type TypedDataInput } from '@cancore/contracts';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Wallet } from 'ethers';
@@ -27,7 +27,7 @@ const quote: TypedDataInput = {
   },
 };
 
-const N = secp256k1.CURVE.n;
+const N = secp256k1.Point.CURVE().n;
 const hex = (n: bigint) => n.toString(16).padStart(64, '0');
 const split = (sig: Hex) => ({ r: BigInt(`0x${sig.slice(2, 66)}`), s: BigInt(`0x${sig.slice(66, 130)}`), v: parseInt(sig.slice(130), 16) });
 
@@ -82,8 +82,8 @@ describe('signer contract: 65 bytes r‖s‖v, low-s, v ∈ {27, 28} (protocol �
     // why the rule exists: OpenZeppelin ECDSA.recover rejects it on chain.
     const twin = (await highS.signTypedData(quote)) as Hex;
     const { r, s, v } = split(twin);
-    const recovered = secp256k1.Signature.fromCompact(`${hex(r)}${hex(s)}`).addRecoveryBit(v - 27).recoverPublicKey(hashTypedData(quote).slice(2));
-    expect(recovered.toHex(false)).toBe(bytesToHex(secp256k1.getPublicKey(KEY_A.slice(2), false)));
+    const recovered = secp256k1.Signature.fromHex(`${hex(r)}${hex(s)}`, 'compact').addRecoveryBit(v - 27).recoverPublicKey(hexToBytes(hashTypedData(quote).slice(2)));
+    expect(recovered.toHex(false)).toBe(bytesToHex(secp256k1.getPublicKey(hexToBytes(KEY_A.slice(2)), false)));
     expect(await violationOf(highS)).toBe('high-s');
   });
 

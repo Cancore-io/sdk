@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fillerIdHash, repayToFromEvm, type AttestationEvm, type FillProofJson, type Hex } from '@cancore/contracts';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { hashFillProof } from '../chain/hashes';
 import { addressOfPublicKey } from '../signer';
 import { collectAttestations, fillProofOf, verifyAttestations, type AttestorSetView } from './attestations';
+import { signRsv } from '../testing/fakes';
 
 /** anvil's default test keys. */
 const KEYS: Hex[] = [
@@ -18,15 +19,12 @@ const OUTSIDER: Hex = '0x4bbbf85ce3377467afe5d46f804f221813b2bb87f24d81f60f1fcdb
 const SOURCE = { chainId: 56n, router: '0x5656565656565656565656565656565656565656' as Hex };
 
 const addressOf = (key: Hex): Hex => addressOfPublicKey(secp256k1.getPublicKey(hexToBytes(key.slice(2)), false));
-const sign = (key: Hex, digest: Hex): AttestationEvm => {
-  const sig = secp256k1.sign(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)), { lowS: true });
-  return { signer: addressOf(key), signature: `0x${bytesToHex(sig.toCompactRawBytes())}${(27 + sig.recovery).toString(16)}` };
-};
+const sign = (key: Hex, digest: Hex): AttestationEvm => ({ signer: addressOf(key), signature: signRsv(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2))) });
 /** The same signature with `s` mirrored to the upper half: valid ECDSA, refused by `ECDSA.recover`. */
 const highS = (entry: AttestationEvm): AttestationEvm => {
   const bytes = hexToBytes(entry.signature.slice(2));
   const s = BigInt(`0x${bytesToHex(bytes.subarray(32, 64))}`);
-  const mirrored = secp256k1.CURVE.n - s;
+  const mirrored = secp256k1.Point.CURVE().n - s;
   return { signer: entry.signer, signature: `0x${entry.signature.slice(2, 66)}${mirrored.toString(16).padStart(64, '0')}${bytes[64] === 27 ? '1c' : '1b'}` };
 };
 

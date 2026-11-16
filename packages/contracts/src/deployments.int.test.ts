@@ -16,8 +16,8 @@ import { join } from 'node:path';
 import { CANCORE_ROUTER_ABI } from './generated/CancoreRouter';
 import { DEPLOYMENTS as SOURCE_DEPLOYMENTS, type EvmDeployment } from './deployments';
 import { FILLER_GATEWAYS as SOURCE_GATEWAYS } from './protocol/gateway';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 
 const INSTALLED = process.env.CANCORE_CONTRACTS_INSTALLED;
 const live = INSTALLED ? describe : describe.skip;

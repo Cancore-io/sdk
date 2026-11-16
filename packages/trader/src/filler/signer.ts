@@ -16,9 +16,9 @@
  * `filler-gateway` or the router rejects.
  */
 import { FILLER_KEY_REGISTRATION_TYPES, FILLER_PROTOCOL_DOMAIN, hashTypedData, type DecString, type Hex, type SignedFillerKeyRegistration, type TypedDataInput } from '@cancore/contracts';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { SignatureContractError } from './errors';
 
 /**
@@ -67,7 +67,7 @@ export type QuoteSigner = TypedDataSigner;
 /** The staking key; used once per `StakeBinding`, never loaded by a running node. */
 export type StakingSigner = TypedDataSigner;
 
-const CURVE_N = secp256k1.CURVE.n;
+const CURVE_N = secp256k1.Point.CURVE().n;
 const HALF_N = CURVE_N >> 1n;
 const SIG_RE = /^0x[0-9a-fA-F]*$/;
 
@@ -95,10 +95,11 @@ export function assertSignature(signature: unknown): Hex {
 /** The address (lowercase) that signed `digest` (32 bytes), from a signature that passed `assertSignature`. */
 export function recoverAddress(digest: Hex, signature: Hex): Hex {
   const sig = hexToBytes(assertSignature(signature).slice(2));
-  const point = secp256k1.Signature.fromCompact(sig.subarray(0, 64))
+  // Signature#recoverPublicKey takes the digest as is; the top-level secp256k1.recoverPublicKey would hash it again.
+  const point = secp256k1.Signature.fromBytes(sig.subarray(0, 64), 'compact')
     .addRecoveryBit(sig[64]! - 27)
     .recoverPublicKey(hexToBytes(digest.slice(2)));
-  return addressOfPublicKey(point.toRawBytes(false));
+  return addressOfPublicKey(point.toBytes(false));
 }
 
 /** The signer of EIP-712 typed data (lowercase address). */

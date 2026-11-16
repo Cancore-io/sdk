@@ -5,7 +5,7 @@
  * consumer re-types a struct (SDK S1). `FillProof` is `hashFillProof` in
  * `../eip712`, next to its domain.
  */
-import { utf8ToBytes } from '@noble/hashes/utils';
+import { utf8ToBytes } from '@noble/hashes/utils.js';
 import { hexBytes, keccak, toHex, uint } from './bytes';
 import { hashTypedData, fillerMessageBodyHash } from './hash';
 import type { TicketIssuedCanton } from './messages';
