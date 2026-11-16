@@ -8,16 +8,32 @@
  *
  *   INTENT_STAND_ENV=<stand env> npx jest --selectProjects int --runInBand packages/trader/test/CAN-2151-envelope.stand.int.test.ts
  */
-import { encodeCantonAmount, FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, fillerIdHash, type Hex, type TicketIntentMessage } from '@cancore/contracts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  encodeCantonAmount,
+  FILL_TICKET_DOMAIN,
+  FILL_TICKET_TYPES,
+  FILLER_KEY_REGISTRATION_TYPES,
+  FILLER_PROTOCOL_DOMAIN,
+  fillerIdHash,
+  hashTypedData,
+  type Hex,
+  type TicketIntentMessage,
+} from '@cancore/contracts';
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { bytesToHex } from '@noble/hashes/utils';
 import { createFillerRoutes } from '../src/filler/routes';
+import { signFillerKeyRegistration } from '../src/filler/signer';
 import { createTestTypedDataSigner } from '../src/filler/testing';
+import { adminApi, ADMIN_KEYS } from './stand/admin';
 import { env } from './stand/canton-ledger';
 import { command, cursor, eventsAfter, GATEWAY_KEYS, offerCommand, ofOrder, sleep, standChain, standFiller, standOrder, standSuite, STREAMS, until } from './stand/filler-gateway';
 
 /** The stand's ticket signer: anvil's default mnemonic, index 16 (TICKETSIGNER of the runbook) — a test key. */
 const STAND_TICKET_SIGNER_KEY: Hex = '0xea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0';
 
-standSuite('CAN-2151: the signed envelope against the real filler-gateway', GATEWAY_KEYS, () => {
+standSuite('CAN-2151: the signed envelope against the real filler-gateway', [...GATEWAY_KEYS, ...ADMIN_KEYS, 'STAND_FILLER2_ID'], () => {
   test('TC-SDK-2151-INT-01: quote, ticket.intent, ticket.decline and routes.set sealed by the SDK are each taken by filler-gateway', async () => {
     const accept = standOrder(2151_01);
     const decline = standOrder(2151_02);
@@ -93,4 +109,17 @@ standSuite('CAN-2151: the signed envelope against the real filler-gateway', GATE
       await stand.filler.stop();
     }
   }, 120_000);
+
+  test('TC-SDK-2151-INT-06: a key registration signed through signFillerKeyRegistration is the one Cancore staff verify, and its digest is the golden vector’s', async () => {
+    type Vector = { message: { fillerId: string; messageKey: string; issuedAt: string }; digest: Hex };
+    const file = JSON.parse(readFileSync(join(__dirname, '../../contracts/spec/protocol/typed-data/FillerKeyRegistration.json'), 'utf8')) as { vectors: Vector[] };
+    for (const v of file.vectors) {
+      expect(hashTypedData({ domain: FILLER_PROTOCOL_DOMAIN, types: FILLER_KEY_REGISTRATION_TYPES, primaryType: 'FillerKeyRegistration', message: v.message })).toBe(v.digest);
+    }
+    const fresh = createTestTypedDataSigner(`0x${bytesToHex(secp256k1.utils.randomPrivateKey())}`);
+    const fillerId = env('STAND_FILLER2_ID');
+    const registration = await signFillerKeyRegistration(fresh, { fillerId, issuedAt: BigInt(Math.floor(Date.now() / 1000)) });
+    const preview = await adminApi<{ ok: boolean; messageKey: string | null; problems: unknown[] }>('POST', `/admin/fillers/${encodeURIComponent(fillerId)}/message-key/verify`, { registration });
+    expect(preview).toMatchObject({ ok: true, messageKey: fresh.address.toLowerCase(), problems: [] });
+  }, 60_000);
 });
