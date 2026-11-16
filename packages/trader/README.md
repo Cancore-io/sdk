@@ -460,7 +460,8 @@ prepares only.
 **Pinned registries.** Every check that meets a registry contract — `transfer`, `delivery.fill`,
 the committed give (V-C4, V-C5) and `intent.settle` — holds it to `CantonOperations.registries`: by
 instrument admin, the package id and templates of the registry (`CantonTransferFactory`: factory,
-holding, pending transfer, V2 allocation, `openReceipt`, and for a cnrx-registry entry its
+holding, pending transfer, V2 allocation (with `allocationPackageId` when it lives in another package, as DA
+Utilities' does), `openReceipt`, and for a cnrx-registry entry its
 `guardian`). It is `CANTON_TRANSFER_FACTORIES`, the
 published registries, unless `CantonConfig.registries` (or `CantonClientConfig.registries`) names
 others — only for a network with its own registrar, such as a test stand; `registriesProblem`

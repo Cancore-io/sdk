@@ -65,6 +65,8 @@ export interface CantonTransferFactory {
   spendChoices?: readonly string[];
   /** The V2 allocation template the registry's allocation factory creates, when the registry has one (V-C4). */
   allocation?: string;
+  /** The package of `allocation` when it is not `packageId` (DA Utilities: `utility-registry-v0`, CAN-3587). */
+  allocationPackageId?: string;
   /**
    * The registry's receipt-only allocation needs nothing from its receiver — no
    * holding, no preapproval, no other contract of the receiver's — so any party
@@ -118,6 +120,10 @@ export const isCnrxRegistry = (f: Pick<CantonTransferFactory, 'holding'>): boole
 
 /** The holding template of a registry, `<package>:<module>:<entity>`: DA Utilities keeps `Holding` in a package of its own (`holdingPackageId`). */
 export const holdingTemplateOf = (f: CantonTransferFactory): string => `${f.holdingPackageId ?? f.packageId}:${f.holding}`;
+
+/** The V2 allocation template of a registry, `<package>:<module>:<entity>`, or undefined when it has none (V-C4). */
+export const allocationTemplateOf = (f: CantonTransferFactory): string | undefined =>
+  f.allocation === undefined ? undefined : `${f.allocationPackageId ?? f.packageId}:${f.allocation}`;
 
 /** Every template a holding of the registry can carry: the one it creates and those of `upgradedHoldingPackageIds` it still spends. */
 export const holdingTemplatesOf = (f: CantonTransferFactory): string[] => [holdingTemplateOf(f), ...(f.upgradedHoldingPackageIds ?? []).map((p) => `${p}:${f.holding}`)];
@@ -196,6 +202,13 @@ const DA_UTILITY_REGISTRY_APP_0_9_2: CantonTransferFactory = {
   packageId: '1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b274b8c0',
   holdingPackageId: '415a1ec96a9e2839453e9aa1c5c71b6511c008c79511cb6f873e0b7393fe3b92',
   transferRecords: ['8c654487d9f5fb195fbcdd7b44cd8e365b1ea39c15ae62ce6c7a48343f1210dd:Utility.Registry.V0.Holding.Transfer:ExecutedTransfer'],
+  // CAN-3587: the committed CBTC allocations devnet holds (backend run 43920493880) are this template of utility-registry-v0
+  // 0.8.2, the package of the executed-transfer record — neither the app package nor the holding package.
+  allocation: 'Utility.Registry.V0.Holding.AllocationV2:AllocationV2',
+  allocationPackageId: '8c654487d9f5fb195fbcdd7b44cd8e365b1ea39c15ae62ce6c7a48343f1210dd',
+  // CAN-3133 spike step 3 (backend run 41898009345): a ReceiverSide receipt allocation takes no input holdings and
+  // settled to a payee with no TransferPreapproval; the holder-credentials entry comes from DA's registry context.
+  openReceipt: true,
 };
 
 /** devnet: DA's operator decoded from the devnet CBTC registrar's AllocationFactory (backend utility-preapproval.constants.ts). */
@@ -279,6 +292,7 @@ export function registriesProblem(registries: unknown): string | undefined {
 
 const isChoiceList = (v: unknown, optional: boolean): boolean => (optional && v === undefined) || (Array.isArray(v) && v.every((c) => typeof c === 'string'));
 const optionalTemplate = (v: unknown): boolean => v === undefined || (typeof v === 'string' && QUALIFIED.test(v));
+const optionalPackageId = (v: unknown): boolean => v === undefined || (typeof v === 'string' && PACKAGE_ID.test(v));
 
 function entryProblem(f: Partial<CantonTransferFactory> | null, at: string): string | undefined {
   if (typeof f !== 'object' || f === null) return `${at}: expected an object`;
@@ -290,12 +304,11 @@ function entryProblem(f: Partial<CantonTransferFactory> | null, at: string): str
   if (f.transferRecords !== undefined && (!Array.isArray(f.transferRecords) || !f.transferRecords.every((t) => typeof t === 'string' && FULL_TEMPLATE.test(t)))) return `${at}.transferRecords: expected a list of <packageId>:<module>:<entity>`;
   if (f.openReceipt !== undefined && typeof f.openReceipt !== 'boolean') return `${at}.openReceipt: expected a boolean`;
   if (f.holdingForm !== undefined && f.holdingForm !== 'view' && f.holdingForm !== 'amulet' && f.holdingForm !== 'utility') return `${at}.holdingForm: expected view, amulet or utility`;
-  if (f.holdingPackageId !== undefined && (typeof f.holdingPackageId !== 'string' || !PACKAGE_ID.test(f.holdingPackageId))) return `${at}.holdingPackageId: expected 64 lowercase hex`;
+  for (const k of ['holdingPackageId', 'allocationPackageId', 'preapprovalPackageId'] as const) if (!optionalPackageId(f[k])) return `${at}.${k}: expected 64 lowercase hex`;
   if (f.upgradedHoldingPackageIds !== undefined && (!Array.isArray(f.upgradedHoldingPackageIds) || !f.upgradedHoldingPackageIds.every((p) => typeof p === 'string' && PACKAGE_ID.test(p)))) {
     return `${at}.upgradedHoldingPackageIds: expected a list of 64 lowercase hex`;
   }
   if (f.preapprovalForm !== undefined && f.preapprovalForm !== 'cnrx' && f.preapprovalForm !== 'utility' && f.preapprovalForm !== 'splice') return `${at}.preapprovalForm: expected cnrx, utility or splice`;
-  if (f.preapprovalPackageId !== undefined && (typeof f.preapprovalPackageId !== 'string' || !PACKAGE_ID.test(f.preapprovalPackageId))) return `${at}.preapprovalPackageId: expected 64 lowercase hex`;
   if (f.preapprovalForm === 'utility' && (typeof f.preapprovalOperator !== 'string' || !PARTY_ID.test(f.preapprovalOperator))) return `${at}.preapprovalOperator: expected the DA operator's party id`;
   if (f.preapprovalForm === 'splice' && (typeof f.preapprovalProvider !== 'string' || !PARTY_ID.test(f.preapprovalProvider))) return `${at}.preapprovalProvider: expected the provider's party id`;
   if ((isCnrxRegistry(f as CantonTransferFactory) || f.guardian !== undefined) && (typeof f.guardian !== 'string' || !PARTY_ID.test(f.guardian))) {
@@ -310,5 +323,5 @@ function entryProblem(f: Partial<CantonTransferFactory> | null, at: string): str
  * of each pinned registry that has one.
  */
 export const CANTON_ALLOCATION_TEMPLATES: Readonly<Record<string, readonly string[]>> = Object.fromEntries(
-  Object.entries(CANTON_TRANSFER_FACTORIES).map(([admin, factories]) => [admin, factories.flatMap((f) => (f.allocation ? [`${f.packageId}:${f.allocation}`] : []))]),
+  Object.entries(CANTON_TRANSFER_FACTORIES).map(([admin, factories]) => [admin, factories.flatMap((f) => allocationTemplateOf(f) ?? [])]),
 );
