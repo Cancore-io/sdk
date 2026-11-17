@@ -1,5 +1,14 @@
 # Changelog — `@cancore/wallet`
 
+## 0.4.6
+
+### Added — the Amulet allocation template in the CC pin (CAN-3579)
+
+- The splice-amulet 0.1.24 entry (CC, the DSO's Amulet) pins `Splice.AmuletAllocationV2:AmuletAllocationV2`, the
+  template `ExternalPartyAmuletRules`' V2 `AllocationFactory_Allocate` creates, and `openReceipt: true`: a receipt
+  allocation needs no funding and nothing of the receiver's, and its settle creates the receiver's `Amulet` with no
+  preapproval. A committed CC allocation is recognised as the escrow of a Canton-source intent.
+
 ## 0.4.5
 
 ### Changed — the DA Utilities 0.9.2 pin takes the registry's event log (CAN-2931)
