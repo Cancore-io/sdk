@@ -571,6 +571,9 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     // trading checks the recipient before it issues the ticket, so the revocation must come between the issue and
     // the node's checks: the node's socket holds the Canton-form ticket.issued until the recipient has archived every
     // preapproval. The node allows the hold in δ_issue; the frame stays fresh (maxMessageAgeMs).
+    // trading answers readiness from an ACS read it keeps CANTON_READINESS_CACHE_MS (5 s, backend
+    // ledger-canton-readiness.ts): the frame waits past it, or V-R1 reads the pre-issue answer.
+    const readinessCacheOutlivedMs = 6_000;
     const revokeOnIssue: WebSocketFactory = (url, h, protocols) =>
       nativeWebSocket(url, {
         ...h,
@@ -578,7 +581,7 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
           const frame = JSON.parse(text) as { type?: string; form?: string };
           if (frame.type !== 'ticket.issued' || frame.form !== 'canton') return h.onMessage(text);
           void Promise.all(live.map((c) => asRecipient(recipient, { ExerciseCommand: { templateId: PREAPPROVAL, contractId: c.contractId, choice: 'Archive', choiceArgument: {} } }))).then(
-            () => h.onMessage(text),
+            () => new Promise((resolve) => setTimeout(resolve, readinessCacheOutlivedMs)).then(() => h.onMessage(text)),
             (error: unknown) => logger.error('the recipient could not revoke its preapproval', { error: String(error) }),
           );
         },
