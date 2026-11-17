@@ -49,6 +49,7 @@ import type { HttpFetch, WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
 import { checkCantonSource, intentOrder } from '../src/filler/tickets/canton-source';
 import { TicketRefusal } from '../src/filler/tickets/refusal';
+import { attestationsOf, ledgerEffects } from './stand/attestors';
 import { standToken } from './stand/keycloak';
 
 const ENV_FILE = process.env.CANCORE_INTENT_STAND_ENV ?? process.env.INTENT_STAND_ENV;
@@ -641,6 +642,29 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
     expect((await freeCnrx(E.STAND_FILLER_CANTON_PARTY)) - before).toBe(payout);
     const registered: CantonParty = await filler.canton!.party();
     expect(registered.registry.state).toBe('ACTIVE');
+  });
+
+  test('TC-ATT-2146-04 (CAN-2146): every attestor signs the Canton-source fill of TC-SDK-2321-INT-01 with repayTo = keccak256 of the stand filler’s party, and the committed SwapIntent_SettleWithProof carries their bundle', async () => {
+    const settledOrders = [...new Set(events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === 'settle.confirmed').map((e) => String(e.orderHash).toLowerCase() as Hex))];
+    expect(settledOrders).toHaveLength(1);
+    const orderHash = settledOrders[0]!;
+    const settlement = await store.withOrder(orderHash, (tx) => tx.getSettlement());
+    if (!settlement?.updateId) throw new Error(`the settlement of ${orderHash} has no update id\n${diagnostics()}`);
+
+    const repayTo = repayToFromParty(E.STAND_FILLER_CANTON_PARTY).toLowerCase();
+    const attestations = await attestationsOf(BigInt(E.CANTON_ORIGIN_ID).toString(), orderHash);
+    expect(attestations.map(({ attestor, proof }) => ({ attestor, orderHash: proof.orderHash.toLowerCase(), repayTo: proof.repayTo.toLowerCase() }))).toEqual(
+      attestations.map(({ attestor }) => ({ attestor, orderHash, repayTo })),
+    );
+
+    const settle = (await ledgerEffects(api, settlement.updateId, E.INTENT_OPERATOR_PARTY_ID)).find((e) => e.ExercisedEvent?.choice === 'SwapIntent_SettleWithProof')?.ExercisedEvent;
+    if (!settle) throw new Error(`update ${settlement.updateId} holds no SwapIntent_SettleWithProof`);
+    const { proof, bundle } = settle.choiceArgument as { proof: { orderHash: unknown; repayTo: unknown }; bundle: Array<{ pubKey: string; sig: string }> };
+    expect([hexOf(proof.orderHash), hexOf(proof.repayTo)]).toEqual([orderHash, repayTo]);
+    const sigEntry = (pubKey: string, sig: string) => `${pubKey.replace(/^0x/i, '').toLowerCase()}:${sig.replace(/^0x/i, '').toLowerCase()}`;
+    const daemonEntries = attestations.map((a) => sigEntry(a.pubKey ?? '', a.signature));
+    expect(bundle.length).toBeGreaterThan(0);
+    expect(daemonEntries).toEqual(expect.arrayContaining(bundle.map((entry) => sigEntry(entry.pubKey, entry.sig))));
   });
 
   // CAN-2321: the payout of TC-SDK-2321-INT-01 went through a lost submit answer.

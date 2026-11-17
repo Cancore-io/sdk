@@ -440,11 +440,6 @@ function parseJson(text: string, path: string): unknown {
 const strings = (o: Record<string, unknown>, keys: readonly string[]): boolean => keys.every((k) => typeof o[k] === 'string');
 const nullableString = (v: unknown): boolean => v === null || typeof v === 'string';
 
-/**
- * The shape of `cantonIntent` (rest.schema.json) the checks read: every field
- * they compare is a string where the schema says so, so a malformed answer is
- * a `BAD_RESPONSE` — a declined ticket — never a `TypeError` mid-check.
- */
 /** The shape of a recipient-readiness answer; whether it is about the ticket's `DeliveryOrder` is V-R1's to check. */
 export function isCantonRecipientReadiness(body: unknown): body is CantonRecipientReadiness {
   return (
@@ -460,6 +455,11 @@ export function isCantonRecipientReadiness(body: unknown): body is CantonRecipie
   );
 }
 
+/**
+ * The shape of `cantonIntent` (rest.schema.json) the checks read: every field
+ * they compare is a string where the schema says so, so a malformed answer is
+ * a `BAD_RESPONSE` — a declined ticket — never a `TypeError` mid-check.
+ */
 export function isCantonIntent(body: unknown): body is CantonIntent {
   if (!isObject(body)) return false;
   const top = ['intentCid', 'templateId', 'orderHash', 'owner', 'operator', 'filler', 'fillerId', 'requestId', 'amount', 'feeRate', 'fillDeadline', 'refundAfter', 'orderCreatedAt', 'allocationCid'];

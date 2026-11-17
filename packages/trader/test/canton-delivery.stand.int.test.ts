@@ -51,10 +51,12 @@ import { RouterEventWatcher, type RouterEventUpdate } from '../src/filler/chain/
 import { hashOrder } from '../src/filler/chain/hashes';
 import { INTENT_STATUS, RouterReader } from '../src/filler/chain/router';
 import type { EvmChainId } from '../src/filler/chains';
+import { cantonFillRef } from '../src/filler/delivery/canton';
 import { createFiller, type Filler } from '../src/filler/filler';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { HttpFetch, WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
+import { attestationsOf, bytes32Hex, createArgumentOf, ledgerEffects, standLedger } from './stand/attestors';
 import { activeContracts, cantonToken, env, exercisedAfter, ledger, ledgerEnd, type CreatedEvent } from './stand/canton-ledger';
 import { cursor, eventsAfter, ofOrder, STREAMS } from './stand/filler-gateway';
 import { standToken } from './stand/keycloak';
@@ -67,7 +69,7 @@ const REQUIRED = [
   'MAKER_EVM_KEY', 'STAND_CANTON_RECIPIENT_PARTY', 'STAND_FILLER_CANTON_PARTY', 'STAND_FILLER_CANTON_PARTY_KEY', 'STAND_FILLER_EVM_KEY',
   'STAND_FILLER_ID', 'STAND_FILLER_MESSAGE_KEY', 'STAND_FILLER_REPAY_TO', 'STAND_USER_CLIENT_ID', 'STAND_USER_CLIENT_SECRET',
   'STAND_USER_NAME', 'STAND_USER_PASSWORD', 'STAND_USER_TOKEN_URL', 'TICKET_SIGNERS', 'PERMIT2_ADDRESS',
-  'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET',
+  'CANTON_JSON_API_URL', 'CANTON_TOKEN_URL', 'CANTON_CLIENT_ID', 'CANTON_CLIENT_SECRET', 'INTENT_OPERATOR_PARTY_ID',
 ] as const;
 
 const abi = (entries: unknown) => entries as unknown as readonly AbiEntry[];
@@ -486,6 +488,37 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     const { orderHash } = await deliverAndSettle(0);
     delivered = { orderHash, from };
   }, 20 * 60_000);
+
+  test('TC-ATT-2146-03 (CAN-2146): every attestor signs the Canton delivery of TC-CAN-1867-STAND-01 with fillerId = keccak256(utf8(stand filler id)) and the repayTo of its DeliveryReceipt and DeliveryOrder on the ledger', async () => {
+    if (!delivered) throw new Error('TC-CAN-1867-STAND-01 delivered nothing');
+    const { orderHash } = delivered;
+    const fillUpdateId = await store.withOrder(orderHash, async (tx) => {
+      for (const t of await tx.listTickets()) {
+        const f = await tx.getFill(t.attempt);
+        if (f?.state === 'confirmed' && f.txRef) return f.txRef;
+      }
+      return undefined;
+    });
+    if (!fillUpdateId) throw new Error(`no confirmed Canton fill of ${orderHash} with its update id`);
+    // The operator signs both the DeliveryOrder and the DeliveryReceipt, so it sees them (canton-contracts Intent.DeliveryReceipt).
+    const operator = env('INTENT_OPERATOR_PARTY_ID');
+    const effects = await ledgerEffects(standLedger, fillUpdateId, operator);
+    const fillExercise = effects.find((e) => e.ExercisedEvent?.choice === 'DeliveryOrder_Fill')?.ExercisedEvent;
+    const receipt = effects.find((e) => e.CreatedEvent?.templateId.endsWith(':Intent.DeliveryReceipt:DeliveryReceipt'))?.CreatedEvent?.createArgument;
+    if (!fillExercise || !receipt) throw new Error(`update ${fillUpdateId} holds no DeliveryOrder_Fill with its DeliveryReceipt`);
+    const deliveryOrder = await createArgumentOf(standLedger, fillExercise.contractId, operator);
+    expect([bytes32Hex(receipt.orderHash), bytes32Hex(deliveryOrder.orderHash)]).toEqual([orderHash, orderHash]);
+    expect([receipt.fillerId, deliveryOrder.fillerId]).toEqual([env('STAND_FILLER_ID'), env('STAND_FILLER_ID')]);
+    const repayTo = bytes32Hex(receipt.repayTo);
+    expect(bytes32Hex(deliveryOrder.repayTo)).toBe(repayTo);
+
+    const fillerId = fillerIdHash(env('STAND_FILLER_ID')).toLowerCase();
+    const attestations = await attestationsOf(env('EVM_CHAIN_ID'), orderHash);
+    const fillRef = cantonFillRef(fillUpdateId).toLowerCase();
+    expect(attestations.map(({ attestor, proof }) => ({ attestor, orderHash: proof.orderHash.toLowerCase(), fillRef: proof.fillRef.toLowerCase(), fillerId: proof.fillerId.toLowerCase(), repayTo: proof.repayTo.toLowerCase() }))).toEqual(
+      attestations.map(({ attestor }) => ({ attestor, orderHash, fillRef, fillerId, repayTo })),
+    );
+  }, 5 * 60_000);
 
   // CAN-1861, CAN-2151: what filler-gateway recorded of that delivery's ticket, on the stream trading reads.
   test('TC-SDK-1861-INT-01 TC-SDK-2151-INT-01: the ticket of TC-CAN-1867-STAND-01 went offer → intent → issued → receipt at filler-gateway; the sealed receipt was taken, nothing declined or refused', async () => {
