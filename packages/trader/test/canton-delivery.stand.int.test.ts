@@ -57,7 +57,7 @@ import type { EvmRpc } from '../src/filler/rpc';
 import type { HttpFetch, WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
 import { attestationsOf, bytes32Hex, createArgumentOf, ledgerEffects, standLedger } from './stand/attestors';
-import { activeContracts, cantonToken, env, exercisedAfter, ledgerEnd } from './stand/canton-ledger';
+import { activeContracts, cantonToken, env, exercisedAfter, ledger, ledgerEnd, type CreatedEvent } from './stand/canton-ledger';
 import { cursor, eventsAfter, ofOrder, STREAMS } from './stand/filler-gateway';
 import { standToken } from './stand/keycloak';
 
@@ -194,9 +194,10 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
 
   /**
    * The stand filler on `store`: a restart is a new one on the same store. `nonceLeaseTtlMs` bounds how long a dead
-   * replica's signed fill stays its own before another replica takes it over.
+   * replica's signed fill stays its own before another replica takes it over; `deltaIssueMs` and `webSocket` are the
+   * node's own, for a case that holds a frame back.
    */
-  const newFiller = (delivery?: { nonceLeaseTtlMs: number }): Filler => {
+  const newFiller = ({ delivery, deltaIssueMs = 3_000, webSocket = nativeWebSocket }: { delivery?: { nonceLeaseTtlMs: number }; deltaIssueMs?: number; webSocket?: WebSocketFactory } = {}): Filler => {
     const seed = hexToBytes(env('STAND_FILLER_CANTON_PARTY_KEY').replace(/^0x/, ''));
     const created = createFiller({
       gatewayUrl: env('FILLER_GATEWAY_WS_URL'),
@@ -207,7 +208,7 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
       fillSigners: { [chain]: fillSigner },
       rpc: { [chain]: [rpc] },
       chains: { [chain]: { router, openConfirmations: 1, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: proofWindowSec, sendGuardSec: 10, minGasWei: 0n, fillConfirmations: 1 } },
-      tickets: { deltaIssueMs: 3_000 },
+      tickets: { deltaIssueMs },
       canton: {
         party: env('STAND_FILLER_CANTON_PARTY'),
         partySigner: { publicKey: `0x${bytesToHex(ed25519.getPublicKey(seed))}` as Hex, signHash: async (hash) => `0x${bytesToHex(ed25519.sign(hash, seed))}` as Hex },
@@ -216,7 +217,7 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
         registries,
       },
       store,
-      webSocket: nativeWebSocket,
+      webSocket,
       fetch: throughStand,
       logger,
       events,
@@ -247,25 +248,15 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     await filler?.stop();
   });
 
+  /** The stand filler's free CNRX on its party. */
+  const free = async () => (await filler.canton!.holdings()).filter((h) => !h.locked && h.asset.admin === asset.admin && h.asset.id === asset.id).reduce((sum, h) => sum + encodeCantonAmount(h.amount), 0n);
+
   /**
-   * quote → pick → openFor → ticket → `DeliveryOrder_Fill` → attestations → settle. `sourceAheadS` opens the
-   * order on a block that many seconds ahead of the wall clock — the source chain's clock ahead of the Canton
-   * participant's, so the order's `openedAt`, and with it the ticket's `validFrom`, lies in the ledger's future.
-   * `fault` breaks the delivery's submit (see `throughStand`): with `lost-answers` the SDK ends the delivery `sent` with
-   * the outcome unknown and the node is restarted on the same store; with `replica-dies` the replica is stopped with
-   * its signed fill `pending`, and a new replica on the same store takes it over once its lease runs out. Either way
-   * no second `DeliveryOrder_Fill` reaches the ledger and the order settles from the attested proof.
+   * quote → pick → openFor as a user of Cancore, with the stand filler picked; resolves once the intent is open.
+   * `sourceAheadS` opens it on a block that many seconds ahead of the wall clock.
    */
-  const deliverAndSettle = async (sourceAheadS: number, { fault: mode = 'none' as Fault } = {}) => {
-    fault.mode = mode;
-    fault.submitInFlight = false;
-    if (mode === 'replica-dies') {
-      await filler.stop();
-      filler = newFiller(SHORT_LEASE);
-      await filler.start();
-    }
-    const preparesFrom = fillPrepares.length;
-    const ledgerFrom = await ledgerEnd(await cantonToken());
+  const openOrder = async (sourceAheadS: number): Promise<{ order: OrderJson; orderHash: Hex; openBlock: bigint }> => {
+    const token = env('INPUT_TOKEN_ADDRESS').toLowerCase() as Hex;
     // -- quote → pick → openFor, as a user of Cancore (backend quote.service): only a picked order is ticketed,
     // and the Canton recipient is recorded with the quote (the readiness check and DeliveryBook_Dispatch read it).
     // trading serves /v1/intents/quote with its own JWT guard; the gateway is tried when trading refuses the token.
@@ -281,7 +272,6 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
       }
       throw new Error(`POST ${last}\n${diagnostics()}`);
     };
-    const token = env('INPUT_TOKEN_ADDRESS').toLowerCase() as Hex;
     // The stand's test tokens carry their own decimals.
     const decimals = Number(BigInt(await client.call(token, '0x313ce567')));
     const quote = await api<{ quoteId: string; offers: Array<{ fillerId: string; amountOut: string }> }>('/v1/intents/quote', {
@@ -319,20 +309,6 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     // The Permit2 witness is a nested struct: the package's own digest, signed with the maker's key.
     const permitSig = signDigest(env('MAKER_EVM_KEY') as Hex, hashPermitWitness({ ...permit, spender: router, witness: order }, toSign.chainId, permit2));
     const data = encodeFunctionCall(entryOf(abi(CANCORE_ROUTER_ABI), 'function', 'openFor'), [order, permit, permitSig, BigInt(toSign.quoteDeadline), toSign.quoteSig]);
-    // Both balances are read before the open reaches the chain: from then on the filler may deliver at any moment.
-    // The payee: the filler's EVM key on the source, padded into repayTo (the stand gives either form).
-    const payee = fillSigner.address.toLowerCase() as Hex;
-    const standRepayTo = env('STAND_FILLER_REPAY_TO').toLowerCase();
-    expect(standRepayTo.length === 66 ? `0x${standRepayTo.slice(26)}` : standRepayTo).toBe(payee);
-    const balanceOf = async (owner: Hex) => BigInt(await client.call(token, encodeFunctionCall(entryOf(abi(IBURN_MINT_ERC20_ABI), 'function', 'balanceOf'), [owner])));
-    const payeeBefore = await balanceOf(payee);
-    const free = async () => (await filler.canton!.holdings()).filter((h) => !h.locked && h.asset.admin === asset.admin && h.asset.id === asset.id).reduce((sum, h) => sum + encodeCantonAmount(h.amount), 0n);
-    const cnrxBefore = await free();
-    const recipient = env('STAND_CANTON_RECIPIENT_PARTY');
-    const registry = (registries[asset.admin] ?? [])[0];
-    if (!registry) throw new Error(`CANTON_TRANSFER_FACTORIES_JSON has no registry of ${asset.admin}`);
-    const recipientBefore = await ledgerHoldings(recipient, asset, registry);
-
     if (sourceAheadS > 0) {
       const latest = BigInt((await rpc.request<{ timestamp: string }>({ method: 'eth_getBlockByNumber', params: ['latest', false] })).timestamp);
       const ahead = BigInt(Math.floor(Date.now() / 1000) + sourceAheadS);
@@ -347,6 +323,43 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
       return receipt ? BigInt(receipt.blockNumber) : undefined;
     }, 60_000, diagnostics);
     await waitFor('the intent opened', async () => ((await reader.intents(orderHash)).status === INTENT_STATUS.Opened ? true : undefined), 60_000, diagnostics);
+    return { order, orderHash, openBlock };
+  };
+
+  /**
+   * quote → pick → openFor → ticket → `DeliveryOrder_Fill` → attestations → settle. `sourceAheadS` opens the
+   * order on a block that many seconds ahead of the wall clock — the source chain's clock ahead of the Canton
+   * participant's, so the order's `openedAt`, and with it the ticket's `validFrom`, lies in the ledger's future.
+   * `fault` breaks the delivery's submit (see `throughStand`): with `lost-answers` the SDK ends the delivery `sent` with
+   * the outcome unknown and the node is restarted on the same store; with `replica-dies` the replica is stopped with
+   * its signed fill `pending`, and a new replica on the same store takes it over once its lease runs out. Either way
+   * no second `DeliveryOrder_Fill` reaches the ledger and the order settles from the attested proof.
+   */
+  const deliverAndSettle = async (sourceAheadS: number, { fault: mode = 'none' as Fault } = {}) => {
+    fault.mode = mode;
+    fault.submitInFlight = false;
+    if (mode === 'replica-dies') {
+      await filler.stop();
+      filler = newFiller({ delivery: SHORT_LEASE });
+      await filler.start();
+    }
+    const preparesFrom = fillPrepares.length;
+    const ledgerFrom = await ledgerEnd(await cantonToken());
+    const token = env('INPUT_TOKEN_ADDRESS').toLowerCase() as Hex;
+    // Both balances are read before the open reaches the chain: from then on the filler may deliver at any moment.
+    // The payee: the filler's EVM key on the source, padded into repayTo (the stand gives either form).
+    const payee = fillSigner.address.toLowerCase() as Hex;
+    const standRepayTo = env('STAND_FILLER_REPAY_TO').toLowerCase();
+    expect(standRepayTo.length === 66 ? `0x${standRepayTo.slice(26)}` : standRepayTo).toBe(payee);
+    const balanceOf = async (owner: Hex) => BigInt(await client.call(token, encodeFunctionCall(entryOf(abi(IBURN_MINT_ERC20_ABI), 'function', 'balanceOf'), [owner])));
+    const payeeBefore = await balanceOf(payee);
+    const cnrxBefore = await free();
+    const recipient = env('STAND_CANTON_RECIPIENT_PARTY');
+    const registry = (registries[asset.admin] ?? [])[0];
+    if (!registry) throw new Error(`CANTON_TRANSFER_FACTORIES_JSON has no registry of ${asset.admin}`);
+    const recipientBefore = await ledgerHoldings(recipient, asset, registry);
+
+    const { order, orderHash, openBlock } = await openOrder(sourceAheadS);
 
     // -- ticket, receipt, delivery on Canton ----------------------------------------------------
     const takeover = mode === 'replica-dies' ? await replicaDiesMidDelivery(orderHash) : undefined;
@@ -463,7 +476,7 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
     await Promise.race([filler.stop(), new Promise((resolve) => setTimeout(resolve, 10_000))]);
     const takeover = { preparesFrom: fillPrepares.length, eventsFrom: events.events.length };
     fault.mode = 'none';
-    filler = newFiller(SHORT_LEASE);
+    filler = newFiller({ delivery: SHORT_LEASE });
     await filler.start();
     return takeover;
   };
@@ -538,4 +551,66 @@ describe('CAN-1867: EVM → Canton on the full intent stand', () => {
   test('TC-SDK-1867-INT-03: the replica dies with the delivery submit in flight — another replica takes the signed fill over after its lease, one DeliveryOrder_Fill on the ledger, the recipient credited once, settled on the router', async () => {
     await deliverAndSettle(0, { fault: 'replica-dies' });
   }, 20 * 60_000);
+
+  /** The recipient's CNRX transfer preapprovals: the one contract a Canton recipient needs to take a delivery. */
+  const PREAPPROVAL = '#cnrx-registry:Cnrx.Transfer:CnrxTransferPreapproval';
+  const recipientPreapprovals = async (recipient: string): Promise<CreatedEvent[]> =>
+    (await activeContracts(recipient, { TemplateFilter: { value: { templateId: PREAPPROVAL, includeCreatedEventBlob: false } } }, await cantonToken())).filter(
+      (c) => c.createArgument?.receiver === recipient && c.createArgument?.admin === asset.admin,
+    );
+  let ledgerCommands = 0;
+  /** A command of the custodial stand recipient, as the stand provisions it: its own signatory acts. */
+  const asRecipient = async (recipient: string, command: Record<string, unknown>): Promise<void> => {
+    await ledger('/v2/commands/submit-and-wait', await cantonToken(), { commands: [command], commandId: `can-1867-int-04-${Date.now()}-${ledgerCommands++}`, actAs: [recipient], readAs: [] });
+  };
+
+  test('TC-SDK-1867-INT-04: the recipient revokes its preapproval after the ticket is issued — V-R1 declines RECIPIENT_NOT_READY, no DeliveryOrder_Fill, the party’s CNRX untouched', async () => {
+    const recipient = env('STAND_CANTON_RECIPIENT_PARTY');
+    const live = await recipientPreapprovals(recipient);
+    expect(live.length).toBeGreaterThan(0);
+    // trading checks the recipient before it issues the ticket, so the revocation must come between the issue and
+    // the node's checks: the node's socket holds the Canton-form ticket.issued until the recipient has archived every
+    // preapproval. The node allows the hold in δ_issue; the frame stays fresh (maxMessageAgeMs).
+    // trading answers readiness from an ACS read it keeps CANTON_READINESS_CACHE_MS (5 s, backend
+    // ledger-canton-readiness.ts): the frame waits past it, or V-R1 reads the pre-issue answer.
+    const readinessCacheOutlivedMs = 6_000;
+    const revokeOnIssue: WebSocketFactory = (url, h, protocols) =>
+      nativeWebSocket(url, {
+        ...h,
+        onMessage: (text) => {
+          const frame = JSON.parse(text) as { type?: string; form?: string };
+          if (frame.type !== 'ticket.issued' || frame.form !== 'canton') return h.onMessage(text);
+          void Promise.all(live.map((c) => asRecipient(recipient, { ExerciseCommand: { templateId: PREAPPROVAL, contractId: c.contractId, choice: 'Archive', choiceArgument: {} } }))).then(
+            () => new Promise((resolve) => setTimeout(resolve, readinessCacheOutlivedMs)).then(() => h.onMessage(text)),
+            (error: unknown) => logger.error('the recipient could not revoke its preapproval', { error: String(error) }),
+          );
+        },
+      }, protocols);
+    await filler.stop();
+    filler = newFiller({ deltaIssueMs: 60_000, webSocket: revokeOnIssue });
+    await filler.start();
+    const preparesFrom = fillPrepares.length;
+    const cnrxBefore = await free();
+    try {
+      const { orderHash } = await openOrder(0);
+      const declined = await waitFor('the ticket declined', async () => {
+        const t = await store.withOrder(orderHash, async (tx) => (await tx.listTickets())[0]);
+        return t?.state === 'declined' ? t : undefined;
+      }, 5 * 60_000, diagnostics);
+      expect(declined.decline).toMatchObject({ reason: 'RECIPIENT_NOT_READY' });
+      const vR1 = events.events.find((e) => e.type === 'stage' && e.stage === 'ticket.checked' && 'orderHash' in e && e.orderHash === orderHash && (e.detail as Record<string, unknown>).check === 'V-R1');
+      expect(vR1 && 'detail' in vR1 ? vR1.detail : undefined).toMatchObject({ status: 'failed', reason: 'RECIPIENT_NOT_READY' });
+      expect(await recipientPreapprovals(recipient)).toEqual([]);
+      expect(fillPrepares.slice(preparesFrom)).toEqual([]);
+      expect(await free()).toBe(cnrxBefore);
+    } finally {
+      // The stand is shared: the recipient takes deliveries again, as provisioned.
+      if ((await recipientPreapprovals(recipient)).length === 0) {
+        for (const c of live) await asRecipient(recipient, { CreateCommand: { templateId: PREAPPROVAL, createArguments: c.createArgument } });
+      }
+      await filler.stop();
+      filler = newFiller();
+      await filler.start();
+    }
+  }, 10 * 60_000);
 });

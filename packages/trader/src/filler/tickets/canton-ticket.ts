@@ -19,6 +19,11 @@
  * | V-E3 | `refundAfter − fillDeadline ≥` the filler's proof window for Canton | `PROOF_WINDOW_TOO_SHORT` |
  * | V-E4 | the source input token does not blocklist `repayTo` | `OTHER` (`repayTo-blocklisted`) |
  * | V-E5 | the party's unlocked holdings of the instrument cover the amount | `NO_INVENTORY` |
+ * | V-R1 | Cancore's readiness read about this `DeliveryOrder` (same order, cid, recipient, instrument) answers `ready: true` | `RECIPIENT_NOT_READY`; an answer about another order or none: `OTHER` |
+ *
+ * V-R1 is Cancore's word, not a fact the party can read: the recipient's transfer
+ * preapproval has the party as no stakeholder. A recipient that is not ready is
+ * declined `RECIPIENT_NOT_READY`, which is not a violation (penalties.md §4.1).
  *
  * The `fillerId` of the `DeliveryOrder` is not on the wire read: the decoded
  * fill holds it to the node's own before anything is signed.
@@ -29,6 +34,7 @@ import {
   encodeCantonRecipient,
   type CantonDeliveryOrder,
   type CantonHolding,
+  type CantonRecipientReadiness,
   type DeclineReason,
   type Hex,
   type TicketIssuedCanton,
@@ -54,6 +60,8 @@ export interface CantonTicketOptions {
   deliveryOrders(): Promise<readonly CantonDeliveryOrder[]>;
   /** The party's holdings (filler-gateway). */
   holdings(): Promise<readonly CantonHolding[]>;
+  /** Cancore's read of whether the recipient of the party's `DeliveryOrder` for `orderHash` accepts its instrument (filler-gateway). */
+  recipientReadiness(orderHash: Hex): Promise<CantonRecipientReadiness>;
 }
 
 type Pass = (check: TicketCheckId, detail?: string, status?: TicketCheckStatus) => void;
@@ -181,6 +189,27 @@ export async function verifyCantonTicket(ctx: Context, input: TicketCheckInput, 
     .reduce((sum, h) => sum + (cantonUnits(h.amount) ?? 0n), 0n);
   if (free < needed) throw new TicketRefusal('V-E5', 'NO_INVENTORY', `holdings: ${free} < ${needed} (${order.asset.id}, units of 10⁻¹⁰)`);
   pass('V-E5');
+
+  // -- V-R1: the recipient takes the delivery --------------------------------------------------------
+  await verifyRecipientReady(ctx.canton, order);
+  pass('V-R1');
+}
+
+/** V-R1: Cancore's readiness read is about this `DeliveryOrder` and says its recipient takes the instrument. */
+async function verifyRecipientReady(canton: CantonTicketOptions, order: CantonDeliveryOrder): Promise<void> {
+  const readiness = await readFor('V-R1', 'OTHER', () => canton.recipientReadiness(order.orderHash));
+  const about = readinessMismatch(readiness, order);
+  if (about) throw new TicketRefusal('V-R1', 'OTHER', `the readiness answer names another ${about} than the DeliveryOrder`);
+  if (readiness.ready !== true) throw new TicketRefusal('V-R1', 'RECIPIENT_NOT_READY', `the recipient ${order.recipient} does not accept ${order.asset.id}: ${readiness.reason ?? 'no reason'}`);
+}
+
+/** The first field of a readiness answer that is not about `order`; undefined when it is about that `DeliveryOrder`. */
+export function readinessMismatch(readiness: CantonRecipientReadiness, order: CantonDeliveryOrder): string | undefined {
+  if (!same(readiness.orderHash, order.orderHash)) return 'orderHash';
+  if (readiness.deliveryOrderCid !== order.deliveryOrderCid) return 'deliveryOrderCid';
+  if (readiness.recipient !== order.recipient) return 'recipient';
+  if (readiness.asset?.admin !== order.asset.admin || readiness.asset?.id !== order.asset.id) return 'asset';
+  return undefined;
 }
 
 /** The window field of the issued ticket that is not the offer's; `validFrom` is absent from a gateway that predates it (CAN-3026). */

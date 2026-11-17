@@ -204,7 +204,18 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
       clock,
       events: createRecordingEventSink(),
       logger,
-      canton: { party: PARTY, policy: cantonPolicy, deliveryOrders: async () => orders, holdings: async () => holdings },
+      canton: {
+        party: PARTY,
+        policy: cantonPolicy,
+        deliveryOrders: async () => orders,
+        holdings: async () => holdings,
+        // trading's own read before it issued the ticket: the recipient of the order's DeliveryOrder takes its instrument.
+        recipientReadiness: async (orderHash) => {
+          const o = orders.find((d) => d.orderHash.toLowerCase() === orderHash.toLowerCase());
+          if (!o) throw new Error(`no DeliveryOrder for ${orderHash}`);
+          return { orderHash: o.orderHash, deliveryOrderCid: o.deliveryOrderCid, recipient: o.recipient, asset: o.asset, ready: true, reason: null };
+        },
+      },
     });
 
   test('TC-SDK-1867-COMP-01: a Canton-form ticket on a real escrow passes every check, from the router and the input token', async () => {
@@ -213,7 +224,7 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
     const t = ticketOf(order, orderHash, now, clock);
     const verdict = await verifierFor(clock, [t.deliveryOrder], [{ contractId: 'h1', asset: ASSET, amount: '30.0', locked: false }]).verify({ offer: t.offer, issued: t.issued, issuedAtMs: clock.now(), intent: t.intent });
     expect(verdict).toMatchObject({ ok: true });
-    expect(verdict.checks.map((c) => [c.check, c.status])).toEqual(['form', 'V-T4', 'V-T2', 'V-T3', 'V-E1', 'V-E2', 'V-E3', 'V-E4', 'V-E5'].map((c) => [c, 'passed']));
+    expect(verdict.checks.map((c) => [c.check, c.status])).toEqual(['form', 'V-T4', 'V-T2', 'V-T3', 'V-E1', 'V-E2', 'V-E3', 'V-E4', 'V-E5', 'V-R1'].map((c) => [c, 'passed']));
   }, 60_000);
 
   test('TC-SDK-1867-COMP-02: refused on the real escrow — another order, an operator repayTo (T-48), no inventory', async () => {

@@ -13,6 +13,7 @@ export type TicketCheckId =
   | 'V-T1'
   | 'V-E4'
   | 'V-E5'
+  | 'V-R1'
   | 'V-C1'
   | 'V-C2'
   | 'V-C3'
