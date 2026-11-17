@@ -1,5 +1,16 @@
 # Changelog — `@cancore/wallet`
 
+## 0.4.5
+
+### Changed — the DA Utilities 0.9.2 pin takes the registry's event log (CAN-2931)
+
+- The DA Utilities 0.9.2 entry (CBTC) names `Utility.Registry.Holding.V0.Holding:Holding.EventLog_HoldingsChange` in
+  `serviceChoices`. From registry 0.14 on, `Holding` (utility-registry-holding-v0 0.3.x) implements Splice's
+  TransferEventsV2 `EventLog`, and a transfer reports the sender's holding change through it: a non-consuming choice
+  the instrument admin controls, which moves nothing. The 0.8.2 entry keeps no service choice.
+- `serviceChoices` documents the rule the transfer check holds it to: a service choice counts only non-consuming and
+  on a template of the registry's own package or its holding.
+
 ## 0.4.4
 
 ### Added — the DA Utilities allocation template in the CBTC pin (CAN-3587)

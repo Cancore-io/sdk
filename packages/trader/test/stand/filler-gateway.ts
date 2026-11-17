@@ -35,7 +35,7 @@ import { hashOrder } from '../../src/filler/chain/hashes';
 import type { EvmChainId } from '../../src/filler/chains';
 import { createFiller, type Filler, type QuoteRequestHook, type ReconfirmHook, type TicketOfferHook } from '../../src/filler/filler';
 import type { EvmRpc } from '../../src/filler/rpc';
-import type { WebSocketFactory } from '../../src/filler/runtime';
+import type { HttpFetch, WebSocketFactory } from '../../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../../src/filler/testing';
 import { env } from './canton-ledger';
 
@@ -121,10 +121,10 @@ function redis(...args: string[]): Promise<Resp> {
   const commands = [...(password ? [['AUTH', decodeURIComponent(password)]] : []), args];
   return new Promise((resolve, reject) => {
     const socket = connect(Number(port || 6379), hostname);
-    let buffer = '';
+    let buffer: Buffer = Buffer.alloc(0);
     const replies: Resp[] = [];
-    socket.on('data', (chunk) => {
-      buffer += chunk.toString('utf8');
+    socket.on('data', (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
       try {
         for (;;) {
           const [value, rest] = parse(buffer);
@@ -147,13 +147,16 @@ function redis(...args: string[]): Promise<Resp> {
   });
 }
 
-/** One RESP value from the front of `text`; `rest` undefined while incomplete. */
-function parse(text: string): [Resp, string | undefined] {
-  const line = text.indexOf('\r\n');
+/**
+ * One RESP value from the front of `bytes`; `rest` undefined while incomplete. RESP lengths count bytes, and stream
+ * payloads carry non-ASCII text, so the reply is cut as bytes and decoded per value.
+ */
+function parse(bytes: Buffer): [Resp, Buffer | undefined] {
+  const line = bytes.indexOf('\r\n');
   if (line < 0) return [null, undefined];
-  const head = text.slice(1, line);
-  const after = text.slice(line + 2);
-  switch (text[0]) {
+  const head = bytes.toString('utf8', 1, line);
+  const after = bytes.subarray(line + 2);
+  switch (bytes.toString('utf8', 0, 1)) {
     case '+':
       return [head, after];
     case '-':
@@ -163,16 +166,16 @@ function parse(text: string): [Resp, string | undefined] {
     case '$': {
       const n = Number(head);
       if (n < 0) return [null, after];
-      if (Buffer.byteLength(after) < n + 2) return [null, undefined];
-      return [after.slice(0, n), after.slice(n + 2)];
+      if (after.length < n + 2) return [null, undefined];
+      return [after.toString('utf8', 0, n), after.subarray(n + 2)];
     }
     case '*': {
       const n = Number(head);
       if (n < 0) return [null, after];
       const items: Resp[] = [];
-      let rest: string | undefined = after;
+      let rest: Buffer | undefined = after;
       for (let i = 0; i < n; i++) {
-        const [item, next]: [Resp, string | undefined] = parse(rest!);
+        const [item, next]: [Resp, Buffer | undefined] = parse(rest!);
         if (next === undefined) return [null, undefined];
         items.push(item);
         rest = next;
@@ -180,7 +183,7 @@ function parse(text: string): [Resp, string | undefined] {
       return [items, rest];
     }
     default:
-      throw new Error(`redis: unexpected reply ${text.slice(0, 20)}`);
+      throw new Error(`redis: unexpected reply ${bytes.toString('utf8', 0, 20)}`);
   }
 }
 
@@ -254,23 +257,39 @@ export function standEvmOrder(salt: number): { order: OrderJson; orderHash: Hex;
 /** The stand's ticket signer: anvil's default mnemonic, index 16 (TICKETSIGNER of the runbook) — a test key. */
 export const STAND_TICKET_SIGNER_KEY: Hex = '0xea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0';
 
-/**
- * Offers an EVM-form ticket of `o` to `s`, waits for the intent ack and issues the ticket signed by `signerKey`, as
- * trading would; returns the ticket-events cursor taken before the offer.
- */
-export async function issueEvmTicket(s: StandFiller, o: { order: OrderJson; orderHash: Hex; nowS: number }, signerKey: Hex): Promise<string> {
+/** Offers an EVM-form ticket of `o`, as trading would; returns the ticket-events cursor taken before the offer. */
+export async function offerEvmOrder(o: { order: OrderJson; orderHash: Hex; nowS: number }, over: { acceptBy?: number } = {}): Promise<string> {
   const from = await cursor(STREAMS.ticketEvents);
-  await command(STREAMS.tickets, 'ticket.offer', offerCommand(o, { destination: standChain(), form: 'evm' }));
+  await command(STREAMS.tickets, 'ticket.offer', offerCommand(o, { ...over, destination: standChain(), form: 'evm' }));
+  return from;
+}
+
+/** Offers an EVM-form ticket of `o` to `s` and waits for the intent ack; returns the ticket-events cursor taken before the offer and the intent. */
+export async function offerEvmTicket(s: StandFiller, o: { order: OrderJson; orderHash: Hex; nowS: number }): Promise<{ from: string; intent: TicketIntentMessage }> {
+  const from = await offerEvmOrder(o);
   const acked = await until('the intent acked', async () => {
     const t = await s.store.withOrder(o.orderHash, (tx) => tx.getTicket(0));
     return t?.intentAck ? t : undefined;
   }, 60_000, s.diagnostics);
-  const intent = acked.intent as TicketIntentMessage;
+  return { from, intent: acked.intent as TicketIntentMessage };
+}
+
+/** Issues the acked EVM-form ticket of `o` for `intent`, signed by `signerKey`, as trading would. */
+export async function issueAckedTicket(o: { orderHash: Hex; nowS: number }, intent: TicketIntentMessage, signerKey: Hex): Promise<void> {
   const fillTicket = {
     orderHash: o.orderHash, fillerId: fillerIdHash(env('STAND_FILLER_ID')), deliveryKey: intent.deliveryKey, repayTo: intent.repayTo, attempt: 0, validFrom: String(o.nowS), validUntil: String(o.nowS + 900),
   };
   const ticketSig = await createTestTypedDataSigner(signerKey).signTypedData({ domain: FILL_TICKET_DOMAIN, types: FILL_TICKET_TYPES, primaryType: 'FillTicket', message: fillTicket });
   await command(STREAMS.tickets, 'ticket.issue', { orderHash: o.orderHash, attempt: 0, ticketSig, deliveryKey: intent.deliveryKey, repayTo: intent.repayTo });
+}
+
+/**
+ * Offers an EVM-form ticket of `o` to `s`, waits for the intent ack and issues the ticket signed by `signerKey`, as
+ * trading would; returns the ticket-events cursor taken before the offer.
+ */
+export async function issueEvmTicket(s: StandFiller, o: { order: OrderJson; orderHash: Hex; nowS: number }, signerKey: Hex): Promise<string> {
+  const { from, intent } = await offerEvmTicket(s, o);
+  await issueAckedTicket(o, intent, signerKey);
   return from;
 }
 
@@ -330,7 +349,13 @@ export interface StandFillerOptions {
   gatewaySigner?: Hex;
   /** EVM endpoints of the stand chain; anvil by default. */
   rpc?: EvmRpc[];
+  /** The proof window the filler requires on the stand chain (V-E3); the stand's CANTON_PROOF_WINDOW_S by default. */
+  requiredProofWindowSec?: number;
   store?: InMemoryFillerStore;
+  /** The socket to filler-gateway; the native one by default. */
+  webSocket?: WebSocketFactory;
+  /** The REST transport to filler-gateway; the global fetch by default. */
+  fetch?: HttpFetch;
 }
 
 export interface StandFiller {
@@ -358,7 +383,7 @@ export function standFiller(options: StandFillerOptions = {}): StandFiller {
     quoteSigner: createTestTypedDataSigner(env('STAND_FILLER_MESSAGE_KEY') as Hex),
     fillSigners: { [chain]: createTestFillSigner(env('STAND_FILLER_EVM_KEY') as Hex) },
     rpc: { [chain]: options.rpc ?? [httpRpc(env('EVM_RPC_URL'))] },
-    chains: { [chain]: { router: standRouter(), openConfirmations: 1, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: proofWindowSec, sendGuardSec: 10, minGasWei: 0n, fillConfirmations: 1 } },
+    chains: { [chain]: { router: standRouter(), openConfirmations: 1, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: options.requiredProofWindowSec ?? proofWindowSec, sendGuardSec: 10, minGasWei: 0n, fillConfirmations: 1 } },
     tickets: { deltaIssueMs: 3_000 },
     canton: {
       party: env('STAND_FILLER_CANTON_PARTY'),
@@ -368,7 +393,8 @@ export function standFiller(options: StandFillerOptions = {}): StandFiller {
       registries: JSON.parse(env('CANTON_TRANSFER_FACTORIES_JSON')) as Record<string, CantonTransferFactory[]>,
     },
     store,
-    webSocket: nativeWebSocket,
+    webSocket: options.webSocket ?? nativeWebSocket,
+    ...(options.fetch ? { fetch: options.fetch } : {}),
     logger,
     events,
   });

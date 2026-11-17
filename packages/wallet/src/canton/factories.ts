@@ -55,6 +55,7 @@ export interface CantonTransferFactory {
   /**
    * Choices besides archiving a stated input that the factory may exercise on
    * a contract the sender is a stakeholder of, as `<module>:<entity>.<choice>`.
+   * The transfer check takes one only non-consuming and on a template of `packageId` or `holding` (CAN-2931).
    */
   serviceChoices: readonly string[];
   /**
@@ -206,6 +207,10 @@ const DA_UTILITY_REGISTRY_APP_0_9_2: CantonTransferFactory = {
   // 0.8.2, the package of the executed-transfer record — neither the app package nor the holding package.
   allocation: 'Utility.Registry.V0.Holding.AllocationV2:AllocationV2',
   allocationPackageId: '8c654487d9f5fb195fbcdd7b44cd8e365b1ea39c15ae62ce6c7a48343f1210dd',
+  // CAN-2931: from registry 0.14 on (holding-v0 0.3.x) `Holding` implements Splice's TransferEventsV2 `EventLog`, whose
+  // `EventLog_HoldingsChange` is non-consuming with `controller admin` (splice TransferEventsV2.daml); a transfer logs
+  // the change on the sender's holding it creates (filler-node-1 refusal of 2026-11-16).
+  serviceChoices: ['Utility.Registry.Holding.V0.Holding:Holding.EventLog_HoldingsChange'],
   // CAN-3133 spike step 3 (backend run 41898009345): a ReceiverSide receipt allocation takes no input holdings and
   // settled to a payee with no TransferPreapproval; the holder-credentials entry comes from DA's registry context.
   openReceipt: true,
