@@ -1,14 +1,16 @@
 /**
  * CAN-1861, the ticket desk against the real filler-gateway of the intent stand: the hook's declines, the checks
  * of an issued EVM-form ticket that refuse it, an offer delivered twice, a hook that never answers, a foreign
- * ticket signature and the expiries. trading is played on the Redis Streams (test/stand/filler-gateway.ts); the
+ * ticket signature, the expiries and a node restarted mid-ticket. trading is played on the Redis Streams (test/stand/filler-gateway.ts); the
  * full path to the receipt is TC-SDK-1861-INT-01 in canton-delivery.stand.int.test.ts.
  *
  *   INTENT_STAND_ENV=<stand env> npx jest --selectProjects int --runInBand packages/trader/test/CAN-1861-tickets.stand.int.test.ts
  */
-import type { Hex } from '@cancore/contracts';
+import type { Hex, TicketIntentMessage } from '@cancore/contracts';
+import type { EvmRpc } from '../src/filler/rpc';
+import type { HttpFetch, WebSocketFactory } from '../src/filler/runtime';
 import { OFFER_DECLINE_REASONS, type TicketOfferDecision } from '../src/filler/tickets/desk';
-import { createTestTypedDataSigner } from '../src/filler/testing';
+import { createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
 import { env } from './stand/canton-ledger';
 import {
   command,
@@ -16,7 +18,11 @@ import {
   eventsAfter,
   GATEWAY_KEYS,
   httpRpc,
+  issueAckedTicket,
   issueEvmTicket,
+  nativeWebSocket,
+  offerEvmOrder,
+  offerEvmTicket,
   offerCommand,
   ofOrder,
   openOnStand,
@@ -157,4 +163,151 @@ standSuite('CAN-1861: the ticket desk against the real filler-gateway', [...GATE
       await blind.filler.stop();
     }
   }, 180_000);
+
+  test('TC-SDK-1861-INT-03: the filler requires a longer proof window than the stand router leaves — V-E3 refuses PROOF_WINDOW_TOO_SHORT, no receipt', async () => {
+    const strict = standFiller({ offer: offerHook, requiredProofWindowSec: 10 * 365 * 86_400 });
+    stand = strict;
+    await strict.filler.start();
+    try {
+      // V-E3 is read after V-E2: only an open escrow lets the ticket reach it.
+      const o = standEvmOrder(122);
+      await openOnStand(o);
+      const from = await issueEvmTicket(strict, o, STAND_TICKET_SIGNER_KEY);
+      expect((await declined(o.orderHash, from)).data).toMatchObject({ reason: 'PROOF_WINDOW_TOO_SHORT' });
+      expect((await eventsAfter(STREAMS.ticketEvents, from, ofOrder(o.orderHash))).map((e) => e.kind)).not.toContain('ticket.receipt');
+    } finally {
+      await strict.filler.stop();
+    }
+  }, 180_000);
+
+  /** The receipt filler-gateway records for `orderHash` after `from`, once the restarted node sends it. */
+  const receiptedOnce = async (orderHash: Hex, from: string, s: StandFiller) => {
+    await until('ticket.receipt at filler-gateway', async () => (await eventsAfter(STREAMS.ticketEvents, from, (e) => ofOrder(orderHash)(e) && e.kind === 'ticket.receipt'))[0], 120_000, s.diagnostics);
+    await sleep(3_000);
+    const kinds = (await eventsAfter(STREAMS.ticketEvents, from, ofOrder(orderHash))).map((e) => e.kind);
+    expect(kinds.filter((k) => k === 'ticket.intent')).toHaveLength(1);
+    expect(kinds.filter((k) => k === 'ticket.receipt')).toHaveLength(1);
+    expect(kinds.filter((k) => k === 'ticket.declined')).toEqual([]);
+  };
+
+  /**
+   * A node's I/O, as a test cuts it. `cutChain` leaves every later chain read hanging; `kill` does that to its REST
+   * calls too and makes its socket send nothing: whatever the node still had in flight reaches neither the chain nor
+   * filler-gateway, and nothing of it is written to the store again. `holdIntent` keeps the node's consent from
+   * leaving: on the socket it is refused, over REST the call never returns.
+   */
+  const mortalIo = ({ holdIntent = false } = {}) => {
+    const anvil = httpRpc(env('EVM_RPC_URL'));
+    const cut = { chain: false, all: false };
+    let heldIntents = 0;
+    const never = <T>() => new Promise<T>(() => undefined);
+    const rpc: EvmRpc = { label: 'stand-anvil-mortal', request: <T>(r: { method: string; params?: readonly unknown[] }) => (cut.chain || cut.all ? never<T>() : anvil.request<T>(r)) };
+    const intentPath = /^\/v1\/filler\/tickets\/[^/]+\/\d+\/intent$/;
+    const fetchThrough: HttpFetch = async (url, request) => {
+      if (cut.all) return never();
+      if (holdIntent && intentPath.test(new URL(url).pathname)) {
+        heldIntents++;
+        return never();
+      }
+      return fetch(url, { method: request.method, headers: { ...request.headers }, ...(request.body !== undefined ? { body: request.body } : {}) });
+    };
+    const webSocket: WebSocketFactory = (url, h, protocols) => {
+      const socket = nativeWebSocket(url, h, protocols);
+      return {
+        send: (text) => {
+          if (cut.all || (holdIntent && (JSON.parse(text) as { type?: string }).type === 'ticket.intent')) throw new Error('not sent: the node is cut off');
+          socket.send(text);
+        },
+        close: (code, reason) => socket.close(code, reason),
+      };
+    };
+    return { rpc, fetch: fetchThrough, webSocket, heldIntents: () => heldIntents, cutChain: () => void (cut.chain = true), kill: () => void (cut.all = true) };
+  };
+
+  /**
+   * The node dies: its I/O is cut first, then it is stopped only to free its timers and its session, so the restarted
+   * node's login does not race a live one under the same fillerId.
+   */
+  const crash = async (s: StandFiller, io: ReturnType<typeof mortalIo>) => {
+    io.kill();
+    await Promise.race([s.filler.stop(), sleep(10_000)]);
+  };
+  const release = async (s: StandFiller | undefined) => {
+    if (s) await Promise.race([s.filler.stop(), sleep(10_000)]);
+  };
+
+  test('TC-SDK-1861-INT-07: the node dies with the intent stored but not delivered (INTENT_SENT) — restarted on the same store it delivers that intent once and takes the ticket to one receipt', async () => {
+    const store = new InMemoryFillerStore();
+    const io = mortalIo({ holdIntent: true });
+    const first = standFiller({ offer: offerHook, store, rpc: [io.rpc], fetch: io.fetch, webSocket: io.webSocket });
+    let second: StandFiller | undefined;
+    stand = first;
+    try {
+      await first.filler.start();
+      const o = standEvmOrder(130);
+      await openOnStand(o);
+      // The consent must still be in time when the restarted node is logged in to send it.
+      const from = await offerEvmOrder(o, { acceptBy: Date.now() + 120_000 });
+      const unsent = await until(
+        'the intent stored and on its way, not delivered',
+        async () => {
+          const t = await ticket(first, o.orderHash);
+          return t?.state === 'intent-sent' && t.intent && t.sentAtMs === undefined && io.heldIntents() > 0 ? t : undefined;
+        },
+        60_000,
+        first.diagnostics,
+      );
+      expect(unsent.intentAck).toBeUndefined();
+      expect((await eventsAfter(STREAMS.ticketEvents, from, ofOrder(o.orderHash))).map((e) => e.kind)).not.toContain('ticket.intent');
+      await crash(first, io);
+
+      second = standFiller({ offer: offerHook, store });
+      stand = second;
+      await second.filler.start();
+      const restarted = second;
+      const acked = await until('the stored intent delivered and acked after the restart', async () => {
+        const t = await ticket(restarted, o.orderHash);
+        return t?.intentAck ? t : undefined;
+      }, 60_000, restarted.diagnostics);
+      expect(acked.state).toBe('intent-acked');
+      await issueAckedTicket(o, acked.intent as TicketIntentMessage, STAND_TICKET_SIGNER_KEY);
+      await receiptedOnce(o.orderHash, from, restarted);
+      // The hook was asked once, by the dead node: the restarted one sent what was stored, it did not decide again.
+      expect(asked.get(o.orderHash)).toBe(1);
+    } finally {
+      await release(first);
+      await release(second);
+    }
+  }, 300_000);
+
+  test('TC-SDK-1861-INT-07: the node dies in the checks (CHECKING) — restarted on the same store it finishes them and sends one receipt', async () => {
+    const store = new InMemoryFillerStore();
+    const io = mortalIo();
+    const first = standFiller({ offer: offerHook, store, rpc: [io.rpc], fetch: io.fetch, webSocket: io.webSocket });
+    let second: StandFiller | undefined;
+    stand = first;
+    try {
+      await first.filler.start();
+      const o = standEvmOrder(131);
+      await openOnStand(o);
+      const { from, intent } = await offerEvmTicket(first, o);
+      // From here the node's chain reads never come back: the escrow check (V-E2) it starts is left in flight.
+      io.cutChain();
+      await issueAckedTicket(o, intent, STAND_TICKET_SIGNER_KEY);
+      const checked = (check: string, s: StandFiller) => s.events.events.some((e) => e.type === 'stage' && e.stage === 'ticket.checked' && 'orderHash' in e && e.orderHash === o.orderHash && (e.detail as Record<string, unknown>).check === check);
+      // The checks ran up to the chain read: the ticket checks and V-E1 passed, V-E2 never answered.
+      await until('the checks reached the escrow read', async () => ((await ticket(first, o.orderHash))?.state === 'checking' && checked('V-E1', first) ? true : undefined), 60_000, first.diagnostics);
+      expect(checked('V-E2', first)).toBe(false);
+      await crash(first, io);
+
+      second = standFiller({ offer: offerHook, store });
+      stand = second;
+      await second.filler.start();
+      await receiptedOnce(o.orderHash, from, second);
+      expect(checked('V-E2', second)).toBe(true);
+    } finally {
+      await release(first);
+      await release(second);
+    }
+  }, 300_000);
 });
