@@ -1,6 +1,6 @@
 import type { Hex } from '@cancore/contracts';
-import { ed25519 } from '@noble/curves/ed25519';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { GatewayError } from '../errors';
 import {
   createFakeFetch,

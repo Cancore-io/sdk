@@ -4,9 +4,9 @@
  * Test keys only; a filler node builds its signers from `.env`.
  */
 import type { Hex } from '@cancore/contracts';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, concatBytes, hexToBytes } from '@noble/hashes/utils';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, concatBytes, hexToBytes } from '@noble/hashes/utils.js';
 import { addressOfPublicKey, type EvmTransactionRequest, type FillSigner } from '../signer';
 import { createTestTypedDataSigner } from './fakes';
 
@@ -97,7 +97,7 @@ export function decodeSignedTransaction(raw: Hex): DecodedTransaction {
   };
   const digest = keccak_256(concatBytes(Uint8Array.of(2), rlpEncode(unsignedFields(tx))));
   const signature = new secp256k1.Signature(intOfBytes(b[10]!), intOfBytes(b[11]!)).addRecoveryBit(Number(intOfBytes(b[9]!)));
-  const from = addressOfPublicKey(signature.recoverPublicKey(digest).toRawBytes(false));
+  const from = addressOfPublicKey(signature.recoverPublicKey(digest).toBytes(false));
   return { ...tx, from, hash: `0x${bytesToHex(keccak_256(bytes))}` };
 }
 
@@ -111,8 +111,8 @@ export function createTestFillSigner(privateKey: Hex): FillSigner {
     async signTransaction(tx: EvmTransactionRequest): Promise<Hex> {
       const fields = unsignedFields(tx);
       const digest = keccak_256(concatBytes(Uint8Array.of(2), rlpEncode(fields)));
-      const sig = secp256k1.sign(digest, key, { lowS: true });
-      const signed = rlpEncode([...fields, bytesOfInt(BigInt(sig.recovery)), bytesOfInt(sig.r), bytesOfInt(sig.s)]);
+      const sig = secp256k1.Signature.fromBytes(secp256k1.sign(digest, key, { prehash: false, lowS: true, format: 'recovered' }), 'recovered');
+      const signed = rlpEncode([...fields, bytesOfInt(BigInt(sig.recovery!)), bytesOfInt(sig.r), bytesOfInt(sig.s)]);
       return `0x02${bytesToHex(signed)}`;
     },
   };

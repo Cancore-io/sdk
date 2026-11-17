@@ -48,9 +48,9 @@ import {
   type TicketIssuedCanton,
   type TicketOffer,
 } from '@cancore/contracts';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
-import { keccak_256 } from '@noble/hashes/sha3';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { FillerChains, hashFillProof, hashOrder, type ChainConfig } from '../src/filler/chain';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { cantonFillRef } from '../src/filler/delivery/canton';
@@ -64,6 +64,7 @@ import { addressOfPublicKey } from '../src/filler/signer';
 import type { TicketRecord } from '../src/filler/store';
 import { TicketVerifier } from '../src/filler/tickets/checks';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
+import { signRsv } from '../src/filler/testing/fakes';
 
 const INTENT = process.env.CANCORE_INTENT_JSON;
 const ACTORS = process.env.CANCORE_ACTORS_ENV;
@@ -109,10 +110,7 @@ async function waitFor<T>(read: () => Promise<T | undefined>, what: string, time
 }
 
 const abi = (entries: unknown) => entries as unknown as readonly AbiEntry[];
-const signDigest = (key: Hex, digest: Hex): Hex => {
-  const sig = secp256k1.sign(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)), { lowS: true });
-  return `0x${bytesToHex(sig.toCompactRawBytes())}${(27 + sig.recovery).toString(16)}`;
-};
+const signDigest = (key: Hex, digest: Hex): Hex => signRsv(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)));
 const addressOf = (key: Hex): Hex => addressOfPublicKey(secp256k1.getPublicKey(hexToBytes(key.slice(2)), false));
 
 live('component: EVM → Canton against the stand router, filler-gateway played (CAN-1867)', () => {

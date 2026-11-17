@@ -1,5 +1,5 @@
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { Hex } from '@cancore/contracts';
 import { GatewayError, UnsupportedVersionError } from '../errors';
 import { createTestGatewaySigner } from '../testing';
@@ -77,7 +77,7 @@ describe('verifyGatewayText — every filler-gateway → filler frame (protocol 
 
     const bytes = hexToBytes(frame.sig.slice(2));
     const s = BigInt(`0x${bytesToHex(bytes.subarray(32, 64))}`);
-    const highS = (secp256k1.CURVE.n - s).toString(16).padStart(64, '0');
+    const highS = (secp256k1.Point.CURVE().n - s).toString(16).padStart(64, '0');
     const flipped = `0x${bytesToHex(bytes.subarray(0, 32))}${highS}${bytes[64] === 27 ? '1c' : '1b'}`;
     expect(verifyGatewayText(JSON.stringify({ ...frame, sig: flipped }), expect_)).toMatchObject({ ok: false, reason: 'bad-sig' });
   });

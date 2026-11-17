@@ -24,8 +24,8 @@ import {
   type Hex,
   type TicketIntentMessage,
 } from '@cancore/contracts';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { bytesToHex } from '@noble/hashes/utils';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { hashOrder } from '../src/filler/chain/hashes';
 import type { EvmRpc } from '../src/filler/rpc';
@@ -258,7 +258,7 @@ standSuite('CAN-2151: the signed envelope against the real filler-gateway', [...
     for (const v of file.vectors) {
       expect(hashTypedData({ domain: FILLER_PROTOCOL_DOMAIN, types: FILLER_KEY_REGISTRATION_TYPES, primaryType: 'FillerKeyRegistration', message: v.message })).toBe(v.digest);
     }
-    const fresh = createTestTypedDataSigner(`0x${bytesToHex(secp256k1.utils.randomPrivateKey())}`);
+    const fresh = createTestTypedDataSigner(`0x${bytesToHex(secp256k1.utils.randomSecretKey())}`);
     const fillerId = env('STAND_FILLER2_ID');
     const registration = await signFillerKeyRegistration(fresh, { fillerId, issuedAt: BigInt(Math.floor(Date.now() / 1000)) });
     const preview = await adminApi<{ ok: boolean; messageKey: string | null; problems: unknown[] }>('POST', `/admin/fillers/${encodeURIComponent(fillerId)}/message-key/verify`, { registration });
