@@ -35,6 +35,7 @@ import {
   type CantonHolding,
   type CantonIntent,
   type CantonParty,
+  type CantonRecipientReadiness,
   type CantonPrepare,
   type CantonSubmit,
   type Hex,
@@ -261,6 +262,20 @@ export class GatewayRest {
     return body as unknown as CantonIntent;
   }
 
+  /**
+   * `GET /v1/filler/canton/recipient-readiness/{orderHash}`: Cancore's read of whether the recipient of the party's
+   * live `DeliveryOrder` for `orderHash` accepts its instrument (V-R1). Checked against the order, never trusted;
+   * here only its shape.
+   */
+  async getCantonRecipientReadiness(orderHash: Hex): Promise<CantonRecipientReadiness> {
+    if (!/^0x[0-9a-fA-F]{64}$/.test(orderHash)) throw new GatewayError('BAD_REQUEST', false, `orderHash ${orderHash} is not 32 bytes of hex`);
+    const path = `/v1/filler/canton/recipient-readiness/${orderHash.toLowerCase()}`;
+    const { text } = await this.authed('GET', path, 'read');
+    const body = parseJson(text, path);
+    if (!isCantonRecipientReadiness(body)) throw new GatewayError('BAD_RESPONSE', false, `${path}: expected a CantonRecipientReadiness`);
+    return body;
+  }
+
   // -- The filler's own routes (§3.20) ----------------------------------------
 
   /** `GET /v1/filler/routes`: the verified `routes.state` — every route approved for this filler and whether it serves it. */
@@ -430,6 +445,21 @@ const nullableString = (v: unknown): boolean => v === null || typeof v === 'stri
  * they compare is a string where the schema says so, so a malformed answer is
  * a `BAD_RESPONSE` — a declined ticket — never a `TypeError` mid-check.
  */
+/** The shape of a recipient-readiness answer; whether it is about the ticket's `DeliveryOrder` is V-R1's to check. */
+export function isCantonRecipientReadiness(body: unknown): body is CantonRecipientReadiness {
+  return (
+    isObject(body) &&
+    typeof body.orderHash === 'string' &&
+    typeof body.deliveryOrderCid === 'string' &&
+    typeof body.recipient === 'string' &&
+    isObject(body.asset) &&
+    typeof body.asset.admin === 'string' &&
+    typeof body.asset.id === 'string' &&
+    typeof body.ready === 'boolean' &&
+    (body.reason === null || typeof body.reason === 'string')
+  );
+}
+
 export function isCantonIntent(body: unknown): body is CantonIntent {
   if (!isObject(body)) return false;
   const top = ['intentCid', 'templateId', 'orderHash', 'owner', 'operator', 'filler', 'fillerId', 'requestId', 'amount', 'feeRate', 'fillDeadline', 'refundAfter', 'orderCreatedAt', 'allocationCid'];

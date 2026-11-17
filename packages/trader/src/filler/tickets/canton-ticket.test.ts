@@ -14,6 +14,7 @@ import {
   hashCantonTicketReceipt,
   repayToFromEvm,
   type CantonDeliveryOrder,
+  type CantonRecipientReadiness,
   type Hex,
   type OrderJson,
   type TicketIssuedCanton,
@@ -83,7 +84,12 @@ describe('CAN-2808: V-E2 of a Canton-form ticket reads at the openConfirmations 
   const FILL_KEY: Hex = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
   const CANTON_POLICY = { minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 30 };
 
-  function cantonFormTicket(openConfirmations: OpenDepth) {
+  /** Cancore's readiness read about `order`: ready, as trading saw it before it issued the ticket. */
+  const readyAbout = (order: CantonDeliveryOrder): CantonRecipientReadiness => ({
+    orderHash: order.orderHash, deliveryOrderCid: order.deliveryOrderCid, recipient: order.recipient, asset: order.asset, ready: true, reason: null,
+  });
+
+  function cantonFormTicket(openConfirmations: OpenDepth, readiness: (order: CantonDeliveryOrder) => Promise<CantonRecipientReadiness> = async (o) => readyAbout(o)) {
     const clock = new FakeClock();
     const nowS = BigInt(Math.floor(clock.now() / 1000));
     const source = new FakeChain(11155111n, 'sepolia');
@@ -118,6 +124,7 @@ describe('CAN-2808: V-E2 of a Canton-form ticket reads at the openConfirmations 
         party: PARTY, policy: CANTON_POLICY,
         deliveryOrders: async () => [deliveryOrder],
         holdings: async () => [{ contractId: '00h1', asset, amount: '100.0000000000', locked: false }],
+        recipientReadiness: async () => readiness(deliveryOrder),
       },
     });
     const escrowReadBlocks = () =>
@@ -150,5 +157,27 @@ describe('CAN-2808: V-E2 of a Canton-form ticket reads at the openConfirmations 
     t.escrow.atBlock = 98n;
     await expect(t.verify()).resolves.toMatchObject({ ok: true });
     expect(t.escrowReadBlocks()).toEqual([98n]);
+  });
+
+  test('TC-SDK-1867-50: V-R1 — a recipient whose preapproval is gone is declined RECIPIENT_NOT_READY, no receipt', async () => {
+    const t = cantonFormTicket(3, async (o) => ({ ...readyAbout(o), ready: false, reason: 'RECIPIENT_NOT_READY' }));
+    await expect(t.verify()).resolves.toMatchObject({ ok: false, reason: 'RECIPIENT_NOT_READY', detail: expect.stringContaining('V-R1') });
+  });
+
+  test.each([
+    ['another order', (o: CantonDeliveryOrder) => ({ ...readyAbout(o), orderHash: `0x${'ab'.repeat(32)}` as Hex })],
+    ['another DeliveryOrder', (o: CantonDeliveryOrder) => ({ ...readyAbout(o), deliveryOrderCid: `00${'ee'.repeat(33)}` })],
+    ['another recipient', (o: CantonDeliveryOrder) => ({ ...readyAbout(o), recipient: 'mallory::1220ef' })],
+    ['another instrument', (o: CantonDeliveryOrder) => ({ ...readyAbout(o), asset: { ...o.asset, id: 'USDCx' } })],
+  ])('TC-SDK-1867-51: V-R1 — a ready answer about %s is no answer: declined OTHER', async (_about, answer) => {
+    const t = cantonFormTicket(3, async (o) => answer(o));
+    await expect(t.verify()).resolves.toMatchObject({ ok: false, reason: 'OTHER', detail: expect.stringContaining('V-R1') });
+  });
+
+  test('TC-SDK-1867-52: V-R1 — a readiness that cannot be read is declined OTHER (N-12), never a receipt', async () => {
+    const t = cantonFormTicket(3, async () => {
+      throw new Error('filler-gateway unreachable');
+    });
+    await expect(t.verify()).resolves.toMatchObject({ ok: false, reason: 'OTHER', detail: expect.stringContaining('V-R1') });
   });
 });

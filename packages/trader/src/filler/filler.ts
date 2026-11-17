@@ -576,7 +576,7 @@ export function createFiller(config: FillerConfig): Filler {
     events,
     logger,
     ...(canton && config.canton
-      ? { canton: { party: config.canton.party, policy: config.canton.destination, deliveryOrders: () => canton.deliveryOrders(), holdings: () => canton.holdings() } }
+      ? { canton: { party: config.canton.party, policy: config.canton.destination, deliveryOrders: () => canton.deliveryOrders(), holdings: () => canton.holdings(), recipientReadiness: (orderHash) => canton.recipientReadiness(orderHash) } }
       : {}),
   });
 

@@ -204,7 +204,18 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
       clock,
       events: createRecordingEventSink(),
       logger,
-      canton: { party: PARTY, policy: cantonPolicy, deliveryOrders: async () => orders, holdings: async () => holdings },
+      canton: {
+        party: PARTY,
+        policy: cantonPolicy,
+        deliveryOrders: async () => orders,
+        holdings: async () => holdings,
+        // trading's own read before it issued the ticket: the recipient of the order's DeliveryOrder takes its instrument.
+        recipientReadiness: async (orderHash) => {
+          const o = orders.find((d) => d.orderHash.toLowerCase() === orderHash.toLowerCase());
+          if (!o) throw new Error(`no DeliveryOrder for ${orderHash}`);
+          return { orderHash: o.orderHash, deliveryOrderCid: o.deliveryOrderCid, recipient: o.recipient, asset: o.asset, ready: true, reason: null };
+        },
+      },
     });
 
   test('TC-SDK-1867-COMP-01: a Canton-form ticket on a real escrow passes every check, from the router and the input token', async () => {
