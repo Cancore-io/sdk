@@ -15,7 +15,7 @@
  * the open — drops the token, so the next attempt logs in again. The token is
  * never logged.
  */
-import { FILLER_CLOSE_CODES, fillerWsProtocols, type AuthToken, type F2SMessage, type Hex } from '@cancore/contracts';
+import { FILLER_CLOSE_CODES, fillerWsProtocols, messageIdRetainUntil, type AuthToken, type F2SMessage, type Hex } from '@cancore/contracts';
 import { GatewayError, UnsupportedVersionError } from '../errors';
 import type { Cancel, Clock, FillerSocket, Logger, WebSocketFactory } from '../runtime';
 import type { Sealer, Unsealed } from './envelope';
@@ -47,6 +47,14 @@ export interface ReconnectPolicy {
 export const DEFAULT_RECONNECT: ReconnectPolicy = { initialDelayMs: 500, maxDelayMs: 30_000 };
 export const DEFAULT_HEARTBEAT_MISSES = 3;
 export const DEFAULT_LOGIN_TIMEOUT_MS = 15_000;
+/**
+ * Frames that stay on their session (protocol §3.5): filler-gateway numbers its pings per session (`ping-1` again on
+ * every new one), so their ids are taken per connection, not across reconnects.
+ */
+const SESSION_SCOPED_TYPES: ReadonlySet<string> = new Set(['auth.ok', 'ping', 'pong']);
+
+/** filler-gateway's own default `maxMessageAgeMs` (FILLER_GATEWAY_MAX_MESSAGE_AGE_MS). */
+export const DEFAULT_MAX_MESSAGE_AGE_MS = 30_000;
 
 /**
  * Delay before reconnect number `attempt` (0-based): `min(max, initial × 2^attempt)`,
@@ -106,6 +114,8 @@ export interface SessionOptions {
   heartbeatMisses: number;
   /** How long a connect — the REST login and the socket — may take to reach `auth.ok`. Default 15 s. */
   loginTimeoutMs: number;
+  /** `transport.maxMessageAgeMs` (filler-gateway's, as configured): a frame whose `sentAt` is further from arrival is stale and dropped (T-6). */
+  maxMessageAgeMs: number;
 }
 
 /** What may arrive before `auth.ok`: `auth.ok` itself, and an `error` before filler-gateway closes. */
@@ -122,6 +132,11 @@ export class GatewaySession {
   private generation = 0;
   private attempt = 0;
   private lastInboundMs = 0;
+  /**
+   * Ids of the frames taken, with the hash of their bytes, each until `messageIdRetainUntil`: a frame reusing one with
+   * other content is a replay and dropped (T-6); a byte-identical redelivery goes on, marked not first-seen.
+   */
+  private readonly takenIds = new Map<string, { until: number; raw: Hex }>();
   private heartbeatIntervalMs = 0;
   private timers: Cancel[] = [];
   /** The token offered on the current connection; dropped when it closes before `auth.ok`. */
@@ -247,6 +262,30 @@ export class GatewaySession {
     this.lastInboundMs = this.options.clock.now();
   }
 
+  /** `stale` or `replayed` for a frame filler-gateway signed but must not be acted on (§3.4 checks 3 and 4). */
+  private staleOrReplayed(frame: { type: string; id?: unknown; sentAt: number }, raw: Hex): 'stale' | 'replayed' | undefined {
+    const now = this.options.clock.now();
+    const maxAge = this.options.maxMessageAgeMs;
+    if (Math.abs(now - frame.sentAt) > maxAge) return 'stale';
+    for (const [id, taken] of this.takenIds) if (taken.until < now) this.takenIds.delete(id);
+    if (typeof frame.id !== 'string') return undefined;
+    const key = SESSION_SCOPED_TYPES.has(frame.type) ? `${this.generation}/${frame.id}` : frame.id;
+    const taken = this.takenIds.get(key);
+    if (taken) return taken.raw === raw ? undefined : 'replayed';
+    this.takenIds.set(key, { until: messageIdRetainUntil(frame.sentAt, now, maxAge), raw });
+    return undefined;
+  }
+
+  /** A stale `auth.ok` opens no session at all: the host clock is what is off, so that is said as an error of its own. */
+  private dropped(reason: 'stale' | 'replayed', frame: { type: string; id?: string; sentAt: number }): void {
+    this.options.logger.warn('filler-gateway: frame dropped', { reason, type: frame.type, id: frame.id });
+    if (reason !== 'stale' || frame.type !== 'auth.ok') return;
+    this.options.logger.error('filler-gateway: auth.ok is stale, the host clock is off filler-gateway\'s by more than maxMessageAgeMs; no session until it is corrected', {
+      skewMs: this.options.clock.now() - frame.sentAt,
+      maxMessageAgeMs: this.options.maxMessageAgeMs,
+    });
+  }
+
   private onMessage(text: string): void {
     const check = verifyGatewayText(text, { gatewaySigner: this.options.gatewaySigner, fillerId: this.options.fillerId });
     if (!check.ok) {
@@ -254,6 +293,11 @@ export class GatewaySession {
       return;
     }
     const { frame } = check.verified;
+    const stale = this.staleOrReplayed(frame, check.verified.id);
+    if (stale) {
+      this.dropped(stale, frame);
+      return;
+    }
     this.lastInboundMs = this.options.clock.now();
 
     if (this.current !== 'ready') {

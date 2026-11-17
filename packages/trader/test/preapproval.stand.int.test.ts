@@ -12,15 +12,22 @@
  * trading reads too): refused while more than the window is left, replaced inside it, the party read names the
  * replacement, and the party is credited directly while the two overlap.
  *
+ * CAN-2151 (INT-07, the last test of this file on purpose — it retires STAND_FILLER2's message key for the rest of the
+ * run, and a retired key never comes back): Cancore staff change the second stand filler's message key; the SDK with
+ * the new key logs in, with the old one it is refused.
+ *
  * Skipped without INTENT_STAND_ENV; with it, a missing key fails naming every missing key.
  */
 import type { Hex } from '@cancore/contracts';
 import { ed25519 } from '@noble/curves/ed25519';
+import { secp256k1 } from '@noble/curves/secp256k1';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import type { CantonTransferFactory } from '../src/filler/canton/factories';
 import { createCantonOperations, type CantonOperations } from '../src/filler/canton/operations';
 import { GatewayError } from '../src/filler/errors';
+import { signFillerKeyRegistration } from '../src/filler/signer';
 import { createTestTypedDataSigner } from '../src/filler/testing';
+import { adminApi, ADMIN_KEYS } from './stand/admin';
 import { env } from './stand/canton-ledger';
 
 const STAND = process.env.INTENT_STAND_ENV;
@@ -28,16 +35,17 @@ const REQUIRED = [
   'FILLER_GATEWAY_WS_URL', 'FILLER_GATEWAY_SIGNER', 'CANTON_PARTICIPANT_UID', 'CNRX_ADMIN_PARTY', 'CANTON_TRANSFER_FACTORIES_JSON',
   'STAND_FILLER_ID', 'STAND_FILLER_MESSAGE_KEY', 'STAND_FILLER_CANTON_PARTY', 'STAND_FILLER_CANTON_PARTY_KEY',
   'STAND_FILLER2_ID', 'STAND_FILLER2_MESSAGE_KEY', 'STAND_FILLER2_CANTON_PARTY', 'STAND_FILLER2_CANTON_PARTY_KEY',
+  ...ADMIN_KEYS,
 ] as const;
 
-/** The Canton operations of one stand filler, over its own REST login to the stand's filler-gateway. */
-function operations(prefix: 'STAND_FILLER' | 'STAND_FILLER2'): CantonOperations {
+/** The Canton operations of one stand filler, over its own REST login to the stand's filler-gateway; `messageKey` in place of its own. */
+function operations(prefix: 'STAND_FILLER' | 'STAND_FILLER2', messageKey = env(`${prefix}_MESSAGE_KEY`) as Hex): CantonOperations {
   const seed = hexToBytes(env(`${prefix}_CANTON_PARTY_KEY`).replace(/^0x/, ''));
   return createCantonOperations({
     gatewayUrl: env('FILLER_GATEWAY_WS_URL'),
     fillerId: env(`${prefix}_ID`),
     gatewaySigner: env('FILLER_GATEWAY_SIGNER') as Hex,
-    messageSigner: createTestTypedDataSigner(env(`${prefix}_MESSAGE_KEY`) as Hex),
+    messageSigner: createTestTypedDataSigner(messageKey),
     partySigner: { publicKey: `0x${bytesToHex(ed25519.getPublicKey(seed))}` as Hex, signHash: async (hash) => `0x${bytesToHex(ed25519.sign(hash, seed))}` as Hex },
     participantUid: env('CANTON_PARTICIPANT_UID'),
     registries: JSON.parse(env('CANTON_TRANSFER_FACTORIES_JSON')) as Record<string, CantonTransferFactory[]>,
@@ -131,4 +139,23 @@ describe('CAN-2904: preapproval.create on the full intent stand', () => {
     expect(sent.result.outcome).toBe('COMPLETED');
     expect(sent.result.transferInstructionCid).toBeUndefined();
   }, 300_000);
+
+  test('TC-SDK-2151-INT-07: Cancore staff change the filler’s message key — the SDK logs in with the new key, the old one is refused BAD_SIGNATURE', async () => {
+    const fillerId = env('STAND_FILLER2_ID');
+    const oldKey = env('STAND_FILLER2_MESSAGE_KEY') as Hex;
+    expect((await operations('STAND_FILLER2', oldKey).party()).party).toBe(env('STAND_FILLER2_CANTON_PARTY'));
+
+    const newKey = `0x${bytesToHex(secp256k1.utils.randomPrivateKey())}` as Hex;
+    const registration = await signFillerKeyRegistration(createTestTypedDataSigner(newKey), { fillerId, issuedAt: BigInt(Math.floor(Date.now() / 1000)) });
+    const change = await adminApi<{ kind: string; previousAddress: string | null; address: string }>('POST', `/admin/fillers/${encodeURIComponent(fillerId)}/message-key`, {
+      registration, reason: 'TC-SDK-2151-INT-07: manual key change on the intent stand', requestRef: 'TC-SDK-2151-INT-07',
+    });
+    expect(change).toMatchObject({ previousAddress: createTestTypedDataSigner(oldKey).address.toLowerCase(), address: createTestTypedDataSigner(newKey).address.toLowerCase() });
+
+    expect((await operations('STAND_FILLER2', newKey).party()).party).toBe(env('STAND_FILLER2_CANTON_PARTY'));
+    // Protocol §3.4 check 1 comes before FillerAuth: msgSig must recover to the key registered now, so a retired key is BAD_SIGNATURE.
+    const refused = await refusal(operations('STAND_FILLER2', oldKey).party());
+    expect(refused.code).toBe('BAD_SIGNATURE');
+    expect(refused.message).toContain('does not recover to the message key registered for fillerId');
+  }, 120_000);
 });

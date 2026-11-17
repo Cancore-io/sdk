@@ -50,6 +50,7 @@ import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, 
 import { checkCantonSource, intentOrder } from '../src/filler/tickets/canton-source';
 import { TicketRefusal } from '../src/filler/tickets/refusal';
 import { attestationsOf, ledgerEffects } from './stand/attestors';
+import { standToken } from './stand/keycloak';
 
 const ENV_FILE = process.env.CANCORE_INTENT_STAND_ENV ?? process.env.INTENT_STAND_ENV;
 const KEYS = [
@@ -162,21 +163,11 @@ const iso = (s: number) => new Date(s * 1000).toISOString().replace(/\.\d{3}Z$/,
 
 // -- trading, as the stand user (Keycloak password grant, the gateway's own client) ---------------
 
-async function userToken(): Promise<string> {
-  const form = new URLSearchParams({
-    grant_type: 'password', client_id: E.STAND_USER_CLIENT_ID, client_secret: E.STAND_USER_CLIENT_SECRET,
-    username: E.STAND_USER_NAME, password: E.STAND_USER_PASSWORD, scope: 'openid',
-  });
-  const res = await fetch(E.STAND_USER_TOKEN_URL, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: form });
-  if (!res.ok) throw new Error(`stand user login: ${res.status}`);
-  return ((await res.json()) as { access_token: string }).access_token;
-}
-
 /** trading serves the user API with its own JWT guard; the gateway is tried when trading refuses the token or the path. */
 async function userApi<T>(path: string, body: unknown): Promise<T> {
   let last = '';
   for (const base of [E.TRADING_URL, E.GATEWAY_URL]) {
-    const res = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${await userToken()}` }, body: JSON.stringify(body) });
+    const res = await fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${await standToken('user')}` }, body: JSON.stringify(body) });
     const text = await res.text();
     if (res.ok) return (text ? JSON.parse(text) : null) as T;
     last = `${base}${path}: ${res.status} ${text.slice(0, 600)}`;
