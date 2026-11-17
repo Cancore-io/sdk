@@ -121,6 +121,15 @@ describe('signer contract: 65 bytes r‖s‖v, low-s, v ∈ {27, 28} (protocol �
     expect(assertSignature(sig.toUpperCase().replace('0X', '0x'))).toBe(sig);
     expect(() => recoverAddress(hashTypedData(quote), sig.slice(0, 130) as Hex)).toThrow(SignatureContractError);
   });
+
+  // KAT pinned on @noble/curves 1.9.7 before the v2 upgrade (CAN-3207): v2 ECDSA hashes its input by
+  // default (prehash), so a recovery that hashes the digest again lands on another address and this fails.
+  test('recoverAddress KAT: a fixed digest and signature recover to the same address as on noble v1', () => {
+    const digest: Hex = '0x78d80d4ac5af5bdcc983baa96a79c8ace5b56dde5770b9331555c8c596eea12e';
+    const signature: Hex = '0x9a668f1bf3d74228b5d56d8c5e83d11d79984b9b96ffc6f148af4bdd9257fe7843a0bef4d770ecebe7e509b2a46fa13ba50f435c40df5e08eb936da85e5ad2c41b';
+    expect(digest).toBe(`0x${bytesToHex(keccak_256(utf8ToBytes('CAN-3207 recoverAddress KAT')))}`);
+    expect(recoverAddress(digest, signature)).toBe(ADDRESS_A);
+  });
 });
 
 describe('signFillerKeyRegistration (CAN-2151, protocol §3.16)', () => {
