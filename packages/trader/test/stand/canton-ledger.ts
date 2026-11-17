@@ -46,7 +46,7 @@ export interface CreatedEvent {
 
 /** The created events of the contracts `party` sees under `filter`, active at the ledger end. */
 export async function activeContracts(party: string, filter: IdentifierFilter, token: string): Promise<CreatedEvent[]> {
-  const { offset } = await ledger<{ offset: number }>('/v2/state/ledger-end', token);
+  const offset = await ledgerEnd(token);
   type Row = { contractEntry?: { JsActiveContract?: { createdEvent?: CreatedEvent } } };
   // eventFormat alone: the participant refuses it beside the older top-level verbose/filter.
   const rows = await ledger<Row[]>('/v2/state/active-contracts', token, {
@@ -54,4 +54,42 @@ export async function activeContracts(party: string, filter: IdentifierFilter, t
     eventFormat: { verbose: true, filtersByParty: { [party]: { cumulative: [{ identifierFilter: filter }] } } },
   });
   return rows.flatMap((r) => (r.contractEntry?.JsActiveContract?.createdEvent ? [r.contractEntry.JsActiveContract.createdEvent] : []));
+}
+
+/** The ledger end: the offset a later `exercisedAfter` reads from. */
+export async function ledgerEnd(token: string): Promise<number> {
+  return (await ledger<{ offset: number }>('/v2/state/ledger-end', token)).offset;
+}
+
+export interface ExercisedEvent {
+  contractId: string;
+  templateId: string;
+  choice: string;
+  actingParties?: string[];
+}
+
+/**
+ * Every choice exercised in the transactions `party` sees after `after` up to the ledger end, in the
+ * choice-level shape (LEDGER_EFFECTS): a consuming choice nested under another is counted too. An answer can be
+ * short of the end (the HTTP list returns what it gathered in its wait), so it is read page by page from the
+ * highest offset seen; a page with no offset at all ends the read, which can only under-count.
+ */
+export async function exercisedAfter(party: string, after: number, token: string): Promise<ExercisedEvent[]> {
+  const end = await ledgerEnd(token);
+  // One key per item: Transaction, Reassignment or OffsetCheckpoint; each carries its offset.
+  type Item = { update?: Record<string, { value?: { offset?: number; events?: Array<{ ExercisedEvent?: ExercisedEvent }> } } | undefined> };
+  const wildcard = { identifierFilter: { WildcardFilter: { value: { includeCreatedEventBlob: false } } } };
+  const exercised: ExercisedEvent[] = [];
+  for (let from = after; from < end; ) {
+    const items = await ledger<Item[]>('/v2/updates?limit=200', token, {
+      beginExclusive: from,
+      endInclusive: end,
+      updateFormat: { includeTransactions: { transactionShape: 'TRANSACTION_SHAPE_LEDGER_EFFECTS', eventFormat: { verbose: true, filtersByParty: { [party]: { cumulative: [wildcard] } } } } },
+    });
+    const offsets = items.flatMap((i) => Object.values(i.update ?? {}).map((u) => u?.value?.offset)).filter((o): o is number => typeof o === 'number');
+    if (offsets.length === 0) break;
+    for (const item of items) for (const event of item.update?.Transaction?.value?.events ?? []) if (event.ExercisedEvent) exercised.push(event.ExercisedEvent);
+    from = Math.max(...offsets);
+  }
+  return exercised;
 }
