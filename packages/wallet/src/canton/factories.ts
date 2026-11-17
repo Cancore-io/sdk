@@ -257,6 +257,20 @@ const SPLICE_AMULET_0_1_24_DEVNET: CantonTransferFactory = {
 };
 
 /**
+ * Splice `splice-amulet` 0.1.25 (canton-network/splice `daml/dars.lock`), which DevNet's DSO vets next to 0.1.24 since
+ * 17.11.2026: `AllocationFactory_Allocate` created the committed `AmuletAllocationV2` of order 0xc87fe441…b483 under it
+ * (filler-node-dev V-C4 refusal, CAN-3579). A body-only upgrade of 0.1.24 with the same templates and fields; its
+ * transfers spend the amulets created under 0.1.24.
+ */
+const SPLICE_AMULET_0_1_25: CantonTransferFactory = {
+  ...SPLICE_AMULET_0_1_24,
+  packageId: 'c5203dee918350373a993328e345872113bd5f8c8f0f51967014d813e583ae66',
+  upgradedHoldingPackageIds: [SPLICE_AMULET_0_1_24.packageId],
+};
+
+const SPLICE_AMULET_0_1_25_DEVNET: CantonTransferFactory = { ...SPLICE_AMULET_0_1_25, preapprovalProvider: SPLICE_AMULET_0_1_24_DEVNET.preapprovalProvider };
+
+/**
  * dev's CNRX guardian (CAN-3132): the guardian of the registrar's live `CnrxSupply`, as gitops publishes it
  * (`k8s/envs/dev/cnrx-deploy-values.yaml` `CNRX_GUARDIAN_PARTY_ID`).
  */
@@ -274,7 +288,8 @@ export const CANTON_TRANSFER_FACTORIES: Readonly<Record<string, readonly CantonT
   // 0.8.2 stays: contracts created under it remain on the ledger after devnet moved to 0.9.2.
   'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff': [DA_UTILITY_REGISTRY_APP_0_9_2_DEVNET, DA_UTILITY_REGISTRY_APP_0_8_2_DEVNET],
   // devnet: the DSO, CC's admin (DevNet scan `registry/metadata/v1/info`).
-  'DSO::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a': [SPLICE_AMULET_0_1_24_DEVNET],
+  // 0.1.24 stays: DevNet's AmuletRules and the amulets and allocations created before 0.1.25 remain under it.
+  'DSO::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a': [SPLICE_AMULET_0_1_25_DEVNET, SPLICE_AMULET_0_1_24_DEVNET],
 };
 
 const PACKAGE_ID = /^[0-9a-f]{64}$/;

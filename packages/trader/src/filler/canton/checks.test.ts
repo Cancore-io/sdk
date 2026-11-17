@@ -324,7 +324,7 @@ describe('holdings.transfer of CC: a Splice amulet transfer through the receiver
   const check = checkHoldingsTransfer({ params, publicKey: KEY, nowMs: NOW });
 
   test('TC-SDK-2931-40: dev pins the DSO’s splice-amulet 0.1.24 with the Amulet holding form', () => {
-    expect(CANTON_TRANSFER_FACTORIES[DSO]?.[0]).toMatchObject({ packageId: AMULET_PKG, factory: 'Splice.ExternalPartyAmuletRules:ExternalPartyAmuletRules', holding: 'Splice.Amulet:Amulet', holdingForm: 'amulet' });
+    expect(CANTON_TRANSFER_FACTORIES[DSO]?.find((f) => f.packageId === AMULET_PKG)).toMatchObject({ packageId: AMULET_PKG, factory: 'Splice.ExternalPartyAmuletRules:ExternalPartyAmuletRules', holding: 'Splice.Amulet:Amulet', holdingForm: 'amulet' });
   });
 
   test('TC-SDK-2931-41: the honest direct transfer passes: inputs archived, 25 amulet to the receiver, change, the provider’s marker, the DSO’s event log', () => {

@@ -33,6 +33,8 @@ const DA_APP_0_9_2 = '1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b2
 const DSO = 'DSO::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a';
 /** splice-amulet 0.1.24, the Amulet package DevNet runs: the factory, the holdings and the V2 allocation are all of it. */
 const AMULET_0_1_24 = '17b6f7c18efec9022dde39a19039783c68490a722e8a5088b22ee034678171a2';
+/** splice-amulet 0.1.25: the package DevNet's DSO creates V2 allocations under since 17.11.2026 (CAN-3579). */
+const AMULET_0_1_25 = 'c5203dee918350373a993328e345872113bd5f8c8f0f51967014d813e583ae66';
 const OPERATOR = 'cancore-intent-operator::1220ee';
 const ALLOCATION_TEMPLATE = `${'ab'.repeat(32)}:Cnrx.Allocation:CnrxAllocationV2`;
 /** A registry pinned like cnrx-registry: its V2 allocation, a receipt allocation open to any party. */
@@ -385,9 +387,15 @@ describe('V-C4 and V-C5 on a CC (Amulet) give (CAN-3579)', () => {
     expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3']);
   });
 
-  test('TC-SDK-3579-05: the DSO pin names one V2 allocation template and pays any party through a receipt allocation', () => {
-    expect(CANTON_ALLOCATION_TEMPLATES[DSO]).toEqual([`${AMULET_0_1_24}:Splice.AmuletAllocationV2:AmuletAllocationV2`]);
-    expect(CANTON_TRANSFER_FACTORIES[DSO]?.map((f) => f.openReceipt === true)).toEqual([true]);
+  test('TC-SDK-3579-06: a committed AmuletAllocationV2 of splice-amulet 0.1.25 passes V-C1…V-C7 on the published pin', async () => {
+    const g = cc(`${AMULET_0_1_25}:Splice.AmuletAllocationV2:AmuletAllocationV2`);
+    await g.run();
+    expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
+  });
+
+  test('TC-SDK-3579-05: the DSO pin names the V2 allocation of 0.1.25 and 0.1.24 and pays any party through a receipt allocation', () => {
+    expect(CANTON_ALLOCATION_TEMPLATES[DSO]).toEqual([AMULET_0_1_25, AMULET_0_1_24].map((p) => `${p}:Splice.AmuletAllocationV2:AmuletAllocationV2`));
+    expect(CANTON_TRANSFER_FACTORIES[DSO]?.map((f) => f.openReceipt === true)).toEqual([true, true]);
     expect(registriesProblem({ [DSO]: CANTON_TRANSFER_FACTORIES[DSO] ?? [] })).toBeUndefined();
   });
 });
