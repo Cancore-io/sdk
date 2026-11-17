@@ -2,8 +2,9 @@
  * CAN-2151, the signed envelope against the real filler-gateway of the intent stand: every frame the SDK seals —
  * `quote`, `ticket.intent`, `ticket.decline`, `routes.set` — is taken by filler-gateway (none comes back
  * BAD_SIGNATURE); frames signed by a key the SDK does not pin are dropped before any hook; a signed frame that arrives
- * later than `maxMessageAgeMs` is dropped as stale while a byte-identical redelivery is acted on once; and a ticket issued for
- * another delivery key than the SDK's own intent is refused by filler-gateway and never reaches the checks.
+ * later than `maxMessageAgeMs` is dropped as stale while a byte-identical redelivery is acted on once; a ticket issued for
+ * another delivery key than the SDK's own intent is refused by filler-gateway and never reaches the checks; and a ticket
+ * whose input token blocklists the SDK's `repayTo` is declined at V-E4.
  * `ticket.receipt` is TC-SDK-2151-INT-01 in canton-delivery.stand.int.test.ts. trading is played on the Redis
  * Streams (test/stand/filler-gateway.ts).
  *
@@ -12,6 +13,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  CANCORE_ROUTER_ABI,
   encodeCantonAmount,
   FILL_TICKET_DOMAIN,
   FILL_TICKET_TYPES,
@@ -24,18 +26,59 @@ import {
 } from '@cancore/contracts';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { bytesToHex } from '@noble/hashes/utils';
+import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
+import { hashOrder } from '../src/filler/chain/hashes';
+import type { EvmRpc } from '../src/filler/rpc';
 import { createFillerRoutes } from '../src/filler/routes';
 import { signFillerKeyRegistration } from '../src/filler/signer';
 import type { HttpFetch, WebSocketFactory } from '../src/filler/runtime';
 import { createTestTypedDataSigner } from '../src/filler/testing';
 import { adminApi, ADMIN_KEYS } from './stand/admin';
 import { env } from './stand/canton-ledger';
-import { command, cursor, eventsAfter, GATEWAY_KEYS, nativeWebSocket, offerCommand, ofOrder, sleep, standChain, standFiller, standOrder, standSuite, STREAMS, until } from './stand/filler-gateway';
+import {
+  command,
+  cursor,
+  eventsAfter,
+  GATEWAY_KEYS,
+  httpRpc,
+  issueAckedTicket,
+  nativeWebSocket,
+  offerCommand,
+  offerEvmTicket,
+  ofOrder,
+  openOnStand,
+  sleep,
+  standChain,
+  standEvmOrder,
+  standFiller,
+  standOrder,
+  standRouter,
+  standSuite,
+  STREAMS,
+  until,
+} from './stand/filler-gateway';
 
 /** The stand's ticket signer: anvil's default mnemonic, index 16 (TICKETSIGNER of the runbook) — a test key. */
 const STAND_TICKET_SIGNER_KEY: Hex = '0xea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0';
 
-standSuite('CAN-2151: the signed envelope against the real filler-gateway', [...GATEWAY_KEYS, ...ADMIN_KEYS, 'STAND_FILLER2_ID'], () => {
+/** evm-contracts `TronUsdt` at the pinned commit: an open mint, and the owner's `addBlackList` behind `isBlackListed`. */
+const TRON_USDT = (JSON.parse(readFileSync(join(__dirname, 'stand', 'artifacts.json'), 'utf8')) as { TronUsdt: { abi: readonly AbiEntry[]; bytecode: Hex } }).TronUsdt;
+const call = (abi: readonly AbiEntry[], name: string, args: readonly unknown[]): Hex => encodeFunctionCall(entryOf(abi, 'function', name), args);
+
+/** A transaction anvil signs as `from`: the stand setup acts as the router owner and as a token owner it holds no key of. */
+async function sendAs(rpc: EvmRpc, from: Hex, tx: { to?: Hex; data: Hex }): Promise<{ contractAddress: Hex | null }> {
+  await rpc.request({ method: 'anvil_impersonateAccount', params: [from] });
+  try {
+    const hash = await rpc.request<Hex>({ method: 'eth_sendTransaction', params: [{ from, ...tx, gas: '0x7a1200' }] });
+    const receipt = await until('the stand transaction mined', async () => (await rpc.request<{ status: string; contractAddress: Hex | null } | null>({ method: 'eth_getTransactionReceipt', params: [hash] })) ?? undefined, 60_000);
+    if (receipt.status !== '0x1') throw new Error(`the stand transaction from ${from} reverted`);
+    return receipt;
+  } finally {
+    await rpc.request({ method: 'anvil_stopImpersonatingAccount', params: [from] });
+  }
+}
+
+standSuite('CAN-2151: the signed envelope against the real filler-gateway', [...GATEWAY_KEYS, ...ADMIN_KEYS, 'STAND_FILLER2_ID', 'MAKER_EVM_KEY', 'PERMIT2_ADDRESS', 'QUOTE_SIGNER_KEY'], () => {
   test('TC-SDK-2151-INT-01: quote, ticket.intent, ticket.decline and routes.set sealed by the SDK are each taken by filler-gateway', async () => {
     const accept = standOrder(2151_01);
     const decline = standOrder(2151_02);
@@ -169,6 +212,45 @@ standSuite('CAN-2151: the signed envelope against the real filler-gateway', [...
       await stand.filler.stop();
     }
   }, 120_000);
+
+  test('TC-SDK-2151-INT-05: the input token blocklists the SDK’s repayTo — V-E4 declines OTHER repayTo-blocklisted, no receipt', async () => {
+    const rpc = httpRpc(env('EVM_RPC_URL'));
+    const maker = env('MAKER_EVM_ADDRESS').toLowerCase() as Hex;
+    // The stand's USDC is a TestToken with no blocklist view: the order pays in a USDT double the maker owns, which the router owner allows.
+    const deployed = await sendAs(rpc, maker, { data: TRON_USDT.bytecode });
+    const token = String(deployed.contractAddress).toLowerCase() as Hex;
+    await sendAs(rpc, maker, { to: token, data: call(TRON_USDT.abi, 'mint', [10n ** 24n]) });
+    await sendAs(rpc, maker, { to: token, data: call(TRON_USDT.abi, 'approve', [env('PERMIT2_ADDRESS'), 2n ** 256n - 1n]) });
+    const router = standRouter();
+    const routerAbi = CANCORE_ROUTER_ABI as unknown as readonly AbiEntry[];
+    const owner = `0x${(await rpc.request<Hex>({ method: 'eth_call', params: [{ to: router, data: call(routerAbi, 'owner', []) }, 'latest'] })).slice(26)}` as Hex;
+    await sendAs(rpc, owner, { to: router, data: call(routerAbi, 'setMinInput', [token, 10n ** 12n]) });
+
+    const base = standEvmOrder(2151_05);
+    const order = { ...base.order, inputToken: token };
+    const o = { ...base, order, orderHash: hashOrder(order, { chainId: BigInt(env('EVM_CHAIN_ID')), router }) };
+    await openOnStand(o);
+
+    const stand = standFiller({ offer: async () => 'accept' });
+    await stand.filler.start();
+    try {
+      const { from, intent } = await offerEvmTicket(stand, o);
+      // Blocklisted between the consent and the issue: the SDK named this repayTo, and the token now refuses to pay it.
+      await sendAs(rpc, maker, { to: token, data: call(TRON_USDT.abi, 'addBlackList', [`0x${intent.repayTo.slice(26)}`]) });
+      await issueAckedTicket(o, intent, STAND_TICKET_SIGNER_KEY);
+
+      const declined = await until('ticket.declined at filler-gateway', async () => (await eventsAfter(STREAMS.ticketEvents, from, (e) => ofOrder(o.orderHash)(e) && e.kind === 'ticket.declined'))[0], 60_000, stand.diagnostics);
+      expect(declined.data).toMatchObject({ reason: 'OTHER' });
+      const checked = stand.events.events.flatMap((e) => (e.type === 'stage' && e.stage === 'ticket.checked' && 'orderHash' in e && e.orderHash === o.orderHash ? [e.detail as Record<string, unknown>] : []));
+      const vE4 = checked.find((d) => d.check === 'V-E4');
+      expect(vE4).toMatchObject({ status: 'failed', reason: 'OTHER' });
+      expect(String(vE4?.detail)).toContain('repayTo-blocklisted');
+      expect((await eventsAfter(STREAMS.ticketEvents, from, ofOrder(o.orderHash))).map((e) => e.kind)).not.toContain('ticket.receipt');
+      expect((await stand.store.withOrder(o.orderHash, (tx) => tx.getTicket(0)))?.state).toBe('declined');
+    } finally {
+      await stand.filler.stop();
+    }
+  }, 180_000);
 
   test('TC-SDK-2151-INT-06: a key registration signed through signFillerKeyRegistration is the one Cancore staff verify, and its digest is the golden vector’s', async () => {
     type Vector = { message: { fillerId: string; messageKey: string; issuedAt: string }; digest: Hex };
