@@ -13,10 +13,16 @@
   "engines": {
     "node": ">=26"
   },
+  "cancore": {
+    "component": "sdk",
+    "requires": {
+      "backend": ">=1.4.0 <2.0.0"
+    }
+  },
   "scripts": {
     "build": "pnpm -r --if-present run build",
     "test": "jest --selectProjects node web",
-    "typecheck": "tsc --build --force && tsc --noEmit -p packages/mcp/tsconfig.json && tsc --noEmit -p packages/wallet/tsconfig.json && tsc --noEmit -p packages/client/tsconfig.json && tsc --noEmit -p packages/contracts/tsconfig.json && tsc --noEmit -p packages/trader/tsconfig.json && tsc --noEmit -p packages/botd/tsconfig.json && tsc --noEmit -p packages/bot-mcp/tsconfig.json && tsc --noEmit -p scripts/tsconfig.json",
+    "typecheck": "tsc --build --force && tsc --noEmit -p packages/mcp/tsconfig.json && tsc --noEmit -p packages/wallet/tsconfig.json && tsc --noEmit -p packages/client/tsconfig.json && tsc --noEmit -p packages/contracts/tsconfig.json && tsc --noEmit -p packages/trader/tsconfig.json && tsc --noEmit -p packages/botd/tsconfig.json && tsc --noEmit -p packages/bot-mcp/tsconfig.json && tsc --noEmit -p packages/release/tsconfig.json && tsc --noEmit -p scripts/tsconfig.json",
     "loc:check": "node scripts/quality-gates.ts loc",
     "loc:check:update": "node scripts/quality-gates.ts loc --update",
     "complexity:check": "node scripts/quality-gates.ts complexity",
@@ -31,6 +37,7 @@
     "release:wallet": "pnpm --filter @cancore/wallet publish --access public",
     "release:client": "pnpm --filter @cancore/client publish --access public",
     "release:contracts": "pnpm --filter @cancore/contracts publish --access public",
+    "release:release": "pnpm --filter @cancore/release publish --access public",
     "test:int": "jest --selectProjects int",
     "test:security:root": "bash packages/botd/test/security/root.sh",
     "test:systemd": "bash packages/botd/test/systemd/unit-start.sh"

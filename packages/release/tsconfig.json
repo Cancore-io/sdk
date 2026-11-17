@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // The CLI runs git on a machine; the library entry stays browser-safe because only cli.ts/bin.ts touch node.
+    "types": ["jest", "node"]
+  },
+  "include": ["src/**/*.ts"],
+  // The root config excludes this package (it is typechecked here instead); that exclude is inherited.
+  "exclude": []
+}
