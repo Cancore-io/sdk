@@ -238,6 +238,12 @@ const SPLICE_AMULET_0_1_24: CantonTransferFactory = {
   holdingForm: 'amulet',
   offer: 'Splice.AmuletTransferInstruction:AmuletTransferInstruction',
   serviceChoices: [],
+  // CAN-3579: `AllocationFactory_Allocate` (V2) of `ExternalPartyAmuletRules` creates this template of the same package,
+  // signed by the DSO and the authorizer (Splice 0.9.4 `Splice/AmuletAllocationV2.daml`).
+  allocation: 'Splice.AmuletAllocationV2:AmuletAllocationV2',
+  // A receipt allocation (receiver legs only) needs no funding: no input holding, no `LockedAmulet`, nothing of the
+  // receiver's, and its settle creates the receiver's `Amulet` with no preapproval (`amulet_allocationFactoryV2_allocateImplCore`).
+  openReceipt: true,
   // splice-wallet 0.1.25 (Splice 0.9.x): `TransferPreapprovalProposal`, signatory the receiver, observer the provider.
   preapproval: 'Splice.Wallet.TransferPreapproval:TransferPreapprovalProposal',
   preapprovalForm: 'splice',

@@ -30,6 +30,9 @@ const CBTC_ADMIN = 'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778
 /** utility-registry-v0 0.8.2: the package of every committed CBTC allocation devnet holds (backend run 43920493880). */
 const DA_ALLOCATION_PKG = '8c654487d9f5fb195fbcdd7b44cd8e365b1ea39c15ae62ce6c7a48343f1210dd';
 const DA_APP_0_9_2 = '1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b274b8c0';
+const DSO = 'DSO::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a';
+/** splice-amulet 0.1.24, the Amulet package DevNet runs: the factory, the holdings and the V2 allocation are all of it. */
+const AMULET_0_1_24 = '17b6f7c18efec9022dde39a19039783c68490a722e8a5088b22ee034678171a2';
 const OPERATOR = 'cancore-intent-operator::1220ee';
 const ALLOCATION_TEMPLATE = `${'ab'.repeat(32)}:Cnrx.Allocation:CnrxAllocationV2`;
 /** A registry pinned like cnrx-registry: its V2 allocation, a receipt allocation open to any party. */
@@ -342,6 +345,50 @@ describe('V-C4 and V-C5 on a DA Utilities CBTC give (CAN-3587)', () => {
     const [da] = CANTON_TRANSFER_FACTORIES[CBTC_ADMIN] ?? [];
     expect(registriesProblem({ [CBTC_ADMIN]: [{ ...da, allocationPackageId: 'utility-registry-v0' }] })).toMatch(/allocationPackageId: expected 64 lowercase hex/);
     expect(registriesProblem({ [CBTC_ADMIN]: [da] })).toBeUndefined();
+  });
+});
+
+describe('V-C4 and V-C5 on a CC (Amulet) give (CAN-3579)', () => {
+  /** A CC intent of the golden terms, its give committed in the allocation `templateId`; checked against the published pins. */
+  function cc(templateId: string) {
+    const input = { ...golden.vector.input, instrumentAdmin: DSO, instrumentId: 'Amulet' };
+    const built = buildCantonSourceOrder(input);
+    const intent = intentOf(input, built.orderHash, GOLDEN_LEGS, String(input.fillDeadline + 3_600));
+    intent.allocation!.templateId = templateId;
+    const passed: string[] = [];
+    const run = () =>
+      checkCantonSource(
+        {
+          order: built.order as unknown as OrderJson,
+          ticket: { orderHash: built.orderHash, repayTo: repayToFromParty(PARTY) } as TicketJson,
+          party: PARTY, fillerId: 'acme', requiredProofWindowSec: 2_700, reader: reader(intent),
+        },
+        (check) => void passed.push(check),
+      );
+    return { run, passed };
+  }
+
+  test('TC-SDK-3579-01: a committed AmuletAllocationV2 of splice-amulet 0.1.24 passes V-C1…V-C7 on the published pin', async () => {
+    const g = cc(`${AMULET_0_1_24}:Splice.AmuletAllocationV2:AmuletAllocationV2`);
+    await g.run();
+    expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
+  });
+
+  test.each([
+    ['TC-SDK-3579-02: the V1 AmuletAllocation, which the V2 factory never creates', `${AMULET_0_1_24}:Splice.AmuletAllocation:AmuletAllocation`],
+    ['TC-SDK-3579-03: AmuletAllocationV2 under another package', `${'cd'.repeat(32)}:Splice.AmuletAllocationV2:AmuletAllocationV2`],
+    ['TC-SDK-3579-04: the CBTC allocation template under the DSO', `${DA_ALLOCATION_PKG}:Utility.Registry.V0.Holding.AllocationV2:AllocationV2`],
+  ])('%s is refused at V-C4', async (_name, templateId) => {
+    const g = cc(templateId);
+    const r = await refusal(g.run());
+    expect({ check: r.check, reason: r.reason }).toEqual({ check: 'V-C4', reason: 'ESCROW_MISMATCH' });
+    expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3']);
+  });
+
+  test('TC-SDK-3579-05: the DSO pin names one V2 allocation template and pays any party through a receipt allocation', () => {
+    expect(CANTON_ALLOCATION_TEMPLATES[DSO]).toEqual([`${AMULET_0_1_24}:Splice.AmuletAllocationV2:AmuletAllocationV2`]);
+    expect(CANTON_TRANSFER_FACTORIES[DSO]?.map((f) => f.openReceipt === true)).toEqual([true]);
+    expect(registriesProblem({ [DSO]: CANTON_TRANSFER_FACTORIES[DSO] ?? [] })).toBeUndefined();
   });
 });
 
