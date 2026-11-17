@@ -1,5 +1,14 @@
 # Changelog — `@cancore/wallet`
 
+## 0.4.7
+
+### Changed — intent operations are signed for cancore-intent 0.6.2 and 0.6.3 (CAN-3588)
+
+- `INTENT_PACKAGE_IDS` also pins 0.6.3
+  (`535cb88a2faec69ec361089d1d5ecbbe150cd50a00b736b2941b52c6b820b6fa`), the staged DAR of
+  canton-contracts#371. Once dev uploads it, the participant prefers it and the backend prepares owner-signed Open and
+  Renew against it; a wallet that pins 0.6.2 alone then refuses them. 0.6.2 stays pinned until dev un-vets it.
+
 ## 0.4.6
 
 ### Added — the Amulet allocation template in the CC pin (CAN-3579)
