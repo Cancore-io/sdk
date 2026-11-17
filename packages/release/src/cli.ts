@@ -42,7 +42,7 @@ const releaseTags = (listing: string) => listing.split('\n').map((t) => t.trim()
 
 function lastReleaseTag(git: Git): string {
   const tag = releaseTags(git('tag', '--merged', 'HEAD', '--list', 'v*', '--sort=-v:refname').out)[0];
-  if (!tag) throw new Refusal(1, 'no seed tag: no vX.Y.Z tag is merged into HEAD. Push the seed tag by hand (annotated, on main) first.');
+  if (!tag) throw new Refusal(1, 'no seed tag: no vX.Y.Z tag is merged into HEAD. Push the seed tag by hand (annotated, on main) first; in CI check out with fetch-depth: 0, a shallow clone sees no tags.');
   return tag;
 }
 
