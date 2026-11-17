@@ -5,7 +5,7 @@
  * backend OrderBuilder, the web app, the filler node and the attestors use;
  * nobody re-implements it.
  */
-import { utf8ToBytes } from '@noble/hashes/utils';
+import { utf8ToBytes } from '@noble/hashes/utils.js';
 import { CANTON_ORIGIN_ID, DAML_NUMERIC_SCALE, INSTRUMENT_LABEL_TAG } from './constants';
 import { abiEncodeStrings, exactUnits } from './encoding';
 import { keccak, toHex } from './protocol/bytes';

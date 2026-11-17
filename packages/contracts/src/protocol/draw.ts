@@ -4,7 +4,7 @@
  * fetching the round and checking its BLS signature is the verifier's job
  * (`@cancore/trader/taker` verifyDraw), not this package's.
  */
-import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
+import { concatBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { beBytes, hexBytes, keccak, toHex, uint } from './bytes';
 import type { Hex } from './typedData';
 

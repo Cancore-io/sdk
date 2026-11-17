@@ -268,8 +268,8 @@ importers:
   packages/contracts:
     dependencies:
       '@noble/hashes':
-        specifier: ^1.8.0
-        version: 1.8.0
+        specifier: ^2.4.0
+        version: 2.4.0
 
   packages/dapp-connector: {}
 
@@ -284,6 +284,8 @@ importers:
       zod:
         specifier: ^4.6.6
         version: 4.6.7
+
+  packages/release: {}
 
   packages/trader:
     dependencies:
@@ -908,6 +910,10 @@ packages:
   '@noble/hashes@1.8.0':
     resolution: {integrity: sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==}
     engines: {node: ^14.21.3 || >=16}
+
+  '@noble/hashes@2.4.0':
+    resolution: {integrity: sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==}
+    engines: {node: '>= 20.19.0'}
 
   '@openzeppelin/merkle-tree@1.0.8':
     resolution: {integrity: sha512-E2c9/Y3vjZXwVvPZKqCKUn7upnvam1P1ZhowJyZVQSkzZm5WhumtaRr+wkUXrZVfkIc7Gfrl7xzabElqDL09ow==}
@@ -3435,6 +3441,8 @@ snapshots:
   '@noble/hashes@1.4.0': {}
 
   '@noble/hashes@1.8.0': {}
+
+  '@noble/hashes@2.4.0': {}
 
   '@openzeppelin/merkle-tree@1.0.8(supports-color@8.1.1)':
     dependencies:

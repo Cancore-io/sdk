@@ -46,6 +46,6 @@
     "vectors": "node scripts/gen-protocol-vectors.mjs && node scripts/gen-settle-attestations.mjs && node scripts/gen-protocol-docs.mjs && node scripts/gen-router-vectors.mjs"
   },
   "dependencies": {
-    "@noble/hashes": "^1.8.0"
+    "@noble/hashes": "^2.4.0"
   }
 }

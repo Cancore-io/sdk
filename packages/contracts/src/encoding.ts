@@ -1,5 +1,5 @@
 // Internal: the decimal and ABI encodings order.ts and cantonDestination.ts share. Not exported from the package.
-import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
+import { concatBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { beBytes } from './protocol/bytes';
 
 /** A decimal string at exactly `decimals` scale, in base units; anything that does not land on a whole unit is refused. */

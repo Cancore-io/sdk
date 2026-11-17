@@ -5,7 +5,7 @@
 //
 // CommonJS so that both the ESM sync script and the jest suite can load it.
 'use strict';
-const { keccak_256 } = require('@noble/hashes/sha3');
+const { keccak_256 } = require('@noble/hashes/sha3.js');
 
 const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 const canonicalType = (input) =>
