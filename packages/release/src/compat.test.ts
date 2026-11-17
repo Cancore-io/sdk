@@ -1,4 +1,4 @@
-import { checkNeighbours, satisfies, versionDoc } from './compat';
+import { checkNeighbours, lowestVersion, satisfies, versionDoc } from './compat';
 
 // Range grammar: `>=X.Y.Z` or `>=X.Y.Z <A.B.C` — the subset CAEF's compat-check.ts evaluates too.
 describe('satisfies', () => {
@@ -91,5 +91,21 @@ describe('versionDoc: the runtime document, one shape everywhere', () => {
     const doc = versionDoc(polluted);
     expect(Object.keys(doc).sort()).toEqual(['builtAt', 'channel', 'component', 'gitSha', 'requires', 'service', 'version']);
     expect(JSON.stringify(doc)).not.toMatch(/https?:\/\/|s3cr3t/);
+  });
+});
+
+// Several attestors answer for one neighbour: the weakest one decides whether the range holds.
+describe('lowestVersion', () => {
+  it('picks the lowest core among responders, ignoring silent and malformed ones', () => {
+    expect(lowestVersion(['2.1.4', null, '2.0.3', 'unknown', '2.10.0'])).toBe('2.0.3');
+  });
+
+  it('a prerelease of the same core is not lower (D6: core match)', () => {
+    expect(lowestVersion(['1.5.0', '1.5.0-dev.3'])).toBe('1.5.0');
+  });
+
+  it('nobody answered -> null', () => {
+    expect(lowestVersion([null, 'v1.2'])).toBeNull();
+    expect(lowestVersion([])).toBeNull();
   });
 });

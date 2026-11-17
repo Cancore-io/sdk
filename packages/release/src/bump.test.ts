@@ -103,3 +103,17 @@ describe('resolveBumpSignal', () => {
     expect(resolveBumpSignal([])).toMatchObject({ level: 'patch', defaulted: true });
   });
 });
+
+describe('resolveBumpSignal: rationale fallbacks', () => {
+  it('a bare trailer says it carried no rationale', () => {
+    expect(resolveBumpSignal(['fix: x\n\nRelease-Bump: minor\n']).rationale).toMatch(/no rationale/);
+  });
+
+  it('a bodiless conventional commit quotes its subject', () => {
+    expect(resolveBumpSignal(['feat(api): add a field']).rationale).toBe('feat(api): add a field');
+  });
+
+  it('CRLF messages read the same as LF', () => {
+    expect(resolveBumpSignal(['chore: x\r\n\r\nBREAKING CHANGE: gone\r\n']).level).toBe('major');
+  });
+});

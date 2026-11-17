@@ -28,6 +28,7 @@
     "packages/wallet/**",
     "packages/trader/**",
     "packages/botd/**",
-    "packages/bot-mcp/**"
+    "packages/bot-mcp/**",
+    "packages/release/**"
   ]
 }

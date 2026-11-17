@@ -191,3 +191,73 @@ describe('release CLI arguments', () => {
     expect(out.stderr).toMatch(/usage/i);
   });
 });
+
+// I1 in CI: actions/checkout of a tag or a PR leaves HEAD detached, so main must still be recognised there,
+// and nothing else may pass for it.
+describe('release version --cut on a detached HEAD', () => {
+  it('HEAD already on origin/main: cuts', async () => {
+    const r = seeded('v1.4.2');
+    r.commit('feat: x');
+    r.git('push', '-q', '-u', 'origin', 'main');
+    r.git('checkout', '-q', '--detach', 'HEAD');
+    const out = await run(r, ['version', '--channel', 'prod', '--cut']);
+    expect(out.code).toBe(0);
+    expect(r.originTags()).toContain('v1.5.0');
+  });
+
+  it('a run started for refs/heads/main: cuts', async () => {
+    const r = seeded('v1.4.2');
+    r.commit('fix: x');
+    r.git('checkout', '-q', '--detach', 'HEAD');
+    const out = await run(r, ['version', '--channel', 'prod', '--cut'], { GITHUB_REF: 'refs/heads/main' });
+    expect(out.code).toBe(0);
+    expect(r.tags()).toContain('v1.4.3');
+  });
+
+  it('neither: refused, nothing tagged', async () => {
+    const r = seeded('v1.4.2');
+    r.commit('fix: x');
+    r.git('checkout', '-q', '--detach', 'HEAD');
+    const out = await run(r, ['version', '--channel', 'prod', '--cut'], { GITHUB_REF: 'refs/pull/7/merge' });
+    expect(out.code).toBe(1);
+    expect(out.stderr).toMatch(/main only/);
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+
+  it('a named branch other than main is refused even when the run claims main', async () => {
+    const r = seeded('v1.4.2', 'feature/x');
+    r.commit('fix: x');
+    expect((await run(r, ['version', '--channel', 'prod', '--cut'], { GITHUB_REF: 'refs/heads/main' })).code).toBe(1);
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+});
+
+describe('release version --channel prod without --cut', () => {
+  it('prints the next version and tags nothing', async () => {
+    const r = seeded('v1.4.2');
+    r.commit('feat: x');
+    const out = await run(r, ['version', '--channel', 'prod']);
+    expect(out.stdout.trim()).toBe('1.5.0');
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+});
+
+describe('release version --cut when the push fails', () => {
+  it('exit 1 and the local tag is removed, so a rerun is not a false reuse', async () => {
+    const r = seeded('v1.4.2');
+    r.commit('feat: x');
+    r.git('remote', 'set-url', 'origin', join(r.work, '..', 'missing.git'));
+    const out = await run(r, ['version', '--channel', 'prod', '--cut']);
+    expect(out.code).toBe(1);
+    expect(out.stderr).toMatch(/could not push v1\.5\.0/);
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+});
+
+describe('release CLI: an unknown flag', () => {
+  it('exit 2 naming it', async () => {
+    const out = await run(seeded('v1.4.2'), ['version', '--channel', 'prod', '--force']);
+    expect(out.code).toBe(2);
+    expect(out.stderr).toMatch(/--force/);
+  });
+});
