@@ -303,7 +303,7 @@ It refuses with `IntentTransactionRefusedError` (its `reason` is the sentence to
 
 - the recomputed V2 hash is `expectedHashB64`, and the transaction acts as `owner` alone;
 - the one root is `IntentFactory_Open` or `SwapIntent_RenewSettlementFactory` of a `cancore-intent`
-  package in `INTENT_PACKAGE_IDS` — 0.6.2 only. 0.6.2 is a Smart Contract Upgrade of 0.4.2–0.6.1,
+  package in `INTENT_PACKAGE_IDS` — 0.6.2 and 0.6.3. 0.6.2 is a Smart Contract Upgrade of 0.4.2–0.6.1,
   so a root of an older version still runs: up to 0.5.2 its code takes the operator's pinned
   settlement factory under the owner's authority, and 0.6.0–0.6.1 accept an attestor registry
   whose sets start on a fractional second. `policy.intentPackageIds` may narrow the list, never
