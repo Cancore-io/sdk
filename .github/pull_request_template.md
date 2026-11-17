@@ -3,6 +3,11 @@
 - Ticket: `CAN-XXXX`
 - Why:
 
+## Release (CAN-3594)
+
+- [ ] Bump level: major / minor / patch (commit subject or `Release-Bump:` trailer)
+- [ ] Neighbour compatibility checked: `cancore.requires` updated or unchanged, `compat-check.ts` green
+
 ## Quality Gates Checklist (`CONTRIBUTING.md`)
 
 - [ ] Comments: why-only in English (CAN-2777) — no "what the code does" comments, existing comments preserved, no license headers

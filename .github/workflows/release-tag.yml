@@ -1,0 +1,54 @@
+name: Release tag
+
+# The repository-wide version (CAN-3594, D4/D8): every push to main cuts an
+# annotated `vX.Y.Z` on the merge commit with @cancore/release from this tree.
+# The level comes from the commits since the last tag (Release-Bump: trailer >
+# conventional commits > patch). It sits on top of the per-package npm versions
+# and their `<package>-v<version>` tags, which publish.yml keeps cutting: `v*`
+# never matches `*-v*`, and a tag pushed with GITHUB_TOKEN starts no workflow.
+# No commit is written back: the version lives in the tag only.
+on:
+  push:
+    branches: [main]
+
+# Queued, never cancelled: two cuts racing would compute the same next version
+# from the same last tag, and a cancelled cut leaves a merge untagged silently.
+concurrency:
+  group: release-tag-${{ github.ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    # ubuntu-latest, not cancore-runners — rationale in ci.yml (CAN-1120).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Pushes the one annotated tag; nothing else.
+      contents: write
+    outputs:
+      version: ${{ steps.cut.outputs.version }}
+      tag: ${{ steps.cut.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The bump reads every commit since the last tag, and the tag list itself.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: ./.github/actions/setup-node26
+        with:
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @cancore/release run build
+      - name: Cut vX.Y.Z on this commit
+        id: cut
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          node packages/release/dist/bin.js version --channel prod --cut
+      - name: Say what was cut
+        env:
+          TAG: ${{ steps.cut.outputs.tag }}
+        run: echo "### Released \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"

@@ -14,6 +14,7 @@ repository.
 | [`@cancore/trader`](packages/trader) | not on npm yet | Programmatic trading. `./filler`: filler protocol v1 for a filler node over injected signers, RPC, ledger and store. Holds no keys and no state of its own. Skeleton; not published yet. |
 | [`@cancore/botd`](packages/botd) | not on npm yet | A self-custody trading daemon (Linux, systemd): holds one bot account's key in an encrypted keystore, trades behind owner-set default-deny limits, keeps a hash-chained audit log. Release candidate. |
 | [`@cancore/bot-mcp`](packages/bot-mcp) | not on npm yet | An MCP server that lets an AI agent drive a local `cancore-botd` within those limits. No key, no withdraw, no limit changes. Release candidate. |
+| [`@cancore/release`](packages/release) | not on npm yet | One SemVer rule for every Cancore repo: the bump level from commits, the `vX.Y.Z` cut on `main`, and the neighbour compatibility check behind `/version`. |
 
 **Agent skills** live in [`skills/`](skills): [`cancore-trading`](skills/cancore-trading/SKILL.md)
 teaches an agent to trade through `@cancore/bot-mcp`.
@@ -176,12 +177,31 @@ repository — nothing to leak, rotate, or answer a 2FA prompt for.
 Each package's trusted publisher is configured once on npmjs.com against this
 repository and the `publish.yml` workflow filename.
 
+### The repository version and neighbour compatibility (CAN-3594)
+
+On top of the per-package npm versions, the repository as a whole carries a `vX.Y.Z` tag, cut on
+every push to `main` by [`release-tag.yml`](.github/workflows/release-tag.yml) with
+[`@cancore/release`](packages/release). The same rule runs in backend, frontend, the filler node
+and the attestor; the canonical text is `docs/VERSIONING.md` in Cancore-io/meta.
+
+1. **The level comes from your commits.** `feat!:`, `fix(x)!:` or a `BREAKING CHANGE:` footer is
+   major, `feat` minor, everything else patch. To override, add a `Release-Bump: major|minor|patch`
+   trailer with a line on why. Nobody edits a version by hand for the repository tag.
+2. **Neighbours are declared** in the root `package.json` `cancore.requires`: the sdk declares the
+   backend range its client and trader speak (`"backend": ">=1.4.0 <2.0.0"`).
+3. **Raise a range** when the code starts using a new endpoint, field or message of that
+   neighbour; lower bound = the first neighbour release that has it.
+4. **Check it** before the PR: the neighbour's `/version`, or CAEF `compat-check.ts`. A mismatch
+   warns, never blocks.
+5. **Say both in the PR**: the checklist in the PR template asks for the bump level and the
+   neighbour check.
+
 ### The exception: a package's very first version
 
 Trusted publishing cannot make the first release of a NEW package — the
 publisher is configured in the package's settings, and until something is
 published there is no package to configure. So version one goes out by hand
-(five packages here have had theirs):
+(five packages here have had theirs; `@cancore/release` is next):
 
 ```bash
 pnpm run release:connector --otp=<code>
@@ -189,6 +209,7 @@ pnpm run release:mcp --otp=<code>
 pnpm run release:wallet --otp=<code>
 pnpm run release:client --otp=<code>
 pnpm run release:contracts --otp=<code>
+pnpm run release:release --otp=<code>
 ```
 
 From the repository root, and note the package name in each. `pnpm publish` at
