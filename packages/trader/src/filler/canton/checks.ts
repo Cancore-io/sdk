@@ -341,6 +341,16 @@ function checkOtherCreate(node: CreateNode, f: CantonTransferFactory, sender: st
   }
 }
 
+/**
+ * A service choice of the pin, exercised on a contract of the registry's own packages. Only a non-consuming one:
+ * consuming, it would spend a contract of the sender that is not a stated input.
+ */
+function isPinnedServiceExercise(node: ExerciseNode, f: CantonTransferFactory): boolean {
+  const name = qualified(node.templateId);
+  const registryTemplates = [`${f.packageId}:${name}`, ...holdingTemplatesOf(f)];
+  return !node.consuming && registryTemplates.includes(node.templateId) && f.serviceChoices.includes(`${name}.${node.choice}`);
+}
+
 function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: TransferExpectation): void {
   const { sender, asked } = o;
   const f = pinnedFactoryOf(o.factories, asked.asset.admin, root.templateId);
@@ -378,7 +388,7 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
       if (spendsStated(node)) {
         if (archived.has(node.contractId)) refuse(`the stated input ${node.contractId} is archived twice`);
         archived.add(node.contractId);
-      } else if (!f.serviceChoices.includes(name)) {
+      } else if (!isPinnedServiceExercise(node, f)) {
         refuse(`the transfer exercises ${name} on ${node.contractId}, a contract of the sender that is not a stated input`);
       }
     }

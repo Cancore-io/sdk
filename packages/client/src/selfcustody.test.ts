@@ -12,6 +12,7 @@ import {
   ForeignPartyError,
   grossAmount,
   legalConsentMessage,
+  newPreimage,
   SettleError,
   UnexpectedLegError,
   UnverifiedTransactionError,
@@ -3263,7 +3264,7 @@ describe('self-custody HTLC: Flow B, accept-counter and refund sign only what th
   type Leg = { kind: string; preparedTransaction: string; preparedTransactionHash: string };
   const asLegs = (legs: Leg[]) => legs.map((l, i) => wireLeg(l, `l${i}`));
 
-  async function account(seed: number, legsFor: (party: string, type: string, params: Record<string, unknown>) => Promise<Leg[]>) {
+  async function account(seed: number, legsFor: (party: string, type: string, params: Record<string, unknown>) => Promise<Leg[]>, routes: Parameters<typeof stub>[0] = {}) {
     const signer = await providerFromMnemonic(PHRASE, { account: seed });
     const party = `party-me::${cantonFingerprint(signer.public_key)}`;
     const asked: Array<{ type: string; params: Record<string, unknown> }> = [];
@@ -3276,6 +3277,7 @@ describe('self-custody HTLC: Flow B, accept-counter and refund sign only what th
       },
       'POST /wallet/operations/submit': () => ({ ok: true }),
       'POST /htlc/s1/refund': () => ({ id: 's1', status: 'htlc_refunded' }),
+      ...routes,
     });
     const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast, maxFee: '0.5' });
     return { acct, api, party, asked };
@@ -3333,6 +3335,39 @@ describe('self-custody HTLC: Flow B, accept-counter and refund sign only what th
     const { acct, api } = await account(64, async (party) => [await acceptCounterLeg(counter(party, { timeout: iso(Date.now() + 10 * 60_000) }))]);
 
     const error = await acct.acceptCounter('s1', expectation).catch((e: unknown) => e);
+
+    expect((error as CeremonyError).cause).toBeInstanceOf(UnverifiedTransactionError);
+    expect(api.hits).not.toContain('POST /wallet/operations/submit');
+  });
+
+  test('one swap end to end: the lock it opens and the counter it accepts are the hash of the preimage it reveals, and only the claim carries it (AUD-SDK-01, CAN-2620)', async () => {
+    const { preimage, hashLock } = await newPreimage();
+    const claimed: unknown[] = [];
+    const { acct, asked } = await account(66, async (party, type) => type === 'htlc.flow-b-create'
+      ? [await initRequestLeg(request(party, { hashLock })), await deposit(party)]
+      : [await acceptCounterLeg(counter(party, { hashLock }))], {
+      'POST /htlc/s1/claim-counter': (body) => (claimed.push(body), { id: 's1', status: 'both_claimed' }),
+    });
+
+    await expect(acct.openHtlc({ ...open, hashLock })).resolves.toMatchObject({ swapId: 's1' });
+    await acct.acceptCounter('s1', { ...expectation, hashLock });
+    await expect(acct.claimCounter('s1', preimage)).resolves.toMatchObject({ status: 'both_claimed' });
+
+    // The lock the account asked the venue to open is the one newPreimage made, and the accept names only the swap.
+    expect(asked).toEqual([
+      { type: 'htlc.flow-b-create', params: expect.objectContaining({ hashLock }) },
+      { type: 'htlc.accept-counter', params: { swapId: 's1' } },
+    ]);
+    expect(claimed).toEqual([{ preimage }]);
+    // Neither ceremony carried the preimage: the venue learns it from the claim alone.
+    expect(JSON.stringify(asked)).not.toContain(preimage);
+  });
+
+  test('a counter locked to another hash than the preimage this account holds is refused before signing, so the claim is never reached', async () => {
+    const { hashLock } = await newPreimage();
+    const { acct, api } = await account(67, async (party) => [await acceptCounterLeg(counter(party))]);
+
+    const error = await acct.acceptCounter('s1', { ...expectation, hashLock }).catch((e: unknown) => e);
 
     expect((error as CeremonyError).cause).toBeInstanceOf(UnverifiedTransactionError);
     expect(api.hits).not.toContain('POST /wallet/operations/submit');

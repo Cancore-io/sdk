@@ -61,7 +61,7 @@ helpers, the events); `ATTESTOR_SET_ABI` is the set on its own (`getAttestorSet`
 `currentSetId`, `isMember`, `revokedAttestors`), which `CancoreRouter` inherits. A test pins what
 the taker client relies on: those views and calls, the events `IntentOpened`, `Filled`,
 `Settled` and `Refunded`, and the 12-field `Order` tuple in the order of `ORDER_TYPES`, whose
-type hash is the router's `ORDER_TYPEHASH`. Router addresses are not in this package yet.
+type hash is the router's `ORDER_TYPEHASH`. Router addresses per environment are in `DEPLOYMENTS` (`router`, `routerBlock`).
 
 ### Orders, the Permit2 witness, the fee
 
@@ -364,7 +364,8 @@ answers the new `routes.state`. A listed route that is not approved refuses the 
 `ROUTE_NOT_APPROVED` (403) and nothing changes. Both are REST only, rate class `service`.
 
 `FILLER_GATEWAYS` is where the gateway key and the ticket signers of each environment are
-published. It is empty in the RC: no gateway key exists yet.
+published. No gateway key exists yet; the ticket signers of devnet and testnet are the ones their
+routers register.
 
 ## Reverts
 
@@ -465,6 +466,15 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.24` — the testnet intent routers (CAN-2529): `router` and `routerBlock` on every
+  `DEPLOYMENTS.testnet` row (Sepolia, BNB testnet, Arbitrum Sepolia, Robinhood testnet, Base Sepolia), and the
+  ticket signer they register in `FILLER_GATEWAYS.testnet.ticketSigners`. Additive.
+- `0.2.0-rc.23` — the recipient of a Canton delivery (CAN-1867): decline reason
+  `RECIPIENT_NOT_READY` — the recipient of the order no longer accepts its instrument, so the filler
+  refuses the Canton-form ticket before `ticket.receipt` (never a violation of the filler). REST read
+  `GET /v1/filler/canton/recipient-readiness/{orderHash}` (`CantonRecipientReadiness`;
+  `$defs/cantonRecipientReadiness`): Cancore's read of that recipient's transfer preapproval for the
+  party's live `DeliveryOrder`, which the party cannot read on its own participant (V-R1). Additive.
 - `0.2.0-rc.22` — `CantonIntent.settlementFactory` (CAN-3408): the settlement factory the owner
   approved into the `SwapIntent` (CAN-3340) and `live`, whether it is still the registry's current
   one, as settle reads it (`CantonSettlementFactory`; `$defs/cantonIntent.settlementFactory`).

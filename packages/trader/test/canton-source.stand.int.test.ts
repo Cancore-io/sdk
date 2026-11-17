@@ -3,7 +3,11 @@
  * meta docs/runbooks/intent-stand.md): CAN-1863 (V-C1…V-C7 before the
  * receipt), CAN-2321 (the payout by SwapIntent_SettleWithProof) and CAN-3408
  * (V-C7: no delivery for an intent whose settlement factory the registry no
- * longer holds). Every
+ * longer holds). CAN-1863 INT-03…06 hold single checks to the stand's own
+ * reads: V-C3 against the stand router, V-C5 with a registry not pinned as
+ * paying, V-C1 while the participant is down, V-C6 at its exact bound.
+ * CAN-2321 INT-06: the filler's first settle submit answer is lost on the
+ * way back; the payout of INT-01 comes from its retry. Every
  * component is the stand's own — Canton participant with cancore-intent and
  * cnrx-registry, trading and filler-gateway (decision T-1: the party's
  * operations go through Cancore), the attestor daemons, anvil with the
@@ -31,18 +35,19 @@
  */
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { buildCantonSourceOrder, cantonInclusiveFeeSplit, repayToFromParty, type CantonParty, type Hex } from '@cancore/contracts';
+import { buildCantonSourceOrder, CANCORE_ROUTER_ABI, cantonInclusiveFeeSplit, repayToFromParty, type CantonParty, type Hex } from '@cancore/contracts';
 import { ed25519 } from '@noble/curves/ed25519';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
-import { createCantonOperations, type CantonPartySigner } from '../src/filler/canton/operations';
+import { createCantonOperations, type CantonOperations, type CantonPartySigner } from '../src/filler/canton/operations';
 import { registriesProblem, type CantonTransferFactory } from '../src/filler/canton/factories';
 import { scaled } from '../src/filler/canton/checks';
+import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { createFiller, type Filler } from '../src/filler/filler';
 import type { StageEvent } from '../src/filler/events';
 import type { EvmRpc } from '../src/filler/rpc';
-import type { WebSocketFactory } from '../src/filler/runtime';
+import type { HttpFetch, WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
-import { checkCantonSource } from '../src/filler/tickets/canton-source';
+import { checkCantonSource, intentOrder } from '../src/filler/tickets/canton-source';
 import { TicketRefusal } from '../src/filler/tickets/refusal';
 import { standToken } from './stand/keycloak';
 
@@ -428,6 +433,18 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
   const events = createRecordingEventSink();
   const logger = createRecordingLogger();
   let filler: Filler;
+  /** Every `canton.submit` the filler sent, in order: the first one's answer is lost on the way back (TC-SDK-2321-INT-06). */
+  const submits: Array<{ operationId: string; answered: boolean }> = [];
+  const losingFirstSubmitAnswer: HttpFetch = async (url, request) => {
+    const response = await fetch(url, { method: request.method, headers: { ...request.headers }, ...(request.body !== undefined ? { body: request.body } : {}) });
+    if (new URL(url).pathname !== '/v1/filler/canton/submit') return response;
+    const operationId = String((JSON.parse(request.body ?? '{}') as { operationId?: unknown }).operationId);
+    const answered = submits.length > 0;
+    submits.push({ operationId, answered });
+    // The submit reached Cancore; the connection drops before its answer does.
+    if (!answered) throw new TypeError('fetch failed: the connection to filler-gateway dropped');
+    return response;
+  };
 
   beforeAll(async () => {
     QUOTED_OUT = 10n ** BigInt(Math.max(0, Number(E.STAND_ROUTE_OUTPUT_DECIMALS) - 2));
@@ -453,6 +470,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
       events,
       logger,
       webSocket: globalWebSocket,
+      fetch: losingFirstSubmitAnswer,
     });
     // The stand filler prices the Canton-source route only: 0.01 of the output token for any give, under
     // the "too good" ceiling of the reference price (FS-4), firm a minute past the quote's own life
@@ -481,6 +499,25 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
 
   const checked = (orderHash: string) =>
     events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === 'ticket.checked' && String(e.orderHash).toLowerCase() === orderHash);
+
+  /** The filler's Canton reads over its own REST login; `over` swaps the registries it pins or the fetch it reads through. */
+  const opsOf = (over: { registries?: Record<string, CantonTransferFactory[]>; fetch?: HttpFetch } = {}): CantonOperations =>
+    createCantonOperations({
+      gatewayUrl: E.FILLER_GATEWAY_WS_URL, fillerId: E.STAND_FILLER_ID, gatewaySigner: E.FILLER_GATEWAY_SIGNER as Hex,
+      messageSigner: createTestTypedDataSigner(E.STAND_FILLER_MESSAGE_KEY as Hex), partySigner: signerOf(), participantUid: E.CANTON_PARTICIPANT_UID,
+      registries: over.registries ?? registries(), ...(over.fetch ? { fetch: over.fetch } : {}),
+    });
+
+  /** V-C1…V-C7 of `opened` as the ticket of the stand filler, read through `reader`: the refusal, if any, and the checks passed. */
+  const runChecks = async (opened: Awaited<ReturnType<typeof openIntent>>, reader: CantonOperations = opsOf()) => {
+    const passed: string[] = [];
+    const ticket = { orderHash: opened.orderHash, repayTo: repayToFromParty(E.STAND_FILLER_CANTON_PARTY) };
+    const result = await checkCantonSource(
+      { order: opened.order as never, ticket: ticket as never, party: E.STAND_FILLER_CANTON_PARTY, fillerId: E.STAND_FILLER_ID, requiredProofWindowSec: MIN_PROOF_WINDOW_S, reader },
+      (c) => void passed.push(c),
+    ).catch((e: unknown) => e);
+    return { result, passed };
+  };
 
   test('TC-SDK-1863-INT-01 TC-SDK-1863-INT-02: the reads V-C1…V-C7 take are the stand participant’s, and refuse what is not committed to this filler', async () => {
     const nowS = Math.floor(Date.now() / 1000);
@@ -514,28 +551,58 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
     const rotated = await openIntent(deadlines);
     const { retired } = await rotateCnrxSettlementFactory();
     const live = await openIntent(deadlines);
-    const ops = createCantonOperations({
-      gatewayUrl: E.FILLER_GATEWAY_WS_URL, fillerId: E.STAND_FILLER_ID, gatewaySigner: E.FILLER_GATEWAY_SIGNER as Hex,
-      messageSigner: createTestTypedDataSigner(E.STAND_FILLER_MESSAGE_KEY as Hex), partySigner: signerOf(), participantUid: E.CANTON_PARTICIPANT_UID, registries: registries(),
-    });
-    const check = async (opened: Awaited<ReturnType<typeof openIntent>>) => {
-      const passed: string[] = [];
-      const ticket = { orderHash: opened.orderHash, repayTo: repayToFromParty(E.STAND_FILLER_CANTON_PARTY) };
-      const result = await checkCantonSource(
-        { order: opened.order as never, ticket: ticket as never, party: E.STAND_FILLER_CANTON_PARTY, fillerId: E.STAND_FILLER_ID, requiredProofWindowSec: MIN_PROOF_WINDOW_S, reader: ops },
-        (c) => void passed.push(c),
-      ).catch((e: unknown) => e);
-      return { result, passed };
-    };
-
-    const ok = await check(live);
+    const ok = await runChecks(live);
     expect(ok.result).toBeUndefined();
     expect(ok.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
 
-    const refused = await check(rotated);
+    const refused = await runChecks(rotated);
     expect(refused.result).toBeInstanceOf(TicketRefusal);
     expect(refused.result).toMatchObject({ check: 'V-C7', reason: 'OTHER', alert: true, detail: expect.stringContaining(`settlement factory ${retired} is no longer the registry’s`) });
     expect(refused.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6']);
+  });
+
+  test('TC-SDK-1863-INT-03: V-C3 on a live intent — the order rebuilt from the fields Cancore reads off the ledger hashes to its orderHash, as the stand router computes it', async () => {
+    const nowS = Math.floor(Date.now() / 1000);
+    const opened = await openIntent({ fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 });
+    const read = await opsOf().intent(opened.orderHash);
+    const rebuilt = intentOrder(read, String(opened.order.originChainId));
+    expect(rebuilt.orderHash.toLowerCase()).toBe(opened.orderHash);
+    const call = encodeFunctionCall(entryOf(CANCORE_ROUTER_ABI as unknown as readonly AbiEntry[], 'function', 'sourceOrderHash'), [rebuilt.order]);
+    const onChain = await httpRpc(E.EVM_RPC_URL).request<string>({ method: 'eth_call', params: [{ to: E.INTENT_ROUTER_ADDRESS, data: call }, 'latest'] });
+    expect(onChain.toLowerCase()).toBe(opened.orderHash);
+  });
+
+  test('TC-SDK-1863-INT-04: the instrument’s registry is not pinned as paying any party — V-C5 declines payout-not-ready', async () => {
+    const nowS = Math.floor(Date.now() / 1000);
+    const opened = await openIntent({ fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 });
+    const pinned = registries();
+    const noReceipt = Object.fromEntries(Object.entries(pinned).map(([admin, list]) => [admin, list.map((r) => ({ ...r, openReceipt: false }))]));
+    const { result, passed } = await runChecks(opened, opsOf({ registries: noReceipt }));
+    expect(result).toBeInstanceOf(TicketRefusal);
+    expect(result).toMatchObject({ check: 'V-C5', reason: 'OTHER', detail: expect.stringContaining('payout-not-ready') });
+    expect(passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4']);
+  });
+
+  test('TC-SDK-1863-INT-05: Cancore cannot read the intent (the participant is down) — V-C1 declines rather than pass unverified (N-12)', async () => {
+    const nowS = Math.floor(Date.now() / 1000);
+    const opened = await openIntent({ fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S + 60 });
+    // filler-gateway's answer while the participant is down; every other route is the stand's own.
+    const participantDown: HttpFetch = async (url, request) =>
+      new URL(url).pathname.startsWith('/v1/filler/canton/intents/')
+        ? { status: 503, headers: { get: () => null }, text: async () => JSON.stringify({ type: 'error', code: 'CANTON_UNAVAILABLE', message: 'the participant is not reachable' }) }
+        : fetch(url, { method: request.method, headers: { ...request.headers }, ...(request.body !== undefined ? { body: request.body } : {}) });
+    const { result, passed } = await runChecks(opened, opsOf({ fetch: participantDown }));
+    expect(result).toBeInstanceOf(TicketRefusal);
+    expect(result).toMatchObject({ check: 'V-C1', reason: 'ESCROW_NOT_OPEN', detail: expect.stringContaining('unverifiable') });
+    expect(passed).toEqual([]);
+  });
+
+  test('TC-SDK-1863-INT-06: refundAfter − fillDeadline exactly the filler’s proof window — V-C6 passes', async () => {
+    const nowS = Math.floor(Date.now() / 1000);
+    const opened = await openIntent({ fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S });
+    const { result, passed } = await runChecks(opened);
+    expect(result).toBeUndefined();
+    expect(passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
   });
 
   test('TC-SDK-1863-INT-07 TC-SDK-2321-INT-01: ticketed, checked V-C1…V-C7, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
@@ -574,5 +641,15 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
     expect((await freeCnrx(E.STAND_FILLER_CANTON_PARTY)) - before).toBe(payout);
     const registered: CantonParty = await filler.canton!.party();
     expect(registered.registry.state).toBe('ACTIVE');
+  });
+
+  // CAN-2321: the payout of TC-SDK-2321-INT-01 went through a lost submit answer.
+  test('TC-SDK-2321-INT-06: the answer of the settle submit is lost — the SDK submits again under the same operationId and the party is paid once', () => {
+    const settle = submits.filter((x) => x.operationId === submits[0]?.operationId);
+    expect(submits[0]).toMatchObject({ answered: false });
+    expect(settle.length).toBeGreaterThanOrEqual(2);
+    expect(settle.at(-1)).toMatchObject({ answered: true });
+    expect(new Set(submits.map((x) => x.operationId)).size).toBe(1);
+    // One payout: TC-SDK-2321-INT-01 held the party's CNRX to exactly the net of the give, and the intent is consumed.
   });
 });

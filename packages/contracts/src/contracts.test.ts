@@ -174,8 +174,26 @@ describe('deployments', () => {
     }
     const routers = routed.map((d) => d.router!.toLowerCase());
     expect(new Set(routers).size).toBe(routers.length);
-    // Routers are not on testnet or mainnet yet.
-    for (const env of ['mainnet', 'testnet'] as const) expect(DEPLOYMENTS[env].every((d) => d.router === undefined)).toBe(true);
+    // Routers are not on mainnet yet.
+    expect(DEPLOYMENTS.mainnet.every((d) => d.router === undefined)).toBe(true);
+  });
+
+  test('every testnet chain has its own intent router at its deployment block (evm-contracts deployments/router/testnet, CAN-2529)', () => {
+    // Values as recorded in evm-contracts deployments/router/testnet/<network>.json and export.env.
+    const records: Record<string, [router: string, block: number]> = {
+      sepolia: ['0x47aB91BdE6fd3f64569F564bC16683Ca5F4e95E2', 12146929],
+      bnb_testnet: ['0x5738179f689072738637100f66a8aba8C0285106', 143053812],
+      arbitrum_sepolia: ['0xE730cAC55E115e578dF2057242ee30f70bCe27e5', 329760799],
+      robinhood_testnet: ['0xEd5ee3476202510F62D8b1dec1e833834033fe3F', 154049182],
+      base_sepolia: ['0xBb6429843614fE4F81641B0404b7591Eae4275E8', 59527026],
+    };
+    expect(DEPLOYMENTS.testnet.map((d) => d.network).sort()).toEqual(Object.keys(records).sort());
+    for (const [network, [router, block]] of Object.entries(records)) {
+      expect(deploymentOf('testnet', network)).toMatchObject({ router, routerBlock: block });
+    }
+    // The testnet stand runs its own routers, never the dev stand's.
+    const dev = new Set(DEPLOYMENTS.devnet.flatMap((d) => (d.router ? [d.router.toLowerCase()] : [])));
+    expect(Object.values(records).some(([router]) => dev.has(router.toLowerCase()))).toBe(false);
   });
 });
 

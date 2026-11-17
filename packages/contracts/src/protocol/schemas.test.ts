@@ -264,6 +264,7 @@ test('the enums of the schemas are the exported constants', () => {
   expect([(m.cantonLegTransaction!.properties as Defs).kind, (m.cantonLegTopology!.properties as Defs).kind]).toEqual(CANTON_LEG_KINDS.map((k) => ({ const: k })));
   expect(known(((r.cantonParty!.properties as Defs).registry!.properties as Defs).state)).toEqual([...CANTON_REGISTRY_STATES]);
   expect(known(((((r.cantonAllocation!.properties as Defs).legs!.items as Defs).properties as Defs).side))).toEqual(['SENDER', 'RECEIVER']);
+  expect(known((r.cantonRecipientReadiness!.properties as Defs).reason)).toEqual(['RECIPIENT_NOT_READY', 'INSTRUMENT_NOT_SUPPORTED', null]);
 });
 
 // A closed enum is allowed only where the gateway owns the value (a request filter); every other enum is open (V-2).
@@ -289,7 +290,7 @@ test('V-2: no object is closed, and no enum outside the allow-list is closed', (
 describe('REST', () => {
   const rest = (def: string, value: unknown) => ajv.validate(`https://cancore.io/schemas/filler-protocol/v1/rest.schema.json#/$defs/${def}`, value);
   test('every endpoint names schemas that resolve', () => {
-    expect(REST_ENDPOINTS).toHaveLength(22);
+    expect(REST_ENDPOINTS).toHaveLength(23);
     const base = 'https://cancore.io/schemas/filler-protocol/v1/';
     for (const e of REST_ENDPOINTS) {
       for (const ref of [e.request, e.query, e.response, e.errorBody].filter((x): x is string => !!x)) {
@@ -566,5 +567,17 @@ describe('Canton operations of the filler party (§3.19)', () => {
     expect(rest('cantonIntent', { ...intent, settlementFactory: null })).toBe(true);
     expect(rest('cantonIntent', { ...intent, settlementFactory: { contractId: '00sf' } })).toBe(false);
     expect(rest('cantonIntent', { ...intent, settlementFactory: { contractId: '', live: true } })).toBe(false);
+  });
+
+  test('reads: the readiness of the recipient of the party’s DeliveryOrder (CAN-1867, V-R1)', () => {
+    const readiness = { orderHash: ORDER_HASH, deliveryOrderCid: '00de', recipient: 'bob::1220cc', asset: { admin: 'cancore-registry::1220aa', id: 'CNRX' }, ready: true, reason: null };
+    expect(rest('cantonRecipientReadiness', readiness)).toBe(true);
+    expect(rest('cantonRecipientReadiness', { ...readiness, ready: false, reason: 'RECIPIENT_NOT_READY' })).toBe(true);
+    expect(rest('cantonRecipientReadiness', { ...readiness, ready: false, reason: 'INSTRUMENT_NOT_SUPPORTED' })).toBe(true);
+    expect(rest('cantonRecipientReadiness', { ...readiness, ready: false, reason: 'NOT_YET_KNOWN' })).toBe(true);
+    const { reason: _r, ...noReason } = readiness;
+    expect(rest('cantonRecipientReadiness', noReason)).toBe(false);
+    expect(rest('cantonRecipientReadiness', { ...readiness, ready: 'yes' })).toBe(false);
+    expect(rest('cantonRecipientReadiness', { ...readiness, deliveryOrderCid: '' })).toBe(false);
   });
 });

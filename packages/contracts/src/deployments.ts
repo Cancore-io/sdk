@@ -39,12 +39,13 @@ export const DEPLOYMENTS: Readonly<Record<DeploymentEnv, readonly EvmDeployment[
     { network: 'base', chainId: 8453, htlc: '0xB3f8BD762fa2a895Ba8Cd35142b7b82b8b413F76', htlcBlock: 53546156, multiBalanceChecker: '0xe025CcCDf82F4165633C6033B7F13690B16c8a84' },
   ],
   testnet: [
-    { network: 'sepolia', chainId: 11155111, htlc: '0xc705C735278AEeF773acb6d1028D8A241D8a9556', htlcBlock: 10334457, multiBalanceChecker: '0x99182E3F18555CFB08e6443e68a11982eF686522' },
-    { network: 'bnb_testnet', chainId: 97, htlc: '0x36D7BEBDB5f93b7b926D621E412132dF89628810', htlcBlock: 92435953, multiBalanceChecker: '0x079bDc94B34EC0e905DcfDB516bdE2f292Efcef2' },
-    { network: 'arbitrum_sepolia', chainId: 421614, htlc: '0x07a6ccF1f0113e2329Bb2460b28eC0d169f5080E', htlcBlock: 245190705, multiBalanceChecker: '0x555Bef5d2f89Fc81c77b930AB6c0D6734bDE569e' },
-    { network: 'robinhood_testnet', chainId: 46630, htlc: '0x5eBf3faAf3a86c37dDf6a46075b8366Ed4D8021A', htlcBlock: 96742769, multiBalanceChecker: '0x9548fd6fA8A3869b215E9D86F6a2628Bf2BEFB74' },
+    // Routers: evm-contracts deployments/router/testnet/*.json (CAN-2529), verified on chain 2026-11-16.
+    { network: 'sepolia', chainId: 11155111, htlc: '0xc705C735278AEeF773acb6d1028D8A241D8a9556', htlcBlock: 10334457, multiBalanceChecker: '0x99182E3F18555CFB08e6443e68a11982eF686522', router: '0x47aB91BdE6fd3f64569F564bC16683Ca5F4e95E2', routerBlock: 12146929 },
+    { network: 'bnb_testnet', chainId: 97, htlc: '0x36D7BEBDB5f93b7b926D621E412132dF89628810', htlcBlock: 92435953, multiBalanceChecker: '0x079bDc94B34EC0e905DcfDB516bdE2f292Efcef2', router: '0x5738179f689072738637100f66a8aba8C0285106', routerBlock: 143053812 },
+    { network: 'arbitrum_sepolia', chainId: 421614, htlc: '0x07a6ccF1f0113e2329Bb2460b28eC0d169f5080E', htlcBlock: 245190705, multiBalanceChecker: '0x555Bef5d2f89Fc81c77b930AB6c0D6734bDE569e', router: '0xE730cAC55E115e578dF2057242ee30f70bCe27e5', routerBlock: 329760799 },
+    { network: 'robinhood_testnet', chainId: 46630, htlc: '0x5eBf3faAf3a86c37dDf6a46075b8366Ed4D8021A', htlcBlock: 96742769, multiBalanceChecker: '0x9548fd6fA8A3869b215E9D86F6a2628Bf2BEFB74', router: '0xEd5ee3476202510F62D8b1dec1e833834033fe3F', routerBlock: 154049182 },
     // Base Sepolia stage stand (CAN-3263), deployed 2026-11-05 — its own set, not the dev stand's.
-    { network: 'base_sepolia', chainId: 84532, htlc: '0xfE77AE800F14c0D5cEF242960b3a720035E7aF12', htlcBlock: 54786694, multiBalanceChecker: '0xC649d578FD0122E2Ce3Bcf6b89E3ef2564d1a30D' },
+    { network: 'base_sepolia', chainId: 84532, htlc: '0xfE77AE800F14c0D5cEF242960b3a720035E7aF12', htlcBlock: 54786694, multiBalanceChecker: '0xC649d578FD0122E2Ce3Bcf6b89E3ef2564d1a30D', router: '0xBb6429843614fE4F81641B0404b7591Eae4275E8', routerBlock: 59527026 },
   ],
   devnet: [
     // Routers: evm-contracts deployments/router/dev/*.json (#120, CAN-2327), verified on chain 2026-10-14.
