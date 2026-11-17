@@ -74,10 +74,12 @@ jobs:
       # Build before test: the bundle-isolation tests read dist (as in publish.yml).
       - run: npm run build
       - name: Unit tests
+        env:
+          JEST_JUNIT_OUTPUT_FILE: rp-reports/sdk-unit.xml
         run: |
           set -euo pipefail
           # GNU time reports the peak RSS of the largest single process: the jest parent or one worker.
-          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" npm test -- --maxWorkers=2 --json --outputFile="$RUNNER_TEMP/unit.json"
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" npm test -- --maxWorkers=2 --reporters=default --reporters=jest-junit --json --outputFile="$RUNNER_TEMP/unit.json"
 
       - name: Summary
         if: ${{ !cancelled() }}
@@ -100,3 +102,14 @@ jobs:
             fi
           # Also in the log: the job summary has no API, the log does.
           } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload test reports for rp-collect
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rp-reports-unit
+          path: rp-reports/
+          if-no-files-found: ignore
+          retention-days: 7
