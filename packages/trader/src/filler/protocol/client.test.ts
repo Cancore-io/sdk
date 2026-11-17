@@ -94,6 +94,7 @@ function harness(options: { random?: () => number; tokenTtlMs?: number; heartbea
       reconnect: { initialDelayMs: 500, maxDelayMs: 30_000 },
       heartbeatMisses: 3,
       loginTimeoutMs: 15_000,
+      maxMessageAgeMs: 30_000,
     },
     client,
   );
@@ -661,7 +662,7 @@ describe('heartbeat and reconnect', () => {
       {
         url: URL_, fillerId: FILLER, gatewaySigner: h.gateway.address, tokens: h.rest, seal: h.client.seal, clock: h.clock, logger: h.logger,
         webSocket: () => { calls++; throw new Error('ECONNREFUSED'); },
-        random: () => 0, nextId: () => 'x', reconnect: { initialDelayMs: 500, maxDelayMs: 30_000 }, heartbeatMisses: 3, loginTimeoutMs: 15_000,
+        random: () => 0, nextId: () => 'x', reconnect: { initialDelayMs: 500, maxDelayMs: 30_000 }, heartbeatMisses: 3, loginTimeoutMs: 15_000, maxMessageAgeMs: 30_000,
       },
       h.client,
     );
@@ -698,6 +699,72 @@ describe('frames after login', () => {
     await settle();
     expect(offers).toHaveLength(0);
     expect(h.logger.entries).toContainEqual(expect.objectContaining({ fields: { reason: 'other-fillerId', type: 'ticket.offer' } }));
+  });
+
+  test('TC-SDK-2151-03: a frame whose sentAt is more than maxMessageAgeMs from its arrival is dropped as stale, either way', async () => {
+    const h = harness();
+    const offers = record(h, 'ticket.offer');
+    void h.client.start();
+    const socket = await h.login();
+    socket.receive(h.offer({ id: 'old', sentAt: h.clock.now() - 30_001 }));
+    socket.receive(h.offer({ id: 'ahead', sentAt: h.clock.now() + 30_001 }));
+    socket.receive(h.offer({ id: 'edge', sentAt: h.clock.now() - 30_000 }));
+    await settle();
+    expect(offers.map((o) => o.frame.id)).toEqual(['edge']);
+    expect(h.logger.entries.filter((l) => l.fields?.reason === 'stale').map((l) => l.fields?.id)).toEqual(['old', 'ahead']);
+  });
+
+  test('TC-SDK-2151-03: a frame reusing the id of one taken with other content is dropped as replayed', async () => {
+    const h = harness();
+    const offers = record(h, 'ticket.offer');
+    void h.client.start();
+    const socket = await h.login();
+    socket.receive(h.offer({ id: 'g-1' }));
+    socket.receive(h.offer({ id: 'g-1', attempt: 2 }));
+    await settle();
+    expect(offers).toHaveLength(1);
+    expect(h.logger.entries).toContainEqual(expect.objectContaining({ fields: { reason: 'replayed', type: 'ticket.offer', id: 'g-1' } }));
+  });
+
+  test('TC-SDK-2151-03: an id is retained until maxMessageAgeMs past its arrival; then it is free for another frame', async () => {
+    const h = harness({ heartbeatIntervalMs: 600_000 });
+    const offers = record(h, 'ticket.offer');
+    void h.client.start();
+    const socket = await h.login();
+    socket.receive(h.offer({ id: 'g-1' }));
+    h.clock.advance(30_000);
+    socket.receive(h.offer({ id: 'g-1', attempt: 2 }));
+    h.clock.advance(1);
+    socket.receive(h.offer({ id: 'g-1', attempt: 3 }));
+    await settle();
+    expect(offers.map((o) => o.frame.attempt)).toEqual([1, 3]);
+    expect(h.logger.entries.filter((l) => l.fields?.reason === 'replayed')).toHaveLength(1);
+  });
+
+  test('TC-SDK-2151-03: an auth.ok stale on arrival — the session does not open and the clock skew is logged as an error', async () => {
+    const h = harness();
+    void h.client.start();
+    const socket = await h.connected();
+    socket.open();
+    socket.receive(h.gateway.frame({ type: 'auth.ok', id: 'g-ok-skewed', fillerId: FILLER, heartbeatIntervalMs: 60_000, sentAt: h.clock.now() - 45_000 }));
+    await settle();
+    expect(h.client.connected).toBe(false);
+    expect(h.logger.entries).toContainEqual(expect.objectContaining({ level: 'error', fields: { skewMs: 45_000, maxMessageAgeMs: 30_000 } }));
+  });
+
+  test('TC-SDK-2151-03: filler-gateway numbering its pings per session — ping-1 of the next session is answered, not dropped as replayed', async () => {
+    const h = harness({ heartbeatIntervalMs: 600_000 });
+    void h.client.start();
+    const first = await h.login();
+    first.receive(h.gateway.frame({ type: 'ping', fillerId: FILLER, id: 'ping-1' }));
+    await settle();
+    first.drop(1006);
+    h.clock.advance(250);
+    const second = await h.login();
+    second.receive(h.gateway.frame({ type: 'ping', fillerId: FILLER, id: 'ping-1' }));
+    await settle();
+    expect(second.sentFrames().filter((f) => f.type === 'pong').map((f) => f.re)).toEqual(['ping-1']);
+    expect(h.logger.entries.filter((l) => l.fields?.reason === 'replayed')).toEqual([]);
   });
 
   test('a frame cut mid-way is dropped and the session stays up', async () => {

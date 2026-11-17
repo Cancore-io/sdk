@@ -24,6 +24,7 @@ import { checkTransferExercise } from '../src/filler/canton/checks';
 import { CANTON_TRANSFER_FACTORIES } from '../src/filler/canton/factories';
 import { transactionView, type DamlValue, type ExerciseNode } from '../src/filler/canton/transaction';
 import { activeContracts, cantonToken, env, ledger } from './stand/canton-ledger';
+import { standToken } from './stand/keycloak';
 
 const STAND = process.env.INTENT_STAND_ENV;
 const REQUIRED = [
@@ -157,12 +158,7 @@ async function prepareTransfer(s: Spike, receiverName: string, label: string): P
     if (!receiverName) throw new Error(`STAND_OWNER_PARTY ${owner} is no genesis party`);
     // The stand user's own preapproval, made the way a user makes it (backend /tokens/utility-preapprovals): the
     // participant's validator user may act as no genesis party. Its operator is the stand's registry party.
-    const login = await fetch(env('STAND_USER_TOKEN_URL'), {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ grant_type: 'password', client_id: env('STAND_USER_CLIENT_ID'), client_secret: env('STAND_USER_CLIENT_SECRET'), username: env('STAND_USER_NAME'), password: env('STAND_USER_PASSWORD') }),
-    });
-    const bearer = ((await login.json()) as { access_token: string }).access_token;
+    const bearer = await standToken('user');
     const setup = await fetch(`${env('GATEWAY_URL')}/tokens/utility-preapprovals/setup`, {
       method: 'POST', headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' }, body: JSON.stringify({ tokenId: instrument }),
     });

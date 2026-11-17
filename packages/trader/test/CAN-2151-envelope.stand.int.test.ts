@@ -1,23 +1,41 @@
 /**
  * CAN-2151, the signed envelope against the real filler-gateway of the intent stand: every frame the SDK seals —
  * `quote`, `ticket.intent`, `ticket.decline`, `routes.set` — is taken by filler-gateway (none comes back
- * BAD_SIGNATURE); frames signed by a key the SDK does not pin are dropped before any hook; and a ticket issued for
+ * BAD_SIGNATURE); frames signed by a key the SDK does not pin are dropped before any hook; a signed frame that arrives
+ * later than `maxMessageAgeMs` is dropped as stale while a byte-identical redelivery is acted on once; and a ticket issued for
  * another delivery key than the SDK's own intent is refused by filler-gateway and never reaches the checks.
  * `ticket.receipt` is TC-SDK-2151-INT-01 in canton-delivery.stand.int.test.ts. trading is played on the Redis
  * Streams (test/stand/filler-gateway.ts).
  *
  *   INTENT_STAND_ENV=<stand env> npx jest --selectProjects int --runInBand packages/trader/test/CAN-2151-envelope.stand.int.test.ts
  */
-import { encodeCantonAmount, FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, fillerIdHash, type Hex, type TicketIntentMessage } from '@cancore/contracts';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  encodeCantonAmount,
+  FILL_TICKET_DOMAIN,
+  FILL_TICKET_TYPES,
+  FILLER_KEY_REGISTRATION_TYPES,
+  FILLER_PROTOCOL_DOMAIN,
+  fillerIdHash,
+  hashTypedData,
+  type Hex,
+  type TicketIntentMessage,
+} from '@cancore/contracts';
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { bytesToHex } from '@noble/hashes/utils';
 import { createFillerRoutes } from '../src/filler/routes';
+import { signFillerKeyRegistration } from '../src/filler/signer';
+import type { HttpFetch, WebSocketFactory } from '../src/filler/runtime';
 import { createTestTypedDataSigner } from '../src/filler/testing';
+import { adminApi, ADMIN_KEYS } from './stand/admin';
 import { env } from './stand/canton-ledger';
-import { command, cursor, eventsAfter, GATEWAY_KEYS, offerCommand, ofOrder, sleep, standChain, standFiller, standOrder, standSuite, STREAMS, until } from './stand/filler-gateway';
+import { command, cursor, eventsAfter, GATEWAY_KEYS, nativeWebSocket, offerCommand, ofOrder, sleep, standChain, standFiller, standOrder, standSuite, STREAMS, until } from './stand/filler-gateway';
 
 /** The stand's ticket signer: anvil's default mnemonic, index 16 (TICKETSIGNER of the runbook) — a test key. */
 const STAND_TICKET_SIGNER_KEY: Hex = '0xea6c44ac03bff858b476bba40716402b03e41b8e97e276d1baec7c37d42484a0';
 
-standSuite('CAN-2151: the signed envelope against the real filler-gateway', GATEWAY_KEYS, () => {
+standSuite('CAN-2151: the signed envelope against the real filler-gateway', [...GATEWAY_KEYS, ...ADMIN_KEYS, 'STAND_FILLER2_ID'], () => {
   test('TC-SDK-2151-INT-01: quote, ticket.intent, ticket.decline and routes.set sealed by the SDK are each taken by filler-gateway', async () => {
     const accept = standOrder(2151_01);
     const decline = standOrder(2151_02);
@@ -68,6 +86,64 @@ standSuite('CAN-2151: the signed envelope against the real filler-gateway', GATE
     }
   }, 120_000);
 
+  test('TC-SDK-2151-INT-03: a signed offer that arrives later than maxMessageAgeMs is dropped as stale; a byte-identical redelivery is acted on once', async () => {
+    const maxMessageAgeMs = 5_000;
+    const late = standOrder(2151_31);
+    const twice = standOrder(2151_32);
+    const asked = new Map<string, number>();
+    let heldId: string | undefined;
+    const throughStand: WebSocketFactory = (url, h, protocols) =>
+      nativeWebSocket(url, {
+        ...h,
+        onMessage: (text) => {
+          const frame = JSON.parse(text) as { type?: string; orderHash?: string; id?: string };
+          if (frame.type !== 'ticket.offer') return h.onMessage(text);
+          const order = frame.orderHash?.toLowerCase();
+          if (order === late.orderHash.toLowerCase()) {
+            if (heldId !== undefined) return;
+            heldId = frame.id;
+            setTimeout(() => h.onMessage(text), maxMessageAgeMs + 2_000);
+            return;
+          }
+          h.onMessage(text);
+          if (order === twice.orderHash.toLowerCase()) h.onMessage(text);
+        },
+      }, protocols);
+    let loginPullDone!: () => void;
+    const loginPull = new Promise<void>((resolve) => (loginPullDone = resolve));
+    const watchingLoginPull: HttpFetch = async (url, request) => {
+      const response = await fetch(url, request);
+      if (request.method === 'GET' && url.includes('/v1/filler/tickets') && url.includes('status=ISSUED')) loginPullDone();
+      return response;
+    };
+    const stand = standFiller({
+      webSocket: throughStand,
+      fetch: watchingLoginPull,
+      maxMessageAgeMs,
+      offer: async (o) => (asked.set(o.orderHash.toLowerCase(), (asked.get(o.orderHash.toLowerCase()) ?? 0) + 1), 'accept'),
+    });
+    await stand.filler.start();
+    try {
+      // The pull that follows login lists open offers over REST: an offer it saw fresh would reach the hook past the held frame.
+      await loginPull;
+      const from = await cursor(STREAMS.ticketEvents);
+      await command(STREAMS.tickets, 'ticket.offer', offerCommand(late));
+      await command(STREAMS.tickets, 'ticket.offer', offerCommand(twice));
+      await until('the redelivered offer acted on', async () => (await eventsAfter(STREAMS.ticketEvents, from, (e) => ofOrder(twice.orderHash)(e) && e.kind === 'ticket.intent'))[0], 60_000, stand.diagnostics);
+      const dropped = await until('the late offer dropped as stale', async () =>
+        stand.logger.entries.find((l) => l.message === 'filler-gateway: frame dropped' && l.fields?.reason === 'stale' && l.fields?.id === heldId), maxMessageAgeMs + 30_000, stand.diagnostics);
+      expect(dropped.fields).toEqual({ reason: 'stale', type: 'ticket.offer', id: heldId });
+      await sleep(3_000);
+      expect(asked.get(twice.orderHash.toLowerCase())).toBe(1);
+      expect((await eventsAfter(STREAMS.ticketEvents, from, (e) => ofOrder(twice.orderHash)(e) && e.kind === 'ticket.intent'))).toHaveLength(1);
+      expect(asked.get(late.orderHash.toLowerCase())).toBeUndefined();
+      expect(await stand.store.withOrder(late.orderHash, (tx) => tx.getTicket(0))).toBeUndefined();
+      expect((await eventsAfter(STREAMS.ticketEvents, from, (e) => ofOrder(late.orderHash)(e) && e.kind === 'ticket.intent'))).toEqual([]);
+    } finally {
+      await stand.filler.stop();
+    }
+  }, 180_000);
+
   test('TC-SDK-2151-INT-04: an issue naming another delivery key than the SDK’s intent — refused by filler-gateway; the SDK never sees ticket.issued', async () => {
     const stand = standFiller({ offer: async () => 'accept' });
     await stand.filler.start();
@@ -93,4 +169,17 @@ standSuite('CAN-2151: the signed envelope against the real filler-gateway', GATE
       await stand.filler.stop();
     }
   }, 120_000);
+
+  test('TC-SDK-2151-INT-06: a key registration signed through signFillerKeyRegistration is the one Cancore staff verify, and its digest is the golden vector’s', async () => {
+    type Vector = { message: { fillerId: string; messageKey: string; issuedAt: string }; digest: Hex };
+    const file = JSON.parse(readFileSync(join(__dirname, '../../contracts/spec/protocol/typed-data/FillerKeyRegistration.json'), 'utf8')) as { vectors: Vector[] };
+    for (const v of file.vectors) {
+      expect(hashTypedData({ domain: FILLER_PROTOCOL_DOMAIN, types: FILLER_KEY_REGISTRATION_TYPES, primaryType: 'FillerKeyRegistration', message: v.message })).toBe(v.digest);
+    }
+    const fresh = createTestTypedDataSigner(`0x${bytesToHex(secp256k1.utils.randomPrivateKey())}`);
+    const fillerId = env('STAND_FILLER2_ID');
+    const registration = await signFillerKeyRegistration(fresh, { fillerId, issuedAt: BigInt(Math.floor(Date.now() / 1000)) });
+    const preview = await adminApi<{ ok: boolean; messageKey: string | null; problems: unknown[] }>('POST', `/admin/fillers/${encodeURIComponent(fillerId)}/message-key/verify`, { registration });
+    expect(preview).toMatchObject({ ok: true, messageKey: fresh.address.toLowerCase(), problems: [] });
+  }, 60_000);
 });

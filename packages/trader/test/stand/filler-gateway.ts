@@ -354,6 +354,8 @@ export interface StandFillerOptions {
   store?: InMemoryFillerStore;
   /** The socket to filler-gateway; the native one by default. */
   webSocket?: WebSocketFactory;
+  /** `transport.maxMessageAgeMs`; the SDK's default otherwise. */
+  maxMessageAgeMs?: number;
   /** The REST transport to filler-gateway; the global fetch by default. */
   fetch?: HttpFetch;
 }
@@ -394,6 +396,7 @@ export function standFiller(options: StandFillerOptions = {}): StandFiller {
     },
     store,
     webSocket: options.webSocket ?? nativeWebSocket,
+    ...(options.maxMessageAgeMs === undefined ? {} : { transport: { maxMessageAgeMs: options.maxMessageAgeMs } }),
     ...(options.fetch ? { fetch: options.fetch } : {}),
     logger,
     events,
