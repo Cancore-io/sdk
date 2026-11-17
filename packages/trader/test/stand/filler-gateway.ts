@@ -35,7 +35,7 @@ import { hashOrder } from '../../src/filler/chain/hashes';
 import type { EvmChainId } from '../../src/filler/chains';
 import { createFiller, type Filler, type QuoteRequestHook, type ReconfirmHook, type TicketOfferHook } from '../../src/filler/filler';
 import type { EvmRpc } from '../../src/filler/rpc';
-import type { WebSocketFactory } from '../../src/filler/runtime';
+import type { HttpFetch, WebSocketFactory } from '../../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../../src/filler/testing';
 import { env } from './canton-ledger';
 
@@ -335,6 +335,8 @@ export interface StandFillerOptions {
   webSocket?: WebSocketFactory;
   /** `transport.maxMessageAgeMs`; the SDK's default otherwise. */
   maxMessageAgeMs?: number;
+  /** The REST client to filler-gateway; the global `fetch` by default. */
+  fetch?: HttpFetch;
 }
 
 export interface StandFiller {
@@ -374,6 +376,7 @@ export function standFiller(options: StandFillerOptions = {}): StandFiller {
     store,
     webSocket: options.webSocket ?? nativeWebSocket,
     ...(options.maxMessageAgeMs === undefined ? {} : { transport: { maxMessageAgeMs: options.maxMessageAgeMs } }),
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     logger,
     events,
   });

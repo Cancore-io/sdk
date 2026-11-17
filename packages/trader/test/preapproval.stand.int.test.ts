@@ -140,7 +140,7 @@ describe('CAN-2904: preapproval.create on the full intent stand', () => {
     expect(sent.result.transferInstructionCid).toBeUndefined();
   }, 300_000);
 
-  test('TC-SDK-2151-INT-07: Cancore staff change the filler’s message key — the SDK logs in with the new key, the old one is refused UNAUTHENTICATED', async () => {
+  test('TC-SDK-2151-INT-07: Cancore staff change the filler’s message key — the SDK logs in with the new key, the old one is refused BAD_SIGNATURE', async () => {
     const fillerId = env('STAND_FILLER2_ID');
     const oldKey = env('STAND_FILLER2_MESSAGE_KEY') as Hex;
     expect((await operations('STAND_FILLER2', oldKey).party()).party).toBe(env('STAND_FILLER2_CANTON_PARTY'));
@@ -153,8 +153,9 @@ describe('CAN-2904: preapproval.create on the full intent stand', () => {
     expect(change).toMatchObject({ previousAddress: createTestTypedDataSigner(oldKey).address.toLowerCase(), address: createTestTypedDataSigner(newKey).address.toLowerCase() });
 
     expect((await operations('STAND_FILLER2', newKey).party()).party).toBe(env('STAND_FILLER2_CANTON_PARTY'));
-    // filler-gateway names a retired key UNAUTHENTICATED at login: the FillerAuth signature is valid, the key is not this filler's.
+    // Protocol §3.4 check 1 comes before FillerAuth: msgSig must recover to the key registered now, so a retired key is BAD_SIGNATURE.
     const refused = await refusal(operations('STAND_FILLER2', oldKey).party());
-    expect(refused.code).toBe('UNAUTHENTICATED');
+    expect(refused.code).toBe('BAD_SIGNATURE');
+    expect(refused.message).toContain('does not recover to the message key registered for fillerId');
   }, 120_000);
 });

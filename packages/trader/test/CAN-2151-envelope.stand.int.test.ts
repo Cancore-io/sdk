@@ -26,7 +26,7 @@ import { secp256k1 } from '@noble/curves/secp256k1';
 import { bytesToHex } from '@noble/hashes/utils';
 import { createFillerRoutes } from '../src/filler/routes';
 import { signFillerKeyRegistration } from '../src/filler/signer';
-import type { WebSocketFactory } from '../src/filler/runtime';
+import type { HttpFetch, WebSocketFactory } from '../src/filler/runtime';
 import { createTestTypedDataSigner } from '../src/filler/testing';
 import { adminApi, ADMIN_KEYS } from './stand/admin';
 import { env } from './stand/canton-ledger';
@@ -109,13 +109,23 @@ standSuite('CAN-2151: the signed envelope against the real filler-gateway', [...
           if (order === twice.orderHash.toLowerCase()) h.onMessage(text);
         },
       }, protocols);
+    let loginPullDone!: () => void;
+    const loginPull = new Promise<void>((resolve) => (loginPullDone = resolve));
+    const watchingLoginPull: HttpFetch = async (url, request) => {
+      const response = await fetch(url, request);
+      if (request.method === 'GET' && url.includes('/v1/filler/tickets') && url.includes('status=ISSUED')) loginPullDone();
+      return response;
+    };
     const stand = standFiller({
       webSocket: throughStand,
+      fetch: watchingLoginPull,
       maxMessageAgeMs,
       offer: async (o) => (asked.set(o.orderHash.toLowerCase(), (asked.get(o.orderHash.toLowerCase()) ?? 0) + 1), 'accept'),
     });
     await stand.filler.start();
     try {
+      // The pull that follows login lists open offers over REST: an offer it saw fresh would reach the hook past the held frame.
+      await loginPull;
       const from = await cursor(STREAMS.ticketEvents);
       await command(STREAMS.tickets, 'ticket.offer', offerCommand(late));
       await command(STREAMS.tickets, 'ticket.offer', offerCommand(twice));
