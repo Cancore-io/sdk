@@ -216,10 +216,27 @@ const DA_UTILITY_REGISTRY_APP_0_9_2: CantonTransferFactory = {
   openReceipt: true,
 };
 
+/**
+ * DA Utilities `utility-registry-app-v0` 0.10.0, the version devnet prefers for a receiver and DA's operator on
+ * 17.11.2026 (ledger `preferred-packages` by package name, backend run 44107640226): `utility-registry-holding-v0`
+ * 0.4.0 and `utility-registry-v0` 0.9.0 in the same answer. Smart Contract Upgrades keep the module paths and fields of
+ * 0.9.2; its allocations and executed-transfer records are of `utility-registry-v0` 0.9.0, and its transfers spend the
+ * holdings of 0.3.2.
+ */
+const DA_UTILITY_REGISTRY_APP_0_10_0: CantonTransferFactory = {
+  ...DA_UTILITY_REGISTRY_APP_0_9_2,
+  packageId: '15cf1eaaf35b3736d95bc5c260d3da5507cbd1edc5680f2d55d98de04e34d545',
+  holdingPackageId: '60392791d561705b24aba7313faff690e8f4e0f906c3e478d37f9e6f23abb04e',
+  upgradedHoldingPackageIds: ['415a1ec96a9e2839453e9aa1c5c71b6511c008c79511cb6f873e0b7393fe3b92'],
+  transferRecords: ['106145fd9ef9cb0545dcf0c04e983ed41f5fe5056dcc4c84b6cdf0d14a634408:Utility.Registry.V0.Holding.Transfer:ExecutedTransfer'],
+  allocationPackageId: '106145fd9ef9cb0545dcf0c04e983ed41f5fe5056dcc4c84b6cdf0d14a634408',
+};
+
 /** devnet: DA's operator decoded from the devnet CBTC registrar's AllocationFactory (backend utility-preapproval.constants.ts). */
 const DA_DEVNET_OPERATOR = 'auth0_007c65f857f1c3d599cb6df73775::1220d2d732d042c281cee80f483ab80f3cbaa4782860ed5f4dc228ab03dedd2ee8f9';
 const DA_UTILITY_REGISTRY_APP_0_8_2_DEVNET: CantonTransferFactory = { ...DA_UTILITY_REGISTRY_APP_0_8_2, preapprovalOperator: DA_DEVNET_OPERATOR };
 const DA_UTILITY_REGISTRY_APP_0_9_2_DEVNET: CantonTransferFactory = { ...DA_UTILITY_REGISTRY_APP_0_9_2, preapprovalOperator: DA_DEVNET_OPERATOR };
+const DA_UTILITY_REGISTRY_APP_0_10_0_DEVNET: CantonTransferFactory = { ...DA_UTILITY_REGISTRY_APP_0_10_0, preapprovalOperator: DA_DEVNET_OPERATOR };
 
 /**
  * Splice `splice-amulet` 0.1.24, the version of Splice 0.9.x that DevNet runs (canton-network/splice
@@ -286,7 +303,8 @@ export const CANTON_TRANSFER_FACTORIES: Readonly<Record<string, readonly CantonT
   'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b': [CNRX_REGISTRY_0_2_7, CNRX_REGISTRY_0_2_6, CNRX_REGISTRY_0_2_3].map((f) => ({ ...f, guardian: DEV_CNRX_GUARDIAN })),
   // devnet: CBTC's registrar on DA Utilities dev (backend libs/common/src/config/cbtc.config.ts).
   // 0.8.2 stays: contracts created under it remain on the ledger after devnet moved to 0.9.2.
-  'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff': [DA_UTILITY_REGISTRY_APP_0_9_2_DEVNET, DA_UTILITY_REGISTRY_APP_0_8_2_DEVNET],
+  // 0.9.2 stays next to 0.10.0 for the same reason: its holdings and committed allocations are still live.
+  'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff': [DA_UTILITY_REGISTRY_APP_0_10_0_DEVNET, DA_UTILITY_REGISTRY_APP_0_9_2_DEVNET, DA_UTILITY_REGISTRY_APP_0_8_2_DEVNET],
   // devnet: the DSO, CC's admin (DevNet scan `registry/metadata/v1/info`).
   // 0.1.24 stays: DevNet's AmuletRules and the amulets and allocations created before 0.1.25 remain under it.
   'DSO::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a': [SPLICE_AMULET_0_1_25_DEVNET, SPLICE_AMULET_0_1_24_DEVNET],

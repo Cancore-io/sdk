@@ -435,7 +435,7 @@ describe('holdings.transfer of CBTC: a DA Utilities transfer through the receive
     });
 
     test('TC-SDK-2931-61: devnet’s 0.9.2 pin names EventLog_HoldingsChange on Holding as its one service choice; 0.8.2 names none', () => {
-      const [pin092, pin082] = CANTON_TRANSFER_FACTORIES[CBTC] ?? [];
+      const [, pin092, pin082] = CANTON_TRANSFER_FACTORIES[CBTC] ?? [];
       expect(pin092).toMatchObject({ packageId: APP_0_9_2, serviceChoices: ['Utility.Registry.Holding.V0.Holding:Holding.EventLog_HoldingsChange'] });
       expect(pin082).toMatchObject({ packageId: APP_PKG, serviceChoices: [] });
     });

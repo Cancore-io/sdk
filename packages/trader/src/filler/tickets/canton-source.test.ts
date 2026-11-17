@@ -29,6 +29,8 @@ const PARTY = 'filler-acme::12206c81aa';
 const CBTC_ADMIN = 'cbtc-network::12202a83c6f4082217c175e29bc53da5f2703ba2675778ab99217a5a881a949203ff';
 /** utility-registry-v0 0.8.2: the package of every committed CBTC allocation devnet holds (backend run 43920493880). */
 const DA_ALLOCATION_PKG = '8c654487d9f5fb195fbcdd7b44cd8e365b1ea39c15ae62ce6c7a48343f1210dd';
+/** utility-registry-v0 0.9.0: the package devnet prefers for CBTC from 17.11.2026 (backend run 44107640226, CAN-3579). */
+const DA_ALLOCATION_PKG_0_9_0 = '106145fd9ef9cb0545dcf0c04e983ed41f5fe5056dcc4c84b6cdf0d14a634408';
 const DA_APP_0_9_2 = '1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b274b8c0';
 const DSO = 'DSO::1220be58c29e65de40bf273be1dc2b266d43a9a002ea5b18955aeef7aac881bb471a';
 /** splice-amulet 0.1.24, the Amulet package DevNet runs: the factory, the holdings and the V2 allocation are all of it. */
@@ -259,7 +261,7 @@ describe('V-C1…V-C7 on the golden Canton-source order (CAN-1863, CAN-3408)', (
   test('V-C5 (T-9) TC-SDK-3587-01: the pinned dev CNRX registry and DA Utilities 0.9.2 (CBTC) pay any party; 0.8.2 commits no allocation', () => {
     const pinned = (admin: string) => CANTON_TRANSFER_FACTORIES[admin]?.map((f) => f.openReceipt === true);
     expect(pinned('cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b')).toEqual([true, true, true]);
-    expect(pinned(CBTC_ADMIN)).toEqual([true, false]);
+    expect(pinned(CBTC_ADMIN)).toEqual([true, true, false]);
   });
 
   test('the read is shape-checked before any check: a non-string field is BAD_RESPONSE, not a TypeError', () => {
@@ -322,6 +324,12 @@ describe('V-C4 and V-C5 on a DA Utilities CBTC give (CAN-3587)', () => {
     expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
   });
 
+  test('TC-SDK-3587-08: a committed AllocationV2 of utility-registry-v0 0.9.0 passes V-C1…V-C7 on the published pin', async () => {
+    const g = cbtc(`${DA_ALLOCATION_PKG_0_9_0}:Utility.Registry.V0.Holding.AllocationV2:AllocationV2`);
+    await g.run();
+    expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
+  });
+
   test.each([
     ['TC-SDK-3587-03: the AllocationV2 template under the app package, not utility-registry-v0', `${DA_APP_0_9_2}:Utility.Registry.V0.Holding.AllocationV2:AllocationV2`],
     ['TC-SDK-3587-04: a DvpLegAllocation of utility-registry-v0, not the committed V2 allocation', `${DA_ALLOCATION_PKG}:Utility.Registry.V0.Holding.Allocation:DvpLegAllocation`],
@@ -342,7 +350,7 @@ describe('V-C4 and V-C5 on a DA Utilities CBTC give (CAN-3587)', () => {
   });
 
   test('TC-SDK-3587-07: the allocation template is read from allocationPackageId, falling back to packageId', () => {
-    expect(CANTON_ALLOCATION_TEMPLATES[CBTC_ADMIN]).toEqual([`${DA_ALLOCATION_PKG}:Utility.Registry.V0.Holding.AllocationV2:AllocationV2`]);
+    expect(CANTON_ALLOCATION_TEMPLATES[CBTC_ADMIN]).toEqual([DA_ALLOCATION_PKG_0_9_0, DA_ALLOCATION_PKG].map((p) => `${p}:Utility.Registry.V0.Holding.AllocationV2:AllocationV2`));
     expect(allocationTemplateOf(registryOf(true))).toBe(ALLOCATION_TEMPLATE);
     const [da] = CANTON_TRANSFER_FACTORIES[CBTC_ADMIN] ?? [];
     expect(registriesProblem({ [CBTC_ADMIN]: [{ ...da, allocationPackageId: 'utility-registry-v0' }] })).toMatch(/allocationPackageId: expected 64 lowercase hex/);
