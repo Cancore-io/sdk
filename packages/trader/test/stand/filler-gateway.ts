@@ -121,10 +121,10 @@ function redis(...args: string[]): Promise<Resp> {
   const commands = [...(password ? [['AUTH', decodeURIComponent(password)]] : []), args];
   return new Promise((resolve, reject) => {
     const socket = connect(Number(port || 6379), hostname);
-    let buffer = '';
+    let buffer: Buffer = Buffer.alloc(0);
     const replies: Resp[] = [];
-    socket.on('data', (chunk) => {
-      buffer += chunk.toString('utf8');
+    socket.on('data', (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
       try {
         for (;;) {
           const [value, rest] = parse(buffer);
@@ -147,13 +147,16 @@ function redis(...args: string[]): Promise<Resp> {
   });
 }
 
-/** One RESP value from the front of `text`; `rest` undefined while incomplete. */
-function parse(text: string): [Resp, string | undefined] {
-  const line = text.indexOf('\r\n');
+/**
+ * One RESP value from the front of `bytes`; `rest` undefined while incomplete. RESP lengths count bytes, and stream
+ * payloads carry non-ASCII text, so the reply is cut as bytes and decoded per value.
+ */
+function parse(bytes: Buffer): [Resp, Buffer | undefined] {
+  const line = bytes.indexOf('\r\n');
   if (line < 0) return [null, undefined];
-  const head = text.slice(1, line);
-  const after = text.slice(line + 2);
-  switch (text[0]) {
+  const head = bytes.toString('utf8', 1, line);
+  const after = bytes.subarray(line + 2);
+  switch (bytes.toString('utf8', 0, 1)) {
     case '+':
       return [head, after];
     case '-':
@@ -163,16 +166,16 @@ function parse(text: string): [Resp, string | undefined] {
     case '$': {
       const n = Number(head);
       if (n < 0) return [null, after];
-      if (Buffer.byteLength(after) < n + 2) return [null, undefined];
-      return [after.slice(0, n), after.slice(n + 2)];
+      if (after.length < n + 2) return [null, undefined];
+      return [after.toString('utf8', 0, n), after.subarray(n + 2)];
     }
     case '*': {
       const n = Number(head);
       if (n < 0) return [null, after];
       const items: Resp[] = [];
-      let rest: string | undefined = after;
+      let rest: Buffer | undefined = after;
       for (let i = 0; i < n; i++) {
-        const [item, next]: [Resp, string | undefined] = parse(rest!);
+        const [item, next]: [Resp, Buffer | undefined] = parse(rest!);
         if (next === undefined) return [null, undefined];
         items.push(item);
         rest = next;
@@ -180,7 +183,7 @@ function parse(text: string): [Resp, string | undefined] {
       return [items, rest];
     }
     default:
-      throw new Error(`redis: unexpected reply ${text.slice(0, 20)}`);
+      throw new Error(`redis: unexpected reply ${bytes.toString('utf8', 0, 20)}`);
   }
 }
 
