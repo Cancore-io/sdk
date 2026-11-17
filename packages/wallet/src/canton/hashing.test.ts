@@ -1,6 +1,6 @@
 import { type DamlTransaction_Node, PreparedTransaction, type Value } from '@canton-network/core-ledger-proto';
 import { computeMultiHashForTopology, computeSha256CantonHash, hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
-import { bytesToHex } from '@noble/hashes/utils';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { cantonHash, fromBase64, hashPreparedTransactionV2, multiHashInput } from './hashing';
 import { transactionView } from './transaction';
 

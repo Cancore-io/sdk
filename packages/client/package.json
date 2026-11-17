@@ -76,7 +76,7 @@
     "@cancore/wallet": "workspace:>=0.3.0 <1.0.0"
   },
   "devDependencies": {
-    "@noble/curves": "^1.9.7"
+    "@noble/curves": "^2.4.0"
   },
   "scripts": {
     "build": "tsup",
