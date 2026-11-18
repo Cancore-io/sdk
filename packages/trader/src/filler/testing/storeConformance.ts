@@ -49,6 +49,14 @@ export const fillerStoreConformance: readonly FillerStoreConformanceCase[] = [
     },
   },
   {
+    name: 'a Canton-source settlement keeps the update id of its SwapIntent_SettleWithProof (CAN-2146)',
+    async run(store, equal) {
+      const confirmed = { orderHash: ORDER, attempt: 0, state: 'confirmed' as const, chain: 'canton:devnet' as const, updateId: `1220${'ab'.repeat(32)}`, updatedAtMs: 1 };
+      await store.withOrder(ORDER, (tx) => tx.putSettlement(confirmed));
+      equal(await store.withOrder(ORDER, (tx) => tx.getSettlement()), confirmed);
+    },
+  },
+  {
     name: 'an unsent decline stays open until sent, while an unsettled fill stays open',
     async run(store, equal) {
       await store.withOrder(ORDER, (tx) => tx.putTicket(ticket('declined')));
