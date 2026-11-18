@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import * as ts from 'typescript';
 import * as canton from './canton';
 import * as proto from './canton/proto';
 import * as root from './index';
@@ -47,18 +48,52 @@ const SURFACE: Record<string, { module: Record<string, unknown>; names: string[]
   },
 };
 
+/** The type-only exports of every entry: erased before runtime, so `Object.keys` cannot see them; the checker does. */
+const TYPES: Record<string, string[]> = {
+  '.': [
+    'Bytes', 'DerivationScheme', 'DerivedCandidate', 'DerivedWalletKey', 'Ed25519KeyPair', 'Ed25519Signer', 'KekRole', 'KeyStore',
+    'MnemonicErrorReport', 'MnemonicLanguage', 'PasskeySigningProvider', 'PersistedKeyPasswordWalletRecord', 'PersistedPasskeyWalletRecord',
+    'PhraseMatch', 'ProviderFromMnemonicOptions', 'RegisterResult', 'RevealedWalletSecret', 'Signer', 'StoredRecord',
+    'UnlockedKeyPasswordWallet', 'WalletPasswordProblem', 'WrappedSeed',
+  ],
+  './operations': [
+    'HashSigner', 'IntentRoot', 'IntentSigningPolicy', 'OperationCatalogueEntry', 'OperationConfirm', 'OperationLeg', 'OperationSignature',
+    'PreparedOperation', 'SignLegsOptions', 'WalletOperations', 'WalletRequest',
+  ],
+  './canton': [
+    'CantonTransaction', 'CantonTransferFactory', 'CreateNode', 'DamlValue', 'ExerciseNode', 'FetchNode', 'IntentRoot', 'IntentSigningPolicy',
+    'ReadPreparedTransaction', 'RegistryContract', 'RegistryGuardians', 'RegistryPackages', 'RollbackNode', 'TransactionNode',
+  ],
+  './canton/proto': [],
+  './web': ['StoredWalletAccount'],
+};
+
+/** The value exports of `./web`, pinned here too so the checker's list of every entry is held whole (its runtime check runs in the web project). */
+const WEB_VALUES = ['clearPersistedWallet', 'deleteWalletAccount', 'evalPrf', 'getPersistedWallet', 'isWebAuthnSupported', 'listWalletAccounts', 'putPersistedWallet', 'putWalletAccount', 'registerPasskey'];
+
+const ENTRY_SOURCES: Record<string, string> = { '.': 'index.ts', './operations': 'operations.ts', './canton': 'canton/index.ts', './canton/proto': 'canton/proto.ts', './web': 'web/index.ts' };
+
+/** Every name an entry exports, values and types, as the TypeScript checker resolves its `export *` chains. */
+function checkerExports(entry: string): string[] {
+  const file = join(SRC, ENTRY_SOURCES[entry]!);
+  const config = ts.getParsedCommandLineOfConfigFile(join(SRC, '..', 'tsconfig.json'), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => undefined });
+  const program = ts.createProgram([file], config!.options);
+  const checker = program.getTypeChecker();
+  return checker.getExportsOfModule(checker.getSymbolAtLocation(program.getSourceFile(file)!)!).map((symbol) => symbol.name).sort();
+}
+
 /** `./operations` re-exports the intent policy of `./canton` for the signer; the two entries share these and nothing else. */
 const OPERATIONS_FROM_CANTON = ['INTENT_OPERATIONS', 'IntentTransactionRefusedError', 'isIntentOperation', 'verifyPreparedTransaction'];
 
-const HEADLESS_ENTRIES = ['index.ts', 'operations.ts', 'canton/index.ts', 'canton/proto.ts'];
 const SRC = __dirname;
+const HEADLESS_ENTRIES = ['index.ts', 'operations.ts', 'canton/index.ts', 'canton/proto.ts'];
 
 /** Every source file a module reaches through its relative imports and re-exports (type-only ones included). */
 function reachable(entry: string, seen = new Set<string>()): Set<string> {
   if (seen.has(entry)) return seen;
   seen.add(entry);
   const source = readFileSync(entry, 'utf8');
-  for (const [, spec] of source.matchAll(/\bfrom\s+'(\.{1,2}\/[^']+)'/g)) {
+  for (const [, spec] of source.matchAll(/\b(?:from|import)\s*\(?\s*['"](\.{1,2}\/[^'"]+)['"]/g)) {
     const base = resolve(dirname(entry), spec!);
     const file = [`${base}.ts`, join(base, 'index.ts')].find((f) => {
       try {
@@ -79,10 +114,15 @@ describe('CAN-867: the public surface of @cancore/wallet', () => {
     for (const name of names) expect(module[name]).toBeDefined();
   });
 
-  test('TC-CAN-867-02: every exported function and class is callable', () => {
-    const callables = Object.values(SURFACE).flatMap(({ module, names }) => names.map((n) => module[n]).filter((v) => typeof v === 'function'));
-    expect(callables.length).toBeGreaterThan(0);
-    for (const fn of callables) expect(typeof (fn as () => unknown).call).toBe('function');
+  test.each(Object.keys(ENTRY_SOURCES))('TC-CAN-867-02: %s exports exactly its pinned values and types, as the checker sees them', (entry) => {
+    const values = entry === './web' ? WEB_VALUES : SURFACE[entry]!.names;
+    expect(checkerExports(entry)).toEqual([...new Set([...values, ...TYPES[entry]!])].sort());
+  });
+
+  test('TC-CAN-867-07: the pinned entries are exactly the subpaths package.json exports', () => {
+    const manifest = JSON.parse(readFileSync(join(SRC, '..', 'package.json'), 'utf8')) as { exports: Record<string, unknown> };
+    expect(Object.keys(manifest.exports).sort()).toEqual(Object.keys(ENTRY_SOURCES).sort());
+    expect([...Object.keys(SURFACE), './web'].sort()).toEqual(Object.keys(ENTRY_SOURCES).sort());
   });
 
   test('TC-CAN-867-03: the headless entries share only the intent policy, as the same objects', () => {
