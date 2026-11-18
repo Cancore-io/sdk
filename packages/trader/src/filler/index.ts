@@ -8,10 +8,8 @@
  */
 export { createFiller } from './filler';
 export type {
-  BindStakeOptions,
   CantonConfig,
   CantonDestinationPolicy,
-  DrawVerification,
   Filler,
   FillerConfig,
   FillerStatsSnapshot,

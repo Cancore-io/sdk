@@ -10,7 +10,7 @@ import { utf8ToBytes } from '@noble/hashes/utils';
 import { hexBytes, keccak, toHex } from './bytes';
 import type { Hex } from './typedData';
 
-/** `fillerId`: issued by Cancore at onboarding, ASCII so the draw's UTF-8 byte order is plain byte order (D-H). */
+/** `fillerId`: issued by Cancore at onboarding, ASCII so its UTF-8 byte order is plain byte order (D-H). */
 export const FILLER_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 /** secp256k1 group order; a message-key signature has `0 < r < N` and `0 < s ≤ N / 2` (low-s). */
