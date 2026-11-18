@@ -45,7 +45,7 @@ export interface PenaltyEvent {
   step: PenaltyStep;
 }
 
-/** The SDK refused a ticket itself (escrow, TTL; V2 also the draw). No penalty follows. */
+/** The SDK refused a ticket itself (escrow, TTL). No penalty follows. */
 export interface DeclinedEvent {
   type: 'declined';
   orderHash: Hex;

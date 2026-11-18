@@ -36,7 +36,7 @@
  * (CAN-1867). A Canton source runs V-C1…V-C7 (`canton-source.ts`, CAN-1863)
  * in place of V-E1…V-E4: there is no escrow on a router, the give is a
  * committed allocation on Canton; V-T1 and V-E5 are read on the EVM
- * destination for both sources. Not here: the draw (V-T5) is V2 (CAN-1848).
+ * destination for both sources.
  */
 import type { DeclineReason, Hex, TicketIntentMessage, TicketIssued, TicketIssuedEvm, TicketOffer } from '@cancore/contracts';
 import { describeDepth, readAtDepth, type ChainReaders, type FillerChains } from '../chain';

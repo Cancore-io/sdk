@@ -2,7 +2,7 @@ import Ajv2020 from 'ajv/dist/2020';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  CANTON_LEG_KINDS, CANTON_OPS, CANTON_REGISTRY_STATES, CANTON_TRANSFER_OUTCOMES, DECLINE_REASONS, DRAW_CLOSED_BY, ERROR_CODES, ERROR_HTTP_STATUS, EXEMPT_REASONS, EXPIRED_RESULTS, PENALTY_STEPS, QUOTE_ACK_STATUSES,
+  CANTON_LEG_KINDS, CANTON_OPS, CANTON_REGISTRY_STATES, CANTON_TRANSFER_OUTCOMES, DECLINE_REASONS, ERROR_CODES, ERROR_HTTP_STATUS, EXEMPT_REASONS, EXPIRED_RESULTS, PENALTY_STEPS, QUOTE_ACK_STATUSES,
   QUOTE_FINAL_STATUSES, TICKET_LIST_STATUSES, TICKET_REFUSED_REASONS,
 } from './messages';
 import { MESSAGE_DIRECTIONS, messageSchemaRef, PROTOCOL_SCHEMAS, REST_ENDPOINTS, REST_ONLY_TYPES, SCHEMA_VOCABULARY } from './schemas';
@@ -41,8 +41,8 @@ test('the three schemas compile in strict mode, every $def of every one', () => 
   }
 });
 
-test('29 frame types, each with a direction and at least one valid example', () => {
-  expect(Object.keys(MESSAGE_DIRECTIONS)).toHaveLength(29);
+test('28 frame types, each with a direction and at least one valid example', () => {
+  expect(Object.keys(MESSAGE_DIRECTIONS)).toHaveLength(28);
   expect(MESSAGE_DIRECTIONS['ticket.offer']).toBe('S2F');
   expect(MESSAGE_DIRECTIONS['ticket.intent']).toBe('F2S');
   expect(MESSAGE_DIRECTIONS.ping).toBe('both');
@@ -244,7 +244,6 @@ test.each([
 test('the enums of the schemas are the exported constants', () => {
   const m = defs(PROTOCOL_SCHEMAS.messages);
   const r = defs(PROTOCOL_SCHEMAS.rest);
-  const rec = defs(PROTOCOL_SCHEMAS.records);
   expect(known(m.declineReason)).toEqual([...DECLINE_REASONS]);
   expect(known(m.errorCode)).toEqual([...ERROR_CODES]);
   expect(known(m.ticketRefusedReason)).toEqual([...TICKET_REFUSED_REASONS]);
@@ -253,8 +252,6 @@ test('the enums of the schemas are the exported constants', () => {
   expect(known(m.quoteAckStatus)).toEqual([...QUOTE_ACK_STATUSES]);
   expect(known(m.penaltyStep)).toEqual([...PENALTY_STEPS]);
   expect(known((r.quoteRecord!.properties as Defs).status)).toEqual([...QUOTE_FINAL_STATUSES]);
-  expect(known((rec.drawAttempt!.properties as Defs).closedBy)).toEqual([...DRAW_CLOSED_BY, null]);
-  expect(known((rec.drawAttempt!.properties as Defs).fallbackReason)).toEqual(['DRAW_FALLBACK', null]);
   expect(known((m['ticket.issued']!.properties as Defs).form)).toEqual(['evm', 'canton']);
   expect((r.ticketListQuery!.properties as Defs).status!.enum).toEqual([...TICKET_LIST_STATUSES]);
   expect((PROTOCOL_SCHEMAS.rest as Record<string, unknown>)['x-error-status']).toEqual(ERROR_HTTP_STATUS);
@@ -277,7 +274,7 @@ test('V-2: no object is closed, and no enum outside the allow-list is closed', (
     expect([path, n.additionalProperties]).not.toEqual([path, false]);
     expect([path, n.unevaluatedProperties]).not.toEqual([path, false]);
     expect([path, n.maxProperties]).not.toEqual([path, 0]);
-    if ('propertyNames' in n) expect(path).toBe('records/$defs/epochRecord/properties/snapshotBlocks'); // a value constraint on caip2 keys
+    expect([path, 'propertyNames' in n]).toEqual([path, false]);
     if ('enum' in n && !path.endsWith('/anyOf/0')) closedEnums.push(path);
     if ('enum' in n && path.endsWith('/anyOf/0')) expect(known(ancestorAt(path))).toEqual(n.enum);
     for (const [k, v] of Object.entries(n)) walk(v, `${path}/${k}`);
@@ -290,7 +287,7 @@ test('V-2: no object is closed, and no enum outside the allow-list is closed', (
 describe('REST', () => {
   const rest = (def: string, value: unknown) => ajv.validate(`https://cancore.io/schemas/filler-protocol/v1/rest.schema.json#/$defs/${def}`, value);
   test('every endpoint names schemas that resolve', () => {
-    expect(REST_ENDPOINTS).toHaveLength(23);
+    expect(REST_ENDPOINTS).toHaveLength(21);
     const base = 'https://cancore.io/schemas/filler-protocol/v1/';
     for (const e of REST_ENDPOINTS) {
       for (const ref of [e.request, e.query, e.response, e.errorBody].filter((x): x is string => !!x)) {

@@ -8,7 +8,7 @@
  *   envelope `msgSig` of every filler → filler-gateway message (protocol §3.4);
  * - fill key per EVM chain — `FillSigner`: sends the `fill` / `settle` transactions, the
  *   `deliveryKey` of its tickets (the consent and the receipt are the message key's, T-3);
- * - staking key — `StakingSigner`: signs one `StakeBinding`, passed to `bindStake` only.
+ * - staking key — `StakingSigner`: signs one `StakeBinding`.
  *
  * Every signature a signer returns goes through `assertSignature` and a
  * recovery check before the SDK uses it, so a misbehaving signer (64 bytes,
