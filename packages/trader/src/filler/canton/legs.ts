@@ -46,16 +46,20 @@ export class CantonRefusal extends Error {
 /**
  * The registry's transfer under a delivery does what the node's check of the pinned registry refuses (BUG-1528). It
  * does not depend on the order: every delivery of the instrument through this registry is refused the same way until
- * the registry or the SDK pin changes.
+ * the registry or the SDK pin changes. What the backend asked of the transfer (receiver, amount, instrument,
+ * executeBefore, the stated input holdings) is checked apart from it, as a refusal of the order.
  */
 export class RegistryTransferRefusal extends CantonRefusal {}
 
-/** Runs the check of a registry transfer; a refusal of it is a `RegistryTransferRefusal`. */
+/** The input holdings the backend stated for one transfer are not what it spends: a refusal of that order alone. */
+export class StatedInputRefusal extends CantonRefusal {}
+
+/** Runs the check of a registry transfer; a refusal of it, other than of the stated inputs, is a `RegistryTransferRefusal`. */
 export function registryTransferChecked(check: () => void): void {
   try {
     check();
   } catch (error) {
-    throw error instanceof CantonRefusal ? new RegistryTransferRefusal(error.legId, error.detail) : error;
+    throw error instanceof CantonRefusal && !(error instanceof StatedInputRefusal) ? new RegistryTransferRefusal(error.legId, error.detail) : error;
   }
 }
 
