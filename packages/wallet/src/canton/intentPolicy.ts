@@ -10,14 +10,19 @@ import type { CantonTransaction, CreateNode, ExerciseNode, TransactionNode } fro
 export const INTENT_PACKAGE_NAME = 'cancore-intent';
 
 /**
- * Package ids of the `cancore-intent` versions whose Open and Renew this wallet signs: 0.6.2 only (CAN-3340, CAN-2716).
- * 0.6.2 is an SCU of 0.4.2–0.6.1, so a root of an older package still runs: up to 0.5.2 their Open stores a settlement
+ * Package ids of the `cancore-intent` versions whose Open and Renew this wallet signs: 0.6.2 and 0.6.3 (CAN-3340, CAN-2716,
+ * CAN-3588). 0.6.2 is an SCU of 0.4.2–0.6.1, so a root of an older package still runs: up to 0.5.2 their Open stores a settlement
  * factory without the owner's PublicFetch and their settle runs the operator's pin under the owner's authority; 0.6.0
  * and 0.6.1 read an attestor registry whose sets may start on a fractional second (CAN-2716).
  * The 0.6.2 id is the main package of `deploy-contracts/dars/cancore-intent-0.6.2.dar` at canton-contracts dev 55438e36
- * (#319 merged), the DAR the dev participant vets and the backend prepares owner-signed steps against.
+ * (#319 merged), the DAR the dev participant vets. The 0.6.3 id is the main package of the staged
+ * `deploy-contracts/dars/cancore-intent-0.6.3.dar` (canton-contracts#371): pinned before its upload, since the participant
+ * then prefers it and the backend prepares owner-signed steps against it. Drop 0.6.2 once dev un-vets it.
  */
-export const INTENT_PACKAGE_IDS: readonly string[] = ['16883f74059616eda07b70764b1160196a5123c5691adccf11062f90176d9d5d'];
+export const INTENT_PACKAGE_IDS: readonly string[] = [
+  '16883f74059616eda07b70764b1160196a5123c5691adccf11062f90176d9d5d',
+  '535cb88a2faec69ec361089d1d5ecbbe150cd50a00b736b2941b52c6b820b6fa',
+];
 
 /** The roots an owner signs, by `<module>:<entity>` of the template and the choice. */
 export const INTENT_ROOTS = {

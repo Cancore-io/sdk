@@ -1,6 +1,6 @@
 # Changelog — `@cancore/wallet`
 
-## Unreleased
+## 0.4.8
 
 ### Changed — `@noble/curves` and `@noble/hashes` 2.x (CAN-3207)
 
@@ -9,6 +9,15 @@
   package's `engines.node >= 26`. Ed25519 output is unchanged (the RFC 8032 KAT still passes).
 - `@scure/bip39` `^1.6.0` → `^2.4.0`, which depends on `@noble/hashes` 2.4.0: the package's runtime tree carries
   one `@noble/hashes` line, not two. Mnemonics, seeds and the wordlists are unchanged.
+
+## 0.4.7
+
+### Changed — intent operations are signed for cancore-intent 0.6.2 and 0.6.3 (CAN-3588)
+
+- `INTENT_PACKAGE_IDS` also pins 0.6.3
+  (`535cb88a2faec69ec361089d1d5ecbbe150cd50a00b736b2941b52c6b820b6fa`), the staged DAR of
+  canton-contracts#371. Once dev uploads it, the participant prefers it and the backend prepares owner-signed Open and
+  Renew against it; a wallet that pins 0.6.2 alone then refuses them. 0.6.2 stays pinned until dev un-vets it.
 
 ## 0.4.6
 
