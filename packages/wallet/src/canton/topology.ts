@@ -11,12 +11,14 @@
  * Moved here from the trader's filler (protocol §3.19), which keeps calling it,
  * so the web wallet and the SDK hold an account's onboarding to the same rules.
  */
-import { Enums_ParticipantPermission, Enums_TopologyChangeOp, PartyToParticipant, SigningPublicKey, TopologyTransaction } from '@canton-network/core-ledger-proto';
-import { MessageType, RepeatType, ScalarType } from '@protobuf-ts/runtime';
+import { Enums_ParticipantPermission, Enums_TopologyChangeOp, PartyToParticipant, SigningPublicKey, TopologyMapping, TopologyTransaction } from '@canton-network/core-ledger-proto';
+import { MessageType, type PartialFieldInfo, RepeatType, ScalarType } from '@protobuf-ts/runtime';
 import { bytesToHex } from '../bytes';
 import { cantonFingerprint } from '../cantonFingerprint';
 import { cantonHash, fromBase64, multiHashInput } from './hashing';
 
+/** The `UntypedVersionedMessage` version Canton 3.4 writes around a topology transaction. */
+const TOPOLOGY_TRANSACTION_VERSION = 30;
 /** Canton `HashPurpose` ids (`HashPurpose.scala`). */
 const TOPOLOGY_TRANSACTION_PURPOSE = 11;
 const MULTI_TOPOLOGY_TRANSACTION_PURPOSE = 55;
@@ -142,13 +144,8 @@ function checkMapping(mapping: NonNullable<Mapping>, expected: Expected): boolea
 }
 
 /** The party is hosted on the expected participant alone, confirming; its own signing keys, if it carries them, are the key alone. */
-function checkHosting(p: PartyToParticipant, expected: Expected): boolean {
-  let signing: SigningKeys | undefined;
-  try {
-    signing = partySigningKeys(p);
-  } catch {
-    return refuse('unsupported party hosting fields');
-  }
+function checkHosting(p: Hosting, expected: Expected): boolean {
+  const signing = p.partySigningKeys;
   if (signing) onlyKey(signing.keys, signing.threshold, expected.key);
   if (p.party !== expected.partyId) refuse('the hosting is for another party');
   if (p.threshold !== 1) refuse(`the hosting threshold is ${p.threshold}, not 1`);
@@ -157,6 +154,9 @@ function checkHosting(p: PartyToParticipant, expected: Expected): boolean {
     refuse('the party is hosted elsewhere than on the expected participant alone');
   }
   if (only?.permission !== Enums_ParticipantPermission.CONFIRMATION) refuse('the hosting permission is not Confirmation');
+  // A participant still onboarding cannot confirm: the party would be hosted and unable to act. The
+  // runtime schema of core-ledger-proto 1.13 reads field 3; its typings do not declare it yet.
+  if ((only as { onboarding?: object } | undefined)?.onboarding) refuse('the party is still onboarding on its participant');
   return signing !== undefined;
 }
 
@@ -177,21 +177,22 @@ function rawEd25519(key: SigningPublicKey | undefined): string | undefined {
 
 /**
  * A topology transaction as the Ledger API serializes it: Canton's
- * `UntypedVersionedMessage` (`data` = 1, `version` = 2) around the
- * `TopologyTransaction`, or the bare message.
+ * `UntypedVersionedMessage` (`data` = 1, `version` = 2, which must be
+ * {@link TOPOLOGY_TRANSACTION_VERSION}) around the `TopologyTransaction`, or the
+ * bare message. Every field must be one Canton's schema has: an unknown one is
+ * refused, so this check and Canton never read two different mappings.
  */
 export function decodeTopology(bytes: Uint8Array): TopologyTransaction {
-  if (bytes[0] !== 0x0a) return TopologyTransaction.fromBinary(bytes);
+  if (bytes[0] !== 0x0a) return strictTransaction.fromBinary(bytes, STRICT);
   const [length, start] = varint(bytes, 1);
   const end = start + length;
   if (end > bytes.length) throw new TypeError('truncated versioned topology transaction');
   // After `data` only the `version` field (2, varint) may follow, once; anything else is refused.
-  if (end < bytes.length) {
-    if (bytes[end] !== 0x10) throw new TypeError('unexpected field after the versioned topology transaction');
-    const [, after] = varint(bytes, end + 1);
-    if (after !== bytes.length) throw new TypeError('unexpected bytes after the version of the topology transaction');
-  }
-  return TopologyTransaction.fromBinary(bytes.subarray(start, end));
+  if (end === bytes.length || bytes[end] !== 0x10) throw new TypeError('unexpected field after the versioned topology transaction');
+  const [version, after] = varint(bytes, end + 1);
+  if (after !== bytes.length) throw new TypeError('unexpected bytes after the version of the topology transaction');
+  if (version !== TOPOLOGY_TRANSACTION_VERSION) throw new TypeError(`topology transaction version ${version}, not ${TOPOLOGY_TRANSACTION_VERSION}`);
+  return strictTransaction.fromBinary(bytes.subarray(start, end), STRICT);
 }
 
 /** A protobuf varint (≤ 5 bytes: a length or an int32) at `at`: its value and the index after it. */
@@ -217,12 +218,14 @@ const keysWithThreshold = new MessageType<SigningKeys>('com.digitalasset.canton.
   { no: 1, name: 'keys', kind: 'message', repeat: RepeatType.UNPACKED, T: () => SigningPublicKey },
   { no: 2, name: 'threshold', kind: 'scalar', T: ScalarType.UINT32 },
 ]);
-const hosting = new MessageType<PartyToParticipant & { partySigningKeys?: SigningKeys }>(PartyToParticipant.typeName, [
+type Hosting = PartyToParticipant & { partySigningKeys?: SigningKeys };
+const hosting = new MessageType<Hosting>(PartyToParticipant.typeName, [
   ...PartyToParticipant.fields,
   { no: 6, name: 'party_signing_keys', kind: 'message', T: () => keysWithThreshold },
 ]);
-
-/** Decode every hosting field; unsupported fields are refused rather than silently signed. */
-function partySigningKeys(mapping: PartyToParticipant): SigningKeys | undefined {
-  return hosting.fromBinary(PartyToParticipant.toBinary(mapping), { readUnknownField: 'throw' }).partySigningKeys;
-}
+/** The generated message with one of its message fields read as `T` instead. */
+const withField = <M extends object>(base: { typeName: string; fields: readonly PartialFieldInfo[] }, no: number, T: () => MessageType<object>): MessageType<M> =>
+  new MessageType<M>(base.typeName, base.fields.map((f) => (f.no === no ? ({ ...f, T } as PartialFieldInfo) : f)));
+const strictMapping = withField<TopologyMapping>(TopologyMapping, 9, () => hosting);
+const strictTransaction = withField<TopologyTransaction>(TopologyTransaction, 3, () => strictMapping);
+const STRICT = { readUnknownField: 'throw' } as const;

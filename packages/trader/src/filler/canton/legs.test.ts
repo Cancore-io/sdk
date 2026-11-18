@@ -59,7 +59,7 @@ describe('self-signed PartyToParticipant onboarding', () => {
 
   test('refuses an unsupported hosting field', async () => {
     const extra = new BinaryWriter().tag(7, WireType.Varint).uint32(1).finish();
-    await refusedWith(verifyTopologyLeg(topologyLeg([selfSigned([NODE_KEY], 1, extra)]), expect_), /unsupported party hosting fields/);
+    await refusedWith(verifyTopologyLeg(topologyLeg([selfSigned([NODE_KEY], 1, extra)]), expect_), /does not decode/);
   });
 
   test.each([
@@ -100,7 +100,9 @@ describe('the fingerprint and the multihash are Canton’s', () => {
     expect(decodeTopology(wrapped)).toEqual(decodeTopology(raw!));
     // Only the version field may follow the data, once; nothing after it.
     const head = cat(new Uint8Array([0x0a, ...varint]), raw!);
-    expect(decodeTopology(head)).toEqual(decodeTopology(raw!));
+    // The version is pinned (CAN-2414): absent or another one is refused.
+    expect(() => decodeTopology(head)).toThrow(/unexpected field/);
+    expect(() => decodeTopology(cat(head, new Uint8Array([0x10, 0x1f])))).toThrow(/version 31, not 30/);
     expect(() => decodeTopology(cat(head, new Uint8Array([0x18, 0x01])))).toThrow(/unexpected field/);
     expect(() => decodeTopology(cat(head, new Uint8Array([0x10, 0x1e, 0x00])))).toThrow(/unexpected bytes/);
     expect(() => decodeTopology(cat(new Uint8Array([0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]), raw!))).toThrow(/varint/);
