@@ -114,7 +114,7 @@ describe('a topology leg is refused, never signed, when', () => {
   });
 
   test('the party is not in the namespace of the node key', async () => {
-    await refusedWith(verifyTopologyLeg(topologyLeg(allocation()), { ...expect_, partyId: party(OTHER_KEY) }), /namespace of the node key/);
+    await refusedWith(verifyTopologyLeg(topologyLeg(allocation()), { ...expect_, partyId: party(OTHER_KEY) }), /namespace of the signing key/);
   });
 
   test.each([

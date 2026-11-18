@@ -44,7 +44,7 @@ const SURFACE: Record<string, { module: Record<string, unknown>; names: string[]
   },
   './canton/proto': {
     module: proto,
-    names: ['cantonHash', 'concat', 'damlValue', 'decodePreparedTransaction', 'fromBase64', 'hashPreparedTransactionV2', 'int32', 'multiHashInput', 'transactionView'],
+    names: ['TopologyRefusal', 'cantonHash', 'concat', 'damlValue', 'decodePreparedTransaction', 'decodeTopology', 'fromBase64', 'hashPreparedTransactionV2', 'int32', 'multiHashInput', 'participantId', 'transactionView', 'verifyPartyTopology'],
   },
 };
 
@@ -64,7 +64,7 @@ const TYPES: Record<string, string[]> = {
     'CantonTransaction', 'CantonTransferFactory', 'CreateNode', 'DamlValue', 'ExerciseNode', 'FetchNode', 'IntentRoot', 'IntentSigningPolicy',
     'ReadPreparedTransaction', 'RegistryContract', 'RegistryGuardians', 'RegistryPackages', 'RollbackNode', 'TransactionNode',
   ],
-  './canton/proto': [],
+  './canton/proto': ['PartyExpectation'],
   './web': ['StoredWalletAccount'],
 };
 
