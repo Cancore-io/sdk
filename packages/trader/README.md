@@ -68,6 +68,7 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 | `start()` | `Promise<void>` | login over REST, then the WebSocket with the token; heartbeat, reconnect, REST fallback; reconcile from the store; then quote, take tickets, fill, settle. Needs all three hooks. Resolves at the first `auth.ok` | CAN-1847 |
 | `stop()` | `Promise<void>` | closes the session; in-flight work stays in the store for any replica | CAN-1847 |
 | `selfSettle(orderHash)` | `{ txHash }` | settle one order now from its verified attestation set (pulled when none is held); `SettleError` with its `reason` when nothing was sent | CAN-1856 |
+| `checkSettle(orderHash)` | `{ gas, repayTo, payout }` | `selfSettle` without sending: the same checks of the held set (or the one filler-gateway holds, read without keeping it), the `eth_call` of `settle` and a gas estimate; signs, sends and stores nothing; `SettleError` as `selfSettle`. EVM source only | CAN-2713 |
 | `verifyDraw(orderHash)` | `{ winner, recomputedWinner, match, drandRound }` | V2 only: recompute the draw | CAN-1848 |
 | `verifyEscrow(ticket)` | `{ ok, reason?, detail?, checks }` | the checks before a receipt for an issued ticket whose offer is stored; also runs before every receipt | CAN-1854 |
 | `bindStake(stakingSigner, { chain })` | `StakeBindingRequest` | sign a `StakeBinding` with the staking key | CAN-1857 |

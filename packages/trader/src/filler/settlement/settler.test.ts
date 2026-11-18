@@ -151,6 +151,7 @@ async function world(options: { refundAfterS?: number; proofWindowS?: bigint; fi
       await handlers.get('settle.attestations')!(next);
       return true;
     },
+    peekAttestations: async () => (ready.next ? { frame: ready.next.frame, raw: ready.next.raw, id: ready.next.id } : undefined),
   } as unknown as FillerProtocolClient;
   const settler = new Settler({ store, chains, executor, protocol, fillerId: FILLER, instanceId: 'r1', clock, logger, events, settlement: { pullIntervalMs: 5_000 } });
   settler.register();
@@ -710,5 +711,49 @@ describe('write-ahead settlement recovery (CAN-1856 R2)', () => {
     expect(open).toHaveLength(1);
     expect(open[0]!.nonce).toBe(empty!.nonce);
     expect(open[0]!.transactions).toHaveLength(1);
+  });
+});
+
+describe('CAN-2713: checkSettle — settle checked without sending', () => {
+  const untouched = async (w: Awaited<ReturnType<typeof world>>) => {
+    expect(w.settles()).toHaveLength(0);
+    expect(w.signer.signTransaction).not.toHaveBeenCalled();
+    expect(await w.settlement()).toBeUndefined();
+    expect(await w.attestation()).toBeUndefined();
+    expect(w.pulls).toEqual([]);
+    expect(w.stages('settle.refused')).toHaveLength(0);
+    expect(w.stages('settle.alert')).toHaveLength(0);
+  };
+
+  test('TC-SDK-2713-01: the set filler-gateway holds passes eth_call — gas, repayTo and payout answered; nothing signed, sent or stored', async () => {
+    const w = await world();
+    w.ready.next = w.delivery({}, 'rest');
+    const check = await w.settler.checkSettle(w.orderHash);
+    expect(check.gas).toBeGreaterThan(0n);
+    expect(check).toMatchObject({ repayTo: w.repayTo.toLowerCase(), payout: 100n }); // 105 × 10⁴ / (10⁴ + 500)
+    expect(w.src.calls.some((c) => c.method === 'eth_call')).toBe(true);
+    await untouched(w);
+  });
+
+  test('TC-SDK-2713-02: settle reverts on eth_call — the same reverted SettleError as selfSettle, naming the error; nothing sent or stored', async () => {
+    const w = await world();
+    w.router.intents.get(w.orderHash.toLowerCase())!.openedAt = BigInt(Math.floor(w.clock.now() / 1000));
+    w.ready.next = w.delivery({}, 'rest');
+    await expect(w.settler.checkSettle(w.orderHash)).rejects.toMatchObject({ name: 'SettleError', reason: 'reverted', detail: 'FilledBeforeOpen()' });
+    await untouched(w);
+  });
+
+  test('TC-SDK-2713-03: an invalid attestation set (fewer than k valid) — insufficient-signatures, no alert, no verdict recorded, nothing sent', async () => {
+    const w = await world();
+    const digest = w.digestOf(w.proof);
+    w.ready.next = w.delivery({ signatures: ascending([sign(ATTESTOR_KEYS[0]!, digest), sign(OUTSIDER, digest)]) }, 'rest');
+    await expect(w.settler.checkSettle(w.orderHash)).rejects.toMatchObject({ reason: 'insufficient-signatures' });
+    await untouched(w);
+  });
+
+  test('TC-SDK-2713-04: nothing at filler-gateway yet — not-ready, as selfSettle', async () => {
+    const w = await world();
+    await expect(w.settler.checkSettle(w.orderHash)).rejects.toMatchObject({ reason: 'not-ready' });
+    await untouched(w);
   });
 });

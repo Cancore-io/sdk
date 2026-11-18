@@ -12,7 +12,7 @@ import { TicketVerifier, type EscrowVerification } from './tickets/checks';
 import { DEFAULT_OFFER_REPLY_MARGIN_MS, TicketDesk, type TicketOfferHook } from './tickets/desk';
 import { FillerConfigError, NotImplementedError } from './errors';
 import { Executor, type DeliveryOptions } from './delivery/executor';
-import { DEFAULT_SETTLEMENT, Settler, type SettlementOptions } from './settlement/settler';
+import { DEFAULT_SETTLEMENT, Settler, type SettleCheck, type SettlementOptions } from './settlement/settler';
 import { FillerProtocolClient, DEFAULT_REST_POLL_INTERVAL_MS } from './protocol/client';
 import { MinInputCache, routerMinInputSource } from './min-input-cache';
 import { createSealer } from './protocol/envelope';
@@ -248,6 +248,12 @@ export interface Filler {
    * chain's fill key. Rejects with `SettleError` naming why nothing was sent.
    */
   selfSettle(orderHash: Hex): Promise<SelfSettleResult>;
+  /**
+   * `selfSettle` without sending: the same set and checks, the `eth_call` of
+   * `settle` and a gas estimate. Signs, sends and stores nothing; rejects with
+   * the `SettleError` `selfSettle` would. EVM source only.
+   */
+  checkSettle(orderHash: Hex): Promise<SettleCheck>;
   /** V2. */
   verifyDraw(orderHash: Hex): Promise<DrawVerification>;
   /**
@@ -689,6 +695,7 @@ export function createFiller(config: FillerConfig): Filler {
     },
     canton,
     selfSettle: (orderHash) => settler.selfSettle(orderHash),
+    checkSettle: (orderHash) => settler.checkSettle(orderHash),
     verifyDraw: async () => {
       throw new NotImplementedError('verifyDraw', 'CAN-1848');
     },

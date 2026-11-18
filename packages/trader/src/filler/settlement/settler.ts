@@ -40,6 +40,7 @@ import {
   PROOF_KIND_ATTESTATION,
   describeRevert,
   fillerIdHash,
+  inclusiveFeeSplit,
   settleAttestationsErrors,
   settleAttestationsPayload,
   type AttestationEvm,
@@ -120,6 +121,16 @@ export class SettleError extends Error {
   }
 }
 
+/** What `checkSettle` found: `settle` would go through, at this gas, paying `repayTo` this much before any withheld penalty. */
+export interface SettleCheck {
+  gas: bigint;
+  repayTo: Hex;
+  payout: bigint;
+}
+
+/** `settle` records its verdicts, stages and alerts; `check` only answers. */
+type VerifyEffects = 'settle' | 'check';
+
 export interface SettlerOptions {
   store: FillerStore;
   chains: FillerChains;
@@ -163,6 +174,33 @@ function revertName(error: unknown): string {
 
 /** The payee the ticket names: `ticket.repayTo` (EVM form) or `repayTo` of a Canton-form ticket. */
 const ticketRepayTo = (issued: TicketIssued | undefined): string => String(issued?.form === 'evm' ? issued.ticket.repayTo : issued?.repayTo);
+
+/** A settlement already closed: settled, or lost to the maker's refund. */
+function refuseClosed(settled: SettlementRecord | undefined): void {
+  if (settled?.state === 'settled') throw new SettleError('already-settled', 'the intent is settled');
+  if (settled?.state === 'failed' && settled.reason?.startsWith('refunded')) throw new SettleError('refunded', settled.reason);
+}
+
+/** `IntentNotOpen` explained by the intent's status: settled by someone, or refunded. */
+function refuseFinal(status: number): void {
+  if (status === INTENT_STATUS.Settled) throw new SettleError('already-settled', 'the intent was settled by another transaction');
+  if (status === INTENT_STATUS.Refunded) throw new SettleError('refunded', 'the maker refunded before settle');
+}
+
+function payloadFrom(value: object): SettleAttestationsPayload {
+  const parsed = settleAttestationsPayload(value);
+  // Valid JSON is not yet a frame: without a proof object and a signature list every later rule throws a TypeError.
+  if (typeof parsed.proof !== 'object' || parsed.proof === null || !Array.isArray(parsed.signatures)) throw new TypeError('no proof or no signatures');
+  return parsed;
+}
+
+/** The set held for the fill, or why there is none to settle with. */
+function payloadOf(s: Settleable): SettleAttestationsPayload {
+  if (s.payload) return s.payload;
+  const [reason, ...detail] = (s.rejected ?? '').split(': ');
+  if (s.rejected) throw new SettleError(reason as SettleRefusal, detail.join(': '));
+  throw new SettleError('not-ready', 'filler-gateway holds no attestation set for the fill yet');
+}
 
 /**
  * The `fillRef` of the filler's own fill: the transaction hash (EVM), or
@@ -361,6 +399,56 @@ export class Settler {
     return { txHash: await this.settle(hash) };
   }
 
+  /**
+   * The checks and the `eth_call` of `selfSettle`, then a gas estimate; nothing
+   * is signed, sent, leased or written to the settlement record. A missing set
+   * is pulled as `selfSettle` pulls it. Throws the `SettleError` `selfSettle`
+   * would throw; a Canton source is `canton-source`.
+   */
+  async checkSettle(orderHash: Hex): Promise<SettleCheck> {
+    const hash = lower(orderHash) as Hex;
+    const loaded = await this.load(hash);
+    if (!loaded) throw new SettleError('no-fill', 'no confirmed fill of this filler for the order');
+    refuseClosed(loaded.settlement);
+    const s = loaded.payload || loaded.settlement?.state === 'sent' ? loaded : { ...loaded, ...(await this.peek(hash)) };
+    if (s.settlement?.txHash && (s.settlement.state === 'sent' || s.settlement.state === 'confirmed')) throw new SettleError('unavailable', `settle ${s.settlement.txHash} is already ${s.settlement.state}`);
+    const { source, readers, driver } = this.evmSource(s, 'the source is not an EVM chain: no dry run of SwapIntent_SettleWithProof');
+    const payload = payloadOf(s);
+    const sigs = await this.verify(s, source, readers, 'check');
+    const call: TransactionCall = { to: readers.router.address, data: encodeFunctionCall(SETTLE, [orderOf(s.order), fillProofOf(payload.proof), sigs.map((x) => x.signature)]), value: 0n };
+    try {
+      await readers.client.call(call.to, call.data);
+      const gas = await driver.estimateGas(call);
+      return { gas, repayTo: lower(ticketRepayTo(s.ticket.issued)) as Hex, payout: inclusiveFeeSplit(s.order.inputAmount, s.order.feeBps).payout };
+    } catch (error) {
+      if (!(error instanceof ChainReadError) || error.reason !== 'reverted') throw new SettleError('unavailable', reasonOf(error));
+      const name = revertName(error);
+      if (name.startsWith('IntentNotOpen')) refuseFinal((await readers.router.intents(hash, readAtDepth(fillDepth(readers.config)))).status);
+      throw new SettleError('reverted', name);
+    }
+  }
+
+  /** The set filler-gateway holds now, read without keeping it: keeping it would settle (`onAttestations`). */
+  private async peek(orderHash: Hex): Promise<{ payload?: SettleAttestationsPayload }> {
+    try {
+      const verified = await this.options.protocol.peekAttestations(orderHash);
+      return verified ? { payload: payloadFrom(verified.frame as object) } : {};
+    } catch (error) {
+      this.options.logger.warn('settle: attestation read failed', { orderHash, error: reasonOf(error) });
+      return {};
+    }
+  }
+
+  /** The source chain's readers and fill-key driver; a Canton source is `canton-source`. */
+  private evmSource(s: Settleable, cantonDetail: string): { source: EvmChainId; readers: ChainReaders; driver: NonNullable<ReturnType<Executor['driver']>> } {
+    const source = chainsOf(s.order)?.source;
+    if (!source) throw new SettleError('canton-source', cantonDetail);
+    const readers = this.options.chains.get(source);
+    const driver = this.options.executor.driver(source);
+    if (!readers || !driver) throw new SettleError('no-delivery-key', `no fill key or router for the source ${source}`);
+    return { source, readers, driver };
+  }
+
   /** One worker per order in this process. */
   private settle(orderHash: Hex): Promise<Hex> {
     const running = this.busy.get(orderHash);
@@ -376,25 +464,15 @@ export class Settler {
     if (!s) throw new SettleError('no-fill', 'no confirmed fill of this filler for the order');
     const attempt = s.fill.attempt;
     const settled = s.settlement;
-    if (settled?.state === 'settled') throw new SettleError('already-settled', 'the intent is settled');
     if (settled?.txHash && (settled.state === 'sent' || settled.state === 'confirmed')) return settled.txHash;
-    if (settled?.state === 'failed' && settled.reason?.startsWith('refunded')) throw new SettleError('refunded', settled.reason);
+    refuseClosed(settled);
 
-    const chains = chainsOf(s.order);
-    if (!chains?.source && this.isCantonOrigin(s.order) && this.options.canton && this.options.cantonParty) return this.runCanton(s);
-    if (!chains?.source) throw new SettleError('canton-source', 'the source is not an EVM chain, and this node has no Canton party: SwapIntent_SettleWithProof');
-    const source = chains.source;
-    const readers = this.options.chains.get(source);
-    const driver = executor.driver(source);
-    if (!readers || !driver) throw new SettleError('no-delivery-key', `no fill key or router for the source ${source}`);
-    if (!s.payload) {
-      const [reason, ...detail] = (s.rejected ?? '').split(': ');
-      if (s.rejected) throw new SettleError(reason as SettleRefusal, detail.join(': '));
-      throw new SettleError('not-ready', 'filler-gateway holds no attestation set for the fill yet');
-    }
+    if (!chainsOf(s.order)?.source && this.isCantonOrigin(s.order) && this.options.canton && this.options.cantonParty) return this.runCanton(s);
+    const { source, readers, driver } = this.evmSource(s, 'the source is not an EVM chain, and this node has no Canton party: SwapIntent_SettleWithProof');
+    const payload = payloadOf(s);
 
     const sigs = await this.verify(s, source, readers);
-    const call: TransactionCall = { to: readers.router.address, data: encodeFunctionCall(SETTLE, [orderOf(s.order), fillProofOf(s.payload.proof), sigs.map((x) => x.signature)]), value: 0n };
+    const call: TransactionCall = { to: readers.router.address, data: encodeFunctionCall(SETTLE, [orderOf(s.order), fillProofOf(payload.proof), sigs.map((x) => x.signature)]), value: 0n };
 
     // eth_call first: a revert is named and nothing is sent (T-34).
     try {
@@ -402,11 +480,7 @@ export class Settler {
     } catch (error) {
       if (!(error instanceof ChainReadError) || error.reason !== 'reverted') throw new SettleError('unavailable', reasonOf(error));
       const name = revertName(error);
-      if (name.startsWith('IntentNotOpen')) {
-        const status = await this.closeIfFinal(orderHash, attempt, readers, 'settled by another transaction');
-        if (status === INTENT_STATUS.Settled) throw new SettleError('already-settled', 'the intent was settled by another transaction');
-        if (status === INTENT_STATUS.Refunded) throw new SettleError('refunded', 'the maker refunded before settle');
-      }
+      if (name.startsWith('IntentNotOpen')) refuseFinal(await this.closeIfFinal(orderHash, attempt, readers, 'settled by another transaction'));
       this.stage('settle.refused', orderHash, attempt, { reason: 'reverted', error: name });
       throw new SettleError('reverted', name);
     }
@@ -488,12 +562,7 @@ export class Settler {
     const party = this.options.cantonParty!;
     const { orderHash } = s;
     const attempt = s.fill.attempt;
-    if (!s.payload) {
-      const [reason, ...detail] = (s.rejected ?? '').split(': ');
-      if (s.rejected) throw new SettleError(reason as SettleRefusal, detail.join(': '));
-      throw new SettleError('not-ready', 'filler-gateway holds no attestation set for the fill yet');
-    }
-    const payload = s.payload;
+    const payload = payloadOf(s);
     const fail = async (reason: SettleRefusal, detail: string): Promise<never> => {
       await store.withOrder(orderHash, async (tx) => {
         const record = await tx.getAttestations(attempt);
@@ -571,10 +640,11 @@ export class Settler {
    * signatures `settle` accepts. Records the verdict on the attestation record;
    * `attested` the first time a set passes.
    */
-  private async verify(s: Settleable, source: EvmChainId, readers: NonNullable<ReturnType<FillerChains['get']>>): Promise<AttestationEvm[]> {
+  private async verify(s: Settleable, source: EvmChainId, readers: NonNullable<ReturnType<FillerChains['get']>>, effects: VerifyEffects = 'settle'): Promise<AttestationEvm[]> {
     const payload = s.payload!;
     const attempt = s.fill.attempt;
     const fail = async (reason: SettleRefusal, detail: string): Promise<never> => {
+      if (effects === 'check') throw new SettleError(reason, detail);
       await this.options.store.withOrder(s.orderHash, async (tx) => {
         const record = await tx.getAttestations(attempt);
         if (record) await tx.putAttestations({ ...record, verified: false, reason: `${reason}: ${detail}` });
@@ -617,6 +687,7 @@ export class Settler {
     if (!collected.enough) {
       return fail('insufficient-signatures', `${collected.valid.length} valid of threshold ${set.threshold}; rejected ${collected.rejected.map((r) => `${r.signer}:${r.reason}`).join(', ') || 'none'}`);
     }
+    if (effects === 'check') return collected.selected;
     await this.options.store.withOrder(s.orderHash, async (tx) => {
       const record = await tx.getAttestations(attempt);
       if (record && !record.verified) await tx.putAttestations({ ...record, verified: true });
@@ -717,10 +788,7 @@ export class Settler {
         let unreadable: string | undefined;
         if (record && (record.verified || !record.reason)) {
           try {
-            const parsed = settleAttestationsPayload(JSON.parse(decoder.decode(record.raw)) as object);
-            // Valid JSON is not yet a frame: without a proof object and a signature list every later rule throws a TypeError.
-            if (typeof parsed.proof !== 'object' || parsed.proof === null || !Array.isArray(parsed.signatures)) throw new TypeError('no proof or no signatures');
-            payload = parsed;
+            payload = payloadFrom(JSON.parse(decoder.decode(record.raw)) as object);
           } catch (error) {
             // A stored frame that does not parse is a failed set: the reason lets the next frame on either channel replace it.
             unreadable = `mismatch: the stored settle.attestations does not parse (${reasonOf(error)})`;
