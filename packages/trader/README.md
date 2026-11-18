@@ -68,9 +68,7 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 | `start()` | `Promise<void>` | login over REST, then the WebSocket with the token; heartbeat, reconnect, REST fallback; reconcile from the store; then quote, take tickets, fill, settle. Needs all three hooks. Resolves at the first `auth.ok` | CAN-1847 |
 | `stop()` | `Promise<void>` | closes the session; in-flight work stays in the store for any replica | CAN-1847 |
 | `selfSettle(orderHash)` | `{ txHash }` | settle one order now from its verified attestation set (pulled when none is held); `SettleError` with its `reason` when nothing was sent | CAN-1856 |
-| `verifyDraw(orderHash)` | `{ winner, recomputedWinner, match, drandRound }` | V2 only: recompute the draw | CAN-1848 |
 | `verifyEscrow(ticket)` | `{ ok, reason?, detail?, checks }` | the checks before a receipt for an issued ticket whose offer is stored; also runs before every receipt | CAN-1854 |
-| `bindStake(stakingSigner, { chain })` | `StakeBindingRequest` | sign a `StakeBinding` with the staking key | CAN-1857 |
 | `stats()` | `{ won, delivered, noShow, reliability, capacityUsd, inFlightUsd }` | filler statistics | CAN-1940 |
 
 ## The connection to filler-gateway
@@ -334,7 +332,7 @@ A fact that cannot be read declines with the code of the check that needed it (`
 detail): an unverifiable ticket is never receipted. No setting turns a check off. Each check's result —
 `passed`, `failed` or `skipped` — is emitted as stage `ticket.checked`. V-T4 compares the
 time `ticket.issued` arrived, which the protocol client writes on the attempt when the frame is received; a
-ticket whose arrival is not recorded is refused as unverifiable. V1 does not check the draw.
+ticket whose arrival is not recorded is refused as unverifiable.
 
 **Canton source** (an EVM-form ticket for an order whose `originChainId` is a `CANTON_ORIGIN_ID`). There is no
 escrow on a router: the owner's give is a committed allocation only `SwapIntent_SettleWithProof` — this filler's
@@ -532,7 +530,7 @@ interface FillSigner extends TypedDataSigner, TransactionSigner {}
 Keys are separate by purpose: the **quote** key is the message key — it signs `FillerAuth`, `FillerQuote`,
 `TicketIntent`, `TicketReceipt` and the envelope `msgSig` of every message; the **fill** key of each EVM chain
 sends the `fill` / `settle` transactions and is the `deliveryKey` of its tickets; the **staking**
-key signs one `StakeBinding` and is passed to `bindStake` only. `createFiller` refuses a fill key equal to the
+key signs one `StakeBinding`. `createFiller` refuses a fill key equal to the
 quote key.
 
 **Signature contract** (protocol §3.1): 65 bytes `r ‖ s ‖ v`, `s ≤ n/2` (low-s), `v ∈ {27, 28}`. The SDK
@@ -619,7 +617,7 @@ const webSocket: WebSocketFactory = (url, h, protocols) => {
 - `EventSink` — `emit(event)`. Public events: `filled`, `attested`, `settled`, `penalty`, `declined`; plus
   `stage` events (`quote.sent`, `ticket.receipted`, `settle.sent`, …) for analytics. A throwing sink never
   stops the protocol. Defaults to a no-op.
-- `HttpFetch` — the slice of `fetch` used for the login, the REST fallback and drand relays (`status`,
+- `HttpFetch` — the slice of `fetch` used for the login, the REST fallback (`status`,
   `text()`, and `headers.get` for `Retry-After`). Defaults to the global `fetch`.
 
 ## Testing — `@cancore/trader/filler/testing`
