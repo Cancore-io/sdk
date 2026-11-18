@@ -217,19 +217,6 @@
       "required": ["type", "re", "code", "message"],
       "properties": { "type": { "const": "error" }, "re": { "$ref": "#/$defs/messageId" }, "code": { "$ref": "#/$defs/errorCode" }, "message": { "type": "string" } }
     },
-    "epoch.weights": {
-      "x-direction": "S2F",
-      "type": "object",
-      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
-      "required": ["type", "epochId", "startsAt", "endsAt", "weightsRoot"],
-      "properties": {
-        "type": { "const": "epoch.weights" },
-        "epochId": { "$ref": "#/$defs/uintDec64" },
-        "startsAt": { "$ref": "#/$defs/timeS" },
-        "endsAt": { "$ref": "#/$defs/timeS" },
-        "weightsRoot": { "$ref": "#/$defs/bytes32" }
-      }
-    },
     "quote.request": {
       "x-direction": "S2F",
       "type": "object",

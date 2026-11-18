@@ -12,11 +12,11 @@
 // are evm-contracts' own (abi/typed-data, brought here by `npm run sync`): this
 // script recomputes their vectors and fails if the synced files differ, and
 // never writes them.
-import { AbiCoder, concat, keccak256, toBeHex, toUtf8Bytes, TypedDataEncoder, Wallet, zeroPadValue } from 'ethers';
+import { AbiCoder, keccak256, toBeHex, toUtf8Bytes, TypedDataEncoder, Wallet, zeroPadValue } from 'ethers';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CANTON_DELIVERY_ORDER_CID, EVM_ORDER, fixtureDraw, JCS_CASES, WORKED_DRAW } from './protocol-fixtures.mjs';
+import { CANTON_DELIVERY_ORDER_CID, EVM_ORDER, JCS_CASES, SPEC_TICKET_ORDER_HASH } from './protocol-fixtures.mjs';
 
 const pkg = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const out = (rel, data) => {
@@ -113,7 +113,7 @@ synced('spec/typed-data/Quote.json', file('Quote', ROUTER_META, ROUTER_SCHEMA, r
   { note: 'canton source domain', domain: CANTON_DOMAIN, message: { orderHash: canton.orderHash, quoteDeadline: '1789999430' } },
   { note: 'Hardhat source domain: production router golden digest', domain: HARDHAT_DOMAIN, message: { orderHash: evmOrderHash, quoteDeadline: '1790000030' } },
 ])));
-const specTicket = { orderHash: WORKED_DRAW.orderHash, fillerId: fillerIdHash('acme'), deliveryKey: DELIVERY_KEY, repayTo: repayEvm(DELIVERY_KEY), attempt: 0, validFrom: '1789999000', validUntil: '1789999180' };
+const specTicket = { orderHash: SPEC_TICKET_ORDER_HASH, fillerId: fillerIdHash('acme'), deliveryKey: DELIVERY_KEY, repayTo: repayEvm(DELIVERY_KEY), attempt: 0, validFrom: '1789999000', validUntil: '1789999180' };
 const fixtureTicket = { orderHash: evmOrderHash, fillerId: fillerIdHash('acme-markets'), deliveryKey: DELIVERY_KEY, repayTo: repayEvm(PAYOUT), attempt: 0, validFrom: '1790000040', validUntil: '1790000400' };
 const cantonSourceTicket = { orderHash: canton.orderHash, fillerId: fillerIdHash('acme'), deliveryKey: DELIVERY_KEY, repayTo: repayParty(FILLER_PARTY), attempt: 1, validFrom: '1789999500', validUntil: '1789999800' };
 const ticketRows = flat(TICKET, 'FillTicket')([
@@ -282,20 +282,5 @@ out('spec/protocol/vectors/jcs.json', {
     for (const t of texts) if (jcs(JSON.parse(t)) !== canonical) throw new Error(`jcs case "${note}": ${jcs(JSON.parse(t))}`);
     return { note, texts, canonical, keccak256: utf8Hash(canonical) };
   }),
-});
-const drawRow = (fixture) => {
-  // A-22: candidates ascending by the UTF-8 bytes of fillerId, whatever order the fixture lists them in.
-  const candidates = [...fixture.candidates].sort((a, b) => Buffer.compare(Buffer.from(a.fillerId), Buffer.from(b.fillerId)));
-  const d = { ...fixture, candidates };
-  const h = BigInt(keccak256(concat([d.randomness, d.orderHash, zeroPadValue(toBeHex(d.attempt), 4)])));
-  const total = d.candidates.reduce((s, c) => s + BigInt(c.weight), 0n);
-  const r = h % total;
-  let acc = 0n;
-  const winner = d.candidates.find((c) => (acc += BigInt(c.weight)) > r);
-  return { ...d, h: toBeHex(h, 32), totalWeight: total.toString(), r: r.toString(), winnerFillerId: winner.fillerId };
-};
-out('spec/protocol/vectors/draw.json', {
-  $comment: 'auction-and-draw §3.6 A-21/A-22: h = keccak256(randomness ‖ orderHash ‖ uint32be(attempt)), r = h mod Σw, winner = first candidate (sorted by UTF-8 bytes of fillerId) whose cumulative weight exceeds r. Real drand quicknet rounds (signature and randomness as served by api.drand.sh).',
-  vectors: [drawRow(WORKED_DRAW), drawRow(fixtureDraw(evmOrderHash))],
 });
 console.log(`vectors written; fixture orderHash ${evmOrderHash}`);

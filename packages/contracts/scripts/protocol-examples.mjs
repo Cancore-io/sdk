@@ -2,7 +2,6 @@
 // vectors so every hash in them is the real one (gen-protocol-docs.mjs).
 // Signatures (`sig` of the gateway, `msgSig` and inner `sig` of the filler)
 // are a zero placeholder: this package holds no keys.
-import { StandardMerkleTree } from '@openzeppelin/merkle-tree';
 import { keccak256, toUtf8Bytes } from 'ethers';
 import { CANTON_DELIVERY_ORDER_CID } from './protocol-fixtures.mjs';
 
@@ -21,49 +20,8 @@ const FILLER_PARTY = 'acme-markets::1220a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4
 const RECIPIENT_PARTY = 'alice::1220f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a5968778695a4b3c2d1e0f';
 const CNRX = { admin: 'cancore-registry::1220aa', id: 'CNRX' };
 
-/** Epoch containing the fixture t0; leaves reproduce the weights of auction-and-draw §3.7. */
-export function epochRecord() {
-  const leaves = [
-    { fillerId: 'acme-markets', base: '100', tier: 1, reliabilityBps: 10000 },
-    { fillerId: 'cancore-reserve', base: '100', tier: 0, reliabilityBps: 9000 },
-    { fillerId: 'zeta-liquidity', base: '100', tier: 0, reliabilityBps: 10000 },
-  ];
-  const tree = StandardMerkleTree.of(leaves.map((l) => [l.fillerId, l.base, l.tier, l.reliabilityBps]), ['string', 'uint256', 'uint8', 'uint16']);
-  return {
-    epochId: '20717',
-    startsAt: '1789948800',
-    endsAt: '1790035200',
-    weightsRoot: tree.root,
-    leaves,
-    stakeSteps: [
-      { tier: 0, minStake: '0', step: '0' },
-      { tier: 1, minStake: '100000000000000000000000', step: '50' },
-    ],
-    rMinBps: 5000,
-    snapshotBlocks: { 'eip155:1': '23456789', 'eip155:56': '61234567' },
-  };
-}
-
-/** Draw record of the fixture order while attempt 0 is open. */
-export function drawRecord(draw) {
-  return {
-    orderHash: draw.orderHash,
-    source: 'eip155:11155111',
-    openRef: tx('cancore:test-kit:fixture-open-tx'),
-    t0: draw.t0,
-    epochId: '20717',
-    deltaDrand: draw.deltaDrand,
-    attempts: [
-      {
-        attempt: draw.attempt, tBase: draw.t0, closedBy: null, drandRound: String(draw.round), drandRandomness: draw.randomness,
-        drandSignature: draw.signature, candidates: draw.candidates, r: draw.r, winnerFillerId: draw.winnerFillerId, fallbackReason: null,
-      },
-    ],
-  };
-}
-
 /** One or more valid examples per frame type, keyed by type. */
-export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHash, intentHash, receiptSigHash, offerBody, epoch }) {
+export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHash, intentHash, receiptSigHash, offerBody }) {
   const t = { orderHash, attempt: 0 };
   return {
     'auth.challenge': [{ type: 'auth.challenge', id: 'g-1', fillerId: 'acme-markets', sentAt: 1789999980000, nonce: tx('cancore:test:auth-nonce:1'), expiresAt: '1790000030', sig: PLACEHOLDER_SIG }],
@@ -81,7 +39,6 @@ export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHas
       { type: 'error', ...F('e-1', 1790000030000), re: 'g-77', code: 'UNKNOWN_TICKET', message: 'no ticket for this orderHash' },
       { type: 'error', id: 'g-18', ...S, sentAt: 1789999991500, re: 'q-2', code: 'RATE_LIMITED', message: 'quote rate class over its limit', retryAfterMs: 850 },
     ],
-    'epoch.weights': [{ type: 'epoch.weights', id: 'g-7', ...S, sentAt: 1789999980300, epochId: epoch.epochId, startsAt: epoch.startsAt, endsAt: epoch.endsAt, weightsRoot: epoch.weightsRoot }],
     'quote.request': [
       {
         type: 'quote.request', id: 'g-8', ...S, sentAt: 1789999990000, requestId: REQ, route: { src: 'eip155:11155111', dst: 'eip155:421614' },
