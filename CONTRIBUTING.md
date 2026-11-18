@@ -91,14 +91,14 @@ Do not write unit-test results into a Linear ticket: no unit counts, unit runs o
 
 ### 8.3 Running a ticket's tests in CI (CAN-3669)
 
-`test-dispatch.yml` runs the tests whose names match one ticket, on a branch or a PR head you name. It has no push or schedule trigger, and its `pull_request` trigger fires only on a change to the workflow itself, so the CI ban above still holds for every other event. `grep` is required (`jest -t`), so a full-suite run is never the default; a run where it matches no test fails. `suite` picks `unit` (`npm test`, the default), `integration` (`npm run test:int` as `ci.yml` `check` runs it: stand suites skip without a stand) or `both`.
+`test-dispatch.yml` runs the tests whose names match one ticket, on a branch of this repository or the head of a PR from this repository. A PR from a fork is refused: its code would run in `main`'s context, where it could poison caches that `publish.yml` restores. The workflow has no push or schedule trigger, and its `pull_request` trigger fires only on a change to the workflow itself, so the CI ban above still holds for every other event. `grep` is required (`jest -t`), so a full-suite run is never the default. `suite` picks `unit` (`npm test`, the default), `integration` (`npm run test:int` as `ci.yml` `check` runs it) or `both`; a run fails when any chosen suite runs no matching test.
 
 ```bash
 gh workflow run test-dispatch.yml -R Cancore-io/sdk -f ref=<branch> -f grep=<CAN-ID or TC-SDK-ID>
 gh workflow run test-dispatch.yml -R Cancore-io/sdk -f pr=<number> -f grep=<CAN-ID or TC-SDK-ID> -f suite=both
 ```
 
-The run's title reads `Tests <grep> @ <ref or PR> (<suite>)`; its JUnit reports are the `rp-reports-unit` and `rp-reports-int` artifacts, which CAEF's rp-collect publishes to ReportPortal project `sdk`. Since local test runs are banned, the link to a green run of this workflow is the evidence a ticket needs for In Testing: it replaces the local `pnpm test` result in the PR description (section 8) and, for integration suites, on the ticket.
+The run's title reads `Tests <grep> @ <ref or PR> (<suite>)`; its JUnit reports are the `rp-reports-unit` and `rp-reports-int` artifacts, which CAEF's rp-collect publishes to ReportPortal project `sdk`. Since local test runs are banned, the link to a green unit run of this workflow replaces the local `pnpm test` result in the PR description (section 8). The job has no stand, so suites that need one skip here: their evidence comes from the stand lanes in section 8.1 and goes on the ticket as section 8.2 says.
 
 ## 9. The local stand
 
