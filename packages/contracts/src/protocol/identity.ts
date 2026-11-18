@@ -7,7 +7,7 @@
  * signer stays with the consumer's own library.
  */
 import { utf8ToBytes } from '@noble/hashes/utils';
-import { hexBytes, keccak, toHex } from './bytes';
+import { hexBytes, keccak, toHex, wellFormedUtf8 } from './bytes';
 import type { Hex } from './typedData';
 
 /** `fillerId`: issued by Cancore at onboarding, ASCII so its UTF-8 byte order is plain byte order (D-H). */
@@ -35,7 +35,7 @@ export function repayToFromEvm(address: string): Hex {
 /** `repayTo` for a Canton source: `keccak256(utf8(partyId))` of the filler's party registered under its `fillerId`. */
 export function repayToFromParty(partyId: string): Hex {
   if (typeof partyId !== 'string' || partyId.length === 0) throw new TypeError('repayTo: a Canton party id is a non-empty string');
-  return toHex(keccak(utf8ToBytes(partyId)));
+  return toHex(keccak(wellFormedUtf8(partyId, 'repayTo')));
 }
 
 /** Whether `repayTo` is payable on an EVM source: zero top 12 bytes (`InvalidBytes32Address`) and not the zero address (`ZeroAddress`). */
