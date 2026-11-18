@@ -553,10 +553,7 @@ export class Settler {
     }
     await store.withOrder(orderHash, async (tx) => {
       const current = await tx.getSettlement();
-      if (current?.state === 'settled') {
-        if (!current.updateId) await tx.putSettlement({ ...current, updateId, updatedAtMs: await store.now() });
-        return;
-      }
+      if (current?.state === 'settled') return current.updateId ? undefined : tx.putSettlement({ ...current, updateId, updatedAtMs: await store.now() });
       await tx.putSettlement({ orderHash, attempt, state: 'confirmed', chain: payload.sourceChainId as SettlementRecord['chain'], updateId, updatedAtMs: await store.now(), ...(current?.orderSettled ? { orderSettled: current.orderSettled } : {}) });
     });
     const k = `${orderHash}:${attempt}`;
