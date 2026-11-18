@@ -997,6 +997,23 @@ describe('REST fallback (protocol §3.6)', () => {
     expect(h.store.journal().filter((e) => e.type === 'settle.attestations')).toHaveLength(1);
   });
 
+  test('TC-SDK-2713-10: peekAttestations returns the verified set without handling or journalling it; a body not signed by filler-gateway is refused', async () => {
+    const h = harness();
+    const seen = record(h, 'settle.attestations');
+    const path = `GET /v1/filler/attestations/${ORDER_HASH}`;
+    h.http.routes[path] = () => ({ status: 404, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code: 'ATTESTATIONS_NOT_READY', message: 'fewer than threshold' }) });
+    await expect(h.client.peekAttestations(ORDER_HASH)).resolves.toBeUndefined();
+
+    const frame = h.gateway.frame({ type: 'settle.attestations', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1, sourceChainId: 'eip155:56', proof: {}, signatures: [], setId: 1, threshold: 2, refundAfter: '1790003600' });
+    h.http.routes[path] = () => ({ status: 200, body: frame });
+    await expect(h.client.peekAttestations(ORDER_HASH)).resolves.toMatchObject({ frame: expect.objectContaining({ type: 'settle.attestations', sig: frame.sig }) });
+    expect(seen).toEqual([]);
+    expect(h.store.journal().filter((e) => e.type === 'settle.attestations')).toHaveLength(0);
+
+    h.http.routes[path] = () => ({ status: 200, body: h.impostor.frame({ type: 'settle.attestations', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1 }) });
+    await expect(h.client.peekAttestations(ORDER_HASH)).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE' });
+  });
+
   test('an attestation body not signed by filler-gateway is refused, never handled', async () => {
     const h = harness();
     const seen = record(h, 'settle.attestations');

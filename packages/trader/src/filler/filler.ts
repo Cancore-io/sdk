@@ -189,9 +189,7 @@ export type { OfferDeclineReason, TicketOfferDecision, TicketOfferHook } from '.
 // Results
 // ---------------------------------------------------------------------------
 
-export interface SelfSettleResult {
-  txHash: Hex;
-}
+export interface SelfSettleResult { txHash: Hex }
 
 /** V2 only: the draw is recomputed locally (auction-and-draw.md §12). */
 export interface DrawVerification {
@@ -248,11 +246,7 @@ export interface Filler {
    * chain's fill key. Rejects with `SettleError` naming why nothing was sent.
    */
   selfSettle(orderHash: Hex): Promise<SelfSettleResult>;
-  /**
-   * `selfSettle` without sending: the same set and checks, the `eth_call` of
-   * `settle` and a gas estimate. Signs, sends and stores nothing; rejects with
-   * the `SettleError` `selfSettle` would. EVM source only.
-   */
+  /** `selfSettle` without sending: its checks, `eth_call` and a gas estimate; signs, sends and stores nothing (`Settler.checkSettle`). */
   checkSettle(orderHash: Hex): Promise<SettleCheck>;
   /** V2. */
   verifyDraw(orderHash: Hex): Promise<DrawVerification>;

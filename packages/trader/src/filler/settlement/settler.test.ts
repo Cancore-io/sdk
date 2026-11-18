@@ -7,7 +7,7 @@ import { Executor } from '../delivery/executor';
 import type { StageEvent } from '../events';
 import type { Delivery, FillerProtocolClient, FrameHandler } from '../protocol/client';
 import type { EvmRpcRequest } from '../rpc';
-import type { FillRecord, TicketRecord } from '../store';
+import type { FillRecord, SettlementRecord, TicketRecord } from '../store';
 import { addressOfPublicKey } from '../signer';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, FakeChain, FakeClock, InMemoryFillerStore } from '../testing';
 import { fillProofOf } from './attestations';
@@ -749,6 +749,60 @@ describe('CAN-2713: checkSettle — settle checked without sending', () => {
     w.ready.next = w.delivery({ signatures: ascending([sign(ATTESTOR_KEYS[0]!, digest), sign(OUTSIDER, digest)]) }, 'rest');
     await expect(w.settler.checkSettle(w.orderHash)).rejects.toMatchObject({ reason: 'insufficient-signatures' });
     await untouched(w);
+  });
+
+  test.each([
+    [2, 'already-settled'],
+    [3, 'refunded'],
+  ] as const)('TC-SDK-2713-05: IntentNotOpen with the intent at status %i — %s, as selfSettle, but no record closed and no alert', async (status, reason) => {
+    const w = await world();
+    w.router.intents.get(w.orderHash.toLowerCase())!.status = status;
+    w.ready.next = w.delivery({}, 'rest');
+    await expect(w.settler.checkSettle(w.orderHash)).rejects.toMatchObject({ reason });
+    await untouched(w);
+  });
+
+  test.each([
+    ['settled', { state: 'settled' }, 'already-settled'],
+    ['refunded', { state: 'failed', reason: 'refunded: the maker refunded before settle (R-5)' }, 'refunded'],
+    ['sent', { state: 'sent', txHash: `0x${'5e'.repeat(32)}` }, 'unavailable'],
+    ['confirmed', { state: 'confirmed', txHash: `0x${'5e'.repeat(32)}` }, 'unavailable'],
+  ] as const)('TC-SDK-2713-06: a settlement already %s — %s, and the record is left as it was', async (_label, record, reason) => {
+    const w = await world();
+    const stored = { orderHash: w.orderHash, attempt: 0, chain: SRC, updatedAtMs: w.clock.now(), ...record } as SettlementRecord;
+    await w.store.withOrder(w.orderHash, (tx) => tx.putSettlement(stored));
+    w.ready.next = w.delivery({}, 'rest');
+    await expect(w.settler.checkSettle(w.orderHash)).rejects.toMatchObject({ reason });
+    expect(await w.settlement()).toEqual(stored);
+    expect(w.settles()).toHaveLength(0);
+  });
+
+  test('TC-SDK-2713-07: a Canton source — canton-source, nothing read from filler-gateway beyond the set', async () => {
+    const w = await world();
+    await w.store.withOrder(w.orderHash, async (tx) => {
+      const ticket = (await tx.getTicket(0))!;
+      const offer = ticket.offer as unknown as { order: OrderJson };
+      await tx.putTicket({ ...ticket, offer: { ...offer, order: { ...offer.order, originChainId: (1n << 63n).toString() } } } as unknown as TicketRecord);
+    });
+    w.ready.next = w.delivery({}, 'rest');
+    await expect(w.settler.checkSettle(w.orderHash)).rejects.toMatchObject({ reason: 'canton-source' });
+    await untouched(w);
+  });
+
+  test('TC-SDK-2713-08: filler-gateway holds the set of another attempt — not-ready, as selfSettle would not use it either', async () => {
+    const w = await world();
+    const d = w.delivery({}, 'rest');
+    w.ready.next = { ...d, frame: { ...(d.frame as object), attempt: 1 } as never };
+    await expect(w.settler.checkSettle(w.orderHash)).rejects.toMatchObject({ reason: 'not-ready' });
+    await untouched(w);
+  });
+
+  test('TC-SDK-2713-09: a stored set that does not parse is refused as mismatch and not rewritten', async () => {
+    const w = await world();
+    const raw = new TextEncoder().encode('{"type":"settle.attestations"}');
+    await w.store.withOrder(w.orderHash, (tx) => tx.putAttestations({ orderHash: w.orderHash, attempt: 0, channel: 'ws', raw, verified: false, receivedAtMs: w.clock.now() }));
+    await expect(w.settler.checkSettle(w.orderHash)).rejects.toMatchObject({ reason: 'mismatch' });
+    expect(await w.attestation()).toEqual({ orderHash: w.orderHash, attempt: 0, channel: 'ws', raw, verified: false, receivedAtMs: w.clock.now() });
   });
 
   test('TC-SDK-2713-04: nothing at filler-gateway yet — not-ready, as selfSettle', async () => {
