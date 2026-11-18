@@ -1,5 +1,16 @@
 # Changelog — `@cancore/wallet`
 
+## 0.4.8
+
+### Fixed — a `202 pending` submit is never reported as a success (CAN-3679)
+
+- `submit` (and so `execute`) answered `202 { operationId, status: "pending" }` polls
+  `GET /wallet/operations/{operationId}` until `committed` or `rejected`, then submits the same signatures once more,
+  which the backend answers by replaying the first outcome: the result, or the coded refusal. Nothing is resubmitted
+  while the status is `submitted`. `expired_not_committed` throws `OperationNotCommittedError`; a status still open
+  after ten minutes throws `OperationOutcomeUnknownError` (it may yet commit — do not prepare it again).
+  `createWalletOperations(request, polling?)` takes the interval and ceiling.
+
 ## 0.4.7
 
 ### Changed — intent operations are signed for cancore-intent 0.6.2 and 0.6.3 (CAN-3588)

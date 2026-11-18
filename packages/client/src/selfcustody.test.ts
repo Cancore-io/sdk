@@ -3471,3 +3471,35 @@ describe('balance(): TokenBalanceDto.balance number normalization (CAN-3087)', (
     await expect(acct.balance('CC')).rejects.toThrow(/balance .* is not a non-negative decimal of at most ten places/);
   });
 });
+
+describe('submit answered 202 pending (CAN-3679)', () => {
+  const LEG_HASH = b64(new Uint8Array(32).fill(0xbb));
+  const pendingVenue = (statuses: string[], replay: () => unknown) => {
+    let submits = 0;
+    return stub({
+      'POST /wallet/operations/prepare': () => ({ operationId: 'op-p', legs: [{ legId: 'l', hash: LEG_HASH, kind: 'transfer' }], meta: {} }),
+      'POST /wallet/operations/submit': () => (submits++ === 0 ? new Response(JSON.stringify({ operationId: 'op-p', status: 'pending' }), { status: 202 }) : replay()),
+      'GET /wallet/operations/op-p': () => ({ operationId: 'op-p', status: statuses.shift() }),
+    });
+  };
+
+  test('is reported only once committed, with the result the backend replays', async () => {
+    const api = pendingVenue(['submitted', 'committed'], () => ({ updateId: 'upd-p' }));
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 58 }), fetchImpl: api.fetchImpl, ...fast });
+
+    await expect(acct.execute('tokens.send')).resolves.toMatchObject({ result: { updateId: 'upd-p' } });
+    expect(api.hits.filter((r) => r.includes('/wallet/operations/'))).toEqual([
+      'POST /wallet/operations/prepare', 'POST /wallet/operations/submit',
+      'GET /wallet/operations/op-p', 'GET /wallet/operations/op-p', 'POST /wallet/operations/submit',
+    ]);
+  });
+
+  test('fails at submit with the coded refusal once rejected', async () => {
+    const api = pendingVenue(['rejected'], () => refuse(400, 'holdings are invalid'));
+    const acct = createSelfCustody({ baseUrl, signer: await providerFromMnemonic(PHRASE, { account: 58 }), fetchImpl: api.fetchImpl, ...fast });
+
+    const error = await acct.execute('tokens.send').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CeremonyError);
+    expect(error).toMatchObject({ stage: 'submit' });
+  });
+});
