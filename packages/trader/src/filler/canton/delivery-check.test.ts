@@ -10,7 +10,7 @@ import { encodeCantonAmount, encodeCantonOutputAsset, encodeCantonRecipient, typ
 import { checkDeliveryFill, type DeliveryFillExpectation } from './delivery-check';
 import { CANTON_TRANSFER_FACTORIES, registriesProblem } from './factories';
 import { NODE_KEY, OTHER_KEY, party } from './fixtures';
-import { CantonRefusal } from './legs';
+import { CantonRefusal, RegistryTransferRefusal } from './legs';
 import type { PreparedOf } from './operations';
 import type { CantonTransaction, DamlValue, TransactionNode } from './transaction';
 
@@ -281,6 +281,17 @@ describe('delivery.fill: the decoded transaction (CAN-1867)', () => {
       chosenValue: v.record({}), actingParties: [OPERATOR, ME], signatories: [OPERATOR, ME], stakeholders: [OPERATOR, ME], consuming: true, children: [],
     };
     refused(() => check()(prepared(), [fill({ extra: [archiveEntry] })]), /besides the delivery/);
+  });
+});
+
+describe('delivery.fill: a refusal of the registry transfer is one of the route, not of the order (BUG-1528)', () => {
+  test('TC-SDK-BUG-1528-03: the transfer through a factory the node does not pin, and a receiver credited short, are RegistryTransferRefusal; a DeliveryOrder of another fillerId is not', () => {
+    const run = (over: Over) => () => check()(prepared(), [fill(over)]);
+    expect(run({ transferTemplate: `${'ee'.repeat(32)}:Intent.Test.Mocks:EvilTransferFactory` })).toThrow(RegistryTransferRefusal);
+    expect(run({ credited: '20' })).toThrow(RegistryTransferRefusal);
+    const orderLevel = run({ order: { fillerId: v.text('someone-else') } });
+    expect(orderLevel).toThrow(CantonRefusal);
+    expect(orderLevel).not.toThrow(RegistryTransferRefusal);
   });
 });
 

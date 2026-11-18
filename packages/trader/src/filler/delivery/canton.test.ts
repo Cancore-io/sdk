@@ -21,7 +21,7 @@ import {
   type TicketIssuedCanton,
   type TicketOffer,
 } from '@cancore/contracts';
-import { CantonRefusal } from '../canton/legs';
+import { CantonRefusal, RegistryTransferRefusal } from '../canton/legs';
 import { CantonSubmitUnknown, type RunHooks } from '../canton/operations';
 import { GatewayError } from '../errors';
 import type { FillRecord, TicketRecord } from '../store';
@@ -37,7 +37,7 @@ const ORDER_HASH = `0x${'5a'.repeat(32)}` as Hex;
 const START = 1_790_000_000_000;
 const ASSET = { admin: `cancore::1220${'4f'.repeat(32)}`, id: 'CNRX' };
 
-type Step = 'commit' | 'refused-before-sign' | 'closed-at-prepare' | 'not-ready' | 'transport-after-sign' | 'closed-after-sign';
+type Step = 'commit' | 'refused-before-sign' | 'closed-at-prepare' | 'not-ready' | 'transport-after-sign' | 'closed-after-sign' | 'factory-untrusted' | 'registry-transfer-refused';
 
 function harness(opts: { validUntilSec?: number; validFromSec?: number; script: Step[] }) {
   const clock = new FakeClock(START);
@@ -69,6 +69,8 @@ function harness(opts: { validUntilSec?: number; validFromSec?: number; script: 
       if (step === 'refused-before-sign') throw new CantonRefusal('-', 'delivery.fill: the root is not DeliveryOrder_Fill');
       if (step === 'closed-at-prepare') throw new GatewayError('TICKET_CLOSED', true, 'the ticket is filled');
       if (step === 'not-ready') throw new GatewayError('CANTON_NOT_READY', true, 'the ticket opens later; fill from then');
+      if (step === 'factory-untrusted') throw new GatewayError('REGISTRY_FACTORY_UNTRUSTED', true, 'delivery.fill: registry factory of DSO/Amulet is not in INTENT_FACTORY_PIN_ALLOWLIST; not pinned');
+      if (step === 'registry-transfer-refused') throw new RegistryTransferRefusal('-', 'the transfer exercises Holding.EventLog_HoldingsChange on 00ee, a contract of the sender that is not a stated input');
       await hooks.onSigned?.('op-1');
       if (step === 'transport-after-sign') throw new CantonSubmitUnknown('delivery.fill', 'op-1', new Error('socket hang up'));
       if (step === 'closed-after-sign') throw new CantonSubmitUnknown('delivery.fill', 'op-1', new GatewayError('TICKET_CLOSED', true, 'already submitted'));
@@ -188,6 +190,27 @@ describe('Canton delivery: before the signature (CAN-1867)', () => {
     await h.seed(h.ticket);
     await expect(h.run()).resolves.toMatchObject({ status: 'refused', reason: 'not-deliverable' });
     await expect(h.fill()).resolves.toMatchObject({ state: 'failed' });
+  });
+});
+
+describe('Canton delivery: an output no order of the route can be delivered to (BUG-1528)', () => {
+  test('TC-SDK-BUG-1528-01: Cancore cannot pin the registry factory (REGISTRY_FACTORY_UNTRUSTED) → refused output-unservable at once, failed, never retried', async () => {
+    const h = harness({ script: ['factory-untrusted', 'commit'] });
+    await h.seed(h.ticket);
+    await expect(h.run()).resolves.toMatchObject({ status: 'refused', reason: 'output-unservable', detail: expect.stringContaining('REGISTRY_FACTORY_UNTRUSTED') });
+    await expect(h.fill()).resolves.toMatchObject({ state: 'failed' });
+    expect(h.events.events).toContainEqual(expect.objectContaining({ type: 'stage', stage: 'fill.refused', detail: expect.objectContaining({ reason: 'output-unservable' }) }));
+    await h.advance(60_000);
+    expect(h.calls).toHaveLength(1);
+  });
+
+  test('TC-SDK-BUG-1528-02: the registry transfer fails the node check of the pinned registry → refused output-unservable, nothing signed', async () => {
+    const h = harness({ script: ['registry-transfer-refused'] });
+    await h.seed(h.ticket);
+    await expect(h.run()).resolves.toMatchObject({ status: 'refused', reason: 'output-unservable', detail: expect.stringContaining('EventLog_HoldingsChange') });
+    const f = await h.fill();
+    expect(f).toMatchObject({ state: 'failed' });
+    expect(f?.sentAtMs).toBeUndefined();
   });
 });
 

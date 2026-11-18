@@ -43,7 +43,7 @@
 import { type Hex, type TicketIssuedCanton } from '@cancore/contracts';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
-import { CantonRefusal } from '../canton/legs';
+import { CantonRefusal, RegistryTransferRefusal } from '../canton/legs';
 import { CantonSubmitUnknown, type CantonOperations } from '../canton/operations';
 import { GatewayError } from '../errors';
 import type { EventSink, FillerEvent } from '../events';
@@ -60,6 +60,8 @@ export const cantonFillRef = (updateId: string): Hex => `0x${bytesToHex(keccak_2
 const TRANSIENT = new Set(['CANTON_NOT_READY', 'CANTON_UNAVAILABLE', 'OPERATION_EXPIRED', 'INTERNAL', 'RATE_LIMITED']);
 /** Refusals that say the ticket is no longer deliverable — or was delivered by an earlier try whose answer was lost. */
 const CLOSED = new Set(['TICKET_CLOSED', 'UNKNOWN_TICKET']);
+/** Cancore cannot pin the output instrument's registry factory: final for every order of the instrument, never retried. */
+const REGISTRY_FACTORY_UNTRUSTED = 'REGISTRY_FACTORY_UNTRUSTED';
 const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 const codeOf = (error: unknown): string => (error instanceof GatewayError ? error.code : error instanceof CantonRefusal ? 'REFUSED' : 'transport');
 
@@ -216,6 +218,9 @@ export class CantonDelivery {
     const cause = error instanceof CantonSubmitUnknown ? error.cause : error;
     const code = codeOf(cause);
     const why = `${code}: ${reasonOf(cause)}`;
+    if (!mayHaveCommitted && (cause instanceof RegistryTransferRefusal || code === REGISTRY_FACTORY_UNTRUSTED)) {
+      return this.refuse(orderHash, attempt, 'output-unservable', cause instanceof CantonRefusal ? cause.detail : why, 'failed');
+    }
     if (error instanceof CantonRefusal && !mayHaveCommitted) {
       // The backend prepared something else than the ticket's delivery: nothing was signed for it.
       return this.refuse(orderHash, attempt, 'ticket-mismatch', error.detail, 'failed');

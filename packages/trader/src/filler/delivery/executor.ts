@@ -123,8 +123,8 @@ export type FillRefusal =
   | 'reverted'
   /** The router could not be approved for the output asset. */
   | 'allowance'
-  /** Priced above `maxFeePerGasWei`. */
-  | 'fee-ceiling';
+  /** `fee-ceiling`: priced above `maxFeePerGasWei`. `output-unservable` (BUG-1528, a Canton output): its registry factory cannot be pinned, or its transfer fails the node check — for every order of the route. */
+  | 'fee-ceiling' | 'output-unservable';
 
 export interface DeliveryResult {
   /** `sent`: broadcast now; `tracking`: already under way (here or on another replica); `waiting`: retried later; `refused`: never sent. */

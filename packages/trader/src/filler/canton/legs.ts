@@ -43,6 +43,22 @@ export class CantonRefusal extends Error {
   }
 }
 
+/**
+ * The registry's transfer under a delivery does what the node's check of the pinned registry refuses (BUG-1528). It
+ * does not depend on the order: every delivery of the instrument through this registry is refused the same way until
+ * the registry or the SDK pin changes.
+ */
+export class RegistryTransferRefusal extends CantonRefusal {}
+
+/** Runs the check of a registry transfer; a refusal of it is a `RegistryTransferRefusal`. */
+export function registryTransferChecked(check: () => void): void {
+  try {
+    check();
+  } catch (error) {
+    throw error instanceof CantonRefusal ? new RegistryTransferRefusal(error.legId, error.detail) : error;
+  }
+}
+
 /** A participant id with or without the `PAR::` member prefix: topology writes it with, the JSON Ledger API without. */
 export const participantId = (uid: string): string => (uid.startsWith('PAR::') ? uid.slice(5) : uid);
 const strip0x = (hex: string): string => (hex.startsWith('0x') ? hex.slice(2) : hex).toLowerCase();

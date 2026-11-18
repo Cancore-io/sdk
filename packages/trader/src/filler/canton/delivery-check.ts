@@ -36,6 +36,7 @@
 import { encodeCantonAmount, encodeCantonOutputAsset, encodeCantonRecipient, type Hex } from '@cancore/contracts';
 import { canonicalDecimal, checkTransferExercise, fetchesNamedPin, field, isOwnParty, namesFactoryPin, numeric, party, qualified, refuse, pinnedTransferFactory, sameSet, soleRoot, subtree, textOf, cids } from './checks';
 import { CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from './factories';
+import { registryTransferChecked } from './legs';
 import type { CantonOpCheck } from './operations';
 import type { CantonTransaction, DamlValue, ExerciseNode } from './transaction';
 
@@ -164,14 +165,17 @@ export function checkDeliveryFill(expect: DeliveryFillExpectation): CantonOpChec
     }
     if (!transfer) return refuse('the fill moves nothing: no TransferFactory_Transfer');
     if (receipts !== 1) refuse(`the fill creates ${receipts} DeliveryReceipts, not one`);
-    checkTransferExercise(tx, transfer, {
-      sender: me,
-      asked: { asset: s.asset, amount: s.amount, toParty: recipient },
-      stated: s.inputHoldingCids,
-      executeBefore: expect.order.fillDeadline,
-      factories: expect.factories ?? CANTON_TRANSFER_FACTORIES,
-      completedOnly: true,
-    });
+    const factories = expect.factories ?? CANTON_TRANSFER_FACTORIES;
+    registryTransferChecked(() =>
+      checkTransferExercise(tx, transfer, {
+        sender: me,
+        asked: { asset: s.asset, amount: s.amount, toParty: recipient },
+        stated: s.inputHoldingCids,
+        executeBefore: expect.order.fillDeadline,
+        factories,
+        completedOnly: true,
+      }),
+    );
   };
 }
 
