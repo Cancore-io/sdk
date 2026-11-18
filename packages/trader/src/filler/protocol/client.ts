@@ -179,6 +179,11 @@ export class FillerProtocolClient implements SessionListener {
     return true;
   }
 
+  /** `GET /v1/filler/attestations/{orderHash}`, verified, for a look only: neither journalled nor handled. Undefined while not ready. */
+  peekAttestations(orderHash: Hex): Promise<VerifiedFrame | undefined> {
+    return this.requireRest().getAttestations(orderHash);
+  }
+
   /** Pulls `GET /v1/filler/tickets` (both statuses) and handles every item. One pull at a time. */
   syncTickets(): Promise<void> {
     this.syncing ??= (async () => {
