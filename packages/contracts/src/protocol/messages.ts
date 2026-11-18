@@ -1,6 +1,6 @@
 /**
  * The wire shapes of filler protocol v1 — WebSocket frames on `/v1`, REST
- * bodies and the public draw/epoch records — as TypeScript. The JSON Schemas
+ * bodies and the public gateway identity — as TypeScript. The JSON Schemas
  * under `spec/protocol/` are normative; schemas.test.ts holds the enums below
  * to them. Encoding (protocol §3.1): uint64 and wider as decimal strings,
  * uint8/16/32 as JSON integers, on-chain times in seconds (decimal string),
@@ -59,7 +59,6 @@ export const QUOTE_ACK_STATUSES = ['COUNTED', 'LATE', 'SHORT_TTL'] as const;
 export const QUOTE_FINAL_STATUSES = [...QUOTE_ACK_STATUSES, 'REPLACED', 'BAD_SIG', 'OUTLIER', 'IN_BAND', 'OUT_OF_BAND', 'WON', 'LOST'] as const;
 /** `penalty.applied.step`: a violation recorded, a ban, a ban lifted by Cancore staff (penalties.md §4.2). */
 export const PENALTY_STEPS = ['RECORDED', 'BANNED', 'UNBANNED'] as const;
-export const DRAW_CLOSED_BY = ['OFFER_TIMEOUT', 'OFFER_DECLINE', 'TICKET_DECLINE', 'TICKET_EXPIRED', 'FILLED'] as const;
 export const TICKET_LIST_STATUSES = ['OFFERED', 'ISSUED'] as const;
 /** The Canton operations of the filler's own party (§3.19): the backend prepares and submits, the node signs with its party key. */
 export const CANTON_OPS = ['party.allocate', 'registry.accept', 'delivery.fill', 'intent.settle', 'holdings.transfer', 'preapproval.create'] as const;
@@ -76,7 +75,6 @@ export type ExemptReason = (typeof EXEMPT_REASONS)[number];
 export type QuoteAckStatus = (typeof QUOTE_ACK_STATUSES)[number];
 export type QuoteFinalStatus = (typeof QUOTE_FINAL_STATUSES)[number];
 export type PenaltyStep = (typeof PENALTY_STEPS)[number];
-export type DrawClosedBy = (typeof DRAW_CLOSED_BY)[number];
 export type CantonOp = (typeof CANTON_OPS)[number];
 export type CantonLegKind = (typeof CANTON_LEG_KINDS)[number];
 export type CantonRegistryState = (typeof CANTON_REGISTRY_STATES)[number];
@@ -157,7 +155,6 @@ export interface ErrorMessage extends S2FBase {
 export interface UnsignedErrorBody { type: 'error'; code: ErrorCode; message: string; retryAfterMs?: number }
 /** The filler's reply to a gateway frame it cannot handle; informational. */
 export interface ErrorF2S extends F2SBase { type: 'error'; re: string; code: ErrorCode; message: string }
-export interface EpochWeights extends S2FBase { type: 'epoch.weights'; epochId: DecString; startsAt: DecString; endsAt: DecString; weightsRoot: Hex }
 
 export interface QuoteRequest extends S2FBase {
   type: 'quote.request';
@@ -348,7 +345,7 @@ export interface RoutesSet extends F2SBase { type: 'routes.set'; routes: RouteRe
 export interface RoutesState extends S2FBase { type: 'routes.state'; fillerId: string; routes: (RouteRef & { active: boolean })[] }
 
 export type S2FMessage =
-  | AuthChallenge | AuthOk | PingS2F | PongS2F | ErrorMessage | EpochWeights | QuoteRequest | QuoteAck | QuoteReconfirm
+  | AuthChallenge | AuthOk | PingS2F | PongS2F | ErrorMessage | QuoteRequest | QuoteAck | QuoteReconfirm
   | TicketOffer | TicketIntentAck | TicketIssued | TicketExpired | OrderSettled | PenaltyApplied | SettleAttestations
   | CantonPrepared | CantonSubmitted | RoutesState;
 export type F2SMessage =
@@ -460,35 +457,8 @@ export interface CantonRecipientReadiness {
   reason: 'RECIPIENT_NOT_READY' | 'INSTRUMENT_NOT_SUPPORTED' | (string & {}) | null;
 }
 
-// --- Public records (auction-and-draw §3.3–3.4) and the gateway identity.
+// --- The gateway identity.
 
-export interface DrawAttempt {
-  attempt: number;
-  tBase: DecString;
-  closedBy: DrawClosedBy | null;
-  drandRound: DecString;
-  drandRandomness: Hex;
-  drandSignature: Hex;
-  candidates: { fillerId: string; weight: DecString }[];
-  r: DecString;
-  winnerFillerId: string;
-  fallbackReason: 'DRAW_FALLBACK' | null;
-}
-export interface DrawRecord {
-  orderHash: Hex; source: string; openRef: string; t0: DecString; epochId: DecString; deltaDrand: number; attempts: DrawAttempt[]; sig: Hex;
-}
-export interface EpochLeaf { fillerId: string; base: DecString; tier: number; reliabilityBps: number }
-export interface EpochRecord {
-  epochId: DecString;
-  startsAt: DecString;
-  endsAt: DecString;
-  weightsRoot: Hex;
-  leaves: EpochLeaf[];
-  stakeSteps: { tier: number; minStake: DecString; step: DecString }[];
-  rMinBps: number;
-  snapshotBlocks: Record<string, DecString>;
-  sig: Hex;
-}
 /** `GET /v1/gateway`: the mirror of `FILLER_GATEWAYS` for one environment. */
 export interface GatewayInfo { env: string; gateway: Hex; ticketSigners: Hex[]; protocolVersion: '1'; maxMessageAgeMs: number }
 

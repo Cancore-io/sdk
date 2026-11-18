@@ -8,10 +8,8 @@
  */
 export { createFiller } from './filler';
 export type {
-  BindStakeOptions,
   CantonConfig,
   CantonDestinationPolicy,
-  DrawVerification,
   Filler,
   FillerConfig,
   FillerStatsSnapshot,
@@ -133,7 +131,7 @@ export { FeeCeilingError, REPLACEMENT_FEE_CAP_MULTIPLE, ReplacementCapError } fr
 export type { DeliveryOptions, DeliveryResult, FillAmountHook, FillAmountInput, FillRefusal } from './delivery/executor';
 
 export { DEFAULT_SETTLEMENT, SettleError } from './settlement/settler';
-export type { SettlementOptions, SettleRefusal } from './settlement/settler';
+export type { SettleCheck, SettlementOptions, SettleRefusal } from './settlement/settler';
 export { collectAttestations, verifyAttestations } from './settlement/attestations';
 export type { AttestationAnswer, AttestationVerification, AttestorSetView, CollectedAttestations, RejectedReason, RejectedSignature } from './settlement/attestations';
 

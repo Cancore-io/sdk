@@ -106,7 +106,7 @@ async function world(options: { canton?: boolean; refundAfterS?: number } = {}) 
   };
   const stages = (stage: string) => events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === stage);
   const settlement = () => store.withOrder(orderHash, (tx) => tx.getSettlement());
-  return { clock, settler, push, delivery, proof, canton, runs, stages, settlement, orderHash };
+  return { clock, settler, push, delivery, proof, canton, runs, stages, settlement, orderHash, handlers };
 }
 
 describe('Settler on a Canton source: SwapIntent_SettleWithProof by the party (CAN-2321)', () => {
@@ -120,6 +120,19 @@ describe('Settler on a Canton source: SwapIntent_SettleWithProof by the party (C
     expect(w.canton.intent).toHaveBeenCalledWith(w.orderHash);
     await expect(w.settlement()).resolves.toMatchObject({ state: 'confirmed', chain: 'canton:devnet', updateId: '1220abcd' });
     expect(w.stages('settle.confirmed')).toHaveLength(1);
+  });
+
+  test('TC-ATT-2146-04 (CAN-2146): order.settled overtakes the answer of the submit — the settlement is settled and keeps the update id of its SwapIntent_SettleWithProof', async () => {
+    const w = await world();
+    const settled = { type: 'order.settled', orderHash: w.orderHash, payout: '99', fee: '1', penaltyWithheld: '0', txRef: '1220abcd' };
+    w.canton.run.mockImplementationOnce(async (op: string, params: unknown, check: (prepared: never, txs: never[]) => unknown) => {
+      w.runs.push({ op, params, check });
+      await w.handlers.get('order.settled')!({ frame: settled as never, raw: new Uint8Array(), id: '0x02', channel: 'ws', firstSeen: true });
+      return { type: 'canton.submitted', op, operationId: 'op-1', updateId: '1220abcd', result: {} };
+    });
+    await w.push(w.delivery());
+    await expect(w.settlement()).resolves.toMatchObject({ state: 'settled', chain: 'canton:devnet', updateId: '1220abcd', orderSettled: settled });
+    expect(w.stages('settle.confirmed').map((e) => e.detail?.updateId)).toEqual(['1220abcd']);
   });
 
   test('a proof of another fill is divergent: nothing is prepared, an alert', async () => {

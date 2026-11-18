@@ -5,8 +5,7 @@
  * consumer re-types a struct (SDK S1). `FillProof` is `hashFillProof` in
  * `../eip712`, next to its domain.
  */
-import { utf8ToBytes } from '@noble/hashes/utils';
-import { hexBytes, keccak, toHex, uint } from './bytes';
+import { hexBytes, keccak, toHex, uint, wellFormedUtf8 } from './bytes';
 import { hashTypedData, fillerMessageBodyHash } from './hash';
 import type { TicketIssuedCanton } from './messages';
 import {
@@ -38,7 +37,7 @@ export const hashFillerKeyRegistration = (registration: FillerKeyRegistration): 
 /** `keccak256(utf8(deliveryOrderCid))` over the contract id exactly as `ticket.issued` sent it: no trimming, no case change. */
 export function deliveryOrderCidHash(deliveryOrderCid: string): Hex {
   if (typeof deliveryOrderCid !== 'string' || deliveryOrderCid.length === 0) throw new TypeError('deliveryOrderCid: a Canton contract id is a non-empty string');
-  return toHex(keccak(utf8ToBytes(deliveryOrderCid)));
+  return toHex(keccak(wellFormedUtf8(deliveryOrderCid, 'deliveryOrderCid')));
 }
 
 /**
