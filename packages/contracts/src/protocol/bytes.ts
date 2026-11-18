@@ -8,9 +8,13 @@ export const toHex = (bytes: Uint8Array): Hex => `0x${bytesToHex(bytes)}`;
 
 export const keccak = (bytes: Uint8Array): Uint8Array => keccak_256(bytes);
 
-/** UTF-8 of `text`. A lone surrogate is refused: TextEncoder writes it as U+FFFD, the bytes of another string. */
-export function wellFormedUtf8(text: string, field: string): Uint8Array {
+/** A lone surrogate has no UTF-8 of its own: TextEncoder writes it as U+FFFD, the bytes of another string. */
+export function assertWellFormed(text: string, field: string): void {
   if (/\p{Cs}/u.test(text)) throw new TypeError(`${field}: lone surrogate in a string`);
+}
+
+export function wellFormedUtf8(text: string, field: string): Uint8Array {
+  assertWellFormed(text, field);
   return utf8ToBytes(text);
 }
 

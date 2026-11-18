@@ -78,6 +78,12 @@ describe('a string member of a typed struct', () => {
     expect(() => hashTypedData({ domain: { name: 'x\udfff', version: '1' }, types: FILLER_QUOTE_TYPES, primaryType: 'FillerQuote', message: quote('acme').message })).toThrow(/lone surrogate/);
   });
 
+  test('a type or field name with a lone surrogate is refused as well', () => {
+    const named = (name: string): TypedDataTypes => ({ [name]: [{ name: 'v\ud800', type: 'uint64' }] });
+    expect(() => typeHash(named('T'), 'T')).toThrow(/lone surrogate/);
+    expect(() => hashTypedData({ domain: FILLER_PROTOCOL_DOMAIN, types: named('T\udc00'), primaryType: 'T\udc00', message: { 'v\ud800': 1n } })).toThrow(/lone surrogate/);
+  });
+
   test('a non-BMP character is a well-formed pair and hashes apart from U+FFFD', () => {
     expect(hashTypedData(quote('acme😀'))).not.toBe(hashTypedData(quote('acme�')));
   });

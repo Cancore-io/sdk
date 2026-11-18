@@ -4,7 +4,7 @@
  * consumer hands its own secp256k1 implementation (protocol §3.3, SDK §7).
  */
 import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
-import { beBytes, hexBytes, keccak, toHex, uint, wellFormedUtf8 } from './bytes';
+import { assertWellFormed, beBytes, hexBytes, keccak, toHex, uint, wellFormedUtf8 } from './bytes';
 import type { Hex, UintLike } from './typedData';
 
 export interface TypedField {
@@ -75,12 +75,12 @@ export function encodeType(types: TypedDataTypes, primaryType: string): string {
 }
 
 export function typeHash(types: TypedDataTypes, primaryType: string): Hex {
-  return toHex(keccak(utf8ToBytes(encodeType(types, primaryType))));
+  return toHex(keccak(wellFormedUtf8(encodeType(types, primaryType), `${primaryType} type`)));
 }
 
 function structHash(types: TypedDataTypes, primaryType: string, message: Readonly<Record<string, unknown>>): Uint8Array {
   const words = fieldsOf(types, primaryType).map((f) => encodeValue(f.type, message[f.name], `${primaryType}.${f.name}`));
-  return keccak(concatBytes(keccak(utf8ToBytes(encodeType(types, primaryType))), ...words));
+  return keccak(concatBytes(keccak(wellFormedUtf8(encodeType(types, primaryType), `${primaryType} type`)), ...words));
 }
 
 export function hashStruct(types: TypedDataTypes, primaryType: string, message: Readonly<Record<string, unknown>>): Hex {
@@ -116,7 +116,7 @@ export function hashTypedData({ domain, types, primaryType, message }: TypedData
 export function jcs(value: unknown): string {
   if (value === null || typeof value === 'boolean') return JSON.stringify(value);
   if (typeof value === 'string') {
-    if (/\p{Cs}/u.test(value)) throw new TypeError('jcs: lone surrogate in a string');
+    assertWellFormed(value, 'jcs');
     return JSON.stringify(value);
   }
   if (typeof value === 'number') {
