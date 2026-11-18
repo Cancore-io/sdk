@@ -466,6 +466,9 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.25` — `@noble/hashes` `^1.8.0` → `^2.4.0` (CAN-3207). No API or output change: keccak-256 and
+  the byte utilities are the same functions, the generated vectors are byte-identical. The 2.x line is ESM-only and
+  needs Node ≥ 20.19, inside `engines.node >= 26`.
 - `0.2.0-rc.24` — the testnet intent routers (CAN-2529): `router` and `routerBlock` on every
   `DEPLOYMENTS.testnet` row (Sepolia, BNB testnet, Arbitrum Sepolia, Robinhood testnet, Base Sepolia), and the
   ticket signer they register in `FILLER_GATEWAYS.testnet.ticketSigners`. Additive.
