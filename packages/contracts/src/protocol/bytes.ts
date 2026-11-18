@@ -1,12 +1,18 @@
 // Internal: the few byte conversions hash.ts and draw.ts share. Not exported
 // from the package — a consumer has @noble/hashes for this.
 import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
 import type { Hex } from './typedData';
 
 export const toHex = (bytes: Uint8Array): Hex => `0x${bytesToHex(bytes)}`;
 
 export const keccak = (bytes: Uint8Array): Uint8Array => keccak_256(bytes);
+
+/** UTF-8 of `text`. A lone surrogate is refused: TextEncoder writes it as U+FFFD, the bytes of another string. */
+export function wellFormedUtf8(text: string, field: string): Uint8Array {
+  if (/\p{Cs}/u.test(text)) throw new TypeError(`${field}: lone surrogate in a string`);
+  return utf8ToBytes(text);
+}
 
 /** `0x`-prefixed hex of exactly `length` bytes (any length when omitted); either letter case. */
 export function hexBytes(value: unknown, field: string, length?: number): Uint8Array {

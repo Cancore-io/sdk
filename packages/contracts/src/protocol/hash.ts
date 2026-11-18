@@ -4,7 +4,7 @@
  * consumer hands its own secp256k1 implementation (protocol §3.3, SDK §7).
  */
 import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
-import { beBytes, hexBytes, keccak, toHex, uint } from './bytes';
+import { beBytes, hexBytes, keccak, toHex, uint, wellFormedUtf8 } from './bytes';
 import type { Hex, UintLike } from './typedData';
 
 export interface TypedField {
@@ -44,7 +44,7 @@ function encodeValue(type: string, value: unknown, field: string): Uint8Array {
   if (type === 'address') return padded(hexBytes(value, field, 20), 12);
   if (type === 'string') {
     if (typeof value !== 'string') throw new TypeError(`${field}: expected a string`);
-    return keccak(utf8ToBytes(value));
+    return keccak(wellFormedUtf8(value, field));
   }
   if (type === 'bool') {
     if (typeof value !== 'boolean') throw new TypeError(`${field}: expected a boolean`);
