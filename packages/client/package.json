@@ -73,7 +73,7 @@
     "node": ">=26"
   },
   "peerDependencies": {
-    "@cancore/wallet": "workspace:>=0.3.0 <1.0.0"
+    "@cancore/wallet": "workspace:>=0.4.8 <1.0.0"
   },
   "devDependencies": {
     "@noble/curves": "^1.9.7"

@@ -58,6 +58,17 @@ describe('submit answered 202 pending (CAN-3679)', () => {
     await expect(ops.submit('op-1', SIGNED)).rejects.toBeInstanceOf(OperationOutcomeUnknownError);
   });
 
+  it.each([
+    { charged: false, status: 'pending', code: 'SWAP_FEE_PENDING', errorCode: 'SWAP_FEE_PENDING', message: 'fee pending' },
+    { status: 'pending', feeRef: 'fee-1' },
+    { charged: false, status: 'pending' },
+  ])('returns an operation answer that is itself pending (%j) without polling', async (answer) => {
+    const { ops, calls } = backend([answer], []);
+
+    await expect(ops.submit('op-1', SIGNED)).resolves.toEqual(answer);
+    expect(calls).toEqual(['/wallet/operations/submit']);
+  });
+
   it('passes a direct answer through untouched, as before', async () => {
     const { ops, calls } = backend([{ updateId: 'upd-0' }], []);
 

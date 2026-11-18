@@ -32,8 +32,18 @@ export class OperationOutcomeUnknownError extends Error {
   }
 }
 
+/** Operation answers that carry their own `status: 'pending'` with HTTP 200 (deferred fees): final results, not a 202. */
+const OPERATION_ANSWER_FIELDS = ['errorCode', 'charged', 'feeRef'];
+
 export function isPendingSubmitAnswer(answer: unknown): answer is PendingSubmitAnswer {
-  return typeof answer === 'object' && answer !== null && (answer as { status?: unknown }).status === 'pending';
+  if (typeof answer !== 'object' || answer === null) return false;
+  const { status, operationId } = answer as { status?: unknown; operationId?: unknown };
+  return (
+    status === 'pending' &&
+    typeof operationId === 'string' &&
+    operationId.length > 0 &&
+    !OPERATION_ANSWER_FIELDS.some((field) => field in answer)
+  );
 }
 
 export interface OutcomePolling {
