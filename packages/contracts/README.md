@@ -212,7 +212,7 @@ inputs in `scripts/protocol-fixtures.mjs`, and checked by this package's own enc
 
 | File (`@cancore/contracts/spec/protocol/…`) | Holds |
 | --- | --- |
-| `messages.schema.json` | one `$def` per frame type (23), `x-direction` S2F / F2S / both, `x-rest-only` on the two login types, and the primitives they share |
+| `messages.schema.json` | one `$def` per frame type (28), `x-direction` S2F / F2S / both, `x-rest-only` on the two login types, and the primitives they share |
 | `rest.schema.json` | REST bodies; `x-endpoints` (method, path, auth, query, request/response, `errorBody` where a refusal may be unsigned), `x-error-status` |
 | `records.schema.json` | `GET /v1/gateway` |
 | `asyncapi.json` | AsyncAPI 3.0: channel `/v1` (the upgrade's subprotocols, its HTTP refusals `x-upgrade-refusals`, the close codes `x-close-codes`), the gateway's send/receive operations, examples |

@@ -1,6 +1,6 @@
 /**
  * The wire shapes of filler protocol v1 — WebSocket frames on `/v1`, REST
- * bodies and the public draw/epoch records — as TypeScript. The JSON Schemas
+ * bodies and the public gateway identity — as TypeScript. The JSON Schemas
  * under `spec/protocol/` are normative; schemas.test.ts holds the enums below
  * to them. Encoding (protocol §3.1): uint64 and wider as decimal strings,
  * uint8/16/32 as JSON integers, on-chain times in seconds (decimal string),

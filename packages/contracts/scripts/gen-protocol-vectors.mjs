@@ -7,7 +7,7 @@
 //   node packages/contracts/scripts/gen-protocol-vectors.mjs
 //
 // Writes spec/protocol/typed-data/*.json (the protocol types),
-// spec/protocol/vectors/{jcs,draw}.json.
+// spec/protocol/vectors/jcs.json.
 // spec/typed-data/{Order,Quote,FillTicket,FillProof}.json
 // are evm-contracts' own (abi/typed-data, brought here by `npm run sync`): this
 // script recomputes their vectors and fails if the synced files differ, and
@@ -275,7 +275,7 @@ out('spec/protocol/typed-data/FillerKeyRegistration.json', file('FillerKeyRegist
   ]),
 ]));
 
-// --- JCS and the draw
+// --- JCS
 out('spec/protocol/vectors/jcs.json', {
   $comment: 'RFC 8785 canonical JSON of the values the protocol puts on the wire. Every text of a case parses to the same value; its canonical text and keccak256(utf8(canonical)) follow.',
   cases: JCS_CASES.map(({ note, texts, canonical }) => {

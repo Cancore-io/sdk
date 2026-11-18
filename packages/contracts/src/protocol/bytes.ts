@@ -1,4 +1,4 @@
-// Internal: the few byte conversions hash.ts and draw.ts share. Not exported
+// Internal: the few byte conversions of hash.ts. Not exported
 // from the package — a consumer has @noble/hashes for this.
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
