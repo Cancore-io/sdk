@@ -328,8 +328,9 @@ jobs:
         env:
           CANCORE_INTENT_JSON: ${{ runner.temp }}/stand/intent.json
           CANCORE_ACTORS_ENV: ${{ runner.temp }}/stand/local-actors.env
+          JEST_JUNIT_OUTPUT_FILE: rp-reports/sdk-stand.xml
         run: |
-          npx jest --selectProjects int --runInBand --json --outputFile="$RUNNER_TEMP/int.json" \
+          npx jest --selectProjects int --runInBand --reporters=default --reporters=jest-junit --json --outputFile="$RUNNER_TEMP/int.json" \
             packages/trader/test/router.int.test.ts packages/trader/test/escrow.int.test.ts \
             packages/trader/test/executor.int.test.ts packages/trader/test/settle.int.test.ts \
             packages/trader/test/canton-delivery.int.test.ts packages/trader/test/CAN-2810-escrow-gone.int.test.ts \
@@ -339,6 +340,16 @@ jobs:
             console.log(r.numTotalTestSuites, 'suites,', r.numPassedTests, 'passed,', r.numPendingTests + r.numTodoTests, 'skipped');
             if (r.numTotalTestSuites !== 7 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
           "
+      - name: Upload test reports for rp-collect
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rp-reports-stand
+          path: rp-reports/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # Transaction pricing and nonce allocation of @cancore/trader against a real node (CAN-2299, CAN-2636): an anvil of its own, no contracts and no
   # secret. The suite toggles automine, so no other suite shares this anvil. ubuntu-latest for the reason given on
@@ -375,13 +386,24 @@ jobs:
       - name: Replacement cap, nonce counter and missing blocks against anvil, none skipped
         env:
           ANVIL_RPC_URL: http://127.0.0.1:8545
+          JEST_JUNIT_OUTPUT_FILE: rp-reports/sdk-anvil.xml
         run: |
-          npx jest --selectProjects int --runInBand --verbose --json --outputFile="$RUNNER_TEMP/int.json" packages/trader/test/replacement.int.test.ts packages/trader/test/nonce.int.test.ts packages/trader/test/missing-block.int.test.ts
+          npx jest --selectProjects int --runInBand --verbose --reporters=default --reporters=jest-junit --json --outputFile="$RUNNER_TEMP/int.json" packages/trader/test/replacement.int.test.ts packages/trader/test/nonce.int.test.ts packages/trader/test/missing-block.int.test.ts
           node -e "
             const r = require(process.env.RUNNER_TEMP + '/int.json');
             console.log(r.numPassedTests, 'passed,', r.numPendingTests + r.numTodoTests, 'skipped');
             if (r.numTotalTestSuites !== 3 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
           "
+      - name: Upload test reports for rp-collect
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rp-reports-anvil
+          path: rp-reports/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # CAN-2331: the published @cancore/contracts, installed from the npm registry into a stranger's project, and its
   # devnet routers read on their own chains over public RPCs (read-only, no key, no secret). The manifest's version
@@ -410,13 +432,24 @@ jobs:
       - name: Dev routers of the installed package on their chains, none skipped
         env:
           CANCORE_CONTRACTS_INSTALLED: ${{ runner.temp }}/consumer
+          JEST_JUNIT_OUTPUT_FILE: rp-reports/sdk-deployments.xml
         run: |
-          npx jest --selectProjects int --runInBand --verbose --json --outputFile="$RUNNER_TEMP/int.json" packages/contracts/src/deployments.int.test.ts
+          npx jest --selectProjects int --runInBand --verbose --reporters=default --reporters=jest-junit --json --outputFile="$RUNNER_TEMP/int.json" packages/contracts/src/deployments.int.test.ts
           node -e "
             const r = require(process.env.RUNNER_TEMP + '/int.json');
             console.log(r.numPassedTests, 'passed,', r.numPendingTests + r.numTodoTests, 'skipped');
             if (r.numTotalTestSuites !== 1 || r.numPendingTests + r.numTodoTests > 0 || r.numPassedTests === 0) process.exit(1);
           "
+      - name: Upload test reports for rp-collect
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rp-reports-deployments
+          path: rp-reports/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # cancore-botd's OS isolation (users, groups, socket and state-dir modes, /proc) needs root: a
   # disposable container is root and is thrown away. ubuntu-latest for the reason given on `check`.
