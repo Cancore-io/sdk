@@ -232,6 +232,14 @@ describe('the owner signs an intent root from its prepared transaction (CAN-3340
     expect(await refusal(() => verifyPreparedTransaction(tx, hash, policy(AMULET, { intentPackageIds: ['f0'.repeat(32)] })))).toMatch(/not a version this wallet signs for/);
   });
 
+  test.each(['open', 'renewSettlementFactory'] as const)('CAN-3588: a cancore-intent 0.6.3 %s is signed before 0.6.3 is uploaded', async (kind) => {
+    const v063 = INTENT_PACKAGE_IDS[1] as string;
+    const at0_6_3 = JSON.parse(JSON.stringify(honest(kind, AMULET)).replaceAll(INTENT_PKG, v063)) as ExerciseSpec;
+    const { tx, hash } = await prepared(at0_6_3);
+    expect(v063).toBe('535cb88a2faec69ec361089d1d5ecbbe150cd50a00b736b2941b52c6b820b6fa');
+    expect(verifyPreparedTransaction(tx, hash, policy(AMULET))).toBe(kind);
+  });
+
   const at0_5_1 = (spec: ExerciseSpec): ExerciseSpec => JSON.parse(JSON.stringify(spec).replaceAll(INTENT_PKG, INTENT_0_5_1)) as ExerciseSpec;
 
   test.each(['open', 'renewSettlementFactory'] as const)('TC-SDK-3340-20: a cancore-intent 0.5.1 %s is refused', async (kind) => {
