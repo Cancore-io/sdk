@@ -89,6 +89,17 @@ A suite that skips itself without the stand is green in the check job's `npm run
 
 Do not write unit-test results into a Linear ticket: no unit counts, unit runs or unit coverage numbers; they go in the PR description (section 8). A ticket that is entirely about unit tests or a refactor is the exception. Integration, e2e and stand run results are required in the ticket: which specs ran, on which stand, the result and the cause of every skip.
 
+### 8.3 Running a ticket's tests in CI (CAN-3669)
+
+`test-dispatch.yml` runs the tests whose names match one ticket, on a branch or a PR head you name. It has no push or schedule trigger, and its `pull_request` trigger fires only on a change to the workflow itself, so the CI ban above still holds for every other event. `grep` is required (`jest -t`), so a full-suite run is never the default; a run where it matches no test fails. `suite` picks `unit` (`npm test`, the default), `integration` (`npm run test:int` as `ci.yml` `check` runs it: stand suites skip without a stand) or `both`.
+
+```bash
+gh workflow run test-dispatch.yml -R Cancore-io/sdk -f ref=<branch> -f grep=<CAN-ID or TC-SDK-ID>
+gh workflow run test-dispatch.yml -R Cancore-io/sdk -f pr=<number> -f grep=<CAN-ID or TC-SDK-ID> -f suite=both
+```
+
+The run's title reads `Tests <grep> @ <ref or PR> (<suite>)`; its JUnit reports are the `rp-reports-unit` and `rp-reports-int` artifacts, which CAEF's rp-collect publishes to ReportPortal project `sdk`. Since local test runs are banned, the link to a green run of this workflow is the evidence a ticket needs for In Testing: it replaces the local `pnpm test` result in the PR description (section 8) and, for integration suites, on the ticket.
+
 ## 9. The local stand
 
 **This repository's CI stand** (anvil, the router and test tokens from `packages/trader/test/stand/artifacts.json`):
