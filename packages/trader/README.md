@@ -332,7 +332,7 @@ A fact that cannot be read declines with the code of the check that needed it (`
 detail): an unverifiable ticket is never receipted. No setting turns a check off. Each check's result —
 `passed`, `failed` or `skipped` — is emitted as stage `ticket.checked`. V-T4 compares the
 time `ticket.issued` arrived, which the protocol client writes on the attempt when the frame is received; a
-ticket whose arrival is not recorded is refused as unverifiable. V1 does not check the draw.
+ticket whose arrival is not recorded is refused as unverifiable.
 
 **Canton source** (an EVM-form ticket for an order whose `originChainId` is a `CANTON_ORIGIN_ID`). There is no
 escrow on a router: the owner's give is a committed allocation only `SwapIntent_SettleWithProof` — this filler's

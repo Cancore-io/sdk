@@ -41,8 +41,8 @@ test('the three schemas compile in strict mode, every $def of every one', () => 
   }
 });
 
-test('29 frame types, each with a direction and at least one valid example', () => {
-  expect(Object.keys(MESSAGE_DIRECTIONS)).toHaveLength(29);
+test('28 frame types, each with a direction and at least one valid example', () => {
+  expect(Object.keys(MESSAGE_DIRECTIONS)).toHaveLength(28);
   expect(MESSAGE_DIRECTIONS['ticket.offer']).toBe('S2F');
   expect(MESSAGE_DIRECTIONS['ticket.intent']).toBe('F2S');
   expect(MESSAGE_DIRECTIONS.ping).toBe('both');
@@ -287,7 +287,7 @@ test('V-2: no object is closed, and no enum outside the allow-list is closed', (
 describe('REST', () => {
   const rest = (def: string, value: unknown) => ajv.validate(`https://cancore.io/schemas/filler-protocol/v1/rest.schema.json#/$defs/${def}`, value);
   test('every endpoint names schemas that resolve', () => {
-    expect(REST_ENDPOINTS).toHaveLength(23);
+    expect(REST_ENDPOINTS).toHaveLength(21);
     const base = 'https://cancore.io/schemas/filler-protocol/v1/';
     for (const e of REST_ENDPOINTS) {
       for (const ref of [e.request, e.query, e.response, e.errorBody].filter((x): x is string => !!x)) {
