@@ -435,6 +435,7 @@ describe('Canton operations of the filler party (§3.19)', () => {
     expect(ERROR_HTTP_STATUS.CANTON_REFUSED).toBe(422);
     expect(ERROR_HTTP_STATUS.CANTON_UNAVAILABLE).toBe(503);
     expect(ERROR_HTTP_STATUS.OPERATION_EXPIRED).toBe(410);
+    expect(ERROR_HTTP_STATUS.REGISTRY_FACTORY_UNTRUSTED).toBe(422);
   });
 
   test('reads: the party, its holdings and delivery orders', () => {

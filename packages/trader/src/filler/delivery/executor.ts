@@ -57,6 +57,7 @@ import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from '..
 import { CantonDelivery } from './canton';
 import { FeeCeilingError, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
 import { reasonOf, retryableEstimateFailure, revertName } from './reverts';
+import type { FillRefusal } from './refusal';
 import { awaitValidFrom } from './validFrom';
 
 // ---------------------------------------------------------------------------
@@ -105,26 +106,7 @@ export const DEFAULT_DELIVERY = {
   nonceLeaseTtlMs: 60_000,
 } as const;
 
-/** Why a delivery was not started. */
-export type FillRefusal =
-  /** No `ticket.receipt` went out for the attempt (T-22). */
-  | 'no-receipt'
-  /** Not an EVM ticket, or no fill key or router for its destination. */
-  | 'not-deliverable'
-  /** The issued ticket does not name this filler, its delivery key or its payee (S13). */
-  | 'ticket-mismatch'
-  /** Less than `sendGuardSec` left to `validUntil` (T-29). */
-  | 'send-guard'
-  /** The amount to send is below `order.minReceived`. */
-  | 'below-min-received'
-  /** The destination router already has a fill for the order (T-27). */
-  | 'already-filled'
-  /** `eth_estimateGas` reverted: the router or the token would refuse it. */
-  | 'reverted'
-  /** The router could not be approved for the output asset. */
-  | 'allowance'
-  /** Priced above `maxFeePerGasWei`. */
-  | 'fee-ceiling';
+export type { FillRefusal } from './refusal';
 
 export interface DeliveryResult {
   /** `sent`: broadcast now; `tracking`: already under way (here or on another replica); `waiting`: retried later; `refused`: never sent. */

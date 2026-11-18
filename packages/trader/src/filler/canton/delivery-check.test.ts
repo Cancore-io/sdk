@@ -10,7 +10,7 @@ import { encodeCantonAmount, encodeCantonOutputAsset, encodeCantonRecipient, typ
 import { checkDeliveryFill, type DeliveryFillExpectation } from './delivery-check';
 import { CANTON_TRANSFER_FACTORIES, registriesProblem } from './factories';
 import { NODE_KEY, OTHER_KEY, party } from './fixtures';
-import { CantonRefusal } from './legs';
+import { CantonRefusal, RegistryTransferRefusal, registryTransferChecked, StatedInputRefusal } from './legs';
 import type { PreparedOf } from './operations';
 import type { CantonTransaction, DamlValue, TransactionNode } from './transaction';
 
@@ -281,6 +281,26 @@ describe('delivery.fill: the decoded transaction (CAN-1867)', () => {
       chosenValue: v.record({}), actingParties: [OPERATOR, ME], signatories: [OPERATOR, ME], stakeholders: [OPERATOR, ME], consuming: true, children: [],
     };
     refused(() => check()(prepared(), [fill({ extra: [archiveEntry] })]), /besides the delivery/);
+  });
+});
+
+describe('delivery.fill: a refusal of the registry transfer is one of the route, not of the order (BUG-1528)', () => {
+  test('TC-SDK-BUG-1528-03: what the registry does under the transfer — a factory the node does not pin, a receiver credited short — is RegistryTransferRefusal; what the backend asked of this transfer or of this order is not', () => {
+    const run = (over: Over) => () => check()(prepared(), [fill(over)]);
+    expect(run({ transferTemplate: `${'ee'.repeat(32)}:Intent.Test.Mocks:EvilTransferFactory` })).toThrow(RegistryTransferRefusal);
+    expect(run({ credited: '20' })).toThrow(RegistryTransferRefusal);
+    for (const orderLevel of [run({ transferAmount: '2.5' }), run({ order: { fillerId: v.text('someone-else') } })]) {
+      expect(orderLevel).toThrow(CantonRefusal);
+      expect(orderLevel).not.toThrow(RegistryTransferRefusal);
+    }
+  });
+
+  test('TC-SDK-BUG-1528-04: the stated input holdings are the order’s — StatedInputRefusal passes the registry wrapper as it is; any other refusal under it becomes RegistryTransferRefusal', () => {
+    const stated = new StatedInputRefusal('-', 'the stated inputs h2 are not spent');
+    expect(() => registryTransferChecked(() => { throw stated; })).toThrow(stated);
+    expect(() => registryTransferChecked(() => { throw new CantonRefusal('-', 'a rollback node inside the transfer'); })).toThrow(RegistryTransferRefusal);
+    const other = new Error('not a refusal');
+    expect(() => registryTransferChecked(() => { throw other; })).toThrow(other);
   });
 });
 
