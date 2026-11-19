@@ -371,29 +371,24 @@ live('Executor against the stand router (make intent-genesis)', () => {
     s.executor.stop();
   });
 
-  test('BUG-1589-15: with no allowance the executor approves the router itself; the approve reports its gas with no order, the fill with its own', async () => {
-    const approveCall = (amount: bigint) => encodeFunctionCall(entryOf(ERC20, 'function', 'approve'), [router, amount]);
+  test('BUG-1589-15: the executor own approve — the allowance top-up at start — reports its gas with no order', async () => {
+    const limit = 10n ** 25n;
     const allowance = async () => BigInt(await rpc.request<string>({ method: 'eth_call', params: [{ to: token, data: encodeFunctionCall(entryOf(ERC20, 'function', 'allowance'), [delivery.address, router]) }, 'latest'] }));
-    await sendFrom(token, approveCall(0n));
-    try {
-      expect(await allowance()).toBe(0n);
-      const s = await scenario({ instanceId: 'int-gas-approve' });
-      await s.executor.start();
-      const delivered = await s.executor.deliver(s.orderHash, 0);
-      // 'waiting' is a read retried on the executor's own schedule; anything else is printed whole.
-      expect(delivered).toEqual(expect.objectContaining({ status: expect.stringMatching(/^(sent|waiting)$/) }));
-      const approved = await waitFor(async () => s.stages('approve.sent')[0], `the executor approve (deliver answered ${JSON.stringify(delivered)})`);
-      const approveHash = approved.detail!.txHash as Hex;
-      await s.state('included');
-      await mine(2);
-      const fill = await s.state('confirmed');
-      const approve = await gasOf(s, approveHash);
-      expect(approve).toMatchObject({ kind: 'approve', chain, ...(await receiptCost(approveHash)) });
-      expect(approve).not.toHaveProperty('orderHash');
-      expect(await gasOf(s, fill.txRef)).toMatchObject({ kind: 'fill', orderHash: s.orderHash, ...(await receiptCost(fill.txRef)) });
-    } finally {
-      await sendFrom(token, approveCall(10n ** 24n));
-    }
+    // A limit above twice what is left makes start() top the allowance up to it: the approve is the executor's own.
+    expect((await allowance()) * 2n).toBeLessThan(limit);
+    const s = await scenario({ instanceId: 'int-gas-approve', delivery: { approvals: { [chain]: { [token]: limit } } } });
+    await s.executor.start();
+    const approved = await waitFor(async () => s.stages('approve.sent')[0], 'the executor approve');
+    expect(approved.detail).toMatchObject({ token, amount: limit.toString() });
+    const approveHash = approved.detail!.txHash as Hex;
+    await mine(2);
+    const approve = await gasOf(s, approveHash);
+    expect(approve).toMatchObject({ kind: 'approve', chain, ...(await receiptCost(approveHash)) });
+    expect(approve).not.toHaveProperty('orderHash');
+    expect(approve).not.toHaveProperty('attempt');
+    await quiet();
+    expect(gasEventsOf(s)).toHaveLength(1);
+    expect(await allowance()).toBe(limit);
   });
 
   test('BUG-1589-14: a fill mined and reverted by the real router (TicketExpired) reports the gas it burnt, reverted, charged to its order', async () => {
