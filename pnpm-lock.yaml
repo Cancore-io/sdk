@@ -249,7 +249,7 @@ importers:
   packages/client:
     dependencies:
       '@cancore/wallet':
-        specifier: workspace:>=0.3.0 <1.0.0
+        specifier: workspace:>=0.4.8 <1.0.0
         version: link:../wallet
       '@canton-network/core-ledger-proto':
         specifier: ^1.12.0
