@@ -26,7 +26,7 @@
  *   `send` returns false and `submitTicket` rejects with `RATE_LIMITED` and the
  *   remaining `retryAfterMs`, so no component resends into the limit.
  */
-import type { F2SMessage, Hex, QuoteAck, TicketIntentAck, TicketReceiptMessage } from '@cancore/contracts';
+import type { F2SMessage, Hex, QuoteAck, TicketDecline, TicketIntentAck, TicketReceiptMessage } from '@cancore/contracts';
 import { FillerStoppedError, GatewayError } from '../errors';
 import type { EventSink, FillerStage } from '../events';
 import type { Clock, Logger } from '../runtime';
@@ -63,6 +63,25 @@ export const DEFAULT_REST_POLL_INTERVAL_MS = 2_000;
 
 const isHex32 = (value: unknown): value is Hex => typeof value === 'string' && /^0x[0-9a-fA-F]{64}$/.test(value);
 const isAttempt = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * filler-gateway already holds the action: our own `id` is taken (protocol §3.4), or a decline meets a ticket no
+ * longer open — the gateway answers a repeated decline `TICKET_CLOSED`, where it answers a repeated intent or
+ * receipt idempotently (§6).
+ */
+const heldAlready = (action: TicketAction['action'], error: unknown): error is GatewayError =>
+  error instanceof GatewayError && (error.code === 'REPLAYED_MESSAGE' || (action === 'decline' && error.code === 'TICKET_CLOSED'));
+
+const FINAL_TICKET_REFUSALS: ReadonlySet<string> = new Set([
+  'BAD_REQUEST', 'UNSUPPORTED_VERSION', 'UNSUPPORTED_TYPE', 'BAD_SIGNATURE', 'TICKET_REFUSED', 'UNKNOWN_REQUEST', 'UNKNOWN_TICKET', 'TICKET_CLOSED', 'NOT_ELIGIBLE',
+]);
+
+/**
+ * A refusal of a ticket action that sending it again cannot change. Every resend spends a token of the `ticket` rate
+ * class all attempts of the filler share; anything else (a transport failure, `RATE_LIMITED`, `INTERNAL`, an unknown
+ * code) is worth another try.
+ */
+export const isFinalTicketRefusal = (error: unknown): boolean => error instanceof GatewayError && FINAL_TICKET_REFUSALS.has(error.code);
 
 export class FillerProtocolClient implements SessionListener {
   private readonly handlers = new Map<string, FrameHandler>();
@@ -157,15 +176,23 @@ export class FillerProtocolClient implements SessionListener {
 
   /**
    * Sends a ticket action as `POST /v1/filler/tickets/{orderHash}/{attempt}/{action}`
-   * and resolves only once filler-gateway acknowledged it (2xx); any refusal
-   * rejects, so the caller sends it again. The answer to an intent
+   * and resolves only once filler-gateway acknowledged it (2xx) or says it
+   * already holds it; any other refusal rejects, and `isFinalTicketRefusal`
+   * tells the caller whether to send it again. The answer to an intent
    * (`ticket.intent.ack`) goes through the same handling as a WebSocket frame.
    * A message is sent again under a fresh envelope (new `id`, `sentAt`): the
    * gateway refuses a reused `id` and a stale `sentAt` (§3.4), and answers a
    * repeated consent or receipt with the same ack (§6).
    */
   async submitTicket(request: TicketAction): Promise<void> {
-    const ack = await this.requireRest().postTicket(request);
+    let ack: VerifiedFrame | undefined;
+    try {
+      ack = await this.requireRest().postTicket(request);
+    } catch (error) {
+      if (!heldAlready(request.action, error)) throw error;
+      if (error.code === 'TICKET_CLOSED') this.declineMetClosedTicket(request.message as TicketDecline);
+      else this.options.logger.info('filler-gateway: already holds the ticket action', { action: request.action, code: error.code });
+    }
     if (request.action === 'receipt') await this.journalReceiptSent(request.message);
     if (ack) await this.ingest(ack, 'rest');
   }
@@ -359,8 +386,14 @@ export class FillerProtocolClient implements SessionListener {
     } else started.resolve();
   }
 
-  private stage(stage: FillerStage, detail: Readonly<Record<string, string | number | boolean>>): void {
-    this.safely(() => this.options.events.emit({ type: 'stage', stage, atMs: this.options.clock.now(), detail }));
+  private stage(stage: FillerStage, detail: Readonly<Record<string, string | number | boolean>>, of?: { orderHash: Hex; attempt: number }): void {
+    this.safely(() => this.options.events.emit({ type: 'stage', stage, atMs: this.options.clock.now(), ...of, detail }));
+  }
+
+  /** Not sent again, but never silent: the closed ticket may be one filler-gateway holds receipted (stage `ticket.decline.closed`). */
+  private declineMetClosedTicket({ orderHash, attempt, reason }: TicketDecline): void {
+    this.options.logger.warn('tickets: declined locally, but filler-gateway had already closed the ticket — it may hold it as receipted', { orderHash, attempt, reason });
+    this.stage('ticket.decline.closed', { reason }, { orderHash, attempt });
   }
 
   private safely(run: () => unknown): void {

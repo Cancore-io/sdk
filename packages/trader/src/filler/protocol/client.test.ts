@@ -31,10 +31,10 @@ import {
   InMemoryFillerStore,
   type FakeSocket,
 } from '../testing';
-import { FillerProtocolClient, type Delivery } from './client';
+import { FillerProtocolClient, isFinalTicketRefusal, type Delivery } from './client';
 import { createSealer } from './envelope';
 import { keccakHex } from './frames';
-import { GatewayRest } from './rest';
+import { GatewayRest, TICKET_POST_TIMEOUT_MS } from './rest';
 import { backoffDelay, CLOSE_HEARTBEAT, CLOSE_LOGIN_TIMEOUT, CLOSE_SOCKET_ERROR, CLOSE_UNSUPPORTED_VERSION, GatewaySession } from './session';
 
 const GATEWAY_KEY: Hex = '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a';
@@ -1003,6 +1003,95 @@ describe('REST fallback (protocol §3.6)', () => {
     expect(h.store.journal().filter((e) => e.direction === 'to-gateway')).toEqual([{ id: keccakHex(raw), direction: 'to-gateway', type: 'ticket.receipt', raw, atMs: h.clock.now(), orderHash: lower, attempt: 1 }]);
     // Under the order's lock, as every entry that names an order.
     expect(outsideAnOrder).not.toHaveBeenCalled();
+  });
+
+  // BUG-1615 review N-3: every ticket action is a POST now, and the desk runs one worker per attempt.
+  test('a ticket POST with no answer within TICKET_POST_TIMEOUT_MS rejects as a transport failure, not a refusal', async () => {
+    const h = harness();
+    h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/receipt`] = () => new Promise(() => undefined);
+    let failure: unknown;
+    void h.client.submitTicket({ action: 'receipt', message: receipt() }).catch((error: unknown) => (failure = error));
+    await settle();
+    h.clock.advance(TICKET_POST_TIMEOUT_MS - 1);
+    await settle();
+    expect(failure).toBeUndefined();
+    h.clock.advance(1);
+    await settle();
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(GatewayError);
+    expect(String(failure)).toMatch(`no answer within ${TICKET_POST_TIMEOUT_MS} ms`);
+    expect(isFinalTicketRefusal(failure)).toBe(false);
+    expect(h.store.journal().filter((e) => e.direction === 'to-gateway')).toEqual([]);
+  });
+
+  test('a ticket POST answered in time is not cut short by its timeout', async () => {
+    const h = harness();
+    let answer: (a: { status: number; body: unknown }) => void = () => undefined;
+    h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/receipt`] = () => new Promise((resolve) => (answer = resolve));
+    let outcome = 'pending';
+    const timersBefore = h.clock.pending;
+    void h.client.submitTicket({ action: 'receipt', message: receipt() }).then(() => (outcome = 'delivered'), () => (outcome = 'failed'));
+    await settle();
+    h.clock.advance(TICKET_POST_TIMEOUT_MS - 1);
+    answer({ status: 200, body: {} });
+    await settle();
+    // The timer goes with the answer: none is left behind per POST.
+    expect(h.clock.pending).toBe(timersBefore);
+    h.clock.advance(60_000);
+    await settle();
+    expect(outcome).toBe('delivered');
+  });
+
+  // BUG-1615 review N-1: the gateway answers a repeated decline TICKET_CLOSED, not idempotently.
+  test('a decline answered TICKET_CLOSED, or any action answered REPLAYED_MESSAGE, is held by filler-gateway: delivered', async () => {
+    const h = harness();
+    const refuse = (code: string) => () => ({ status: 409, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code, message: 'refused' }) });
+    h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/decline`] = refuse('TICKET_CLOSED');
+    const decline = await h.client.seal<TicketDecline>({ type: 'ticket.decline', id: 'd-1', orderHash: ORDER_HASH, attempt: 1, reason: 'NO_INVENTORY' });
+    await expect(h.client.submitTicket({ action: 'decline', message: decline })).resolves.toBeUndefined();
+    h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/receipt`] = refuse('REPLAYED_MESSAGE');
+    await expect(h.client.submitTicket({ action: 'receipt', message: receipt() })).resolves.toBeUndefined();
+    expect(h.store.journal().filter((e) => e.direction === 'to-gateway')).toEqual([expect.objectContaining({ type: 'ticket.receipt' })]);
+  });
+
+  // BUG-1615 review of #298: an abandoned receipt POST may land after the desk declined TICKET_TTL_TOO_SHORT; the
+  // gateway then holds the ticket RECEIPTED and answers the decline TICKET_CLOSED, and penalises a NO_SHOW.
+  test('a decline answered TICKET_CLOSED is not resent but made visible: a warn and stage ticket.decline.closed; REPLAYED_MESSAGE is neither', async () => {
+    const h = harness();
+    const route = `POST /v1/filler/tickets/${ORDER_HASH}/1/decline`;
+    const refuse = (code: string) => () => ({ status: 409, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code, message: 'refused' }) });
+    const decline = await h.client.seal<TicketDecline>({ type: 'ticket.decline', id: 'd-1', orderHash: ORDER_HASH, attempt: 1, reason: 'TICKET_TTL_TOO_SHORT' });
+    const closed = () => h.events.events.filter((e) => e.type === 'stage' && e.stage === 'ticket.decline.closed');
+    const warned = () => h.logger.entries.filter((e) => e.level === 'warn' && e.message.includes('filler-gateway had already closed the ticket'));
+    h.http.routes[route] = refuse('REPLAYED_MESSAGE');
+    await expect(h.client.submitTicket({ action: 'decline', message: decline })).resolves.toBeUndefined();
+    expect(closed()).toEqual([]);
+    expect(warned()).toEqual([]);
+    h.http.routes[route] = refuse('TICKET_CLOSED');
+    await expect(h.client.submitTicket({ action: 'decline', message: decline })).resolves.toBeUndefined();
+    expect(closed()).toEqual([{ type: 'stage', stage: 'ticket.decline.closed', atMs: h.clock.now(), orderHash: ORDER_HASH, attempt: 1, detail: { reason: 'TICKET_TTL_TOO_SHORT' } }]);
+    expect(warned()).toEqual([expect.objectContaining({ fields: expect.objectContaining({ orderHash: ORDER_HASH, attempt: 1, reason: 'TICKET_TTL_TOO_SHORT' }) })]);
+  });
+
+  test.each(['intent', 'receipt'] as const)('a %s answered TICKET_CLOSED is refused, not delivered', async (action) => {
+    const h = harness();
+    h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/${action}`] = () => ({ status: 409, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code: 'TICKET_CLOSED', message: 'closed' }) });
+    const request = action === 'intent' ? { action, message: intent() } : { action, message: receipt() };
+    await expect(h.client.submitTicket(request as never)).rejects.toMatchObject({ code: 'TICKET_CLOSED' });
+    expect(h.store.journal().filter((e) => e.direction === 'to-gateway')).toEqual([]);
+  });
+
+  // BUG-1615 review N-2: each resend spends a token of the ticket rate class every attempt of this filler shares.
+  test.each(['BAD_REQUEST', 'UNSUPPORTED_VERSION', 'UNSUPPORTED_TYPE', 'BAD_SIGNATURE', 'TICKET_REFUSED', 'UNKNOWN_REQUEST', 'UNKNOWN_TICKET', 'TICKET_CLOSED', 'NOT_ELIGIBLE'])('%s is a final refusal of a ticket action', (code) => {
+    expect(isFinalTicketRefusal(new GatewayError(code, true, 'refused'))).toBe(true);
+  });
+
+  test.each(['RATE_LIMITED', 'INTERNAL', 'STALE_MESSAGE', 'UNAUTHENTICATED', 'REPLAYED_MESSAGE', 'UNVERIFIED_RESPONSE', 'SOMETHING_NEW'])('%s is worth sending again', (code) => {
+    expect(isFinalTicketRefusal(new GatewayError(code, false, 'refused'))).toBe(false);
+  });
+
+  test('a failure that is not a GatewayError (network, timeout) is worth sending again', () => {
+    expect(isFinalTicketRefusal(new TypeError('fetch failed'))).toBe(false);
   });
 
   test('frames with no REST route are not sent while down', async () => {
