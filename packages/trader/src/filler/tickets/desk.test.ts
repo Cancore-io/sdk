@@ -16,7 +16,6 @@ import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { hashOrder, hashTicket, type FillerChains } from '../chain';
 import type { FillerEvent } from '../events';
-import { GatewayError } from '../errors';
 import { createFiller, type Filler, type TicketOfferDecision } from '../filler';
 import { recoverAddress, type FillSigner } from '../signer';
 import { FillerProtocolClient } from '../protocol/client';
@@ -24,6 +23,7 @@ import { createSealer } from '../protocol/envelope';
 import type { TicketRecord, TicketState } from '../store';
 import type { TicketVerifier } from './checks';
 import { TicketDesk } from './desk';
+import { isBoundToDeliver } from './terms';
 import {
   createFakeFetch,
   createFakeGatewayLogin,
@@ -39,6 +39,7 @@ import {
   type FakeSocket,
 } from '../testing';
 import { keccakHex, utf8 } from '../protocol/frames';
+import { TICKET_POST_TIMEOUT_MS } from '../protocol/rest';
 
 const QUOTE_KEY: Hex = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
 /** The message key (today the quote key): signs the consent, the receipt and every envelope. */
@@ -356,6 +357,71 @@ describe('BUG-1615: a ticket action counts as delivered only once filler-gateway
     await settle();
     expect(h.sent('ticket.decline')).toHaveLength(2);
     expect(await h.record()).toMatchObject({ state: 'declined', sentAtMs: expect.any(Number) });
+    await h.filler.stop();
+  });
+
+  // Review N-3: one worker per attempt, so a POST that never answers must not hold the attempt past its deadline.
+  test('an intent POST that never answers frees the worker after TICKET_POST_TIMEOUT_MS: sent again and acked before acceptBy', async () => {
+    const h = await harness();
+    const accept = h.answer.intent;
+    let hung = false;
+    h.answer.intent = (m) => (hung ? accept(m) : ((hung = true), new Promise<FakeAnswer>(() => undefined) as never));
+    const offer = h.offerFrame();
+    h.socket.receive(h.gateway.frame(offer));
+    await settle();
+    h.clock.advance(TICKET_POST_TIMEOUT_MS);
+    await settle();
+    expect((await h.record())!.sentAtMs).toBeUndefined();
+    h.clock.advance(1_000);
+    await settle();
+    expect(h.sent('ticket.intent')).toHaveLength(2);
+    expect(h.clock.now()).toBeLessThan(offer.acceptBy);
+    expect(await h.record()).toMatchObject({ state: 'intent-acked', sentAtMs: expect.any(Number) });
+    await h.filler.stop();
+  });
+
+  // Review N-2: a resend cannot change a final refusal, and each one spends the ticket rate class all attempts share.
+  const finally_ = (h: Harness, code: string): FakeAnswer => ({ status: 409, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code, message: 'refused for good' }) });
+
+  test('an intent refused TICKET_CLOSED is not sent again: marked unsent, as past its deadline', async () => {
+    const h = await harness();
+    h.answer.intent = () => finally_(h, 'TICKET_CLOSED');
+    await consent(h);
+    h.clock.advance(4_000);
+    await settle();
+    expect(h.sent('ticket.intent')).toHaveLength(1);
+    expect(await h.record()).toMatchObject({ state: 'intent-sent', sentAtMs: expect.any(Number), unsent: true });
+    expect(h.logger.entries).toContainEqual(expect.objectContaining({ message: 'tickets: refused by filler-gateway, not sent again', fields: expect.objectContaining({ error: expect.stringContaining('TICKET_CLOSED') }) }));
+    await h.filler.stop();
+  });
+
+  test('a receipt refused BAD_SIGNATURE is not sent again and binds no delivery', async () => {
+    const h = await harness();
+    h.answer.receipt = () => finally_(h, 'BAD_SIGNATURE');
+    const { offer } = await consent(h);
+    h.socket.receive(h.gateway.frame(await h.issuedFrame(offer)));
+    await settle();
+    h.clock.advance(60_000);
+    await settle();
+    expect(h.sent('ticket.receipt')).toHaveLength(1);
+    expect(await h.record()).toMatchObject({ state: 'receipted', unsent: true });
+    expect(isBoundToDeliver((await h.record())!)).toBe(false);
+    expect(h.stages()).not.toContain('ticket.receipted');
+    expect(h.store.journal().filter((e) => e.direction === 'to-gateway')).toEqual([]);
+    await h.filler.stop();
+  });
+
+  // Review N-1: the gateway answers a decline of a ticket it already declined TICKET_CLOSED.
+  test('a decline whose 2xx was lost, answered TICKET_CLOSED on the resend, is recorded as sent', async () => {
+    const h = await harness({ hook: async () => ({ decline: 'NO_INVENTORY' }) });
+    h.answer.decline = () => finally_(h, 'TICKET_CLOSED');
+    await consent(h);
+    h.clock.advance(4_000);
+    await settle();
+    expect(h.sent('ticket.decline')).toHaveLength(1);
+    expect(await h.record()).toMatchObject({ state: 'declined', sentAtMs: expect.any(Number) });
+    expect((await h.record())!.unsent).toBeUndefined();
+    expect(h.stages()).toContain('ticket.declined');
     await h.filler.stop();
   });
 });
@@ -741,15 +807,18 @@ describe('a receipt whose answer was lost is sent again under a fresh envelope (
   });
 
   test('REPLAYED_MESSAGE on its own id: the gateway holds the receipt — delivered, never declined', async () => {
-    const h = await receiptedDesk(async () => {
-      throw new GatewayError('REPLAYED_MESSAGE', true, 'id already accepted', undefined, 409);
-    });
-    await h.desk.work(h.w.orderHash, 0);
+    const h = await harness();
+    h.answer.receipt = () => ({ status: 409, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code: 'REPLAYED_MESSAGE', message: 'id already accepted' }) });
+    const { offer } = await consent(h);
+    h.socket.receive(h.gateway.frame(await h.issuedFrame(offer)));
+    await settle();
     h.clock.advance(60_000);
     await settle();
-    expect(h.calls).toHaveLength(1);
+    expect(h.sent('ticket.receipt')).toHaveLength(1);
     expect(await h.record()).toMatchObject({ state: 'receipted', sentAtMs: expect.any(Number) });
     expect((await h.record())!.unsent).toBeUndefined();
+    expect(h.stages()).toContain('ticket.receipted');
+    await h.filler.stop();
   });
 });
 

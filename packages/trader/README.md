@@ -128,7 +128,11 @@ It connects only after logging in.
 - **Ticket actions** (intents, receipts, declines) always go as
   `POST /v1/filler/tickets/{orderHash}/{attempt}/{intent|receipt|decline}`, session up or down: the HTTP status
   is the acknowledgement. Until a 2xx the action counts as not delivered: a receipt does not start the delivery,
-  and the action is sent again (fresh envelope) while its deadline lasts.
+  and the action is sent again (fresh envelope) while its deadline lasts. A POST unanswered after
+  `TICKET_POST_TIMEOUT_MS` (2 s) counts as a transport failure and is sent again. A final refusal (`BAD_REQUEST`,
+  `BAD_SIGNATURE`, `TICKET_REFUSED`, `UNKNOWN_TICKET`, `TICKET_CLOSED`, `NOT_ELIGIBLE`, …) is not: the action is
+  marked unsent, as past its deadline. `REPLAYED_MESSAGE`, and `TICKET_CLOSED` on a decline, mean filler-gateway
+  already holds it: delivered.
 - **Evidence.** Every verified frame is written to the store's evidence journal as the exact bytes received
   (id = keccak256 of the bytes), under the order lock when it names an order. `quote.ack` is attached to its
   quote, `ticket.intent.ack` to its ticket attempt. Every receipt filler-gateway acknowledged is journalled
