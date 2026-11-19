@@ -635,7 +635,7 @@ export class Executor {
     if (!driver || !readers || limit === undefined) return;
     try {
       const allowance = await erc20Allowance(readers.client, token, driver.address, readers.router.address);
-      if (allowance * 2n < limit) await this.approve(driver, readers, token, 0n, allowance);
+      if (allowance * 2n < limit && !this.stopped) await this.approve(driver, readers, token, 0n, allowance);
     } catch (error) {
       this.options.logger.warn('delivery: allowance top-up failed', { chain, token, error: reasonOf(error) });
     }
