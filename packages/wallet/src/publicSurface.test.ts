@@ -54,7 +54,7 @@ const TYPES: Record<string, string[]> = {
   '.': [
     'Bytes', 'DerivationScheme', 'DerivedCandidate', 'DerivedWalletKey', 'Ed25519KeyPair', 'Ed25519Signer', 'KekRole', 'KeyStore',
     'MnemonicErrorReport', 'MnemonicLanguage', 'PasskeySigningProvider', 'PersistedKeyPasswordWalletRecord', 'PersistedPasskeyWalletRecord',
-    'PhraseMatch', 'ProviderFromMnemonicOptions', 'RegisterResult', 'RevealedWalletSecret', 'Signer', 'StoredRecord',
+    'PhraseDamage', 'PhraseMatch', 'ProviderFromMnemonicOptions', 'RegisterResult', 'RevealedWalletSecret', 'Signer', 'StoredRecord',
     'UnlockedKeyPasswordWallet', 'WalletPasswordProblem', 'WrappedSeed',
   ],
   './operations': [
