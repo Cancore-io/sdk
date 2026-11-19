@@ -90,10 +90,11 @@ async function world(options: { canton?: boolean; refundAfterS?: number } = {}) 
   const chains = new FillerChains({}, {}, logger);
   const executor = new Executor({ store, chains, fillSigners: {}, fillerId: FILLER, receipted: async () => undefined, instanceId: 'r1', clock, logger, events });
   const handlers = new Map<string, FrameHandler>();
+  const pulls: Hex[] = [];
   const protocol = {
     on: (type: string, handler: FrameHandler) => void handlers.set(type, handler),
     onLogin: () => undefined,
-    pullAttestations: async () => false,
+    pullAttestations: async (hash: Hex) => (pulls.push(hash), false),
   } as unknown as FillerProtocolClient;
   const settler = new Settler({
     store, chains, executor, protocol, fillerId: FILLER, instanceId: 'r1', clock, logger, events,
@@ -106,7 +107,10 @@ async function world(options: { canton?: boolean; refundAfterS?: number } = {}) 
   };
   const stages = (stage: string) => events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === stage);
   const settlement = () => store.withOrder(orderHash, (tx) => tx.getSettlement());
-  return { clock, settler, push, delivery, proof, canton, runs, stages, settlement, orderHash, handlers };
+  const alertKinds = () => stages('settle.alert').map((e) => e.detail?.kind);
+  /** Moves the clock to `s` seconds from the start of the world. */
+  const at = (s: number) => clock.advance((nowS + s) * 1000 - clock.now());
+  return { clock, settler, push, delivery, proof, canton, runs, stages, settlement, orderHash, handlers, pulls, alertKinds, at, registered, refundAfter, store };
 }
 
 describe('Settler on a Canton source: SwapIntent_SettleWithProof by the party (CAN-2321)', () => {
@@ -168,5 +172,74 @@ describe('Settler on a Canton source: SwapIntent_SettleWithProof by the party (C
     const w = await world({ canton: false });
     await expect(w.settler.selfSettle(w.orderHash)).rejects.toBeInstanceOf(SettleError);
     await expect(w.settler.selfSettle(w.orderHash)).rejects.toMatchObject({ reason: 'canton-source' });
+  });
+});
+
+describe('Settler on a Canton source: the settle window, as on an EVM source (BUG-1614, S-07)', () => {
+  // refundAfter = +4200 s, fillDeadline = +600 s: proof window 3600 s; filled at -200 s, so half the window at +1600 s.
+  test('no set held: refund-near alertBeforeRefundMs before refundAfter, half-window at half of refundAfter − fillDeadline after the fill', async () => {
+    const w = await world();
+    await w.settler.sweep();
+    expect(w.alertKinds()).toEqual([]);
+    w.at(600);
+    await w.settler.sweep();
+    expect(w.stages('settle.alert').map((e) => e.detail)).toEqual([{ kind: 'refund-near', refundAfter: w.refundAfter }]);
+    w.at(1_599);
+    await w.settler.sweep();
+    expect(w.alertKinds()).toEqual(['refund-near']);
+    w.at(1_600);
+    await w.settler.sweep();
+    expect(w.stages('settle.alert').map((e) => e.detail).at(-1)).toMatchObject({ kind: 'half-window', proofWindow: '3600' });
+    expect(w.pulls).toHaveLength(4);
+  });
+
+  test('no set held: the pulls stop at refundAfter, when SwapIntent_SettleWithProof refuses (now < refundAfter); the intent is read once', async () => {
+    const w = await world();
+    await w.settler.sweep();
+    w.at(4_199);
+    await w.settler.sweep();
+    expect(w.pulls).toHaveLength(2);
+    w.at(4_200);
+    await w.settler.sweep();
+    w.at(4_200 + 7 * 24 * 3_600);
+    await w.settler.sweep();
+    expect(w.pulls).toHaveLength(2);
+    expect(w.canton.intent).toHaveBeenCalledTimes(1);
+  });
+
+  test('a held set that keeps failing to settle (the registry entry is not ACTIVE): refund-near from its own refundAfter, even with the intent unreadable', async () => {
+    const w = await world();
+    w.registered.registry = { state: 'PENDING', proposalCid: '00pr', entryCid: null } as never;
+    await w.push(w.delivery());
+    expect(w.runs).toHaveLength(0);
+    w.canton.intent.mockRejectedValue(new Error('filler-gateway unreachable'));
+    w.at(600);
+    await w.settler.sweep();
+    expect(w.alertKinds()).toEqual(['refund-near']);
+    expect(w.pulls).toHaveLength(0);
+  });
+
+  test('an intent that cannot be read: no pull and no alert this sweep; the next sweep reads it again', async () => {
+    const w = await world();
+    w.canton.intent.mockRejectedValueOnce(new Error('filler-gateway unreachable'));
+    w.at(600);
+    await w.settler.sweep();
+    expect(w.pulls).toHaveLength(0);
+    expect(w.alertKinds()).toEqual([]);
+    await w.settler.sweep();
+    expect(w.pulls).toHaveLength(1);
+    expect(w.alertKinds()).toEqual(['refund-near']);
+  });
+
+  test('no half-window alert without a fill time, or without a proof window (refundAfter at fillDeadline)', async () => {
+    const untimed = await world();
+    const { inclusion: _inclusion, ...fill } = (await untimed.store.withOrder(untimed.orderHash, (tx) => tx.getFill(0)))!;
+    await untimed.store.withOrder(untimed.orderHash, (tx) => tx.putFill(fill));
+    const windowless = await world({ refundAfterS: 600 });
+    for (const w of [untimed, windowless]) {
+      w.at(599);
+      await w.settler.sweep();
+      expect(w.alertKinds()).not.toContain('half-window');
+    }
   });
 });

@@ -145,6 +145,7 @@ export class Settler {
   private readonly alerted = new Set<string>();
   /** `attested` emitted in this process, by `${orderHash}:${attempt}`. */
   private readonly attested = new Set<string>();
+  private readonly refundAfters = new Map<Hex, bigint>();
   private timer: Cancel | undefined;
   private stopped = false;
 
@@ -244,7 +245,10 @@ export class Settler {
         const source = chainsOf(s.order)?.source;
         if (!source) {
           if (!this.isCantonOrigin(s.order)) continue;
-          if (s.payload && BigInt(Math.floor(this.options.clock.now() / 1000)) >= BigInt(s.payload.refundAfter)) continue;
+          const refundAfter = await this.cantonRefundAfter(s);
+          await this.windowAlerts(s, refundAfter, async () => refundAfter - BigInt(s.order.fillDeadline));
+          // SwapIntent_SettleWithProof asserts ledger time < refundAfter: from then on no settle can succeed.
+          if (BigInt(Math.floor(this.options.clock.now() / 1000)) >= refundAfter) continue;
           if (s.payload) await this.settle(orderHash).catch((error: unknown) => this.quiet(orderHash, error));
           else await this.pull(orderHash);
           continue;
@@ -276,16 +280,24 @@ export class Settler {
       return intent;
     }
     this.rearmAlert(s.orderHash, 'escrow-gone');
-    const nowS = BigInt(Math.floor(this.options.clock.now() / 1000));
-    const filledAt = s.fill.inclusion ? BigInt(String(s.fill.inclusion.header.timestamp ?? '0')) : undefined;
-    if (filledAt !== undefined && filledAt > 0n) {
-      const window = await readers.router.proofWindow(s.order.destination);
-      if (window > 0n && nowS >= filledAt + window / 2n) this.alert(s.orderHash, s.fill.attempt, 'half-window', { filledAt: filledAt.toString(), proofWindow: window.toString() });
-    }
-    if (nowS * 1000n + BigInt(this.settings.alertBeforeRefundMs) >= intent.refundAfter * 1000n) {
-      this.alert(s.orderHash, s.fill.attempt, 'refund-near', { refundAfter: intent.refundAfter.toString() });
-    }
+    await this.windowAlerts(s, intent.refundAfter, () => readers.router.proofWindow(s.order.destination));
     return intent;
+  }
+
+  /** R-4: an unsettled fill past half its proof window, or within `alertBeforeRefundMs` of `refundAfter`. */
+  private async windowAlerts(s: Settleable, refundAfter: bigint, proofWindow: () => Promise<bigint>): Promise<void> {
+    const nowS = BigInt(Math.floor(this.options.clock.now() / 1000));
+    const filledAt = s.fill.inclusion ? BigInt(String(s.fill.inclusion.header.timestamp ?? '0')) : 0n;
+    const window = filledAt > 0n ? await proofWindow() : 0n;
+    if (window > 0n && nowS >= filledAt + window / 2n) this.alert(s.orderHash, s.fill.attempt, 'half-window', { filledAt: filledAt.toString(), proofWindow: window.toString() });
+    if (nowS * 1000n + BigInt(this.settings.alertBeforeRefundMs) >= refundAfter * 1000n) this.alert(s.orderHash, s.fill.attempt, 'refund-near', { refundAfter: refundAfter.toString() });
+  }
+
+  /** `refundAfter` of a Canton source: the held set's, else the intent's (`GET /v1/filler/canton/intents/{orderHash}`, once per process). */
+  private async cantonRefundAfter(s: Settleable): Promise<bigint> {
+    if (s.payload) return BigInt(s.payload.refundAfter);
+    if (!this.refundAfters.has(s.orderHash)) this.refundAfters.set(s.orderHash, BigInt((await this.options.canton!.intent(s.orderHash)).refundAfter));
+    return this.refundAfters.get(s.orderHash)!;
   }
 
   /** `GET /v1/filler/attestations/{orderHash}`; false while not ready or filler-gateway is unreachable. */
