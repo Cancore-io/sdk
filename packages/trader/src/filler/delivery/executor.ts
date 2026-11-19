@@ -54,7 +54,7 @@ import type { CantonOperations } from '../canton/operations';
 import type { FillSigner } from '../signer';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, TicketRecord } from '../store';
 import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from '../tickets/terms';
-import { CantonDelivery } from './canton';
+import { CantonDelivery, isSignedClaim } from './canton';
 import { FeeCeilingError, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
 import { reasonOf, retryableEstimateFailure, revertName } from './reverts';
 import type { FillRefusal } from './refusal';
@@ -310,9 +310,10 @@ export class Executor {
       const work = await this.options.store.withOrder(orderHash, async (tx) => {
         const attempts: number[] = [];
         for (const ticket of await tx.listTickets()) {
-          if (ticket.state !== 'receipted' || ticket.sentAtMs === undefined || ticket.unsent) continue;
           const fill = await tx.getFill(ticket.attempt);
-          if (!fill || fill.state === 'pending') attempts.push(ticket.attempt);
+          const bound = ticket.state === 'receipted' && ticket.sentAtMs !== undefined && !ticket.unsent;
+          // A signed claim may have committed whatever its ticket became since: resumed to be closed, never left pending.
+          if (isSignedClaim(fill) || (bound && (!fill || fill.state === 'pending'))) attempts.push(ticket.attempt);
         }
         return attempts;
       });
@@ -421,7 +422,7 @@ export class Executor {
   private async run(orderHash: Hex, attempt: number): Promise<DeliveryResult> {
     const { store, clock, instanceId } = this.options;
     const ticket = await this.options.receipted(orderHash, attempt);
-    if (!ticket) return this.refuse(orderHash, attempt, 'no-receipt', 'no ticket.receipt went out for this attempt');
+    if (!ticket) return (await this.canton?.closeSigned(orderHash, attempt, () => void this.deliver(orderHash, attempt))) ?? this.refuse(orderHash, attempt, 'no-receipt', 'no ticket.receipt went out for this attempt');
     if (ticket.issued?.form === 'canton') {
       if (!this.canton) return this.refuse(orderHash, attempt, 'not-deliverable', 'a Canton-form ticket, and no Canton party configured');
       return this.canton.deliver(ticket, () => void this.deliver(orderHash, attempt));

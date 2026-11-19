@@ -26,9 +26,13 @@ import { CantonSubmitUnknown, type RunHooks } from '../canton/operations';
 import { GatewayError } from '../errors';
 import type { FillRecord, TicketRecord } from '../store';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, FakeClock, InMemoryFillerStore } from '../testing';
+import { FillerChains } from '../chain';
+import type { FillerProtocolClient } from '../protocol/client';
+import { Settler } from '../settlement/settler';
+import { TicketDesk, type TicketDeskOptions } from '../tickets/desk';
 import { CantonDelivery, cantonFillRef } from './canton';
 import { LEDGER_CLOCK_SLACK_MS } from './validFrom';
-import type { DeliveryResult } from './executor';
+import { Executor, type DeliveryResult } from './executor';
 
 const FILL_KEY: Hex = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
 const SOURCE = 'eip155:11155111' as const;
@@ -98,7 +102,7 @@ function harness(opts: { validUntilSec?: number; validFromSec?: number; script: 
     clock.advance(ms);
     await Promise.all(results);
   };
-  return { clock, store, events, ticket, run, fill, seed, advance, calls, asked, make };
+  return { clock, store, events, ticket, run, fill, seed, advance, calls, asked, make, operations, signer };
 }
 
 describe('Canton delivery: a commit (CAN-1867)', () => {
@@ -242,6 +246,130 @@ describe('Canton delivery: a replica that died mid-delivery (CAN-1867, review F-
     await h.store.withOrder(ORDER_HASH, (tx) => tx.putFill(dead(START - 1)));
     await expect(h.run()).resolves.toMatchObject({ status: 'tracking', detail: expect.stringContaining('outcome unknown') });
     await expect(h.fill()).resolves.toMatchObject({ state: 'sent' });
+    expect(h.calls).toHaveLength(0);
+  });
+
+  const flush = async () => {
+    for (let i = 0; i < 50; i++) await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  const receipted = (h: ReturnType<typeof harness>): TicketRecord => ({ ...h.ticket, receipt: { type: 'ticket.receipt', form: 'canton' } as never });
+
+  /** The production wiring (filler.ts): `Executor.receipted` is `TicketDesk.receipted`; `ticket.expired` reaches `TicketDesk.onExpired`. */
+  function wired(h: ReturnType<typeof harness>) {
+    const logger = createRecordingLogger();
+    const desk = new TicketDesk({ store: h.store, clock: h.clock, logger, events: h.events } as unknown as TicketDeskOptions);
+    const chains = new FillerChains({}, {}, logger);
+    const executor = new Executor({
+      store: h.store, chains, fillSigners: { [SOURCE]: h.signer }, fillerId: 'cancore-dev-1', cantonParty: PARTY, receipted: (o, a) => desk.receipted(o, a), instanceId: 'replica-1',
+      clock: h.clock, logger, events: h.events, delivery: { pollIntervalMs: 2_000, nonceLeaseTtlMs: 60_000 }, canton: { operations: h.operations as never, sendGuardSec: 20 },
+    });
+    const protocol = { on: () => undefined, onLogin: () => undefined, pullAttestations: async () => false } as unknown as FillerProtocolClient;
+    const settler = new Settler({ store: h.store, chains, executor, protocol, fillerId: 'cancore-dev-1', instanceId: 'replica-1', clock: h.clock, logger, events: h.events });
+    return { desk, executor, settler };
+  }
+
+  async function expiredBeforeRestart(h: ReturnType<typeof harness>) {
+    const w = wired(h);
+    await h.seed(receipted(h));
+    // filler-gateway sends ticket.expired only at validUntil + grace.
+    h.clock.advance(300_000 + 60_000);
+    await w.desk.onExpired({ frame: { type: 'ticket.expired', orderHash: ORDER_HASH, attempt: 0, result: 'NO_SHOW' }, channel: 'ws', firstSeen: true } as never);
+    expect((await h.store.withOrder(ORDER_HASH, (tx) => tx.getTicket(0)))?.state).toBe('expired');
+    return w;
+  }
+  const outcomeUnknown = (h: ReturnType<typeof harness>) => h.events.events.filter((e) => e.type === 'stage' && e.stage === 'fill.sent' && e.detail?.outcome === 'unknown');
+
+  test('TC-SDK-BUG-1610-01: it signed, and ticket.expired came before the restart → resume closes it sent, outcome unknown, never prepared again; the settlement takes it up', async () => {
+    const h = harness({ script: ['commit'] });
+    // Its lease ends as the replica restarts.
+    await h.store.withOrder(ORDER_HASH, (tx) => tx.putFill(dead(START + 360_000)));
+    const { executor, settler } = await expiredBeforeRestart(h);
+    await executor.start();
+    await flush();
+    await expect(h.fill()).resolves.toMatchObject({ state: 'sent', txRef: '', sentAtMs: START - 1_000, reason: expect.stringContaining('outcome unknown') });
+    expect(h.calls).toHaveLength(0);
+    // Past `no-fill`: the settlement loads the fill; this harness has no source chain to settle on.
+    await expect(settler.selfSettle(ORDER_HASH)).rejects.toMatchObject({ reason: 'no-delivery-key' });
+    executor.stop();
+    // A closed fill is not resumed again.
+    const next = wired(h).executor;
+    await next.start();
+    await flush();
+    expect(outcomeUnknown(h)).toHaveLength(1);
+    next.stop();
+  });
+
+  test('TC-SDK-BUG-1610-02: its lease still runs when the expired ticket is delivered → tracked, closed sent once the lease ends, never prepared again', async () => {
+    const h = harness({ script: ['commit'] });
+    await h.store.withOrder(ORDER_HASH, (tx) => tx.putFill(dead(START + 370_000)));
+    const { executor } = await expiredBeforeRestart(h);
+    await expect(executor.deliver(ORDER_HASH, 0)).resolves.toMatchObject({ status: 'tracking', detail: expect.stringContaining('another replica') });
+    await expect(h.fill()).resolves.toMatchObject({ state: 'pending' });
+    h.clock.advance(10_001);
+    await flush();
+    await expect(h.fill()).resolves.toMatchObject({ state: 'sent', reason: expect.stringContaining('outcome unknown') });
+    expect(h.calls).toHaveLength(0);
+  });
+
+  test('TC-SDK-BUG-1610-03: a claim that never signed is not resumed once its ticket expired: nothing went out, no-receipt as before', async () => {
+    const h = harness({ script: ['commit'] });
+    const { sentAtMs: _signed, ...unsigned } = dead(START + 10_000);
+    await h.store.withOrder(ORDER_HASH, (tx) => tx.putFill(unsigned));
+    const { executor } = await expiredBeforeRestart(h);
+    await executor.start();
+    await flush();
+    expect(h.events.events).not.toContainEqual(expect.objectContaining({ stage: 'fill.refused' }));
+    await expect(executor.deliver(ORDER_HASH, 0)).resolves.toMatchObject({ status: 'refused', reason: 'no-receipt' });
+    await expect(h.fill()).resolves.toMatchObject({ state: 'pending' });
+    expect(h.calls).toHaveLength(0);
+    executor.stop();
+  });
+
+  test('TC-SDK-BUG-1610-07: a pending EVM-chain fill with sentAtMs is left to its nonce: resume and deliver never close it', async () => {
+    const h = harness({ script: ['commit'] });
+    await h.store.withOrder(ORDER_HASH, (tx) => tx.putFill({ ...dead(START + 10_000), chain: SOURCE }));
+    const { executor } = await expiredBeforeRestart(h);
+    await executor.start();
+    await flush();
+    await expect(executor.deliver(ORDER_HASH, 0)).resolves.toMatchObject({ status: 'refused', reason: 'no-receipt' });
+    await expect(h.fill()).resolves.toMatchObject({ state: 'pending', chain: SOURCE });
+    expect(outcomeUnknown(h)).toHaveLength(0);
+    executor.stop();
+  });
+
+  test('TC-SDK-BUG-1610-04: the replica that signed restarts after ticket.expired → its own claim is closed at once, though its lease still runs', async () => {
+    const h = harness({ script: ['commit'] });
+    await h.store.withOrder(ORDER_HASH, (tx) => tx.putFill({ ...dead(START + 420_000), owner: 'replica-1' }));
+    const { executor } = await expiredBeforeRestart(h);
+    await executor.start();
+    await flush();
+    await expect(h.fill()).resolves.toMatchObject({ state: 'sent', reason: expect.stringContaining('outcome unknown') });
+    executor.stop();
+  });
+
+  test('TC-SDK-BUG-1610-05: resume still delivers a receipted ticket only once its receipt went out', async () => {
+    const h = harness({ script: ['commit'] });
+    const { sentAtMs: _sent, ...notYetSent } = receipted(h);
+    for (const ticket of [notYetSent, { ...receipted(h), unsent: true as const }]) {
+      await h.seed(ticket);
+      const { executor } = wired(h);
+      await executor.start();
+      await flush();
+      executor.stop();
+    }
+    expect(h.events.events).not.toContainEqual(expect.objectContaining({ stage: 'fill.refused' }));
+    await expect(h.fill()).resolves.toBeUndefined();
+  });
+
+  test('TC-SDK-BUG-1610-06: a stopped delivery waits on no lease: nothing runs once it ends', async () => {
+    const h = harness({ script: ['closed-at-prepare'] });
+    await h.seed(h.ticket);
+    await h.store.withOrder(ORDER_HASH, (tx) => tx.putFill(dead(START + 10_000)));
+    const stopped = h.make('replica-1');
+    stopped.stop();
+    await expect(h.run(stopped)).resolves.toMatchObject({ status: 'tracking', detail: expect.stringContaining('another replica') });
+    await h.advance(10_001);
     expect(h.calls).toHaveLength(0);
   });
 });
