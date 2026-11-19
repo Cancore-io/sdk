@@ -62,9 +62,11 @@ function harness(opts: { validUntilSec?: number; validFromSec?: number; script: 
 
   const script = [...opts.script];
   const calls: number[] = [];
+  const asked: unknown[] = [];
   const operations = {
-    fill: async (_expect: unknown, hooks: RunHooks = {}) => {
+    fill: async (expectation: unknown, hooks: RunHooks = {}) => {
       calls.push(clock.now());
+      asked.push(expectation);
       const step = script.shift() ?? 'closed-at-prepare';
       if (step === 'refused-before-sign') throw new CantonRefusal('-', 'delivery.fill: the root is not DeliveryOrder_Fill');
       if (step === 'closed-at-prepare') throw new GatewayError('TICKET_CLOSED', true, 'the ticket is filled');
@@ -96,7 +98,7 @@ function harness(opts: { validUntilSec?: number; validFromSec?: number; script: 
     clock.advance(ms);
     await Promise.all(results);
   };
-  return { clock, store, events, ticket, run, fill, seed, advance, calls, make };
+  return { clock, store, events, ticket, run, fill, seed, advance, calls, asked, make };
 }
 
 describe('Canton delivery: a commit (CAN-1867)', () => {
@@ -124,6 +126,8 @@ describe('Canton delivery: not before the order\'s validFrom (CAN-3026)', () => 
     expect(h.calls).toHaveLength(0);
     await h.advance(1);
     expect(h.calls).toEqual([START + 5_000 + LEDGER_CLOCK_SLACK_MS]);
+    // BUG-1609: the fill check holds the disclosed DeliveryOrder to this floor.
+    expect(h.asked).toEqual([expect.objectContaining({ validFrom: String(START / 1000 + 5) })]);
     await expect(h.fill()).resolves.toMatchObject({ state: 'confirmed', txRef: 'upd-1' });
   });
 
@@ -134,6 +138,7 @@ describe('Canton delivery: not before the order\'s validFrom (CAN-3026)', () => 
     await expect(h.run()).resolves.toMatchObject({ status: 'waiting' });
     await h.advance(3_000 + LEDGER_CLOCK_SLACK_MS);
     expect(h.calls).toEqual([START + 3_000 + LEDGER_CLOCK_SLACK_MS]);
+    expect(h.asked).toEqual([expect.objectContaining({ validFrom: String(START / 1000 + 3) })]);
   });
 
   test('TC-SDK-3026-03: trading refuses the prepare before validFrom (CANTON_NOT_READY): retried, nothing signed, then filled', async () => {

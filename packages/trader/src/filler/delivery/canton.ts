@@ -111,7 +111,8 @@ export class CantonDelivery {
     const validUntilMs = Number(issued.validUntil) * 1000;
     // Signed by an earlier try — this replica's or a dead one's: it may have committed.
     const signedBefore = existing?.sentAtMs !== undefined;
-    const held = await this.outsideWindow(ticket, issued.validFrom ?? offer.validFrom, validUntilMs, signedBefore, existing !== undefined, again);
+    const validFrom = issued.validFrom ?? offer.validFrom;
+    const held = await this.outsideWindow(ticket, validFrom, validUntilMs, signedBefore, existing !== undefined, again);
     if (held) return held;
     const claimed = await store.withOrder(orderHash, async (tx) => {
       const fill = await tx.getFill(attempt);
@@ -140,6 +141,7 @@ export class CantonDelivery {
         attempt,
         deliveryOrderCid: issued.deliveryOrderCid,
         validUntil: issued.validUntil,
+        validFrom,
         repayTo: identity.repayTo,
         order: { recipient: offer.order.recipient, outputAsset: offer.order.outputAsset, minReceived: offer.order.minReceived, fillDeadline: offer.order.fillDeadline },
         amountOut: offer.amountOut,

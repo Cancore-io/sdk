@@ -31,6 +31,7 @@ const ORDER_CID = `00${'0d'.repeat(33)}`;
 const FACTORY_CID = `00${'fa'.repeat(33)}`;
 const PIN_CID = '00pin';
 const VALID_UNTIL = String(NOW / 1000 + 120);
+const VALID_FROM = String(NOW / 1000 - 30);
 const FILL_DEADLINE = String(NOW / 1000 + 600);
 const asset = { admin: ADMIN, id: 'CNRX' };
 
@@ -61,6 +62,7 @@ const expect_: DeliveryFillExpectation = {
   attempt: 2,
   deliveryOrderCid: ORDER_CID,
   validUntil: VALID_UNTIL,
+  validFrom: VALID_FROM,
   repayTo: REPAY_TO,
   order: { recipient: encodeCantonRecipient(RECIPIENT), outputAsset: encodeCantonOutputAsset(asset), minReceived: encodeCantonAmount('25').toString(), fillDeadline: FILL_DEADLINE },
   amountOut: encodeCantonAmount('25').toString(),
@@ -78,7 +80,7 @@ const orderArg = (over: Record<string, DamlValue> = {}) =>
     operator: v.party(OPERATOR), guardian: v.party(GUARDIAN), filler: v.party(ME), fillerId: v.text('cancore-dev-1'), repayTo: v.bytes32(REPAY_TO),
     fillerEntryCid: v.cid('ee'.repeat(34)), attestors: v.list([v.party(ATTESTOR)]), orderHash: v.bytes32(ORDER_HASH), recipient: v.party(RECIPIENT),
     instrumentId: instrument(), instrumentAdmin: v.party(ADMIN), transferFactoryCid: v.cid(FACTORY_CID), amount: v.numeric('25.0000000000'),
-    fillDeadline: v.time(FILL_DEADLINE), attempt: v.int(2), validUntil: v.time(VALID_UNTIL),
+    fillDeadline: v.time(FILL_DEADLINE), attempt: v.int(2), validUntil: v.time(VALID_UNTIL), validFrom: { t: 'optional', v: v.time(VALID_FROM) },
     ...over,
   });
 /** A `TransferRoute` of the pin, held (CAN-3172). */
@@ -240,6 +242,30 @@ describe('delivery.fill: what the summary states (CAN-1867)', () => {
 
   test('TC-SDK-1867-09: a ticket already expired by the process clock: refused', () => {
     refused(() => check({ nowMs: (Number(VALID_UNTIL) + 1) * 1000 })(prepared(), [fill()]), /expired/);
+  });
+});
+
+describe('delivery.fill: the DeliveryOrder opens no earlier than the ticket’s validFrom (BUG-1609)', () => {
+  test('a DeliveryOrder whose validFrom is later than the ticket’s: passes (the ledger holds the fill until then)', () => {
+    expect(() => check()(prepared(), [fill({ order: { validFrom: { t: 'optional', v: v.time(String(Number(VALID_FROM) + 1)) } } })])).not.toThrow();
+  });
+
+  test.each([
+    ['one second before the ticket’s validFrom', { t: 'optional', v: v.time(String(Number(VALID_FROM) - 1)) }],
+    ['None', { t: 'optional' }],
+    ['not an Optional', { t: 'variant', constructor: 'Some', v: v.time(VALID_FROM) }],
+  ] as [string, DamlValue][])('a DeliveryOrder whose validFrom is %s: refused', (_name, validFrom) => {
+    refused(() => check()(prepared(), [fill({ order: { validFrom } })]), /validFrom/);
+  });
+
+  test('a DeliveryOrder with no validFrom field (a 0.4.2 order, or a None the ledger dropped as a trailing field): refused', () => {
+    const tx = fill();
+    delete (tx.inputContracts[0]!.argument as { v: Record<string, DamlValue> }).v.validFrom;
+    refused(() => check()(prepared(), [tx]), /validFrom/);
+  });
+
+  test('an expected validFrom that is not unix seconds: refused', () => {
+    refused(() => check({ validFrom: 'soon' })(prepared(), [fill()]), /validFrom is not unix seconds/);
   });
 });
 
