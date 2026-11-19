@@ -35,8 +35,10 @@ import {
   FakeChain,
   FakeClock,
   InMemoryFillerStore,
+  type FakeAnswer,
   type FakeSocket,
 } from '../testing';
+import { keccakHex, utf8 } from '../protocol/frames';
 
 const QUOTE_KEY: Hex = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
 /** The message key (today the quote key): signs the consent, the receipt and every envelope. */
@@ -107,6 +109,16 @@ async function harness(options: Options = {}) {
   const events = createRecordingEventSink();
   const logger = createRecordingLogger();
   const hookCalls: TicketOffer[] = [];
+  const http = createFakeFetch(login.routes);
+  /** filler-gateway's answer to a ticket action; a test replaces one to refuse it. */
+  const answer: Record<TicketActionName, (message: Record<string, unknown>) => FakeAnswer> = {
+    intent: (m) => ({ status: 200, body: gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, re: m.id, orderHash: m.orderHash, attempt: m.attempt, intentHash: `0x${'11'.repeat(32)}`, receivedAt: clock.now() }) }),
+    receipt: () => ({ status: 200, body: {} }),
+    decline: () => ({ status: 200, body: {} }),
+  };
+  for (const attempt of [0, 1]) {
+    for (const action of TICKET_ACTIONS) http.routes[`POST /v1/filler/tickets/${w.orderHash}/${attempt}/${action}`] = (r) => answer[action](JSON.parse(r.body!));
+  }
   const filler: Filler = createFiller({
     gatewayUrl: 'wss://filler-gateway.example/v1',
     fillerId: FILLER,
@@ -119,7 +131,7 @@ async function harness(options: Options = {}) {
     tickets: { deltaIssueMs: 3_000 },
     store,
     webSocket: ws.factory,
-    fetch: createFakeFetch(login.routes).fetch,
+    fetch: http.fetch,
     clock,
     events,
     logger,
@@ -166,11 +178,16 @@ async function harness(options: Options = {}) {
     const ticketSig = await (over.signer ?? ticketSigner).signTypedData({ domain: FILL_TICKET_DOMAIN, types: FILL_TICKET_TYPES, primaryType: 'FillTicket', message: ticket });
     return { type: 'ticket.issued', fillerId: FILLER, form: 'evm', orderHash: w.orderHash, attempt: offer.attempt, ticket, ticketSig };
   };
-  const sent = (type: string) => socket.sentFrames().filter((f) => f.type === type);
+  /** Every POST of a ticket action of `type`, answered or refused. */
+  const posts = (type: string) => http.requests.filter((r) => r.method === 'POST' && r.url.endsWith(`/${type.replace('ticket.', '')}`));
+  const sent = (type: string) => posts(type).map((r) => JSON.parse(r.body!) as Record<string, unknown>);
   const record = (attempt = 0) => store.withOrder(w.orderHash, (tx) => tx.getTicket(attempt));
   const stages = () => events.events.filter((e): e is Extract<FillerEvent, { type: 'stage' }> => e.type === 'stage').map((e) => e.stage);
-  return { clock, store, w, gateway, impostor, socket, events, logger, filler, hookCalls, offerFrame, issuedFrame, sent, record, stages };
+  return { clock, store, w, gateway, impostor, socket, events, logger, filler, hookCalls, answer, offerFrame, issuedFrame, posts, sent, record, stages };
 }
+
+const TICKET_ACTIONS = ['intent', 'receipt', 'decline'] as const;
+type TicketActionName = (typeof TICKET_ACTIONS)[number];
 
 type Harness = Awaited<ReturnType<typeof harness>>;
 
@@ -180,17 +197,12 @@ const contentOf = (message: Record<string, unknown>) => {
   return content;
 };
 
-/** offer → intent → ack, through the session. */
+/** offer on the session → intent posted → ack in the answer. */
 async function consent(h: Harness, over: Record<string, unknown> = {}) {
   const offer = h.offerFrame(over);
   h.socket.receive(h.gateway.frame(offer));
   await settle();
-  const intent = h.sent('ticket.intent').at(-1);
-  if (intent) {
-    h.socket.receive(h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, re: intent.id, orderHash: h.w.orderHash, attempt: offer.attempt, intentHash: `0x${'11'.repeat(32)}`, receivedAt: h.clock.now() }));
-    await settle();
-  }
-  return { offer, intent };
+  return { offer, intent: h.sent('ticket.intent').at(-1) };
 }
 
 describe('the full path: offer → intent → ack → issued → checks → receipt', () => {
@@ -274,6 +286,76 @@ describe('the full path: offer → intent → ack → issued → checks → rece
     expect(h.sent('ticket.intent')).toHaveLength(1);
     expect(h.sent('ticket.receipt')).toHaveLength(1);
     expect(h.hookCalls).toHaveLength(1);
+    await h.filler.stop();
+  });
+});
+
+// BUG-1615 (BUG-1556 S-08): a WebSocket send only proves the bytes reached the socket, and an `error{re}` was never
+// tied back to the action: a refused or lost intent, receipt or decline counted as delivered and was never resent.
+describe('BUG-1615: a ticket action counts as delivered only once filler-gateway acknowledged it', () => {
+  const refusal = (h: Harness, code: 'RATE_LIMITED' | 'INTERNAL'): FakeAnswer =>
+    code === 'RATE_LIMITED'
+      ? { status: 429, body: { type: 'error', code, message: 'ticket rate class over its limit', retryAfterMs: 1_000 } }
+      : { status: 500, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code, message: 'refused' }) };
+  const refuseOnce = (h: Harness, action: TicketActionName, code: 'RATE_LIMITED' | 'INTERNAL') => {
+    const accept = h.answer[action];
+    let refused = false;
+    h.answer[action] = (m) => (refused ? accept(m) : ((refused = true), refusal(h, code)));
+  };
+  const ticketFramesOnSocket = (h: Harness) => h.socket.sentFrames().filter((f) => String(f.type).startsWith('ticket.'));
+
+  test.each(['RATE_LIMITED', 'INTERNAL'] as const)('the intent refused with %s while the session is up: not marked sent, sent again before acceptBy, then acked', async (code) => {
+    const h = await harness();
+    refuseOnce(h, 'intent', code);
+    const offer = h.offerFrame();
+    h.socket.receive(h.gateway.frame(offer));
+    await settle();
+    expect(h.sent('ticket.intent')).toHaveLength(1);
+    expect(await h.record()).toMatchObject({ state: 'intent-sent' });
+    expect((await h.record())!.sentAtMs).toBeUndefined();
+    h.clock.advance(1_000);
+    await settle();
+    expect(h.sent('ticket.intent')).toHaveLength(2);
+    expect(h.clock.now()).toBeLessThan(offer.acceptBy);
+    expect(await h.record()).toMatchObject({ state: 'intent-acked', sentAtMs: expect.any(Number) });
+    expect(ticketFramesOnSocket(h)).toEqual([]);
+    await h.filler.stop();
+  });
+
+  test('the receipt refused: not delivered, nothing journalled; once acknowledged, journalled to-gateway as the bytes posted, then delivered', async () => {
+    const h = await harness();
+    refuseOnce(h, 'receipt', 'INTERNAL');
+    const { offer } = await consent(h);
+    h.socket.receive(h.gateway.frame(await h.issuedFrame(offer)));
+    await settle();
+    const toGateway = () => h.store.journal().filter((e) => e.direction === 'to-gateway');
+    expect(h.sent('ticket.receipt')).toHaveLength(1);
+    expect(await h.record()).toMatchObject({ state: 'receipted' });
+    expect((await h.record())!.sentAtMs).toBeUndefined();
+    expect(toGateway()).toEqual([]);
+    expect(h.stages()).not.toContain('ticket.receipted');
+
+    h.clock.advance(1_000);
+    await settle();
+    const acknowledged = h.posts('ticket.receipt')[1]!.body!;
+    expect(h.sent('ticket.receipt')).toHaveLength(2);
+    expect(toGateway()).toEqual([{ id: keccakHex(utf8(acknowledged)), direction: 'to-gateway', type: 'ticket.receipt', raw: utf8(acknowledged), atMs: h.clock.now(), orderHash: h.w.orderHash, attempt: 0 }]);
+    expect(await h.record()).toMatchObject({ state: 'receipted', receipt: { id: JSON.parse(acknowledged).id }, sentAtMs: expect.any(Number) });
+    expect(h.stages()).toContain('ticket.receipted');
+    expect(ticketFramesOnSocket(h)).toEqual([]);
+    await h.filler.stop();
+  });
+
+  test('the decline refused: not marked sent, sent again while its deadline lasts', async () => {
+    const h = await harness({ hook: async () => ({ decline: 'NO_INVENTORY' }) });
+    refuseOnce(h, 'decline', 'INTERNAL');
+    await consent(h);
+    expect(await h.record()).toMatchObject({ state: 'declined' });
+    expect((await h.record())!.sentAtMs).toBeUndefined();
+    h.clock.advance(1_000);
+    await settle();
+    expect(h.sent('ticket.decline')).toHaveLength(2);
+    expect(await h.record()).toMatchObject({ state: 'declined', sentAtMs: expect.any(Number) });
     await h.filler.stop();
   });
 });

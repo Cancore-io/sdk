@@ -1,6 +1,7 @@
 /**
  * The REST side of filler-gateway (protocol §3.6), on the host of the
- * WebSocket URL: the login, and the fallback while the session is down.
+ * WebSocket URL: the login, every ticket action, and the fallback while the
+ * session is down.
  * Bodies are the WebSocket messages; every filler-gateway → filler message in
  * a response — the challenge, a list item, an ack, an error body — is
  * verified exactly like a WebSocket frame before it is returned.
