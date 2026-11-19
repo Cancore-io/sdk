@@ -110,7 +110,7 @@ async function world(options: { canton?: boolean; refundAfterS?: number } = {}) 
   const alertKinds = () => stages('settle.alert').map((e) => e.detail?.kind);
   /** Moves the clock to `s` seconds from the start of the world. */
   const at = (s: number) => clock.advance((nowS + s) * 1000 - clock.now());
-  return { clock, settler, push, delivery, proof, canton, runs, stages, settlement, orderHash, handlers, pulls, alertKinds, at, registered, refundAfter, store };
+  return { clock, settler, push, delivery, proof, canton, runs, stages, settlement, orderHash, handlers, pulls, alertKinds, at, registered, refundAfter, store, logger };
 }
 
 describe('Settler on a Canton source: SwapIntent_SettleWithProof by the party (CAN-2321)', () => {
@@ -219,16 +219,45 @@ describe('Settler on a Canton source: the settle window, as on an EVM source (BU
     expect(w.pulls).toHaveLength(0);
   });
 
-  test('an intent that cannot be read: no pull and no alert this sweep; the next sweep reads it again', async () => {
+  test('an intent that cannot be read: the pulls go on with refundAfter unknown and no alert, a warning per failed read; the next sweep reads it again', async () => {
     const w = await world();
-    w.canton.intent.mockRejectedValueOnce(new Error('filler-gateway unreachable'));
+    const read = w.canton.intent.getMockImplementation()!;
+    w.canton.intent.mockRejectedValue(new Error('filler-gateway unreachable'));
     w.at(600);
     await w.settler.sweep();
-    expect(w.pulls).toHaveLength(0);
+    await w.settler.sweep();
+    expect(w.pulls).toHaveLength(2);
     expect(w.alertKinds()).toEqual([]);
+    expect(w.logger.entries.filter((e) => e.level === 'warn').map((e) => e.fields?.error)).toEqual(['filler-gateway unreachable', 'filler-gateway unreachable']);
+    w.canton.intent.mockImplementation(read);
+    await w.settler.sweep();
+    expect(w.pulls).toHaveLength(3);
+    expect(w.alertKinds()).toEqual(['refund-near']);
+  });
+
+  test('a node without Canton operations: refundAfter unknown, the pulls go on as before, no sweep error', async () => {
+    const w = await world({ canton: false });
+    w.at(4_200);
     await w.settler.sweep();
     expect(w.pulls).toHaveLength(1);
-    expect(w.alertKinds()).toEqual(['refund-near']);
+    expect(w.logger.entries.filter((e) => e.level === 'warn')).toEqual([]);
+  });
+
+  test('the refundAfter read is dropped once the settlement is confirmed, or the order leaves the open orders', async () => {
+    const cached = (w: { settler: unknown }) => [...(w.settler as { refundAfters: Map<Hex, bigint> }).refundAfters.keys()];
+    const confirmed = await world();
+    await confirmed.settler.sweep();
+    expect(cached(confirmed)).toEqual([confirmed.orderHash]);
+    await confirmed.push(confirmed.delivery());
+    await expect(confirmed.settlement()).resolves.toMatchObject({ state: 'confirmed' });
+    expect(cached(confirmed)).toEqual([]);
+
+    const settled = await world();
+    await settled.settler.sweep();
+    const frame = { type: 'order.settled', orderHash: settled.orderHash, payout: '99', fee: '1', penaltyWithheld: '0', txRef: '1220abcd' };
+    await settled.handlers.get('order.settled')!({ frame: frame as never, raw: new Uint8Array(), id: '0x02', channel: 'ws', firstSeen: true });
+    await settled.settler.sweep();
+    expect(cached(settled)).toEqual([]);
   });
 
   test('no half-window alert without a fill time, or without a proof window (refundAfter at fillDeadline)', async () => {
@@ -241,5 +270,14 @@ describe('Settler on a Canton source: the settle window, as on an EVM source (BU
       await w.settler.sweep();
       expect(w.alertKinds()).not.toContain('half-window');
     }
+  });
+
+  test('an order with neither an EVM nor a Canton source (origin 0) is not swept: no intent read, no pull', async () => {
+    const w = await world();
+    const ticket = (await w.store.withOrder(w.orderHash, (tx) => tx.getTicket(0)))!;
+    await w.store.withOrder(w.orderHash, (tx) => tx.putTicket({ ...ticket, offer: { ...ticket.offer!, order: { ...ticket.offer!.order, originChainId: '0' } } }));
+    await w.settler.sweep();
+    expect(w.pulls).toHaveLength(0);
+    expect(w.canton.intent).not.toHaveBeenCalled();
   });
 });
