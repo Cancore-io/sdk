@@ -70,6 +70,7 @@ import { cantonFillRef } from '../delivery/canton';
 import { CANTON_ORIGIN_FLOOR, chainsOf, orderOf } from '../tickets/terms';
 import { collectAttestations, fillProofOf } from './attestations';
 import { cantonRefundAfter, closeCantonSettlement } from './canton-refund-after';
+import { sendSettle } from './send-settle';
 import { type CantonClosed, cantonClosure, isTerminal, payloadFrom, payloadOf, refuseClosed, refuseFinal, SettleError, type Settleable, type SettleCheck, type SettleRefusal, type VerifyEffects } from './refusals';
 
 export { SettleError } from './refusals';
@@ -394,7 +395,7 @@ export class Settler {
   }
 
   private async run(orderHash: Hex): Promise<Hex> {
-    const { store, instanceId, executor, clock } = this.options;
+    const { store, instanceId, executor } = this.options;
     const s = await this.load(orderHash);
     if (!s) throw new SettleError('no-fill', 'no confirmed fill of this filler for the order');
     const attempt = s.fill.attempt;
@@ -437,17 +438,7 @@ export class Settler {
         sent = recovered.tx;
       } else {
         const gasLimit = await driver.estimateGas(call);
-        lease = await executor.acquire(driver);
-        try {
-          sent = await driver.send(lease, call, gasLimit, await driver.marketFees(), { kind: 'settle', orderHash, attempt }, clock.now());
-        } catch (error) {
-          if (error instanceof LeaseLostError) throw error;
-          const record = await driver.record(lease);
-          const recorded = record?.transactions.at(-1);
-          if (record?.owner !== instanceId || !recorded || recorded.kind !== 'settle' || recorded.orderHash !== orderHash || recorded.attempt !== attempt || recorded.to !== call.to.toLowerCase() || recorded.data !== call.data || recorded.value !== call.value) throw error;
-          sent = recorded;
-          this.options.logger.warn('settle: broadcast refused, the tracker retries it', { orderHash, attempt, txHash: sent.hash, error: reasonOf(error) });
-        }
+        ({ lease, sent } = await executor.acquire(driver, async (taken) => ({ lease: taken, sent: await sendSettle(this.options, driver, taken, call, gasLimit, orderHash, attempt) })));
       }
       if (!(await driver.renew(lease))) throw new LeaseLostError(lease);
       await store.withOrder(orderHash, async (tx) => {

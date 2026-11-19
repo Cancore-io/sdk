@@ -510,7 +510,7 @@ describe('Executor — replacement caps (F-3, R-14, CAN-2299)', () => {
     expect(mined[0]).toMatchObject({ nonce: 0n, to: ME, data: '0x', value: 0n });
     expect(w.stages('fill.cancelled')).toHaveLength(1);
     expect(await openNonce(w)).toBeUndefined();
-    const next = await executor.acquire(executor.driver(DST)!);
+    const next = await executor.acquire(executor.driver(DST)!, async (lease) => lease);
     expect(next.nonce).toBe(1n);
     executor.stop();
   });
@@ -518,9 +518,8 @@ describe('Executor — replacement caps (F-3, R-14, CAN-2299)', () => {
   /** A settle of this replica's on the fake chain, priced at the market now and tracked by the executor. */
   async function trackedSettle(w: Awaited<ReturnType<typeof world>>, executor: Executor) {
     const driver = executor.driver(DST)!;
-    const lease = await executor.acquire(driver);
     // To self with no data: the fake chain executes it as a plain transfer.
-    const tx = await driver.send(lease, { to: ME, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now());
+    const { lease, tx } = await executor.acquire(driver, async (taken) => ({ lease: taken, tx: await driver.send(taken, { to: ME, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now()) }));
     executor.watch(driver, lease);
     return tx;
   }
