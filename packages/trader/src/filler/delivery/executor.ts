@@ -273,7 +273,11 @@ export class Executor {
 
   // -- lifecycle ----------------------------------------------------------------
 
-  /** Resumes from the store and keeps claiming the expired nonce leases of dead replicas, every lease TTL. */
+  /**
+   * Resumes from the store, then every lease TTL claims the expired nonce leases
+   * of dead replicas and tops up the configured allowances: V-E5 checks the
+   * allowance at `ticket.issued`, before a delivery could approve it.
+   */
   async start(): Promise<void> {
     if (this.started && !this.stopped) return;
     this.started = true;
@@ -281,7 +285,7 @@ export class Executor {
     const sweep = () => {
       this.sweep = this.options.clock.schedule(this.delivery.nonceLeaseTtlMs, () => {
         if (this.stopped) return;
-        void this.claim().finally(sweep);
+        void this.claim().then(() => this.topUpConfigured()).finally(sweep);
       });
     };
     sweep();
@@ -304,9 +308,7 @@ export class Executor {
    */
   async resume(): Promise<void> {
     await this.claim();
-    for (const [chain, tokens] of Object.entries(this.delivery.approvals ?? {}) as Array<[EvmChainId, Record<Hex, bigint>]>) {
-      for (const token of Object.keys(tokens) as Hex[]) void this.topUp(chain, token);
-    }
+    void this.topUpConfigured();
     for (const orderHash of await this.options.store.listOpenOrders()) {
       const work = await this.options.store.withOrder(orderHash, async (tx) => {
         const attempts: number[] = [];
@@ -611,6 +613,20 @@ export class Executor {
     }
   }
 
+  /**
+   * Tops up every configured allowance that has fallen below half of its
+   * limit, one token at a time so two approvals never race for one empty
+   * nonce of the key. Never rejects.
+   */
+  private async topUpConfigured(): Promise<void> {
+    for (const [chain, tokens] of Object.entries(this.delivery.approvals ?? {}) as Array<[EvmChainId, Record<Hex, bigint>]>) {
+      for (const token of Object.keys(tokens)) {
+        if (this.stopped) return;
+        await this.topUp(chain, token.toLowerCase() as Hex);
+      }
+    }
+  }
+
   /** Tops up the configured allowance of `token` on `chain` when it has fallen below half of its limit. */
   private async topUp(chain: EvmChainId, token: Hex): Promise<void> {
     const driver = this.driver(chain);
@@ -619,7 +635,7 @@ export class Executor {
     if (!driver || !readers || limit === undefined) return;
     try {
       const allowance = await erc20Allowance(readers.client, token, driver.address, readers.router.address);
-      if (allowance * 2n < limit) await this.approve(driver, readers, token, 0n, allowance);
+      if (allowance * 2n < limit && !this.stopped) await this.approve(driver, readers, token, 0n, allowance);
     } catch (error) {
       this.options.logger.warn('delivery: allowance top-up failed', { chain, token, error: reasonOf(error) });
     }

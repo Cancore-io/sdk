@@ -389,6 +389,74 @@ describe('Executor — router allowance', () => {
   });
 });
 
+describe('BUG-1588: the sweep keeps the router allowance topped up, not only the start', () => {
+  // The ticket is not receipted: no fill at start spends the allowance these tests read.
+  const LIMIT = 5_000n;
+  const routerAllowance = (w: Awaited<ReturnType<typeof world>>) => String(w.dst.token(TOKEN).allowances.get(`${fillSigner.address.toLowerCase()}:${DST_ROUTER}`));
+  const spendAllowanceTo = (w: Awaited<ReturnType<typeof world>>, left: bigint) => w.dst.token(TOKEN).approve(fillSigner.address, DST_ROUTER, left);
+
+  test('BUG-1588-01: an allowance spent below half of its limit after start is approved back to the limit by the next sweep; exactly half is left alone', async () => {
+    const w = await world({ state: 'checking', allowance: LIMIT, delivery: { approvals: { [DST]: { [TOKEN]: LIMIT } } } });
+    const executor = w.executor();
+    await executor.start();
+    await w.tick(6_000);
+    expect(w.stages('approve.sent')).toEqual([]);
+
+    spendAllowanceTo(w, LIMIT / 2n);
+    await w.tick(12_000);
+    expect(w.stages('approve.sent')).toEqual([]);
+
+    spendAllowanceTo(w, LIMIT / 2n - 1n);
+    await w.tick(6_000);
+    expect(w.stages('approve.sent').map((s) => s.detail)).toEqual([expect.objectContaining({ token: TOKEN, amount: LIMIT.toString() })]);
+    await w.tick(2_000);
+    expect(routerAllowance(w)).toBe(LIMIT.toString());
+    executor.stop();
+  });
+
+  test('BUG-1588-02: an approve still pending is not sent again by later sweeps of this replica or by a second replica; none once it lands', async () => {
+    const w = await world({ state: 'checking', allowance: 1_000n, delivery: { approvals: { [DST]: { [TOKEN]: LIMIT } } } });
+    w.dst.minTip = 10n ** 12n;
+    const slowReplace = { ...TIMING, replaceAfterMs: 600_000, approvals: { [DST]: { [TOKEN]: LIMIT } } };
+    const r1 = w.executor('r1', slowReplace);
+    await r1.start();
+    await flush();
+    const r2 = w.executor('r2', slowReplace);
+    await r2.start();
+    await w.tick(16_000);
+    expect(w.stages('approve.sent')).toHaveLength(1);
+
+    w.dst.minTip = 0n;
+    await w.tick(3_000);
+    expect(routerAllowance(w)).toBe(LIMIT.toString());
+    await w.tick(12_000);
+    expect(w.stages('approve.sent')).toHaveLength(1);
+    r1.stop();
+    r2.stop();
+  });
+
+  test('BUG-1588-03: a limit configured under a mixed-case token address is topped up as well', async () => {
+    const mixedCaseToken = `0x${TOKEN.slice(2, -2)}AA` as Hex;
+    const w = await world({ state: 'checking', allowance: 0n, delivery: { approvals: { [DST]: { [mixedCaseToken]: LIMIT } } } });
+    const executor = w.executor();
+    await executor.start();
+    await w.tick(2_000);
+    expect(w.stages('approve.sent').map((s) => s.detail)).toEqual([expect.objectContaining({ token: TOKEN, amount: LIMIT.toString() })]);
+    expect(routerAllowance(w)).toBe(LIMIT.toString());
+    executor.stop();
+  });
+
+  test('BUG-1588-04: a stopped executor tops up nothing, whatever the allowance falls to', async () => {
+    const w = await world({ state: 'checking', allowance: LIMIT, delivery: { approvals: { [DST]: { [TOKEN]: LIMIT } } } });
+    const executor = w.executor();
+    await executor.start();
+    executor.stop();
+    spendAllowanceTo(w, 0n);
+    await w.tick(12_000);
+    expect(w.stages('approve.sent')).toEqual([]);
+  });
+});
+
 describe('Executor — replace-by-fee (T-29)', () => {
   test('a stuck fill is replaced on the same nonce with both fees raised; the replacement confirms', async () => {
     const w = await world();
