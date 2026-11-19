@@ -1,10 +1,4 @@
-import {
-  bytesToHex,
-  hexToBytes,
-  binaryStringToBytes,
-  bytesToBinaryString,
-  type Bytes,
-} from './bytes';
+import { bytesToHex, hexToBytes, type Bytes } from './bytes';
 import { wrapSeed, unwrapSeed } from './aesGcm';
 import {
   ed25519PublicKeyFromSeed,
@@ -24,6 +18,7 @@ import {
   WALLET_RECORD_VERSION,
   walletRecordVersion,
 } from './recordVersion';
+import { storedPhrase } from './storedPhrase';
 
 export { WALLET_RECORD_VERSION, walletRecordVersion } from './recordVersion';
 
@@ -93,7 +88,8 @@ async function openRecord(
     { ivHex: record.mnemonicIvHex, ciphertextHex: record.mnemonicCiphertextHex },
     legacy ? undefined : recordAad(record.publicKeyHex, 'mnemonic'),
   );
-  return { seed, mnemonic: bytesToBinaryString(mnemonicBytes) };
+  const mnemonic = storedPhrase(mnemonicBytes);
+  return mnemonic === undefined ? { seed } : { seed, mnemonic };
 }
 
 /** True when the record was written by an older format or weaker parameters. */
@@ -216,9 +212,9 @@ async function buildRecord(
   // The recovery phrase gets its OWN key, not the seed's (KS-4). It is the more
   // portable secret of the two — a seed is ours, a phrase types into any BIP39
   // wallet — and one key for both meant one mistake could hand over either.
-  // (BIP39 words are ASCII, so latin1 bytes round-trip exactly.)
+  // UTF-8, not latin1: zh/ko/es/fr words are not ASCII (BUG-1612, see storedPhrase).
   const wrappedMnemonic = mnemonic
-    ? await wrapSeed(keks.mnemonic, binaryStringToBytes(mnemonic), recordAad(publicKeyHex, 'mnemonic'))
+    ? await wrapSeed(keks.mnemonic, new TextEncoder().encode(mnemonic), recordAad(publicKeyHex, 'mnemonic'))
     : null;
   return {
     method: 'pbkdf2',
@@ -308,7 +304,8 @@ export interface RevealedWalletSecret {
   privateKeyHex: string;
   /**
    * The original BIP39 recovery phrase, or `null` for legacy/private-key-only
-   * records that never persisted one (caller falls back to `privateKeyHex`).
+   * records that never persisted one, and for a Chinese phrase an older release
+   * stored unreadably (BUG-1612). The caller falls back to `privateKeyHex`.
    */
   mnemonic: string | null;
 }
