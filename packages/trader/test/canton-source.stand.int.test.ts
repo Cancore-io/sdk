@@ -693,7 +693,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
       const error = await opsOf().intent(orderHash).then(() => undefined, (e: unknown) => e);
       return error instanceof GatewayError && error.code !== 'CANTON_UNAVAILABLE' ? error : undefined;
     }, 3 * 60_000);
-    expect({ code: gone.code, message: gone.message }).toEqual({ code: 'INTENT_SETTLED', message: expect.stringMatching(/^closed by SwapIntent_SettleWithProof in update /) });
+    expect({ code: gone.code, message: gone.message }).toEqual({ code: 'INTENT_SETTLED', message: expect.stringMatching(/^filler-gateway INTENT_SETTLED: closed by SwapIntent_SettleWithProof in update /) });
     expect(cantonClosure(gone)).toMatchObject({ closure: 'settled' });
     expect(refundedAlerts(orderHash)).toEqual([]);
   });
@@ -720,7 +720,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
       const s = await store.withOrder(opened.orderHash, (tx) => tx.getSettlement());
       return s?.state === 'failed' ? s : undefined;
     }, 5 * 60_000, diagnostics);
-    expect(closed.reason).toMatch(/^refunded: closed by SwapIntent_Cancel in update /);
+    expect(closed.reason).toMatch(/^refunded: filler-gateway INTENT_REFUNDED: closed by SwapIntent_Cancel in update /);
     expect(refundedAlerts(opened.orderHash).map((e) => e.detail?.detail)).toEqual([expect.stringContaining('SwapIntent_Cancel')]);
     expect(submits.length).toBe(submitted);
     await expect(filler.selfSettle(opened.orderHash)).rejects.toMatchObject({ reason: 'refunded' });
