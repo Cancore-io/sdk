@@ -1,7 +1,8 @@
 import type { Hex } from '@cancore/contracts';
-import type { GasSpentEvent } from '../events';
+import type { FillerEvent, StageEvent } from '../events';
 import type { InFlightTransaction, NonceLease } from '../store';
-import { gasSpentOf, lateReceipt, reportMined, type NonceCloser } from './gas';
+import { createRecordingLogger, FakeClock } from '../testing';
+import { GasReporter, gasSpentOf, lateReceipt, unpricedNonce } from './gas';
 import type { TransactionReceipt } from './transactions';
 
 const CHAIN = 'eip155:8453' as const;
@@ -50,36 +51,53 @@ describe('BUG-1589: what an own transaction cost', () => {
     }
   });
 
-  test('BUG-1589-07: at least once — the gas is reported before the nonce is marked mined, whether that write succeeds, is refused or throws', async () => {
-    for (const outcome of ['held', 'lost', 'throws'] as const) {
-      const log: string[] = [];
-      const closer: NonceCloser = {
-        lease,
-        driver: { chain: CHAIN, rawBlock: noBlock },
-        nonces: {
-          complete: async (_: NonceLease, minedHash: Hex) => {
-            log.push(`complete ${minedHash}`);
-            if (outcome === 'throws') throw new Error('the reply to the UPDATE was lost');
-            return outcome === 'held';
-          },
-        },
-        emit: (event) => log.push(`gas ${event.txHash} ${event.feeWei}`),
-      };
-      const closing = reportMined(closer, fill, receiptOf(fill), [fill]);
-      if (outcome === 'throws') await expect(closing).rejects.toThrow('lost');
-      else await closing;
-      expect(log).toEqual([`gas ${fill.hash} ${(95_000n * 2_000_000n).toString()}`, `complete ${fill.hash}`]);
-    }
+  /** A reporter over a sink that refuses `gas` while `refusing()` holds. */
+  const reporterWith = (refusing: () => boolean, attempts = 3) => {
+    const delivered: FillerEvent[] = [];
+    const alerts: StageEvent[] = [];
+    const logger = createRecordingLogger();
+    const events = { emit: async (event: FillerEvent) => (refusing() ? Promise.reject(new Error('the database is down')) : void delivered.push(event)) };
+    const reporter = new GasReporter({ events, alert: (event) => alerts.push(event), logger, clock: new FakeClock(), attempts });
+    return { reporter, delivered, alerts, logger };
+  };
+  const at = { lease, driver: { chain: CHAIN, rawBlock: noBlock } };
+
+  test('BUG-1589-07: at least once — a sink that refuses the gas makes the report throw (the nonce stays open) until it accepts it; then it is delivered once', async () => {
+    let down = 2;
+    const { reporter, delivered, alerts } = reporterWith(() => down-- > 0);
+    await expect(reporter.report(at, fill, receiptOf(fill), [fill])).rejects.toThrow('the event sink refused the gas');
+    await expect(reporter.report(at, fill, receiptOf(fill), [fill])).rejects.toThrow('(2)');
+    await reporter.report(at, fill, receiptOf(fill), [fill]);
+    expect(delivered).toEqual([expect.objectContaining({ type: 'gas', txHash: fill.hash, feeWei: (95_000n * 2_000_000n).toString() })]);
+    expect(alerts).toEqual([]);
   });
 
-  test('BUG-1589-16: a Filled log naming a transaction not journaled on this nonce closes the nonce and reports nothing: its own nonce reports it', async () => {
-    const emitted: GasSpentEvent[] = [];
-    const completed: Hex[] = [];
+  test('BUG-1589-22: a sink that never accepts the gas is given up after its attempts: an error log and a gas.unpriced alert, and the report resolves so the nonce can close', async () => {
+    const { reporter, delivered, alerts, logger } = reporterWith(() => true, 3);
+    await expect(reporter.report(at, fill, receiptOf(fill), [fill])).rejects.toThrow('(1)');
+    await expect(reporter.report(at, fill, receiptOf(fill), [fill])).rejects.toThrow('(2)');
+    await reporter.report(at, fill, receiptOf(fill), [fill]);
+    expect(delivered).toEqual([]);
+    expect(logger.entries).toContainEqual(expect.objectContaining({ level: 'error', message: expect.stringContaining('gas report given up'), fields: expect.objectContaining({ txHash: fill.hash }) }));
+    expect(alerts).toEqual([expect.objectContaining({ stage: 'gas.unpriced', orderHash: ORDER, attempt: 2, detail: expect.objectContaining({ nonce: '7', txHashes: fill.hash }) })]);
+  });
+
+  test('BUG-1589-16: a Filled log naming a transaction not journaled on this nonce reports no gas for it and raises gas.unpriced for the nonce own transactions', async () => {
     const foreign: InFlightTransaction = { ...fill, hash: `0x${'ee'.repeat(32)}` };
-    const closer: NonceCloser = { lease, driver: { chain: CHAIN, rawBlock: noBlock }, nonces: { complete: async (_, h) => (completed.push(h), true) }, emit: (e) => emitted.push(e) };
-    await reportMined(closer, foreign, receiptOf(foreign), [fill]);
-    expect(emitted).toEqual([]);
-    expect(completed).toEqual([foreign.hash]);
+    const { reporter, delivered, alerts } = reporterWith(() => false);
+    await reporter.report(at, foreign, receiptOf(foreign), [fill]);
+    expect(delivered).toEqual([]);
+    expect(alerts).toEqual([expect.objectContaining({ stage: 'gas.unpriced', orderHash: ORDER, detail: expect.objectContaining({ kinds: 'fill', txHashes: fill.hash }) })]);
+  });
+
+  test('BUG-1589-21: gas.unpriced of a nonce that holds only an approve or a gap cancel names no order', () => {
+    const approve: InFlightTransaction = { ...unattached, hash: `0x${'a1'.repeat(32)}`, kind: 'approve' };
+    for (const txs of [[approve], [cancel]]) {
+      const alert = unpricedNonce(CHAIN, lease, txs, 5);
+      expect(alert).toMatchObject({ type: 'stage', stage: 'gas.unpriced', atMs: 5, detail: { chain: CHAIN, nonce: '7', kinds: txs[0]!.kind, txHashes: txs[0]!.hash } });
+      expect(alert).not.toHaveProperty('orderHash');
+      expect(alert).not.toHaveProperty('attempt');
+    }
   });
 
   test('BUG-1589-17: a receipt without effectiveGasPrice is priced min(maxFeePerGas, baseFee + tip) from its block, never 0', async () => {
@@ -102,7 +120,7 @@ describe('BUG-1589: what an own transaction cost', () => {
     const driverWith = (receipts: Record<string, TransactionReceipt>, canonical: boolean) => ({
       receipt: async (hash: Hex) => receipts[hash],
       isCanonical: async () => canonical,
-      client: { head: async () => 44n } as never,
+      client: { head: async () => 44n },
     });
     expect(await lateReceipt(driverWith({ [cancel.hash]: receiptOf(cancel) }, true), [fill, cancel])).toMatchObject({ tx: cancel, depth: 3n });
     expect(await lateReceipt(driverWith({ [cancel.hash]: receiptOf(cancel) }, false), [fill, cancel])).toBeUndefined();

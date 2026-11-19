@@ -1129,6 +1129,96 @@ describe('BUG-1589: gas of own transactions, charged to the trade', () => {
     expect(await w.store.nonces.listOpen(DST, fillSigner.address.toLowerCase() as Hex)).toEqual([]);
     executor.stop();
   });
+
+  /** A settle on a leased nonce of the delivery key, sent and handed to the executor to track. */
+  const watchedSettle = async (w: World, executor: Executor) => {
+    const driver = new TransactionDriver({ chain: DST, client: w.chains.get(DST)!.client, signer: fillSigner, store: w.store, owner: 'r1', leaseTtlMs: 5_000, fees: { feeBumpPercent: 15, gasLimitMarginPercent: 20 }, logger: w.logger });
+    const lease = await driver.acquire();
+    const settle = await driver.send(lease, { to: SRC_ROUTER, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now());
+    return { driver, lease, settle, watch: () => executor.watch(driver, lease) };
+  };
+  /** A sink that rejects `gas` events while `refuse()` holds and records everything else, and what it accepted. */
+  const refusingSink = (w: World, refuse: () => boolean) => ({
+    emit: (event: FillerEvent): void | Promise<void> => (event.type === 'gas' && refuse() ? Promise.reject(new Error('the database is down')) : w.events.emit(event)),
+  });
+  const me = fillSigner.address.toLowerCase() as Hex;
+
+  test('BUG-1589-23: a sink that rejects the gas keeps the nonce open and gets it again on the next looks; once it accepts, the gas arrives once and the nonce closes', async () => {
+    const w = await world();
+    let refused = 0;
+    const executor = w.executor('r1', TIMING, { events: refusingSink(w, () => refused++ < 3) });
+    const { settle, watch } = await watchedSettle(w, executor);
+    watch();
+    await w.tick(4_000);
+    expect(refused).toBeGreaterThanOrEqual(1);
+    expect(gasEvents(w)).toEqual([]);
+    expect((await w.store.nonces.listOpen(DST, me)).map((r) => r.nonce)).toEqual([0n]);
+    await w.tick(6_000);
+    expect(gasEvents(w)).toEqual([expect.objectContaining({ kind: 'settle', txHash: settle.hash, orderHash: w.orderHash })]);
+    expect(await w.store.nonces.listOpen(DST, me)).toEqual([]);
+    expect(w.stages('gas.unpriced')).toEqual([]);
+    executor.stop();
+  });
+
+  test('BUG-1589-24: a sink that never accepts the gas holds the nonce for GAS_REPORT_ATTEMPTS looks only: then an error log, gas.unpriced, and the nonce closes', async () => {
+    const w = await world();
+    const executor = w.executor('r1', TIMING, { events: refusingSink(w, () => true) });
+    const { settle, watch } = await watchedSettle(w, executor);
+    watch();
+    await w.tick(8_000);
+    expect((await w.store.nonces.listOpen(DST, me)).map((r) => r.nonce)).toEqual([0n]);
+    await w.tick(10_000);
+    expect(await w.store.nonces.listOpen(DST, me)).toEqual([]);
+    expect(w.logger.entries).toContainEqual(expect.objectContaining({ level: 'error', message: expect.stringContaining('gas report given up'), fields: expect.objectContaining({ txHash: settle.hash }) }));
+    expect(w.stages('gas.unpriced')).toEqual([expect.objectContaining({ orderHash: w.orderHash, detail: expect.objectContaining({ kinds: 'settle', txHashes: settle.hash }) })]);
+    executor.stop();
+  });
+
+  test('BUG-1589-25: a nonce spent by another transaction while the router holds a fill of an earlier attempt: no gas for that fill twice, gas.unpriced for the nonce own fill', async () => {
+    const w = await world();
+    const executor = w.executor();
+    await executor.start();
+    const first = await executor.deliver(w.orderHash, 0);
+    await w.tick(5_000);
+    expect(gasEvents(w).map((e) => e.txHash)).toEqual([first.txHash]);
+    const driver = new TransactionDriver({ chain: DST, client: w.chains.get(DST)!.client, signer: fillSigner, store: w.store, owner: 'r1', leaseTtlMs: 5_000, fees: { feeBumpPercent: 15, gasLimitMarginPercent: 20 }, logger: w.logger });
+    const lease = await driver.acquire();
+    const call = { to: DST_ROUTER, data: w.fills()[0]!.data, value: 0n, gasLimit: 200_000n, maxFeePerGas: 10n ** 11n, maxPriorityFeePerGas: 10n ** 9n };
+    const raw = await fillSigner.signTransaction({ chainId: 1n, nonce: lease.nonce, ...call });
+    const { hash } = decodeSignedTransaction(raw);
+    expect(await w.store.nonces.recordTransaction(lease, { hash, raw, kind: 'fill', orderHash: w.orderHash, attempt: 1, ...call, sentAtMs: w.clock.now() })).toBe(true);
+    const other = await fillSigner.signTransaction({ chainId: 1n, nonce: lease.nonce, to: me, data: '0x', value: 0n, gasLimit: 21_000n, maxFeePerGas: 10n ** 11n, maxPriorityFeePerGas: 10n ** 9n });
+    await w.dst.request({ method: 'eth_sendRawTransaction', params: [other] });
+    executor.watch(driver, lease);
+    await w.tick(8_000);
+    expect(w.stages('gas.unpriced')).toEqual([expect.objectContaining({ orderHash: w.orderHash, attempt: 1, detail: expect.objectContaining({ nonce: '1', kinds: 'fill', txHashes: hash }) })]);
+    expect(gasEvents(w).map((e) => e.txHash)).toEqual([first.txHash]);
+    expect(await w.store.nonces.listOpen(DST, me)).toEqual([]);
+    executor.stop();
+  });
+
+  test('BUG-1589-26: a receipt that lags the nonce for SPENT_TICKS looks shows on the extra read: the nonce closes with its own hash and gas, no gas.unpriced', async () => {
+    const w = await world();
+    const executor = w.executor();
+    const { driver, settle, watch } = await watchedSettle(w, executor);
+    const visible = driver.receipt.bind(driver);
+    let hidden = 0;
+    driver.receipt = async (hash) => {
+      const receipt = await visible(hash);
+      if (receipt && hidden < 3) {
+        hidden++;
+        return undefined;
+      }
+      return receipt;
+    };
+    watch();
+    await w.tick(8_000);
+    expect(hidden).toBe(3);
+    expect(gasEvents(w)).toEqual([expect.objectContaining({ kind: 'settle', txHash: settle.hash, orderHash: w.orderHash })]);
+    expect(w.stages('gas.unpriced')).toEqual([]);
+    expect(await w.store.nonces.listOpen(DST, me)).toEqual([]);
+    executor.stop();
+  });
 });
 
 describe('fillDepth', () => {

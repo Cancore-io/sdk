@@ -29,7 +29,7 @@ import { TransactionDriver } from '../src/filler/delivery/transactions';
 import type { GasSpentEvent, StageEvent } from '../src/filler/events';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { Clock } from '../src/filler/runtime';
-import type { FillRecord, TicketRecord } from '../src/filler/store';
+import type { FillRecord, InFlightTransaction, NonceLease, TicketRecord } from '../src/filler/store';
 import { isBoundToDeliver } from '../src/filler/tickets/terms';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, decodeSignedTransaction, InMemoryFillerStore } from '../src/filler/testing';
 
@@ -372,10 +372,9 @@ live('Executor against the stand router (make intent-genesis)', () => {
   });
 
   test('BUG-1589-15: the executor own approve — the allowance top-up at start — reports its gas with no order', async () => {
-    const limit = 10n ** 25n;
     const allowance = async () => BigInt(await rpc.request<string>({ method: 'eth_call', params: [{ to: token, data: encodeFunctionCall(entryOf(ERC20, 'function', 'allowance'), [delivery.address, router]) }, 'latest'] }));
     // A limit above twice what is left makes start() top the allowance up to it: the approve is the executor's own.
-    expect((await allowance()) * 2n).toBeLessThan(limit);
+    const limit = (await allowance()) * 4n + 10n ** 24n;
     const s = await scenario({ instanceId: 'int-gas-approve', delivery: { approvals: { [chain]: { [token]: limit } } } });
     await s.executor.start();
     const approved = await waitFor(async () => s.stages('approve.sent')[0], 'the executor approve');
@@ -397,20 +396,24 @@ live('Executor against the stand router (make intent-genesis)', () => {
 
   test('BUG-1589-14: a fill mined and reverted by the real router (TicketExpired) reports the gas it burnt, reverted, charged to its order', async () => {
     await rpc.request({ method: 'evm_setAutomine', params: [false] });
-    const s = await scenario({ ttlS: 60, instanceId: 'int-gas-revert' });
-    await s.executor.start();
-    const { txHash } = await s.executor.deliver(s.orderHash, 0);
-    expect(txHash).toBeDefined();
-    // Estimated before validUntil, mined after it: the router reverts TicketExpired and the gas is spent.
-    await rpc.request({ method: 'evm_setNextBlockTimestamp', params: [`0x${(BigInt(s.ticket.validUntil) + 1n).toString(16)}`] });
-    await rpc.request({ method: 'evm_mine', params: [] });
-    await rpc.request({ method: 'evm_setAutomine', params: [true] });
-    await mine(2);
-    await s.state('failed');
-    const cost = await receiptCost(txHash!);
-    expect(cost.reverted).toBe(true);
-    expect(await gasOf(s, txHash!)).toMatchObject({ kind: 'fill', orderHash: s.orderHash, attempt: 0, ...cost });
-    expect(await s.filled()).toBe(false);
+    try {
+      const s = await scenario({ ttlS: 60, instanceId: 'int-gas-revert' });
+      await s.executor.start();
+      const { txHash } = await s.executor.deliver(s.orderHash, 0);
+      expect(txHash).toBeDefined();
+      // Estimated before validUntil, mined after it: the router reverts TicketExpired and the gas is spent.
+      await rpc.request({ method: 'evm_setNextBlockTimestamp', params: [`0x${(BigInt(s.ticket.validUntil) + 1n).toString(16)}`] });
+      await rpc.request({ method: 'evm_mine', params: [] });
+      await rpc.request({ method: 'evm_setAutomine', params: [true] });
+      await mine(2);
+      await s.state('failed');
+      const cost = await receiptCost(txHash!);
+      expect(cost.reverted).toBe(true);
+      expect(await gasOf(s, txHash!)).toMatchObject({ kind: 'fill', orderHash: s.orderHash, attempt: 0, ...cost });
+      expect(await s.filled()).toBe(false);
+    } finally {
+      await rpc.request({ method: 'evm_setAutomine', params: [true] });
+    }
   });
 
   test.each([
@@ -494,4 +497,84 @@ live('Executor against the stand router (make intent-genesis)', () => {
     expect(await s.filled()).toBe(true);
     s.executor.stop();
   }, 120_000);
+
+  /** A driver of the delivery key over `s`'s store that holds its leases as the executor instance `owner`. */
+  const driverFor = (s: Scenario, owner: string) =>
+    new TransactionDriver({ chain, client: s.chains.get(chain)!.client, signer: delivery, store: s.store, owner, leaseTtlMs: 60_000, fees: { feeBumpPercent: 15, gasLimitMarginPercent: 20 }, logger });
+  const GWEI = 1_000_000_000n;
+  const transferToSelf = (nonce: bigint, maxFeePerGas = 50n * GWEI) => ({ to: delivery.address.toLowerCase() as Hex, data: '0x' as Hex, value: 0n, gasLimit: 21_000n, maxFeePerGas, maxPriorityFeePerGas: GWEI, nonce });
+  /** Signs `call` on its nonce and journals it on `lease` as `kind`, without broadcasting it. */
+  async function journal(s: Scenario, lease: NonceLease, call: ReturnType<typeof transferToSelf>, purpose: Pick<InFlightTransaction, 'kind' | 'orderHash' | 'attempt'>) {
+    const { nonce, ...fields } = call;
+    const raw = await delivery.signTransaction({ chainId: BigInt(stand.chainId), nonce, ...fields });
+    const { hash } = decodeSignedTransaction(raw);
+    expect(await s.store.nonces.recordTransaction(lease, { hash, raw, ...purpose, ...fields, sentAtMs: s.clock.now() })).toBe(true);
+    return { hash, raw };
+  }
+
+  test('BUG-1589-27: the cancel that fills a nonce gap below a journaled transaction reports its gas with no order', async () => {
+    const owner = 'int-gas-gap';
+    const s = await scenario({ instanceId: owner, receiptSent: false });
+    const driver = driverFor(s, owner);
+    const gap = await driver.acquire();
+    const above = await s.store.nonces.allocate({ chain, address: driver.address, owner, ttlMs: 60_000, chainNonce: gap.nonce + 1n });
+    expect(above.nonce).toBe(gap.nonce + 1n);
+    // Broadcast behind the empty nonce: it waits in the queue until the gap is filled.
+    const queued = await journal(s, above, transferToSelf(above.nonce), { kind: 'cancel' });
+    await rpc.request({ method: 'eth_sendRawTransaction', params: [queued.raw] });
+    await s.executor.start();
+    const gapHash = await waitFor(async () => logger.entries.find((e) => e.message.includes('filled a nonce gap') && e.fields?.nonce === gap.nonce.toString())?.fields?.txHash as Hex | undefined, 'the gap cancel');
+    await mine(3);
+    const spent = await gasOf(s, gapHash);
+    expect(spent).toMatchObject({ kind: 'cancel', chain, ...(await receiptCost(gapHash)) });
+    expect(spent).not.toHaveProperty('orderHash');
+    expect((await rpc.request<{ nonce: string }>({ method: 'eth_getTransactionByHash', params: [gapHash] })).nonce).toBe(`0x${gap.nonce.toString(16)}`);
+    s.executor.stop();
+  });
+
+  test('BUG-1589-28: a settle journaled on a nonce another transaction took reports no gas; gas.unpriced names it and the nonce is closed', async () => {
+    const owner = 'int-gas-unpriced';
+    const s = await scenario({ instanceId: owner, receiptSent: false });
+    const driver = driverFor(s, owner);
+    const lease = await driver.acquire();
+    const settle = await journal(s, lease, { ...transferToSelf(lease.nonce), to: router, gasLimit: 100_000n }, { kind: 'settle', orderHash: s.orderHash, attempt: 0 });
+    const { nonce, ...taker } = transferToSelf(lease.nonce, 60n * GWEI);
+    await rpc.request({ method: 'eth_sendRawTransaction', params: [await delivery.signTransaction({ chainId: BigInt(stand.chainId), nonce, ...taker })] });
+    await s.executor.start();
+    const alert = await waitFor(async () => s.stages('gas.unpriced')[0], 'the gas.unpriced alert');
+    expect(alert).toMatchObject({ orderHash: s.orderHash, attempt: 0, detail: { chain, nonce: lease.nonce.toString(), kinds: 'settle', txHashes: settle.hash } });
+    expect(gasEventsOf(s)).toEqual([]);
+    expect(await s.store.nonces.listOpen(chain, driver.address)).toEqual([]);
+    s.executor.stop();
+  });
+
+  test('BUG-1589-29: the cancel that frees the nonce of a fill stuck past validUntil reports its gas, charged to that fill order', async () => {
+    const latestBaseFee = async () => BigInt((await rpc.request<{ baseFeePerGas: string }>({ method: 'eth_getBlockByNumber', params: ['latest', false] })).baseFeePerGas);
+    const before = await latestBaseFee();
+    await rpc.request({ method: 'evm_setAutomine', params: [false] });
+    try {
+      const s = await scenario({ ttlS: 60, instanceId: 'int-gas-cancel', delivery: { replaceAfterMs: 60_000 } });
+      await s.executor.start();
+      const sent = await s.executor.deliver(s.orderHash, 0);
+      expect(sent).toMatchObject({ status: 'sent' });
+      const fillFee = BigInt(s.stages('fill.sent')[0]!.detail!.maxFeePerGas as string);
+      // A base fee above the fill's cap keeps it out of the block that passes validUntil: the executor has to cancel it.
+      await rpc.request({ method: 'anvil_setNextBlockBaseFeePerGas', params: [`0x${(fillFee * 8n).toString(16)}`] });
+      await rpc.request({ method: 'evm_setNextBlockTimestamp', params: [`0x${(BigInt(s.ticket.validUntil) + 1n).toString(16)}`] });
+      await rpc.request({ method: 'evm_mine', params: [] });
+      const cancel = await waitFor(async () => (await s.store.nonces.listOpen(chain, delivery.address.toLowerCase() as Hex)).flatMap((r) => r.transactions).find((t) => t.kind === 'cancel'), 'the cancel');
+      await rpc.request({ method: 'evm_setAutomine', params: [true] });
+      await mine(3);
+      await s.state('failed');
+      expect(s.stages('fill.cancelled')).toHaveLength(1);
+      expect(await gasOf(s, cancel.hash)).toMatchObject({ kind: 'cancel', orderHash: s.orderHash, attempt: 0, ...(await receiptCost(cancel.hash)) });
+      expect(gasEventsOf(s, sent.txHash!)).toEqual([]);
+      expect(await s.filled()).toBe(false);
+      s.executor.stop();
+    } finally {
+      await rpc.request({ method: 'evm_setAutomine', params: [true] });
+      await rpc.request({ method: 'anvil_setNextBlockBaseFeePerGas', params: [`0x${before.toString(16)}`] });
+      await mine(1);
+    }
+  });
 });

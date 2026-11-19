@@ -288,15 +288,17 @@ receipted ──► pending ──► sent ──► included ──► confirme
   `fill.confirmed` (`gasUsed`, `effectiveGasPrice`, `latencyMs`, `replacements`), `fill.refused`,
   `approve.sent`, `approve.confirmed`, `tx.capped`, `gas.unpriced`; `gas` for every own transaction.
 - **Gas** (`gas`, `GasSpentEvent`) — the cost of every own EVM transaction once its block is
-  `fillConfirmations` deep, where its block hash and price are final, reverted ones included:
-  `{ orderHash?, attempt?, kind, chain, txHash, blockNumber, blockHash, reverted, gasUsed, effectiveGasPrice,
-  l1Fee?, feeWei }`, `feeWei = gasUsed × effectiveGasPrice + l1Fee` in the chain's native wei (`l1Fee`: the
-  OP-stack L1 data fee; a receipt without `effectiveGasPrice` is priced `min(maxFeePerGas, baseFee + tip)` from
-  its block). `kind` is `fill` or `settle` (charged to its order), `cancel` (charged to the expired fill it
-  freed; a cancel that filled a nonce gap has no `orderHash`) or `approve` (no `orderHash`: it serves every
-  order of its token). At least once: reported before the nonce is marked mined, so a crash or a lost store
-  reply repeats it — dedupe by `txHash`. A nonce given up with no receipt of any of its transactions raises
-  `gas.unpriced` (`detail.txHashes`) instead, for reconciliation.
+  `fillConfirmations` deep, reverted ones included; its block hash and price are as final as that depth makes
+  them: `{ orderHash?, attempt?, kind, chain, txHash, blockNumber, blockHash, reverted, gasUsed,
+  effectiveGasPrice, l1Fee?, feeWei }`, `feeWei = gasUsed × effectiveGasPrice + l1Fee` in the chain's native wei
+  (`l1Fee`: the OP-stack L1 data fee; a receipt without `effectiveGasPrice` is priced
+  `min(maxFeePerGas, baseFee + tip)` from its block). `kind` is `fill` or `settle` (charged to its order),
+  `cancel` (charged to the expired fill it freed; a cancel that filled a nonce gap has no `orderHash`) or
+  `approve` (no `orderHash`: it serves every order of its token). At least once, dedupe by `txHash` keeping
+  the first: the sink is awaited before the nonce is marked mined, and a rejection, a crash or a lost store
+  reply reports it again on the next look. A sink that rejects it 10 looks in a row gets an error log and
+  `gas.unpriced` instead, and the nonce is closed. `gas.unpriced` (`detail.txHashes`) also marks a nonce given
+  up with no receipt of its own transactions, or closed by a receipt of a transaction not journaled on it.
 
 ## Settlement
 

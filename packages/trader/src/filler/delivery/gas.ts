@@ -1,8 +1,10 @@
 import type { Hex } from '@cancore/contracts';
 import type { EvmChainId } from '../chains';
-import type { GasSpentEvent, StageEvent } from '../events';
-import type { InFlightTransaction, NonceLease, NonceLeases } from '../store';
-import type { TransactionDriver, TransactionReceipt } from './transactions';
+import type { ChainClient } from '../chain/client';
+import type { EventSink, GasSpentEvent, StageEvent } from '../events';
+import type { Clock, Logger } from '../runtime';
+import type { InFlightTransaction, NonceLease } from '../store';
+import { inclusionDepth, type TransactionDriver, type TransactionReceipt } from './transactions';
 
 const QUANTITY = /^0x[0-9a-fA-F]+$/;
 
@@ -71,22 +73,61 @@ export async function gasSpentOf(mined: MinedTransaction, readBlock: (at: bigint
   };
 }
 
-export interface NonceCloser {
-  nonces: Pick<NonceLeases, 'complete'>;
-  lease: NonceLease;
-  driver: Pick<TransactionDriver, 'chain' | 'rawBlock'>;
-  emit: (event: GasSpentEvent) => void;
+/**
+ * Looks a nonce is held open while the event sink refuses its `gas` event. A broken sink must not hold the key's
+ * nonces for good: `approve` waits on an open approve, and gaps are filled only below the highest open nonce.
+ */
+export const GAS_REPORT_ATTEMPTS = 10;
+
+export interface GasReporterOptions {
+  /** Awaited for every `gas` event: a rejection keeps the nonce open. */
+  events: EventSink;
+  /** The `gas.unpriced` alert, through the executor's own (non-blocking) emit. */
+  alert: (event: StageEvent) => void;
+  logger: Logger;
+  clock: Clock;
+  attempts?: number;
 }
 
-/**
- * Reports the gas of `tx`, then marks its nonce mined. At least once: the report goes out before the store
- * write, so a crash or a lost write reply between them repeats it on the next look, never drops it —
- * consumers key it by `txHash`.
- */
-export async function reportMined(closer: NonceCloser, tx: InFlightTransaction, receipt: TransactionReceipt, nonceTransactions: readonly InFlightTransaction[]): Promise<void> {
-  const spent = await gasSpentOf({ chain: closer.driver.chain, tx, receipt, nonceTransactions }, (at) => closer.driver.rawBlock(at));
-  if (spent) closer.emit(spent);
-  await closer.nonces.complete(closer.lease, tx.hash);
+/** Where a mined transaction sits: its nonce lease and the driver of its chain. */
+export interface MinedAt {
+  lease: NonceLease;
+  driver: Pick<TransactionDriver, 'chain' | 'rawBlock'>;
+}
+
+export class GasReporter {
+  private readonly refusals = new Map<Hex, number>();
+
+  constructor(private readonly options: GasReporterOptions) {}
+
+  /**
+   * Reports what `tx` cost; the caller marks its nonce mined only after this resolves, so the report is at least
+   * once. A sink that refuses it makes this throw — the nonce stays open and the next look reports again — up to
+   * `GAS_REPORT_ATTEMPTS` looks; then the report is given up with an error log and a `gas.unpriced` alert.
+   */
+  async report(at: MinedAt, tx: InFlightTransaction, receipt: TransactionReceipt, nonceTransactions: readonly InFlightTransaction[]): Promise<void> {
+    const { chain } = at.driver;
+    const spent = await gasSpentOf({ chain, tx, receipt, nonceTransactions }, (block) => at.driver.rawBlock(block));
+    if (!spent) return this.unpriced(chain, at.lease, nonceTransactions);
+    try {
+      await this.options.events.emit(spent);
+      this.refusals.delete(spent.txHash);
+    } catch (error) {
+      const refused = (this.refusals.get(spent.txHash) ?? 0) + 1;
+      if (refused < (this.options.attempts ?? GAS_REPORT_ATTEMPTS)) {
+        this.refusals.set(spent.txHash, refused);
+        throw new Error(`the event sink refused the gas of ${spent.txHash} (${refused}): ${String(error)}`, { cause: error });
+      }
+      this.refusals.delete(spent.txHash);
+      this.options.logger.error('delivery: gas report given up, the event sink keeps refusing it', { chain, txHash: spent.txHash, feeWei: spent.feeWei, error: String(error) });
+      this.unpriced(chain, at.lease, nonceTransactions);
+    }
+  }
+
+  /** Raises `gas.unpriced` for a nonce whose own transactions' gas will not be reported. */
+  unpriced(chain: EvmChainId, lease: NonceLease, nonceTransactions: readonly InFlightTransaction[]): void {
+    this.options.alert(unpricedNonce(chain, lease, nonceTransactions, this.options.clock.now()));
+  }
 }
 
 /**
@@ -94,17 +135,17 @@ export async function reportMined(closer: NonceCloser, tx: InFlightTransaction, 
  * given up: an endpoint behind a load balancer may lag the one that answered the transaction count.
  */
 export async function lateReceipt(
-  driver: Pick<TransactionDriver, 'receipt' | 'isCanonical' | 'client'>,
+  driver: Pick<TransactionDriver, 'receipt' | 'isCanonical'> & { client: Pick<ChainClient, 'head'> },
   nonceTransactions: readonly InFlightTransaction[],
 ): Promise<{ tx: InFlightTransaction; receipt: TransactionReceipt; depth: bigint } | undefined> {
   for (const tx of nonceTransactions) {
     const receipt = await driver.receipt(tx.hash);
-    if (receipt && (await driver.isCanonical(receipt))) return { tx, receipt, depth: (await driver.client.head()) - receipt.blockNumber + 1n };
+    if (receipt && (await driver.isCanonical(receipt))) return { tx, receipt, depth: inclusionDepth(await driver.client.head(), receipt) };
   }
   return undefined;
 }
 
-/** Operator alert for reconciliation: a nonce closed with no receipt of any of its transactions, so their gas is unknown. */
+/** Operator alert for reconciliation: the gas of a nonce's own transactions is not reported (no receipt of any of them, a receipt of another transaction, or a sink that keeps refusing). */
 export function unpricedNonce(chain: EvmChainId, lease: NonceLease, nonceTransactions: readonly InFlightTransaction[], atMs: number): StageEvent {
   const charged = nonceTransactions.find(isCharged);
   return {

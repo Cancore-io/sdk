@@ -60,10 +60,13 @@ export interface DeclinedEvent {
  * as the chain's `fillConfirmations` (BUG-1589): a fill, confirmed or reverted;
  * a cancel (of an expired fill, or of a nonce gap); a `settle`; an `approve`.
  * Gas is spent whether or not the call succeeded, so a reverted one is reported
- * too. `blockHash` and the price are final only at that depth, which is why
- * nothing is reported before it. At least once: a replica that crashes, or
- * loses the store's reply, after reporting and before the nonce is marked
- * mined reports it again — key it by `txHash`.
+ * too. `blockHash` and the price are as final as `fillConfirmations` makes
+ * them: a reorg deeper than that can still move the transaction. At least
+ * once, keyed by `txHash` (keep the first): the sink is awaited before the
+ * nonce is marked mined; a rejection, a crash or a lost store reply in between
+ * reports it again on the next look. A sink that rejects it on
+ * `GAS_REPORT_ATTEMPTS` (10) looks in a row gets an error log and a
+ * `gas.unpriced` alert instead, and the nonce is closed.
  */
 export interface GasSpentEvent {
   type: 'gas';
@@ -165,8 +168,9 @@ export type FillerStage =
   | 'settle.sent'
   | 'settle.confirmed'
   /**
-   * Operator alert: a nonce looked spent with no receipt of any of its own transactions and was given up, so
-   * their gas is unknown (`detail.chain`, `detail.nonce`, `detail.kinds`, `detail.txHashes` for reconciliation).
+   * Operator alert: the gas of a nonce's own transactions is not reported — the nonce looked spent with no receipt
+   * of any of them, the receipt found is of a transaction not journaled on it, or the event sink kept refusing
+   * the `gas` event (`detail.chain`, `detail.nonce`, `detail.kinds`, `detail.txHashes` for reconciliation).
    */
   | 'gas.unpriced';
 
