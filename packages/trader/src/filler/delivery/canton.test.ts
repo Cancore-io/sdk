@@ -321,6 +321,18 @@ describe('Canton delivery: a replica that died mid-delivery (CAN-1867, review F-
     executor.stop();
   });
 
+  test('TC-SDK-BUG-1610-07: a pending EVM-chain fill with sentAtMs is left to its nonce: resume and deliver never close it', async () => {
+    const h = harness({ script: ['commit'] });
+    await h.store.withOrder(ORDER_HASH, (tx) => tx.putFill({ ...dead(START + 10_000), chain: SOURCE }));
+    const { executor } = await expiredBeforeRestart(h);
+    await executor.start();
+    await flush();
+    await expect(executor.deliver(ORDER_HASH, 0)).resolves.toMatchObject({ status: 'refused', reason: 'no-receipt' });
+    await expect(h.fill()).resolves.toMatchObject({ state: 'pending', chain: SOURCE });
+    expect(outcomeUnknown(h)).toHaveLength(0);
+    executor.stop();
+  });
+
   test('TC-SDK-BUG-1610-04: the replica that signed restarts after ticket.expired → its own claim is closed at once, though its lease still runs', async () => {
     const h = harness({ script: ['commit'] });
     await h.store.withOrder(ORDER_HASH, (tx) => tx.putFill({ ...dead(START + 420_000), owner: 'replica-1' }));

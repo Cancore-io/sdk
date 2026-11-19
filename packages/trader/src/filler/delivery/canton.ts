@@ -56,8 +56,9 @@ import { awaitClock, LEDGER_CLOCK_SLACK_MS } from './validFrom';
 /** `FillProof.fillRef` of a Canton delivery: `keccak256(utf8(updateId))` (attestors.md, protocol §3.13). */
 export const cantonFillRef = (updateId: string): Hex => `0x${bytesToHex(keccak_256(utf8ToBytes(updateId)))}` as Hex;
 
-/** Only a Canton claim is still `pending` once signed: an EVM fill turns `sent` with its broadcast. */
-export const isSignedClaim = (fill: FillRecord | undefined): fill is FillRecord & { sentAtMs: number } => fill?.state === 'pending' && fill.sentAtMs !== undefined;
+/** A Canton claim only: an EVM fill is driven from its nonce, and closing it here would end that tracking. */
+export const isSignedClaim = (fill: FillRecord | undefined): fill is FillRecord & { sentAtMs: number } =>
+  fill?.state === 'pending' && fill.sentAtMs !== undefined && fill.chain.startsWith('canton:');
 
 /** Refusals after which the same ticket can still be delivered. */
 const TRANSIENT = new Set(['CANTON_NOT_READY', 'CANTON_UNAVAILABLE', 'OPERATION_EXPIRED', 'INTERNAL', 'RATE_LIMITED']);
