@@ -57,6 +57,23 @@ function retries() {
   return { scheduled, schedule: (run: () => void, ms: number) => void scheduled.push({ run, ms }) };
 }
 
+/** A wallet window that grants `token` on `rpcUrl` as soon as the ceremony listens for an answer. */
+function consentingWindow(token: string, rpcUrl = SESSION.rpcUrl) {
+  const popup = { closed: false, postMessage: () => {}, close: () => {} };
+  return {
+    open: jest.fn(() => popup),
+    addEventListener: (_type: 'message', deliver: (event: MessageEventLike) => void) =>
+      queueMicrotask(() =>
+        deliver({
+          origin: 'https://app-dev.cancore.app',
+          source: popup,
+          data: { type: 'cancore:connect-result', ...SESSION, token, rpcUrl },
+        }),
+      ),
+    removeEventListener: () => {},
+  };
+}
+
 async function failure(run: Promise<unknown>): Promise<ProviderRpcError> {
   try {
     await run;
@@ -477,19 +494,7 @@ describe('CancoreProvider — events', () => {
     const first = fakeStream();
     const streams = [first, fakeStream()];
     const { fetchImpl, calls } = transport(() => ({ body: { result: { ticket: 't' } } }));
-    const popup = { closed: false, postMessage: () => {}, close: () => {} };
-    const win = {
-      open: jest.fn(() => popup),
-      addEventListener: (_type: 'message', deliver: (event: MessageEventLike) => void) =>
-        queueMicrotask(() =>
-          deliver({
-            origin: 'https://app-dev.cancore.app',
-            source: popup,
-            data: { type: 'cancore:connect-result', ...SESSION, token: 'cs_fresh' },
-          }),
-        ),
-      removeEventListener: () => {},
-    };
+    const win = consentingWindow('cs_fresh');
     const provider = new CancoreProvider({
       host: 'https://app-dev.cancore.app',
       session: SESSION,
@@ -507,6 +512,69 @@ describe('CancoreProvider — events', () => {
     expect(win.open).toHaveBeenCalledTimes(1);
     expect(streams).toHaveLength(0);
     expect(calls[calls.length - 1]!.init.headers.Authorization).toBe('Bearer cs_fresh');
+  });
+
+  // A ticket requested on the old grant must not open the new grant's stream,
+  // and the new `connect` must not answer before its own stream is up.
+  it('streams on the new grant when disconnect and a new connect land while a ticket is in flight', async () => {
+    let release!: () => void;
+    const ticketHeld = new Promise<void>((resolve) => (release = resolve));
+    const log: string[] = [];
+    const fetchImpl = jest.fn(async (_url: string, init: RequestInitLike) => {
+      const { method } = JSON.parse(init.body) as { method: string };
+      const grant = init.headers.Authorization!.replace('Bearer ', '');
+      log.push(`${method} ${grant}`);
+      if (method === 'cancore_streamTicket' && grant === SESSION.token) await ticketHeld;
+      return { ok: true, status: 200, json: async () => ({ result: { ticket: `of ${grant}` } }) };
+    });
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+      openStream: (url) => (log.push(`stream ${url}`), fakeStream()),
+      win: consentingWindow('cs_fresh', 'https://api-fresh.example/dapp/rpc'),
+    });
+
+    const first = provider.request({ method: 'connect' });
+    await flush();
+    await provider.request({ method: 'disconnect' });
+    const second = provider.request({ method: 'connect' });
+    await flush();
+    release();
+    await Promise.all([first, second]);
+
+    expect(log).toEqual([
+      'cancore_streamTicket cs_grant',
+      'disconnect cs_grant',
+      'cancore_streamTicket cs_fresh',
+      'stream https://api-fresh.example/dapp/rpc/events?token=of%20cs_fresh',
+      'connect cs_fresh',
+      'connect cs_fresh',
+    ]);
+  });
+
+  it('ignores a late error from a stream it already replaced', async () => {
+    const first = fakeStream();
+    const second = fakeStream();
+    const streams = [first, second];
+    const { fetchImpl } = transport(() => ({ body: { result: { ticket: 't' } } }));
+    const { scheduled, schedule } = retries();
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+      openStream: () => streams.shift()!,
+      schedule,
+    });
+
+    await provider.request({ method: 'connect' });
+    first.fire('error', '');
+    scheduled[0]!.run();
+    await flush();
+    first.fire('error', '');
+
+    expect(second.closed).toBe(false);
+    expect(scheduled).toHaveLength(1);
   });
   // CAN-744, checked against the kernel's OpenRPC: a method the spec names and
   // this provider declines must be REFUSED BY THE WALLET, with 4200. Answering
