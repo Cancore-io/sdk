@@ -50,7 +50,7 @@ import { FillerChains, hashFillProof, hashOrder, INTENT_STATUS, type ChainConfig
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { Executor } from '../src/filler/delivery/executor';
 import { TransactionDriver } from '../src/filler/delivery/transactions';
-import type { StageEvent } from '../src/filler/events';
+import type { GasSpentEvent, StageEvent } from '../src/filler/events';
 import type { Delivery, FillerProtocolClient, FrameHandler } from '../src/filler/protocol/client';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { Clock } from '../src/filler/runtime';
@@ -304,6 +304,21 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
     expect(await d.status()).toBe(INTENT_STATUS.Settled);
     // FILLER1 is both the delivery key and the payee: it spent the fill, it got the payout.
     expect((await balanceOf(d.delivery.address.toLowerCase() as Hex)) - payeeBefore).toBe(payoutOf(d.order));
+    d.executor.stop();
+  }, 60_000);
+
+  test('BUG-1589-09: the fill and the settle of one trade each report the gas anvil charged, both charged to the order', async () => {
+    const d = await delivered();
+    const { settler, serve } = d.settlerFor();
+    serve(await d.frameOf(d.signed(attestorKeys())));
+    const { txHash } = await settler.selfSettle(d.orderHash);
+    const gasOf = (hash: string) => waitFor(async () => d.events.events.find((e): e is GasSpentEvent => e.type === 'gas' && e.txHash === hash), `the gas of ${hash}`);
+    for (const [kind, hash] of [['fill', d.fill.txRef], ['settle', txHash]] as const) {
+      const spent = await gasOf(hash);
+      const receipt = await rpc.request<{ gasUsed: string; effectiveGasPrice: string }>({ method: 'eth_getTransactionReceipt', params: [hash] });
+      expect(spent).toMatchObject({ kind, orderHash: d.orderHash, attempt: 0, chain, reverted: false });
+      expect(spent.feeWei).toBe((BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice)).toString());
+    }
     d.executor.stop();
   }, 60_000);
 

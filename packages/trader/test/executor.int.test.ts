@@ -26,7 +26,7 @@ import { FillerChains, hashOrder, type ChainConfig } from '../src/filler/chain';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { Executor, type DeliveryOptions } from '../src/filler/delivery/executor';
 import { TransactionDriver } from '../src/filler/delivery/transactions';
-import type { StageEvent } from '../src/filler/events';
+import type { GasSpentEvent, StageEvent } from '../src/filler/events';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { Clock } from '../src/filler/runtime';
 import type { FillRecord, TicketRecord } from '../src/filler/store';
@@ -214,6 +214,22 @@ live('Executor against the stand router (make intent-genesis)', () => {
     expect(fill.inclusion?.receipt).toMatchObject({ transactionHash: fill.txRef });
     expect(await s.filled()).toBe(true);
     expect(s.events.events.filter((e) => e.type === 'filled')).toHaveLength(1);
+    s.executor.stop();
+  });
+
+  test('BUG-1589-08: a fill on the real router reports the gas anvil charged for it, once, charged to its order', async () => {
+    const s = await scenario({ instanceId: 'int-gas' });
+    await s.executor.start();
+    const { txHash } = await s.executor.deliver(s.orderHash, 0);
+    await s.state('included');
+    await mine(2);
+    await s.state('confirmed');
+    const spent = await waitFor(async () => s.events.events.find((e): e is GasSpentEvent => e.type === 'gas' && e.txHash === txHash), 'the gas of the fill');
+    const receipt = await rpc.request<{ gasUsed: string; effectiveGasPrice: string; blockHash: Hex }>({ method: 'eth_getTransactionReceipt', params: [txHash] });
+    expect(spent).toMatchObject({ orderHash: s.orderHash, attempt: 0, kind: 'fill', chain, reverted: false, blockHash: receipt.blockHash, gasUsed: BigInt(receipt.gasUsed).toString(), effectiveGasPrice: BigInt(receipt.effectiveGasPrice).toString() });
+    expect(spent.feeWei).toBe((BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice)).toString());
+    expect(BigInt(spent.feeWei)).toBeGreaterThan(0n);
+    expect(s.events.events.filter((e) => e.type === 'gas' && e.orderHash === s.orderHash)).toHaveLength(1);
     s.executor.stop();
   });
 

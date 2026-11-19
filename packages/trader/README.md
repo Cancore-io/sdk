@@ -626,9 +626,14 @@ const webSocket: WebSocketFactory = (url, h, protocols) => {
 - `Clock` — `now()` (unix ms) and `schedule(delayMs, callback) → cancel`. Defaults to the system clock.
 - `Logger` — `debug/info/warn/error(message, fields?)`. The SDK never logs signatures, signed payloads,
   prepared transactions or keys. Defaults to silent.
-- `EventSink` — `emit(event)`. Public events: `filled`, `attested`, `settled`, `penalty`, `declined`; plus
+- `EventSink` — `emit(event)`. Public events: `filled`, `attested`, `settled`, `penalty`, `declined`, `gas`; plus
   `stage` events (`quote.sent`, `ticket.receipted`, `settle.sent`, …) for analytics. A throwing sink never
   stops the protocol. Defaults to a no-op.
+- `gas` (`GasSpentEvent`) — the cost of every own EVM transaction once its nonce is done, reverted ones
+  included: `{ orderHash?, attempt?, kind, chain, txHash, blockNumber, blockHash, reverted, gasUsed,
+  effectiveGasPrice, l1Fee?, feeWei }`, `feeWei = gasUsed × effectiveGasPrice + l1Fee` in the chain's native
+  wei. `kind` is `fill`, `cancel` (charged to the fill it freed), `settle` or `approve` (no `orderHash`). One
+  event per transaction, from the replica that marks its nonce mined; key it by `txHash`.
 - `HttpFetch` — the slice of `fetch` used for the login, the REST fallback (`status`,
   `text()`, and `headers.get` for `Retry-After`). Defaults to the global `fetch`.
 

@@ -5,6 +5,8 @@
  * journal, Prometheus, a webhook). Payloads never carry signatures or keys.
  */
 import type { DeclineReason, DecString, Hex, PenaltyStep } from '@cancore/contracts';
+import type { EvmChainId } from './chains';
+import type { InFlightKind } from './store';
 
 /** Own `fill` confirmed on the destination. */
 export interface FilledEvent {
@@ -51,6 +53,35 @@ export interface DeclinedEvent {
   orderHash: Hex;
   attempt: number;
   reason: DeclineReason;
+}
+
+/**
+ * What one own EVM transaction cost, once its nonce is done — as deep as the
+ * chain's `fillConfirmations` (BUG-1589): a fill, confirmed or reverted; the
+ * cancel that freed an expired fill's nonce; a `settle`; an `approve`. Gas is
+ * spent whether or not the call succeeded, so a reverted one is reported too.
+ * Emitted by the replica that marks the nonce mined, once per transaction:
+ * key it by `txHash`.
+ */
+export interface GasSpentEvent {
+  type: 'gas';
+  /** The trade the cost is charged to; absent for an `approve`, which serves every order of its token. */
+  orderHash?: Hex;
+  attempt?: number;
+  kind: InFlightKind;
+  chain: EvmChainId;
+  txHash: Hex;
+  blockNumber: DecString;
+  blockHash: Hex;
+  /** Mined and reverted: the gas was still spent. */
+  reverted: boolean;
+  gasUsed: DecString;
+  /** Wei per gas unit, from the receipt. */
+  effectiveGasPrice: DecString;
+  /** OP-stack chains only: the L1 data fee the receipt names, wei. */
+  l1Fee?: DecString;
+  /** `gasUsed × effectiveGasPrice + l1Fee`: wei of the chain's native asset. */
+  feeWei: DecString;
 }
 
 /** Internal stages, for analytics; not part of the protocol. */
@@ -135,7 +166,7 @@ export interface StageEvent {
   detail?: Readonly<Record<string, string | number | boolean>>;
 }
 
-export type FillerEvent = FilledEvent | AttestedEvent | SettledEvent | PenaltyEvent | DeclinedEvent | StageEvent;
+export type FillerEvent = FilledEvent | AttestedEvent | SettledEvent | PenaltyEvent | DeclinedEvent | GasSpentEvent | StageEvent;
 
 /**
  * Receives every event. A rejected promise or a throw is logged and dropped:

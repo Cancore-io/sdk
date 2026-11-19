@@ -2,7 +2,7 @@ import { FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, fillerIdHash, repayToFromEvm, ty
 import { CANCORE_ROUTER_ABI } from '@cancore/contracts';
 import { ChainClient, FillerChains, fillDepth, hashOrder, readAtDepth, type ChainConfig, type OpenDepth } from '../chain';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../chain/abi';
-import type { FillerEvent, StageEvent } from '../events';
+import type { FillerEvent, GasSpentEvent, StageEvent } from '../events';
 import type { TicketRecord } from '../store';
 import {
   createRecordingEventSink,
@@ -966,6 +966,87 @@ async function forDraws(draws: number, check: (rng: Rng) => void | Promise<void>
 const ascending = (values: readonly bigint[]): bigint[] => [...values].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
 
 const chainWith = (openConfirmations: OpenDepth, fillConfirmations?: number): ChainConfig => ({ ...POLICY, openConfirmations, fillConfirmations });
+
+describe('BUG-1589: gas of own transactions, charged to the trade', () => {
+  type World = Awaited<ReturnType<typeof world>>;
+  const gasEvents = (w: World) => w.events.events.filter((e): e is GasSpentEvent => e.type === 'gas');
+  /** The cost as the chain's own receipt states it. */
+  const costOf = async (w: World, hash: Hex) => {
+    const raw = await w.dst.request<{ gasUsed: string; effectiveGasPrice: string; blockNumber: string; blockHash: Hex }>({ method: 'eth_getTransactionReceipt', params: [hash] });
+    const gasUsed = BigInt(raw.gasUsed);
+    const price = BigInt(raw.effectiveGasPrice);
+    return { gasUsed: gasUsed.toString(), effectiveGasPrice: price.toString(), feeWei: (gasUsed * price).toString(), blockNumber: BigInt(raw.blockNumber).toString(), blockHash: raw.blockHash };
+  };
+
+  test('BUG-1589-01: a confirmed fill reports gasUsed × effectiveGasPrice once, charged to its order and attempt', async () => {
+    const w = await world();
+    const executor = w.executor();
+    await executor.start();
+    const { txHash } = await executor.deliver(w.orderHash, 0);
+    await w.tick(1_000);
+    expect(gasEvents(w)).toEqual([]);
+    await w.tick(4_000);
+    expect(gasEvents(w)).toEqual([{ type: 'gas', orderHash: w.orderHash, attempt: 0, kind: 'fill', chain: DST, txHash, reverted: false, ...(await costOf(w, txHash!)) }]);
+    expect(BigInt(gasEvents(w)[0]!.feeWei)).toBeGreaterThan(0n);
+    executor.stop();
+  });
+
+  test('BUG-1589-02: a fill mined and reverted still reports the gas it burnt, reverted', async () => {
+    const w = await world();
+    const executor = w.executor();
+    await executor.start();
+    const { txHash } = await executor.deliver(w.orderHash, 0);
+    w.dst.token(TOKEN).setBalance(fillSigner.address, 0n);
+    await w.tick(5_000);
+    expect(await fillOf(w)).toMatchObject({ state: 'failed' });
+    expect(gasEvents(w)).toEqual([{ type: 'gas', orderHash: w.orderHash, attempt: 0, kind: 'fill', chain: DST, txHash, reverted: true, ...(await costOf(w, txHash!)) }]);
+    expect(gasEvents(w)[0]!.gasUsed).toBe('30000');
+    executor.stop();
+  });
+
+  test('BUG-1589-03: the cancel that frees an expired fill nonce is charged to that fill order', async () => {
+    const w = await world({ ttlS: 40 });
+    w.dst.minTip = 10n ** 12n;
+    const executor = w.executor('r1', { ...TIMING, replaceAfterMs: 60_000 });
+    await executor.start();
+    await executor.deliver(w.orderHash, 0);
+    await w.tick(45_000);
+    const [cancel] = [...w.dst.mempool.values()];
+    expect(cancel).toMatchObject({ data: '0x', nonce: 0n });
+    w.dst.minTip = 0n;
+    await w.tick(3_000);
+    expect(w.stages('fill.cancelled')).toHaveLength(1);
+    expect(gasEvents(w)).toEqual([{ type: 'gas', orderHash: w.orderHash, attempt: 0, kind: 'cancel', chain: DST, txHash: cancel!.hash, reverted: false, ...(await costOf(w, cancel!.hash)) }]);
+    executor.stop();
+  });
+
+  test('BUG-1589-04: an approve reports its gas with no order: it serves every order of its token', async () => {
+    const w = await world({ allowance: 0n });
+    const executor = w.executor();
+    await executor.start();
+    const delivering = executor.deliver(w.orderHash, 0);
+    await flush();
+    const approveHash = w.stages('approve.sent')[0]!.detail!.txHash as Hex;
+    await w.tick(10_000);
+    const { txHash } = await delivering;
+    const approve = gasEvents(w).find((e) => e.kind === 'approve');
+    expect(approve).toEqual({ type: 'gas', kind: 'approve', chain: DST, txHash: approveHash, reverted: false, ...(await costOf(w, approveHash)) });
+    expect(gasEvents(w).filter((e) => e.kind === 'fill').map((e) => e.txHash)).toEqual([txHash]);
+    executor.stop();
+  });
+
+  test('BUG-1589-05: a settle on a leased nonce reports its gas, charged to the order it settles', async () => {
+    const w = await world();
+    const executor = w.executor();
+    const driver = new TransactionDriver({ chain: DST, client: w.chains.get(DST)!.client, signer: fillSigner, store: w.store, owner: 'r1', leaseTtlMs: 5_000, fees: { feeBumpPercent: 15, gasLimitMarginPercent: 20 }, logger: w.logger });
+    const lease = await driver.acquire();
+    const settle = await driver.send(lease, { to: SRC_ROUTER, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now());
+    executor.watch(driver, lease);
+    await w.tick(5_000);
+    expect(gasEvents(w)).toEqual([{ type: 'gas', orderHash: w.orderHash, attempt: 0, kind: 'settle', chain: DST, txHash: settle.hash, reverted: false, ...(await costOf(w, settle.hash)) }]);
+    executor.stop();
+  });
+});
 
 describe('fillDepth', () => {
   test('CAN-2893: fillDepth never reads below one confirmation, whatever integer the config holds, with or without fillConfirmations (RX-1)', async () => {

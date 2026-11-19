@@ -55,6 +55,7 @@ import type { FillSigner } from '../signer';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, TicketRecord } from '../store';
 import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from '../tickets/terms';
 import { CantonDelivery, isSignedClaim } from './canton';
+import { completeMined } from './gas';
 import { FeeCeilingError, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
 import { reasonOf, retryableEstimateFailure, revertName } from './reverts';
 import type { FillRefusal } from './refusal';
@@ -734,14 +735,14 @@ export class Executor {
     if (tx.kind === 'settle') {
       if (!(await this.deepEnough(t, receipt, depth))) return false;
       await this.settleListener?.(chain, tx, receipt);
-      await store.nonces.complete(t.lease, tx.hash);
+      await completeMined(store.nonces, t.lease, { chain, tx, receipt, nonceTransactions: txs }, (spent) => this.emit(spent));
       return true;
     }
     if (tx.kind !== 'fill' || !tx.orderHash || tx.attempt === undefined) {
       if (!(await this.deepEnough(t, receipt, depth))) return false;
       if (tx.kind === 'cancel') await this.cancelled(chain, tx, txs, receipt);
       else this.stage(tx.kind === 'approve' ? 'approve.confirmed' : 'tx.confirmed', tx.orderHash, tx.attempt, { chain, kind: tx.kind, txHash: tx.hash, status: receipt.status, gasUsed: receipt.gasUsed.toString() });
-      await store.nonces.complete(t.lease, tx.hash);
+      await completeMined(store.nonces, t.lease, { chain, tx, receipt, nonceTransactions: txs }, (spent) => this.emit(spent));
       return true;
     }
     const orderHash = tx.orderHash;
@@ -770,7 +771,7 @@ export class Executor {
     if (receipt.status === 0) {
       await this.fail(orderHash, attempt, `reverted in block ${receipt.blockNumber}`);
       this.stage('fill.reverted', orderHash, attempt, { chain, txHash: tx.hash, block: receipt.blockNumber.toString(), gasUsed: receipt.gasUsed.toString() });
-      await store.nonces.complete(t.lease, tx.hash);
+      await completeMined(store.nonces, t.lease, { chain, tx, receipt, nonceTransactions: txs }, (spent) => this.emit(spent));
       return true;
     }
     const confirmed = await store.withOrder(orderHash, async (otx) => {
@@ -797,7 +798,7 @@ export class Executor {
       this.options.logger.info('delivery: fill confirmed', { orderHash, attempt, chain, txHash: tx.hash });
       this.options.onFilled?.(orderHash, attempt);
     }
-    await store.nonces.complete(t.lease, tx.hash);
+    await completeMined(store.nonces, t.lease, { chain, tx, receipt, nonceTransactions: txs }, (spent) => this.emit(spent));
     return true;
   }
 
