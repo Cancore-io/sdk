@@ -268,8 +268,10 @@ receipted ──► pending ──► sent ──► included ──► confirme
   delivered.
 - **Allowance.** The router is approved for the output asset when the allowance cannot cover a fill — up to
   `delivery.approvals[<caip2>][<token>]`, or exactly the fill without a limit; never unlimited by default. With
-  a limit, the allowance is topped up at start when it has fallen below half of it. One approve per token at a
-  time; a token that refuses to change a non-zero allowance is approved to zero first.
+  a limit, the allowance is topped up at start and on every sweep (each `nonceLeaseTtlMs`) when it has fallen
+  below half of it, so V-E5 keeps passing while the filler runs. One approve per token at a time (an
+  approve in flight on any nonce of the key holds back the next); a token that refuses to change a non-zero
+  allowance is approved to zero first.
 - **Events.** `filled { orderHash, attempt, txHash, amount }` once confirmed; stages `fill.sent` (nonce,
   gas limit, fees), `fill.replaced`, `fill.included`, `fill.reorged`, `fill.reverted`, `fill.cancelled`,
   `fill.confirmed` (`gasUsed`, `effectiveGasPrice`, `latencyMs`, `replacements`), `fill.refused`,
