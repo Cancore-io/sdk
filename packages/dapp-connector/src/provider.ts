@@ -67,6 +67,8 @@ const STREAM_EVENTS = ['connected', 'statusChanged', 'accountsChanged', 'txChang
 
 /** The stream has no replay buffer; a reconnect storm would only make that worse. */
 const STREAM_RETRY_MS = 3000;
+/** Doubling stops here: an outage of any length still ends with a stream, within this long. */
+const STREAM_RETRY_MAX_MS = 30_000;
 
 export interface CancoreProviderOptions {
   /** Wallet origin, e.g. `https://app-dev.cancore.app`. */
@@ -91,6 +93,7 @@ export class CancoreProvider implements Cip0103Provider {
   private stream: StreamLike | null = null;
   private streaming = false;
   private closed = false;
+  private streamFailures = 0;
   private nextId = 1;
 
   constructor(options: CancoreProviderOptions) {
@@ -103,6 +106,7 @@ export class CancoreProvider implements Cip0103Provider {
     if (!KNOWN_METHODS.has(method)) {
       throw rpcError(RpcCode.METHOD_NOT_FOUND, `Method ${method} not found`);
     }
+    if (method === 'disconnect') return this.disconnect(params);
     if (method !== 'connect') return this.send(method, params);
 
     // Synchronous up to here: `window.open` must still be inside the click.
@@ -140,6 +144,19 @@ export class CancoreProvider implements Cip0103Provider {
     this.closed = true;
     this.stream?.close();
     this.stream = null;
+  }
+
+  /**
+   * The wallet revokes the grant on `disconnect`. Kept, it would skip the next
+   * ceremony and every `connect` after would answer 4100; its stream would
+   * also stand in for the new grant's.
+   */
+  private async disconnect(params: unknown): Promise<unknown> {
+    const result = await this.send('disconnect', params);
+    this.stream?.close();
+    this.stream = null;
+    this.session = null;
+    return result;
   }
 
   private beginCeremony(): Promise<CancoreSession> {
@@ -205,12 +222,14 @@ export class CancoreProvider implements Cip0103Provider {
     this.streaming = true;
     try {
       const issued = (await this.send('cancore_streamTicket', undefined)) as { ticket?: unknown };
-      if (typeof issued?.ticket !== 'string') return;
-      const url = `${this.session!.rpcUrl}/events?token=${encodeURIComponent(issued.ticket)}`;
+      // `close()` or `disconnect` may have landed while the ticket was in flight.
+      if (this.closed || !this.session || typeof issued?.ticket !== 'string') return;
+      const url = `${this.session.rpcUrl}/events?token=${encodeURIComponent(issued.ticket)}`;
       const stream = openStream(url);
       for (const name of STREAM_EVENTS) {
         stream.addEventListener(name, (event) => this.emit(name, parseFrame(event.data)));
       }
+      stream.addEventListener('open', () => (this.streamFailures = 0));
       stream.addEventListener('error', () => this.reopen());
       this.stream = stream;
     } finally {
@@ -219,13 +238,21 @@ export class CancoreProvider implements Cip0103Provider {
   }
 
   private reopen(): void {
-    if (this.closed) return;
+    if (this.closed || !this.session) return;
     this.stream?.close();
     this.stream = null;
     const schedule = this.options.schedule ?? setTimeout;
+    const delay = Math.min(STREAM_RETRY_MS * 2 ** this.streamFailures++, STREAM_RETRY_MAX_MS);
     schedule(() => {
-      void this.listen();
-    }, STREAM_RETRY_MS);
+      void this.listen()
+        .catch((error?: ProviderRpcError) => {
+          // A revoked or expired grant does not come back by retrying; the next `connect` runs the ceremony.
+          if (error?.code === RpcCode.UNAUTHORIZED) this.session = null;
+        })
+        .then(() => {
+          if (!this.stream) this.reopen();
+        });
+    }, delay);
   }
 }
 
