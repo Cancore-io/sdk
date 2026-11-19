@@ -70,6 +70,7 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 | `selfSettle(orderHash)` | `{ txHash }` | settle one order now from its verified attestation set (pulled when none is held); `SettleError` with its `reason` when nothing was sent | CAN-1856 |
 | `checkSettle(orderHash)` | `{ gas, repayTo, payout }` | `selfSettle` without sending: the same checks of the held set (or the one filler-gateway holds, read without keeping it), the `eth_call` of `settle` and a gas estimate; signs, sends and stores nothing; `SettleError` as `selfSettle`. EVM source only | CAN-2713 |
 | `verifyEscrow(ticket)` | `{ ok, reason?, detail?, checks }` | the checks before a receipt for an issued ticket whose offer is stored; also runs before every receipt | CAN-1854 |
+| `restToken()` | `Promise<string>` | a filler-gateway REST bearer valid for at least 30 s more, from the login the session shares; logs in again when the held one is near expiry, so a caller of the filler's own REST routes never holds an expired token while the WebSocket stays up | BUG-1602 |
 | `stats()` | `{ won, delivered, noShow, reliability, capacityUsd, inFlightUsd }` | filler statistics | CAN-1940 |
 
 ## The connection to filler-gateway

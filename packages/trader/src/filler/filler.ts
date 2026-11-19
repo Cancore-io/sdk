@@ -243,6 +243,8 @@ export interface Filler {
   verifyEscrow(ticket: TicketIssued): Promise<EscrowVerification>;
   /** The Canton operations of the filler's party, over this filler's own login; undefined without `canton`. */
   readonly canton: CantonOperations | undefined;
+  /** A filler-gateway REST bearer valid for at least `TOKEN_MARGIN_MS` more, from the login the session shares; logs in when the held one is near expiry. */
+  restToken(): Promise<string>;
   stats(): Promise<FillerStatsSnapshot>;
 }
 
@@ -673,6 +675,7 @@ export function createFiller(config: FillerConfig): Filler {
     canton,
     selfSettle: (orderHash) => settler.selfSettle(orderHash),
     checkSettle: (orderHash) => settler.checkSettle(orderHash),
+    restToken: async () => (await rest.validToken()).token,
     verifyEscrow: async (ticket) => {
       const orderHash = typeof ticket?.orderHash === 'string' ? (ticket.orderHash.toLowerCase() as Hex) : undefined;
       if (!orderHash || !/^0x[0-9a-f]{64}$/.test(orderHash) || !Number.isSafeInteger(ticket.attempt)) {
