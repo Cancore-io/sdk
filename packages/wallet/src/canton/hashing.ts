@@ -245,7 +245,10 @@ const B64_INDEX = new Map([...B64].map((c, i) => [c, i] as const));
 
 /** Strict standard base64 (padding optional) to bytes, without `atob` or `Buffer`. */
 export function fromBase64(b64: string): Uint8Array {
-  const clean = b64.replace(/=+$/, '');
+  // At most two `=` of padding, trimmed without a regex: `/=+$/` is quadratic on a long run of `=` (CodeQL).
+  let end = b64.length;
+  while (end > 0 && end > b64.length - 2 && b64[end - 1] === '=') end--;
+  const clean = b64.slice(0, end);
   if (clean.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(clean)) throw new TypeError('not base64');
   const out = new Uint8Array(Math.floor((clean.length * 3) / 4));
   let bits = 0;

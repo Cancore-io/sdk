@@ -204,14 +204,18 @@ function canonical(bytes: Uint8Array): TopologyTransaction {
   return tx;
 }
 
-/** A protobuf varint (≤ 5 bytes: a length or an int32) at `at`: its value and the index after it. */
+/** A minimal protobuf varint (≤ 5 bytes: a length or an int32) at `at`: its value and the index after it. */
 function varint(bytes: Uint8Array, at: number): [number, number] {
   let value = 0;
   for (let i = 0; i < 5; i++) {
     const b = bytes[at + i];
     if (b === undefined) throw new TypeError('truncated varint');
     value |= (b & 0x7f) << (7 * i);
-    if ((b & 0x80) === 0) return [value >>> 0, at + i + 1];
+    if ((b & 0x80) === 0) {
+      // A last byte of 0 after the first only pads the value: not the bytes Canton writes.
+      if (b === 0 && i > 0) throw new TypeError('padded varint');
+      return [value >>> 0, at + i + 1];
+    }
   }
   throw new TypeError('varint longer than 5 bytes');
 }

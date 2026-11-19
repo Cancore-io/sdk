@@ -13,6 +13,11 @@
 - `OperationLeg.topologyTransactions`: the base64 transactions a `topology` leg's multihash covers, as the backend
   sends them from backend#2822 on.
 
+### Fixed — `fromBase64` trims padding in linear time
+
+- At most two `=` of padding are accepted, trimmed without a regex: `/=+$/` took seconds on a long run of `=`, and the
+  topology check decodes what the server sends. Three or more `=` are refused as not base64.
+
 ## 0.4.8
 
 ### Fixed — a `202 pending` submit is never reported as a success (CAN-3679)

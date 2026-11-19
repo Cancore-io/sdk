@@ -151,7 +151,15 @@ describe('topology multihash and base64', () => {
       expect(fromBase64(b64)).toEqual(bytes);
       expect(fromBase64(b64.replace(/=+$/, ''))).toEqual(bytes);
     }
-    for (const bad of ['a', 'ab$c', 'a-b_']) expect(() => fromBase64(bad)).toThrow(/not base64/);
+    for (const bad of ['a', 'ab$c', 'a-b_', 'AAAA===', 'AA=A']) expect(() => fromBase64(bad)).toThrow(/not base64/);
+  });
+
+  // CodeQL on sdk#276: `/=+$/` backtracks quadratically on a run of `=` that does not end the string, and the
+  // topology check decodes what the server sends.
+  test('a long run of padding is refused in linear time', () => {
+    const started = performance.now();
+    expect(() => fromBase64(`${'='.repeat(100_000)}A`)).toThrow(/not base64/);
+    expect(performance.now() - started).toBeLessThan(500);
   });
 });
 

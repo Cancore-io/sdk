@@ -60,7 +60,9 @@ export function registryTransferChecked(check: () => void): void {
   }
 }
 
-export { decodeTopology, participantId } from '@cancore/wallet/canton/proto';
+// Local, not re-exported from @cancore/wallet/canton/proto: that entry's types pull in core-ledger-proto, which
+// needs AbortSignal (DOM or @types/node), into the filler's public d.ts (the stranger-install check in ci.yml).
+export const participantId = (uid: string): string => (uid.startsWith('PAR::') ? uid.slice(5) : uid);
 const strip0x = (hex: string): string => (hex.startsWith('0x') ? hex.slice(2) : hex).toLowerCase();
 
 /** Fingerprint of an Ed25519 public key as a party id carries it after `::`: `1220` ‖ sha256(int32BE(12) ‖ key). */

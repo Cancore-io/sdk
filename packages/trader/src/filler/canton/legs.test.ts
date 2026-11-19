@@ -17,7 +17,8 @@ import {
   transactionLeg,
   tx,
 } from './fixtures';
-import { CantonRefusal, cantonFingerprint, decodeTopology, legKind, verifyTopologyLeg, verifyTransactionLeg } from './legs';
+import { decodeTopology } from '@cancore/wallet/canton/proto';
+import { CantonRefusal, cantonFingerprint, legKind, verifyTopologyLeg, verifyTransactionLeg } from './legs';
 
 const expect_ = { partyId: party(), publicKey: `0x${NODE_KEY}` as Hex, participantUid: PARTICIPANT };
 const refusedWith = async (p: Promise<unknown>, detail: RegExp) => {
@@ -107,6 +108,10 @@ describe('the fingerprint and the multihash are Canton’s', () => {
     expect(() => decodeTopology(cat(head, new Uint8Array([0x18, 0x01])))).toThrow(/unexpected field/);
     expect(() => decodeTopology(cat(head, new Uint8Array([0x10, 0x1e, 0x00])))).toThrow(/unexpected bytes/);
     expect(() => decodeTopology(cat(new Uint8Array([0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]), raw!))).toThrow(/varint/);
+    // Only minimal varints in the wrapper too (F-4 on sdk#276): a padded length or version is refused.
+    const padded = [...varint.slice(0, -1), varint[varint.length - 1]! | 0x80, 0x00];
+    expect(() => decodeTopology(cat(new Uint8Array([0x0a, ...padded]), raw!, new Uint8Array([0x10, 0x1e])))).toThrow(/padded varint/);
+    expect(() => decodeTopology(cat(head, new Uint8Array([0x10, 0x9e, 0x00])))).toThrow(/padded varint/);
   });
 });
 
