@@ -133,6 +133,35 @@ describe('hashing scheme V2, ported: the same bytes as @canton-network/core-tx-v
     tx.transaction!.nodeSeeds = [];
     expect(() => hashPreparedTransactionV2(tx)).toThrow(/no seed/);
   });
+
+  const rollback = (nodeId: string, children: string[]): DamlTransaction_Node => node(nodeId, { oneofKind: 'rollback', rollback: { children } });
+  const withNodes = (roots: string[], nodes: DamlTransaction_Node[]): PreparedTransaction => {
+    const tx = richTransaction();
+    tx.transaction = { version: '2.1', roots, nodes, nodeSeeds: [] };
+    return tx;
+  };
+
+  test('a diamond of 30 levels (2^30 paths through 60 nodes) is refused at once, not walked path by path', () => {
+    const depth = 30;
+    const level = (i: number) => (i + 1 < depth ? [`${i + 1}a`, `${i + 1}b`] : []);
+    const tx = withNodes(['0a'], Array.from({ length: depth }, (_, i) => [rollback(`${i}a`, level(i)), rollback(`${i}b`, level(i))]).flat());
+    const startedAt = performance.now();
+    expect(() => hashPreparedTransactionV2(tx)).toThrow(/node 29a is reached twice/);
+    expect(performance.now() - startedAt).toBeLessThan(100);
+  });
+
+  test('a cycle, a child named twice, and a root that is also a node under a rollback or an exercise are refused', () => {
+    expect(() => hashPreparedTransactionV2(withNodes(['0'], [rollback('0', ['1']), rollback('1', ['0'])]))).toThrow(/node 0 is reached twice/);
+    expect(() => hashPreparedTransactionV2(withNodes(['0'], [rollback('0', ['1', '1']), rollback('1', [])]))).toThrow(/node 1 is reached twice/);
+    expect(() => hashPreparedTransactionV2(withNodes(['0', '1'], [rollback('0', ['1']), rollback('1', [])]))).toThrow(/node 1 is reached twice/);
+    const underExercise = richTransaction();
+    underExercise.transaction!.roots = ['0', '4'];
+    expect(() => hashPreparedTransactionV2(underExercise)).toThrow(/node 4 is reached twice/);
+  });
+
+  test('a child that is not in the transaction is refused', () => {
+    expect(() => hashPreparedTransactionV2(withNodes(['0'], [rollback('0', ['9'])]))).toThrow(/node 9 is not in the transaction/);
+  });
 });
 
 describe('topology multihash and base64', () => {

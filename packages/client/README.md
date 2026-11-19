@@ -505,6 +505,7 @@ retries are the ones the API says are safe. Every decision is taken on the refus
 
 | `errorCode` | What the account does |
 | --- | --- |
+| `202 { status: "pending" }` (not an error) | polls `GET /wallet/operations/{operationId}` until committed / rejected, then reports that outcome — never a success before |
 | `SUBMISSION_TIMEOUT_RETRYABLE` | resubmits the same signatures (up to twice) — never prepares again; Canton deduplicates on the command id |
 | `PREPARED_SUBMISSION_EXPIRED` | prepares and signs again, once — only where that is safe (the DvP steps of `make` / `take`) |
 | `DVP_NOT_ALLOWED` | a `SettleError` wherever it comes (placing, taking, recording the trade): DvP is not open to this account on this stand |

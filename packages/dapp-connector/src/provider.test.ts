@@ -1,5 +1,12 @@
 import { CancoreProvider } from './provider';
-import { RpcCode, type PrepareExecuteResult, type ProviderRpcError, type RequestInitLike, type StreamLike } from './types';
+import {
+  RpcCode,
+  type MessageEventLike,
+  type PrepareExecuteResult,
+  type ProviderRpcError,
+  type RequestInitLike,
+  type StreamLike,
+} from './types';
 
 const SESSION = {
   token: 'cs_grant',
@@ -40,6 +47,31 @@ function fakeStream() {
     fire: (type, data) => handlers.get(type)?.({ data }),
   };
   return stream;
+}
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Retries the provider asked for, with their delays, run by hand. */
+function retries() {
+  const scheduled: Array<{ run: () => void; ms: number }> = [];
+  return { scheduled, schedule: (run: () => void, ms: number) => void scheduled.push({ run, ms }) };
+}
+
+/** A wallet window that grants `token` on `rpcUrl` as soon as the ceremony listens for an answer. */
+function consentingWindow(token: string, rpcUrl = SESSION.rpcUrl) {
+  const popup = { closed: false, postMessage: () => {}, close: () => {} };
+  return {
+    open: jest.fn(() => popup),
+    addEventListener: (_type: 'message', deliver: (event: MessageEventLike) => void) =>
+      queueMicrotask(() =>
+        deliver({
+          origin: 'https://app-dev.cancore.app',
+          source: popup,
+          data: { type: 'cancore:connect-result', ...SESSION, token, rpcUrl },
+        }),
+      ),
+    removeEventListener: () => {},
+  };
 }
 
 async function failure(run: Promise<unknown>): Promise<ProviderRpcError> {
@@ -294,6 +326,255 @@ describe('CancoreProvider — events', () => {
 
     expect(scheduled).toHaveLength(0);
     expect(stream.closed).toBe(true);
+  });
+
+  // BUG-1633: one failed ticket fetch used to end the stream for good.
+  it('keeps re-opening a dropped stream, backing off to a cap, while the wallet cannot be reached', async () => {
+    let reachable = true;
+    const { fetchImpl } = transport(() => {
+      if (!reachable) throw new TypeError('Failed to fetch');
+      return { body: { result: { ticket: 't' } } };
+    });
+    const first = fakeStream();
+    const streams = [first, fakeStream()];
+    const { scheduled, schedule } = retries();
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+      openStream: () => streams.shift()!,
+      schedule,
+    });
+
+    await provider.request({ method: 'connect' });
+    reachable = false;
+    first.fire('error', '');
+    for (let attempt = 0; attempt < 6; attempt++) {
+      scheduled[attempt]!.run();
+      await flush();
+    }
+    expect(scheduled.map((retry) => retry.ms)).toEqual([3000, 6000, 12000, 24000, 30000, 30000, 30000]);
+
+    reachable = true;
+    scheduled[6]!.run();
+    await flush();
+    expect(streams).toHaveLength(0);
+  });
+
+  it('asks again when the wallet hands back no ticket', async () => {
+    const first = fakeStream();
+    const streams = [first, fakeStream()];
+    const { fetchImpl } = transport([
+      { body: { result: { ticket: 't' } } },
+      { body: { result: null } },
+      { body: { result: {} } },
+      { body: { result: { ticket: 't' } } },
+    ]);
+    const { scheduled, schedule } = retries();
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+      openStream: () => streams.shift()!,
+      schedule,
+    });
+
+    await provider.request({ method: 'connect' });
+    first.fire('error', '');
+    scheduled[0]!.run();
+    await flush();
+    expect(scheduled).toHaveLength(2);
+    scheduled[1]!.run();
+    await flush();
+    expect(streams).toHaveLength(0);
+  });
+
+  it('starts the backoff over once a stream is up again', async () => {
+    const first = fakeStream();
+    const second = fakeStream();
+    const streams = [first, second];
+    const { fetchImpl } = transport(() => ({ body: { result: { ticket: 't' } } }));
+    const { scheduled, schedule } = retries();
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+      openStream: () => streams.shift()!,
+      schedule,
+    });
+
+    await provider.request({ method: 'connect' });
+    first.fire('error', '');
+    scheduled[0]!.run();
+    await flush();
+    second.fire('open', '');
+    second.fire('error', '');
+
+    expect(scheduled.map((retry) => retry.ms)).toEqual([3000, 3000]);
+  });
+
+  it('drops a revoked grant instead of retrying the stream on it', async () => {
+    const first = fakeStream();
+    const { fetchImpl, calls } = transport([
+      { body: { result: { ticket: 't' } } },
+      { body: { result: null } },
+      { ok: false, status: 401, body: { error: { code: RpcCode.UNAUTHORIZED, message: 'grant revoked' } } },
+    ]);
+    const { scheduled, schedule } = retries();
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+      openStream: () => first,
+      schedule,
+    });
+
+    await provider.request({ method: 'connect' });
+    first.fire('error', '');
+    scheduled[0]!.run();
+    await flush();
+
+    expect(scheduled).toHaveLength(1);
+    const err = await failure(provider.request({ method: 'status' }));
+    expect(err.code).toBe(RpcCode.DISCONNECTED);
+    expect(calls).toHaveLength(3);
+  });
+
+  it('opens no stream when closed while the ticket is in flight', async () => {
+    let release!: () => void;
+    const ticketHeld = new Promise<void>((resolve) => (release = resolve));
+    const fetchImpl = jest.fn(async (_url: string, init: RequestInitLike) => {
+      if (JSON.parse(init.body).method === 'cancore_streamTicket') await ticketHeld;
+      return { ok: true, status: 200, json: async () => ({ result: { ticket: 't' } }) };
+    });
+    const opened: unknown[] = [];
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+      openStream: () => (opened.push(1), fakeStream()),
+    });
+
+    const connecting = provider.request({ method: 'connect' });
+    await flush();
+    provider.close();
+    release();
+    await connecting;
+
+    expect(opened).toHaveLength(0);
+  });
+
+  it('answers 4900, not a crash, when disconnect lands while the ticket is in flight', async () => {
+    let release!: () => void;
+    const ticketHeld = new Promise<void>((resolve) => (release = resolve));
+    const fetchImpl = jest.fn(async (_url: string, init: RequestInitLike) => {
+      if (JSON.parse(init.body).method === 'cancore_streamTicket') await ticketHeld;
+      return { ok: true, status: 200, json: async () => ({ result: { ticket: 't' } }) };
+    });
+    const opened: unknown[] = [];
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+      openStream: () => (opened.push(1), fakeStream()),
+    });
+
+    const connecting = failure(provider.request({ method: 'connect' }));
+    await flush();
+    await provider.request({ method: 'disconnect' });
+    release();
+
+    expect((await connecting).code).toBe(RpcCode.DISCONNECTED);
+    expect(opened).toHaveLength(0);
+  });
+
+  // The wallet revokes the grant on `disconnect`; reusing it skipped the next
+  // ceremony and answered 4100 to every `connect` after.
+  it('forgets the grant on disconnect, so the next connect asks the user and streams on the new one', async () => {
+    const first = fakeStream();
+    const streams = [first, fakeStream()];
+    const { fetchImpl, calls } = transport(() => ({ body: { result: { ticket: 't' } } }));
+    const win = consentingWindow('cs_fresh');
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+      openStream: () => streams.shift()!,
+      schedule: () => {},
+      win,
+    });
+
+    await provider.request({ method: 'connect' });
+    await provider.request({ method: 'disconnect' });
+    expect(first.closed).toBe(true);
+
+    await provider.request({ method: 'connect' });
+    expect(win.open).toHaveBeenCalledTimes(1);
+    expect(streams).toHaveLength(0);
+    expect(calls[calls.length - 1]!.init.headers.Authorization).toBe('Bearer cs_fresh');
+  });
+
+  // A ticket requested on the old grant must not open the new grant's stream,
+  // and the new `connect` must not answer before its own stream is up.
+  it('streams on the new grant when disconnect and a new connect land while a ticket is in flight', async () => {
+    let release!: () => void;
+    const ticketHeld = new Promise<void>((resolve) => (release = resolve));
+    const log: string[] = [];
+    const fetchImpl = jest.fn(async (_url: string, init: RequestInitLike) => {
+      const { method } = JSON.parse(init.body) as { method: string };
+      const grant = init.headers.Authorization!.replace('Bearer ', '');
+      log.push(`${method} ${grant}`);
+      if (method === 'cancore_streamTicket' && grant === SESSION.token) await ticketHeld;
+      return { ok: true, status: 200, json: async () => ({ result: { ticket: `of ${grant}` } }) };
+    });
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+      openStream: (url) => (log.push(`stream ${url}`), fakeStream()),
+      win: consentingWindow('cs_fresh', 'https://api-fresh.example/dapp/rpc'),
+    });
+
+    const first = provider.request({ method: 'connect' });
+    await flush();
+    await provider.request({ method: 'disconnect' });
+    const second = provider.request({ method: 'connect' });
+    await flush();
+    release();
+    await Promise.all([first, second]);
+
+    expect(log).toEqual([
+      'cancore_streamTicket cs_grant',
+      'disconnect cs_grant',
+      'cancore_streamTicket cs_fresh',
+      'stream https://api-fresh.example/dapp/rpc/events?token=of%20cs_fresh',
+      'connect cs_fresh',
+      'connect cs_fresh',
+    ]);
+  });
+
+  it('ignores a late error from a stream it already replaced', async () => {
+    const first = fakeStream();
+    const second = fakeStream();
+    const streams = [first, second];
+    const { fetchImpl } = transport(() => ({ body: { result: { ticket: 't' } } }));
+    const { scheduled, schedule } = retries();
+    const provider = new CancoreProvider({
+      host: 'https://app-dev.cancore.app',
+      session: SESSION,
+      fetchImpl,
+      openStream: () => streams.shift()!,
+      schedule,
+    });
+
+    await provider.request({ method: 'connect' });
+    first.fire('error', '');
+    scheduled[0]!.run();
+    await flush();
+    first.fire('error', '');
+
+    expect(second.closed).toBe(false);
+    expect(scheduled).toHaveLength(1);
   });
   // CAN-744, checked against the kernel's OpenRPC: a method the spec names and
   // this provider declines must be REFUSED BY THE WALLET, with 4200. Answering

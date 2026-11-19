@@ -10,7 +10,7 @@ import { encodeCantonAmount, encodeCantonOutputAsset, encodeCantonRecipient, typ
 import { checkDeliveryFill, type DeliveryFillExpectation } from './delivery-check';
 import { CANTON_TRANSFER_FACTORIES, registriesProblem } from './factories';
 import { NODE_KEY, OTHER_KEY, party } from './fixtures';
-import { CantonRefusal } from './legs';
+import { CantonRefusal, RegistryTransferRefusal, registryTransferChecked, StatedInputRefusal } from './legs';
 import type { PreparedOf } from './operations';
 import type { CantonTransaction, DamlValue, TransactionNode } from './transaction';
 
@@ -31,6 +31,7 @@ const ORDER_CID = `00${'0d'.repeat(33)}`;
 const FACTORY_CID = `00${'fa'.repeat(33)}`;
 const PIN_CID = '00pin';
 const VALID_UNTIL = String(NOW / 1000 + 120);
+const VALID_FROM = String(NOW / 1000 - 30);
 const FILL_DEADLINE = String(NOW / 1000 + 600);
 const asset = { admin: ADMIN, id: 'CNRX' };
 
@@ -61,6 +62,7 @@ const expect_: DeliveryFillExpectation = {
   attempt: 2,
   deliveryOrderCid: ORDER_CID,
   validUntil: VALID_UNTIL,
+  validFrom: VALID_FROM,
   repayTo: REPAY_TO,
   order: { recipient: encodeCantonRecipient(RECIPIENT), outputAsset: encodeCantonOutputAsset(asset), minReceived: encodeCantonAmount('25').toString(), fillDeadline: FILL_DEADLINE },
   amountOut: encodeCantonAmount('25').toString(),
@@ -78,7 +80,7 @@ const orderArg = (over: Record<string, DamlValue> = {}) =>
     operator: v.party(OPERATOR), guardian: v.party(GUARDIAN), filler: v.party(ME), fillerId: v.text('cancore-dev-1'), repayTo: v.bytes32(REPAY_TO),
     fillerEntryCid: v.cid('ee'.repeat(34)), attestors: v.list([v.party(ATTESTOR)]), orderHash: v.bytes32(ORDER_HASH), recipient: v.party(RECIPIENT),
     instrumentId: instrument(), instrumentAdmin: v.party(ADMIN), transferFactoryCid: v.cid(FACTORY_CID), amount: v.numeric('25.0000000000'),
-    fillDeadline: v.time(FILL_DEADLINE), attempt: v.int(2), validUntil: v.time(VALID_UNTIL),
+    fillDeadline: v.time(FILL_DEADLINE), attempt: v.int(2), validUntil: v.time(VALID_UNTIL), validFrom: { t: 'optional', v: v.time(VALID_FROM) },
     ...over,
   });
 /** A `TransferRoute` of the pin, held (CAN-3172). */
@@ -243,6 +245,30 @@ describe('delivery.fill: what the summary states (CAN-1867)', () => {
   });
 });
 
+describe('delivery.fill: the DeliveryOrder opens no earlier than the ticket’s validFrom (BUG-1609)', () => {
+  test('a DeliveryOrder whose validFrom is later than the ticket’s: passes (the ledger holds the fill until then)', () => {
+    expect(() => check()(prepared(), [fill({ order: { validFrom: { t: 'optional', v: v.time(String(Number(VALID_FROM) + 1)) } } })])).not.toThrow();
+  });
+
+  test.each([
+    ['one second before the ticket’s validFrom', { t: 'optional', v: v.time(String(Number(VALID_FROM) - 1)) }],
+    ['None', { t: 'optional' }],
+    ['not an Optional', { t: 'variant', constructor: 'Some', v: v.time(VALID_FROM) }],
+  ] as [string, DamlValue][])('a DeliveryOrder whose validFrom is %s: refused', (_name, validFrom) => {
+    refused(() => check()(prepared(), [fill({ order: { validFrom } })]), /validFrom/);
+  });
+
+  test('a DeliveryOrder with no validFrom field (a 0.4.2 order, or a None the ledger dropped as a trailing field): refused', () => {
+    const tx = fill();
+    delete (tx.inputContracts[0]!.argument as { v: Record<string, DamlValue> }).v.validFrom;
+    refused(() => check()(prepared(), [tx]), /validFrom/);
+  });
+
+  test('an expected validFrom that is not unix seconds: refused', () => {
+    refused(() => check({ validFrom: 'soon' })(prepared(), [fill()]), /validFrom is not unix seconds/);
+  });
+});
+
 describe('delivery.fill: the decoded transaction (CAN-1867)', () => {
   test.each([
     ['TC-SDK-1867-10: acting as another party', { root: { actingParties: [party(OTHER_KEY)] } }, /another party than the node key/],
@@ -281,6 +307,26 @@ describe('delivery.fill: the decoded transaction (CAN-1867)', () => {
       chosenValue: v.record({}), actingParties: [OPERATOR, ME], signatories: [OPERATOR, ME], stakeholders: [OPERATOR, ME], consuming: true, children: [],
     };
     refused(() => check()(prepared(), [fill({ extra: [archiveEntry] })]), /besides the delivery/);
+  });
+});
+
+describe('delivery.fill: a refusal of the registry transfer is one of the route, not of the order (BUG-1528)', () => {
+  test('TC-SDK-BUG-1528-03: what the registry does under the transfer — a factory the node does not pin, a receiver credited short — is RegistryTransferRefusal; what the backend asked of this transfer or of this order is not', () => {
+    const run = (over: Over) => () => check()(prepared(), [fill(over)]);
+    expect(run({ transferTemplate: `${'ee'.repeat(32)}:Intent.Test.Mocks:EvilTransferFactory` })).toThrow(RegistryTransferRefusal);
+    expect(run({ credited: '20' })).toThrow(RegistryTransferRefusal);
+    for (const orderLevel of [run({ transferAmount: '2.5' }), run({ order: { fillerId: v.text('someone-else') } })]) {
+      expect(orderLevel).toThrow(CantonRefusal);
+      expect(orderLevel).not.toThrow(RegistryTransferRefusal);
+    }
+  });
+
+  test('TC-SDK-BUG-1528-04: the stated input holdings are the order’s — StatedInputRefusal passes the registry wrapper as it is; any other refusal under it becomes RegistryTransferRefusal', () => {
+    const stated = new StatedInputRefusal('-', 'the stated inputs h2 are not spent');
+    expect(() => registryTransferChecked(() => { throw stated; })).toThrow(stated);
+    expect(() => registryTransferChecked(() => { throw new CantonRefusal('-', 'a rollback node inside the transfer'); })).toThrow(RegistryTransferRefusal);
+    const other = new Error('not a refusal');
+    expect(() => registryTransferChecked(() => { throw other; })).toThrow(other);
   });
 });
 

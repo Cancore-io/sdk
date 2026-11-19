@@ -44,7 +44,7 @@ stdout.
 | Variable | Meaning |
 | --- | --- |
 | `CANCORE_API_URL` | the Cancore gateway the agent talks to |
-| `CANCORE_APP_URL` | where the wallet is served — the consent page lives there |
+| `CANCORE_APP_URL` | where the wallet is served — the consent page lives there. A consent link the gateway sends is opened or shown only on this origin; while it is unset, `cancore_connect_wallet` refuses |
 | `CANCORE_APP_NAME` | how the server introduces itself on the consent page (default `Cancore MCP`) |
 | `CANCORE_GRANT_FILE` | where the approved grant is stored (default `~/.config/cancore-mcp/grants.json`) |
 

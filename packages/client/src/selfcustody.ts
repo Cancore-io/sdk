@@ -21,7 +21,7 @@
  * pair through DvP is a SettleError. An EVM leg is locked by an EVM key, which
  * is not this signer.
  */
-import { assertOperationLegs, signLegs, TOPOLOGY_OPERATION, type OperationLeg } from '@cancore/wallet/operations';
+import { assertOperationLegs, settleSubmitAnswer, signLegs, TOPOLOGY_OPERATION, type OperationLeg, type OperationStatusView } from '@cancore/wallet/operations';
 import { isPartyOfKey } from '@cancore/wallet';
 export { UnexpectedLegError } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
@@ -769,7 +769,13 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       if (prepared.legs.length === 0) return { meta: prepared.meta, result: null };
       const signatures = await signLegs(signer, prepared.legs, { operation: type });
       try {
-        const result = await retrying(() => http.post('/wallet/operations/submit', { operationId: prepared.operationId, signatures }));
+        const send = () => retrying(() => http.post('/wallet/operations/submit', { operationId: prepared.operationId, signatures }));
+        const result = await settleSubmitAnswer(
+          await send(),
+          () => http.get<OperationStatusView>(`/wallet/operations/${encodeURIComponent(prepared.operationId)}`),
+          send,
+          { intervalMs: pollMs, sleep, now },
+        );
         return { meta: prepared.meta, result };
       } catch (err) {
         if (rerunOnStalePrepare && attempt === 0 && refusalOf(err) === 'rerunCeremony') continue;

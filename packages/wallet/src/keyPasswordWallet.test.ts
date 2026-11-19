@@ -10,10 +10,11 @@ import {
   walletRecordVersion,
 } from './keyPasswordWallet';
 import { signWithEd25519Signer, verifyEd25519 } from './ed25519';
-import { deriveKeyFromPassword } from './passwordKek';
-import { wrapSeed } from './aesGcm';
+import { deriveKeyFromPassword, deriveRecordKeks } from './passwordKek';
+import { unwrapSeed, wrapSeed } from './aesGcm';
 import type { PersistedKeyPasswordWalletRecord } from './keyPasswordWallet';
-import { newMnemonic, mnemonicToEd25519Seed } from './mnemonic';
+import { entropyToMnemonic } from '@scure/bip39';
+import { isValidMnemonic, newMnemonic, mnemonicToEd25519Seed, normalizeMnemonic, wordlistFor } from './mnemonic';
 import { bytesToHex, hexToBytes } from './bytes';
 
 // Keep PBKDF2 cheap in tests — the KDF itself is exercised by the round-trip,
@@ -341,5 +342,85 @@ describe('seed and recovery phrase are separately wrapped', () => {
     await expect(unlockKeyPasswordWallet(swapped, 'swap-check', OPTS)).rejects.toThrow(
       WrongPasswordError,
     );
+  });
+});
+
+describe('BUG-1612: a recovery phrase in any supported language survives the keystore', () => {
+  const PHRASE_LANGUAGES = ['en', 'zh', 'ko', 'es', 'fr'] as const;
+  const phraseIn = (language: string, prefix: number[] = []) =>
+    normalizeMnemonic(entropyToMnemonic(Uint8Array.from([...prefix, ...new Array(16 - prefix.length).fill(0)]), wordlistFor(language) as string[]));
+
+  /** A v2 record as releases before the fix wrote it: the phrase kept only the low byte of every UTF-16 unit. */
+  async function latin1RecordFor(phrase: string, password: string): Promise<PersistedKeyPasswordWalletRecord> {
+    const { record } = await importKeyPasswordWallet(bytesToHex(mnemonicToEd25519Seed(phrase)), password, OPTS);
+    const keks = await deriveRecordKeks(password, hexToBytes(record.saltHex), record.iterations);
+    const aad = new TextEncoder().encode(`cancore/wallet/v2|pbkdf2|${record.publicKeyHex}|mnemonic`);
+    const wrapped = await wrapSeed(keks.mnemonic, Uint8Array.from(phrase, (c) => c.charCodeAt(0) & 0xff), aad);
+    return { ...record, mnemonicIvHex: wrapped.ivHex, mnemonicCiphertextHex: wrapped.ciphertextHex };
+  }
+
+  it.each(PHRASE_LANGUAGES)('%s: the phrase revealed after import, unlock and a password change is the phrase stored, undamaged', async (language) => {
+    const phrase = normalizeMnemonic(newMnemonic(128, language));
+    const imported = await importKeyPasswordWallet(bytesToHex(mnemonicToEd25519Seed(phrase)), 'pw', OPTS, phrase);
+    expect(await revealWalletSecret(imported.record, 'pw')).toEqual({ privateKeyHex: expect.any(String), mnemonic: phrase });
+    expect((await unlockKeyPasswordWallet(imported.record, 'pw', OPTS)).phraseDamage).toBeUndefined();
+    const changed = await changeKeyPasswordWalletPassword(imported.record, 'pw', 'pw2', OPTS);
+    expect((await revealWalletSecret(changed, 'pw2')).mnemonic).toBe(phrase);
+  });
+
+  it.each(['ko', 'es', 'fr'] as const)('%s: a phrase an older release stored as latin1 is revealed restored and flagged; a password change stores it whole', async (language) => {
+    // fr: word 18 'académie' first; the all-zero entropy is all ASCII in French.
+    const phrase = phraseIn(language, language === 'fr' ? [0x02, 0x40] : []);
+    expect([...phrase].some((c) => c.charCodeAt(0) > 0x7f)).toBe(true);
+    const legacy = await latin1RecordFor(phrase, 'pw');
+    expect(await revealWalletSecret(legacy, 'pw')).toMatchObject({ mnemonic: phrase, phraseDamage: 'restored' });
+    expect((await unlockKeyPasswordWallet(legacy, 'pw', OPTS)).phraseDamage).toBe('restored');
+    const changed = await changeKeyPasswordWalletPassword(legacy, 'pw', 'pw2', OPTS);
+    expect(await revealWalletSecret(changed, 'pw2')).toEqual({ privateKeyHex: expect.any(String), mnemonic: phrase });
+  });
+
+  it('en: an ASCII phrase an older release stored reads back unchanged and undamaged', async () => {
+    const phrase = phraseIn('en');
+    expect(await revealWalletSecret(await latin1RecordFor(phrase, 'pw'), 'pw')).toEqual({ privateKeyHex: expect.any(String), mnemonic: phrase });
+  });
+
+  it('es: an NFC phrase an older release stored kept its Latin-1 letters exactly, so it reads back as stored and undamaged', async () => {
+    const phrase = phraseIn('es').normalize('NFC');
+    expect([...phrase].some((c) => c.charCodeAt(0) > 0x7f && c.charCodeAt(0) <= 0xff)).toBe(true);
+    expect(await revealWalletSecret(await latin1RecordFor(phrase, 'pw'), 'pw')).toEqual({ privateKeyHex: expect.any(String), mnemonic: phrase });
+  });
+
+  it('zh: a phrase an older release stored as latin1 is lost: none is revealed, the key is, the damage is flagged and survives a password change', async () => {
+    const phrase = phraseIn('zh');
+    const legacy = await latin1RecordFor(phrase, 'pw');
+    expect(await revealWalletSecret(legacy, 'pw')).toEqual({ privateKeyHex: bytesToHex(mnemonicToEd25519Seed(phrase)), mnemonic: null, phraseDamage: 'lost' });
+    expect((await unlockKeyPasswordWallet(legacy, 'pw', OPTS)).phraseDamage).toBe('lost');
+    const changed = await changeKeyPasswordWalletPassword(legacy, 'pw', 'pw2', OPTS);
+    expect(await revealWalletSecret(changed, 'pw2')).toMatchObject({ mnemonic: null, phraseDamage: 'lost' });
+    // The damaged bytes themselves are kept, not dropped: whatever repair comes later still has them.
+    const keks = await deriveRecordKeks('pw2', hexToBytes(changed.saltHex), changed.iterations);
+    const aad = new TextEncoder().encode(`cancore/wallet/v2|pbkdf2|${changed.publicKeyHex}|mnemonic`);
+    const kept = await unwrapSeed(keks.mnemonic, { ivHex: changed.mnemonicIvHex!, ciphertextHex: changed.mnemonicCiphertextHex! }, aad);
+    expect(kept).toEqual(Uint8Array.from(phrase, (c) => c.charCodeAt(0) & 0xff));
+  });
+
+  it('a lost phrase in a legacy v1 record stays flagged after the upgrade on unlock', async () => {
+    const wallet = await makeWallet('pw');
+    const v1 = await legacyRecordFor({ ...wallet, mnemonic: phraseIn('zh') }, 'pw');
+    const unlocked = await unlockKeyPasswordWallet(v1, 'pw', OPTS);
+    expect(unlocked.phraseDamage).toBe('lost');
+    expect((await unlockKeyPasswordWallet(unlocked.upgraded!, 'pw', OPTS)).phraseDamage).toBe('lost');
+  });
+
+  it('zh: low bytes that also spell another valid zh phrase still reveal none: a backup is never a guess', async () => {
+    // Entropy 0x13…: taking the last wordlist word for each shared low byte yields a checksum-valid, different phrase.
+    expect((await revealWalletSecret(await latin1RecordFor(phraseIn('zh', [19]), 'pw'), 'pw')).mnemonic).toBeNull();
+  });
+
+  it('es: words that each map back but fail the checksum are not revealed', async () => {
+    const words = phraseIn('es').split(' ');
+    const shuffled = [words[11]!, ...words.slice(1, 11), words[0]!].join(' ');
+    expect(isValidMnemonic(shuffled, 'es')).toBe(false);
+    expect((await revealWalletSecret(await latin1RecordFor(shuffled, 'pw'), 'pw')).mnemonic).toBeNull();
   });
 });

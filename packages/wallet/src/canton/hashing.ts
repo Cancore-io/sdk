@@ -4,7 +4,7 @@
  * Copyright (c) 2025-2026 Digital Asset (Switzerland) GmbH and/or its affiliates. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  * Modified by Cancore: rewritten synchronous on @noble/hashes; int64 encoded from its exact decimal;
- * an exercise node without a seed is an error.
+ * an exercise node without a seed is an error; a node reached twice is an error.
  */
 /**
  * Canton's hashes the node recomputes before it signs (interactive submission
@@ -13,9 +13,10 @@
  * needs neither.
  *
  * The V2 encoding follows `@canton-network/core-tx-visualizer` 1.13 (see the
- * notice above), with two deliberate differences: an `int64` value is encoded from its exact decimal (the
- * library parses it through a double), and an exercise node without a seed is
- * an error instead of an undefined read. The tests hold this port to the
+ * notice above), with three deliberate differences: an `int64` value is encoded from its exact decimal (the
+ * library parses it through a double), an exercise node without a seed is
+ * an error instead of an undefined read, and a node reached twice (a shared
+ * child or a cycle) is an error instead of a walk exponential in its depth. The tests hold this port to the
  * library on the shapes both handle.
  */
 import {
@@ -139,7 +140,7 @@ function createNode(create: Create, nodeId: string, seeds: readonly DamlTransact
   );
 }
 
-function exerciseNode(exercise: Exercise, nodeId: string, nodes: Nodes, seeds: readonly DamlTransaction_NodeSeed[]): Uint8Array {
+function exerciseNode(exercise: Exercise, nodeId: string, nodes: Nodes, seeds: readonly DamlTransaction_NodeSeed[], reached: Set<string>): Uint8Array {
   const seed = seedOf(nodeId, seeds);
   if (!seed) throw new TypeError(`exercise node ${nodeId} has no seed`);
   return concat(
@@ -159,7 +160,7 @@ function exerciseNode(exercise: Exercise, nodeId: string, nodes: Nodes, seeds: r
     bool(exercise.consuming),
     optional(exercise.exerciseResult, value),
     repeated(exercise.choiceObservers, text),
-    repeated(exercise.children, (child) => nodeHash(child, nodes, seeds)),
+    repeated(exercise.children, (child) => nodeHash(child, nodes, seeds, reached)),
   );
 }
 
@@ -178,7 +179,9 @@ function fetchNode(fetch: Fetch): Uint8Array {
   );
 }
 
-function nodeHash(nodeId: string, nodes: Nodes, seeds: readonly DamlTransaction_NodeSeed[]): Uint8Array {
+function nodeHash(nodeId: string, nodes: Nodes, seeds: readonly DamlTransaction_NodeSeed[], reached: Set<string>): Uint8Array {
+  if (reached.has(nodeId)) throw new TypeError(`node ${nodeId} is reached twice`);
+  reached.add(nodeId);
   const node = nodes.get(nodeId);
   if (!node) throw new TypeError(`node ${nodeId} is not in the transaction`);
   if (node.versionedNode.oneofKind !== 'v1') throw new TypeError(`node ${nodeId}: unsupported node version`);
@@ -187,11 +190,11 @@ function nodeHash(nodeId: string, nodes: Nodes, seeds: readonly DamlTransaction_
     case 'create':
       return sha256(createNode(type.create, nodeId, seeds));
     case 'exercise':
-      return sha256(exerciseNode(type.exercise, nodeId, nodes, seeds));
+      return sha256(exerciseNode(type.exercise, nodeId, nodes, seeds, reached));
     case 'fetch':
       return sha256(fetchNode(type.fetch));
     case 'rollback':
-      return sha256(concat(NODE_ENCODING_VERSION, 3, repeated(type.rollback.children, (child) => nodeHash(child, nodes, seeds))));
+      return sha256(concat(NODE_ENCODING_VERSION, 3, repeated(type.rollback.children, (child) => nodeHash(child, nodes, seeds, reached))));
     default:
       throw new TypeError(`node ${nodeId}: unsupported node type`);
   }
@@ -222,7 +225,8 @@ function metadataHash(m: Metadata | undefined): Uint8Array {
 function transactionHash(t: DamlTransaction | undefined): Uint8Array {
   if (!t) throw new TypeError('no transaction');
   const nodes = new Map(t.nodes.map((n) => [n.nodeId, n] as const));
-  const encoded = concat(text(t.version), repeated(t.roots, (root) => nodeHash(root, nodes, t.nodeSeeds)));
+  const reached = new Set<string>();
+  const encoded = concat(text(t.version), repeated(t.roots, (root) => nodeHash(root, nodes, t.nodeSeeds, reached)));
   return sha256(concat(PREPARED_TRANSACTION_PURPOSE, encoded));
 }
 

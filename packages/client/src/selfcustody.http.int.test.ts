@@ -200,11 +200,13 @@ describe('CAN-2423: the bot pays its own network fee, so no debt is left behind,
   });
 
   test('@edge G0-CAN-2423.3: an incoming transfer accepted with a fee budget asks for the fee leg and pays it in the same transaction', async () => {
+    // Contract ids are hex: the wallet's hash refuses any other (BUG-1617).
+    const TI_1 = Buffer.from('ti-1').toString('hex');
     const asked: Array<Record<string, unknown>> = [];
     let signatures = 0;
     const { acct } = await account(723, (me) => ({
       'GET /tokens/transfer-requests/incoming': () => [
-        { contractId: 'ti-1', templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId: 'CBTC', executeBefore: new Date(Date.now() + 60_000).toISOString() },
+        { contractId: TI_1, templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId: 'CBTC', executeBefore: new Date(Date.now() + 60_000).toISOString() },
       ],
       'POST /wallet/operations/prepare': async (body) => {
         const params = body.params as { instructionCid: string; withFeeLeg?: boolean };
@@ -216,7 +218,7 @@ describe('CAN-2423: the bot pays its own network fee, so no debt is left behind,
     }));
     const { accepted, failed } = await acct.acceptIncoming(undefined, { maxFee: '2' });
     expect([accepted.length, failed.length]).toEqual([1, 0]);
-    expect(asked[0]).toMatchObject({ instructionCid: 'ti-1', withFeeLeg: true });
+    expect(asked[0]).toMatchObject({ instructionCid: TI_1, withFeeLeg: true });
     // The accept and its fee leg, both signed in one submit: the bot's fee is paid, not left as debt.
     expect(signatures).toBe(2);
   });

@@ -133,19 +133,6 @@
         "retryAfterMs": 850
       }
     ],
-    "epoch.weights": [
-      {
-        "type": "epoch.weights",
-        "id": "g-7",
-        "fillerId": "acme-markets",
-        "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
-        "sentAt": 1789999980300,
-        "epochId": "20717",
-        "startsAt": "1789948800",
-        "endsAt": "1790035200",
-        "weightsRoot": "0xa1c24765b55b34e0c206f808d2fac2e448d9db6f154d89f898921a80bad76e92"
-      }
-    ],
     "quote.request": [
       {
         "type": "quote.request",

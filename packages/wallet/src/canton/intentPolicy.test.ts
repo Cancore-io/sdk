@@ -275,12 +275,29 @@ describe('the owner signs an intent root from its prepared transaction (CAN-3340
   });
 });
 
-describe('isRegistryFactory: admin among the signatories, or a package of the admin (CAN-3340)', () => {
+describe('BUG-1611: a factory the admin signs from a package outside the pin is not the registry\'s', () => {
+  const drain: NodeSpec = { kind: 'exercise', template: AMULET.factory, choice: 'TransferFactory_Transfer', actors: [OWNER], signatories: [DSO], packageName: 'registry' };
+
+  test.each(REGISTRIES.map((r) => [r.name, r] as const))('%s: a rogue-package factory signed like the genuine one is refused, so its subtree cannot spend the owner\'s holdings', async (_name, r) => {
+    const rogue = `${ROGUE_PKG}:Evil.Factory:EvilSettlementFactory`;
+    const [publicFetch] = registryCalls(r, rogue) as [ExerciseSpec];
+    const { tx, hash } = await prepared(honest('renewSettlementFactory', r, [{ ...publicFetch, children: [drain] }]));
+    expect(await refusal(() => verifyPreparedTransaction(tx, hash, policy(r)))).toMatch(/not a factory of the registry/);
+  });
+
+  test('a pinned-package factory a stranger signs is refused: the admin signs every genuine factory', () => {
+    expect(isRegistryFactory({ templateId: AMULET.factory, signatories: [OPERATOR] }, DSO)).toBe(false);
+    for (const r of REGISTRIES) expect(isRegistryFactory({ templateId: r.factory, signatories: r.factorySignatories }, r.admin)).toBe(true);
+  });
+});
+
+describe('isRegistryFactory: admin among the signatories, and a package of the admin (CAN-3340, BUG-1611)', () => {
   const preapproval = { templateId: '1eddd268bdd50d6e262722bea799c9455da032b3f94489e589975151b274b8c0:Utility.Registry.App.V0.Model.TransferPreapproval:TransferPreapproval', signatories: [OWNER] };
 
-  test('TC-SDK-3340-11: the admin signs it, or its package is the admin’s; an unknown admin is refused', () => {
-    expect(isRegistryFactory({ templateId: `${ROGUE_PKG}:X:Y`, signatories: [DSO] }, DSO)).toBe(true);
-    expect(isRegistryFactory(preapproval, CBTC)).toBe(true);
+  test('TC-SDK-3340-11: the admin signs it and its package is the admin’s; an unknown admin is refused', () => {
+    expect(isRegistryFactory({ templateId: `${ROGUE_PKG}:X:Y`, signatories: [DSO] }, DSO)).toBe(false);
+    expect(isRegistryFactory(preapproval, CBTC)).toBe(false);
+    expect(isRegistryFactory({ ...preapproval, signatories: [OWNER, CBTC] }, CBTC)).toBe(true);
     expect(isRegistryFactory(preapproval, DSO)).toBe(false);
     expect(isRegistryFactory({ templateId: `${ROGUE_PKG}:X:Y`, signatories: [OPERATOR] }, CBTC)).toBe(false);
     expect(isRegistryFactory({ templateId: `${ROGUE_PKG}:X:Y`, signatories: [OPERATOR] }, OPERATOR)).toBe(false);
@@ -302,7 +319,7 @@ describe('isRegistryFactory of a CNRX admin with a guardian G: G signs the facto
     expect(isRegistryFactory({ templateId: RULES, signatories: [CNRX, CNRX_GUARDIAN] }, CNRX, REGISTRY_PACKAGES, {})).toBe(false);
     expect(isRegistryFactory({ templateId: RULES.replace('Cnrx.Rules:CnrxRules', 'Cnrx.Allocation:CnrxAllocationRules'), signatories: [CNRX] }, CNRX, REGISTRY_PACKAGES, {})).toBe(false);
     expect(isRegistryFactory({ templateId: RULES.replace('Cnrx.Rules:CnrxRules', 'Other.Rules:Rules'), signatories: [CNRX] }, CNRX, REGISTRY_PACKAGES, {})).toBe(true);
-    expect(isRegistryFactory({ templateId: `${ROGUE_PKG}:X:Y`, signatories: ['constructor'] }, 'constructor', { constructor: [] }, {})).toBe(true);
+    expect(isRegistryFactory({ templateId: `${ROGUE_PKG}:X:Y`, signatories: ['constructor'] }, 'constructor', { constructor: [ROGUE_PKG] }, {})).toBe(true);
   });
 
   test('TC-SDK-3132-02: the guardian of an admin is the first of its entries that names one; an admin with none has no entry', () => {

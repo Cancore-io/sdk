@@ -148,6 +148,7 @@ describe('each check refuses with its own code, and nothing after it runs', () =
     ['V-E2: the escrow is already settled', {}, (h) => void (h.src.router(SRC_ROUTER).intents.get(h.orderHash)!.status = 2), 'V-E2', 'ESCROW_NOT_OPEN'],
     ['V-E2: opened with openConfirmations − 1 confirmations', {}, (h) => void (h.src.router(SRC_ROUTER).intents.get(h.orderHash)!.atBlock = 99n), 'V-E2', 'ESCROW_NOT_OPEN'],
     ['V-E2: the source RPC is down (N-12)', {}, (h) => void (h.src.down = true), 'V-E2', 'ESCROW_NOT_OPEN'],
+    ['V-E2 (BUG-1609): validFrom one second before the escrow openedAt (settle reverts FilledBeforeOpen)', {}, (h) => void (h.src.router(SRC_ROUTER).intents.get(h.orderHash)!.openedAt = BigInt(h.offer.validFrom) + 1n), 'V-E2', 'ESCROW_MISMATCH'],
     ['V-E3: refundAfter − fillDeadline one second short', { refundAfter: undefined }, (h) => void (h.src.router(SRC_ROUTER).intents.get(h.orderHash)!.refundAfter = BigInt(h.offer.order.fillDeadline) + 2_699n), 'V-E3', 'PROOF_WINDOW_TOO_SHORT'],
     ['V-T1: signed by a key that is not a ticket signer', { signer: stranger }, undefined, 'V-T1', 'TICKET_SIGNER_UNKNOWN'],
     ['V-T1: pinned, but not registered on the destination router', {}, (h) => h.dstRouter.ticketSigners.clear(), 'V-T1', 'TICKET_SIGNER_UNKNOWN'],
@@ -213,6 +214,12 @@ describe('boundaries pass', () => {
     intent.refundAfter = BigInt(h.offer.order.fillDeadline) + 2_700n;
     // Head 100: block 98 has exactly 3 confirmations (98, 99, 100).
     intent.atBlock = 98n;
+    await expect(h.verifier.verify(h.input)).resolves.toMatchObject({ ok: true });
+  });
+
+  test('BUG-1609: validFrom exactly the escrow openedAt, as the backend floors it', async () => {
+    const h = await setup();
+    h.src.router(SRC_ROUTER).intents.get(h.orderHash)!.openedAt = BigInt(h.offer.validFrom);
     await expect(h.verifier.verify(h.input)).resolves.toMatchObject({ ok: true });
   });
 

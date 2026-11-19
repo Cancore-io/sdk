@@ -381,11 +381,79 @@ describe('Executor — router allowance', () => {
     const delivering = executor.deliver(w.orderHash, 0);
     await flush();
     expect(w.stages('approve.sent').map((s) => s.detail!.amount)).toEqual(['0']);
-    await w.tick(2_000);
+    await w.tick(4_000);
     expect(w.stages('approve.sent').map((s) => s.detail!.amount)).toEqual(['0', '5000']);
     await w.tick(2_000);
     expect(await delivering).toMatchObject({ status: 'sent' });
     executor.stop();
+  });
+});
+
+describe('BUG-1588: the sweep keeps the router allowance topped up, not only the start', () => {
+  // The ticket is not receipted: no fill at start spends the allowance these tests read.
+  const LIMIT = 5_000n;
+  const routerAllowance = (w: Awaited<ReturnType<typeof world>>) => String(w.dst.token(TOKEN).allowances.get(`${fillSigner.address.toLowerCase()}:${DST_ROUTER}`));
+  const spendAllowanceTo = (w: Awaited<ReturnType<typeof world>>, left: bigint) => w.dst.token(TOKEN).approve(fillSigner.address, DST_ROUTER, left);
+
+  test('BUG-1588-01: an allowance spent below half of its limit after start is approved back to the limit by the next sweep; exactly half is left alone', async () => {
+    const w = await world({ state: 'checking', allowance: LIMIT, delivery: { approvals: { [DST]: { [TOKEN]: LIMIT } } } });
+    const executor = w.executor();
+    await executor.start();
+    await w.tick(6_000);
+    expect(w.stages('approve.sent')).toEqual([]);
+
+    spendAllowanceTo(w, LIMIT / 2n);
+    await w.tick(12_000);
+    expect(w.stages('approve.sent')).toEqual([]);
+
+    spendAllowanceTo(w, LIMIT / 2n - 1n);
+    await w.tick(6_000);
+    expect(w.stages('approve.sent').map((s) => s.detail)).toEqual([expect.objectContaining({ token: TOKEN, amount: LIMIT.toString() })]);
+    await w.tick(2_000);
+    expect(routerAllowance(w)).toBe(LIMIT.toString());
+    executor.stop();
+  });
+
+  test('BUG-1588-02: an approve still pending is not sent again by later sweeps of this replica or by a second replica; none once it lands', async () => {
+    const w = await world({ state: 'checking', allowance: 1_000n, delivery: { approvals: { [DST]: { [TOKEN]: LIMIT } } } });
+    w.dst.minTip = 10n ** 12n;
+    const slowReplace = { ...TIMING, replaceAfterMs: 600_000, approvals: { [DST]: { [TOKEN]: LIMIT } } };
+    const r1 = w.executor('r1', slowReplace);
+    await r1.start();
+    await flush();
+    const r2 = w.executor('r2', slowReplace);
+    await r2.start();
+    await w.tick(16_000);
+    expect(w.stages('approve.sent')).toHaveLength(1);
+
+    w.dst.minTip = 0n;
+    await w.tick(3_000);
+    expect(routerAllowance(w)).toBe(LIMIT.toString());
+    await w.tick(12_000);
+    expect(w.stages('approve.sent')).toHaveLength(1);
+    r1.stop();
+    r2.stop();
+  });
+
+  test('BUG-1588-03: a limit configured under a mixed-case token address is topped up as well', async () => {
+    const mixedCaseToken = `0x${TOKEN.slice(2, -2)}AA` as Hex;
+    const w = await world({ state: 'checking', allowance: 0n, delivery: { approvals: { [DST]: { [mixedCaseToken]: LIMIT } } } });
+    const executor = w.executor();
+    await executor.start();
+    await w.tick(2_000);
+    expect(w.stages('approve.sent').map((s) => s.detail)).toEqual([expect.objectContaining({ token: TOKEN, amount: LIMIT.toString() })]);
+    expect(routerAllowance(w)).toBe(LIMIT.toString());
+    executor.stop();
+  });
+
+  test('BUG-1588-04: a stopped executor tops up nothing, whatever the allowance falls to', async () => {
+    const w = await world({ state: 'checking', allowance: LIMIT, delivery: { approvals: { [DST]: { [TOKEN]: LIMIT } } } });
+    const executor = w.executor();
+    await executor.start();
+    executor.stop();
+    spendAllowanceTo(w, 0n);
+    await w.tick(12_000);
+    expect(w.stages('approve.sent')).toEqual([]);
   });
 });
 
@@ -436,6 +504,8 @@ describe('Executor — replace-by-fee (T-29)', () => {
     expect(cancel).toMatchObject({ to: fillSigner.address.toLowerCase(), data: '0x', value: 0n, nonce: 0n });
     w.dst.minTip = 0n;
     await w.tick(1_000);
+    expect(w.stages('fill.cancelled')).toHaveLength(0);
+    await w.tick(2_000);
     expect(w.stages('fill.cancelled')).toHaveLength(1);
     expect(await fillOf(w)).toMatchObject({ state: 'failed', reason: expect.stringContaining('cancelled') });
     expect(await w.store.nonces.listOpen(DST, fillSigner.address.toLowerCase() as Hex)).toEqual([]);
@@ -508,7 +578,7 @@ describe('Executor — replacement caps (F-3, R-14, CAN-2299)', () => {
     expect(mined[0]).toMatchObject({ nonce: 0n, to: ME, data: '0x', value: 0n });
     expect(w.stages('fill.cancelled')).toHaveLength(1);
     expect(await openNonce(w)).toBeUndefined();
-    const next = await executor.acquire(executor.driver(DST)!);
+    const next = await executor.acquire(executor.driver(DST)!, async (lease) => lease);
     expect(next.nonce).toBe(1n);
     executor.stop();
   });
@@ -516,9 +586,8 @@ describe('Executor — replacement caps (F-3, R-14, CAN-2299)', () => {
   /** A settle of this replica's on the fake chain, priced at the market now and tracked by the executor. */
   async function trackedSettle(w: Awaited<ReturnType<typeof world>>, executor: Executor) {
     const driver = executor.driver(DST)!;
-    const lease = await executor.acquire(driver);
     // To self with no data: the fake chain executes it as a plain transfer.
-    const tx = await driver.send(lease, { to: ME, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now());
+    const { lease, tx } = await executor.acquire(driver, async (taken) => ({ lease: taken, tx: await driver.send(taken, { to: ME, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now()) }));
     executor.watch(driver, lease);
     return tx;
   }
@@ -631,6 +700,62 @@ describe('Executor — reorgs (T-30)', () => {
     await w.tick(3_000);
     expect(await fillOf(w)).toMatchObject({ state: 'confirmed', txRef: sent.txHash });
     expect(w.events.events.filter((e: FillerEvent) => e.type === 'filled')).toHaveLength(1);
+    executor.stop();
+  });
+
+  test('BUG-1556 S-01: a cancel counts only fillConfirmations deep; a reorg that mines the fill instead confirms the fill', async () => {
+    const w = await world({ ttlS: 40 });
+    const me = fillSigner.address.toLowerCase() as Hex;
+    w.dst.minTip = 10n ** 12n;
+    const executor = w.executor('r1', { ...TIMING, replaceAfterMs: 60_000 });
+    await executor.start();
+    await executor.deliver(w.orderHash, 0);
+    const fillRaw = (await w.store.nonces.listOpen(DST, me))[0]!.transactions[0]!.raw;
+    await w.tick(45_000);
+    const [cancel] = [...w.dst.mempool.values()];
+    expect(cancel).toMatchObject({ to: me, data: '0x', nonce: 0n });
+    w.dst.minTip = 0n;
+    await w.tick(1_000);
+    const block = w.dst.minedTransactions.get(cancel!.hash)!.blockNumber;
+    expect(w.dst.head - block + 1n).toBeLessThan(3n);
+    expect(w.stages('fill.cancelled')).toHaveLength(0);
+    expect(await fillOf(w)).not.toMatchObject({ state: 'failed' });
+    expect((await w.store.nonces.listOpen(DST, me)).map((r) => r.nonce)).toEqual([0n]);
+
+    w.dst.dropOnReorg = true;
+    w.dst.reorg(block - 1n);
+    w.dst.setTimestamp(w.dst.head + 1n, w.validUntil);
+    await w.dst.request({ method: 'eth_sendRawTransaction', params: [fillRaw] });
+    w.dst.mine();
+    for (let i = 0; i < 6; i++) {
+      w.clock.advance(1_000);
+      w.dst.mine();
+      await flush();
+    }
+    expect(w.stages('fill.cancelled')).toHaveLength(0);
+    expect(await fillOf(w)).toMatchObject({ state: 'confirmed' });
+    expect(await w.store.nonces.listOpen(DST, me)).toEqual([]);
+    executor.stop();
+  });
+
+  test('BUG-1556 S-01: a cancel reorged out before it is fillConfirmations deep keeps its nonce tracked, so the next nonce is not stuck behind a hole', async () => {
+    const w = await world({ ttlS: 40 });
+    const me = fillSigner.address.toLowerCase() as Hex;
+    w.dst.minTip = 10n ** 12n;
+    const executor = w.executor('r1', { ...TIMING, replaceAfterMs: 60_000 });
+    await executor.start();
+    await executor.deliver(w.orderHash, 0);
+    await w.tick(45_000);
+    const [cancel] = [...w.dst.mempool.values()];
+    w.dst.minTip = 0n;
+    await w.tick(1_000);
+    const block = w.dst.minedTransactions.get(cancel!.hash)!.blockNumber;
+    w.dst.dropOnReorg = true;
+    w.dst.reorg(block);
+    await w.tick(10_000);
+    expect(BigInt(await w.dst.request<string>({ method: 'eth_getTransactionCount', params: [me, 'latest'] }))).toBe(1n);
+    expect(w.stages('fill.cancelled')).toHaveLength(1);
+    expect(await w.store.nonces.listOpen(DST, me)).toEqual([]);
     executor.stop();
   });
 

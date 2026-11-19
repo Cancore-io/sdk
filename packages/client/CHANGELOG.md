@@ -1,5 +1,13 @@
 # Changelog — `@cancore/client`
 
+## 0.13.3
+
+### Fixed
+
+- A self-custody ceremony whose submit answers `202 pending` (CAN-3675) is reported only once
+  `GET /wallet/operations/{operationId}` says `committed` (with the replayed result) or `rejected` (as the coded
+  refusal, a `CeremonyError` at `submit`); see `@cancore/wallet` 0.4.8 (CAN-3679).
+
 ## 0.13.2
 
 ### Fixed
