@@ -26,7 +26,7 @@
  *   `send` returns false and `submitTicket` rejects with `RATE_LIMITED` and the
  *   remaining `retryAfterMs`, so no component resends into the limit.
  */
-import type { F2SMessage, Hex, QuoteAck, TicketIntentAck, TicketReceiptMessage } from '@cancore/contracts';
+import type { F2SMessage, Hex, QuoteAck, TicketDecline, TicketIntentAck, TicketReceiptMessage } from '@cancore/contracts';
 import { FillerStoppedError, GatewayError } from '../errors';
 import type { EventSink, FillerStage } from '../events';
 import type { Clock, Logger } from '../runtime';
@@ -190,7 +190,8 @@ export class FillerProtocolClient implements SessionListener {
       ack = await this.requireRest().postTicket(request);
     } catch (error) {
       if (!heldAlready(request.action, error)) throw error;
-      this.options.logger.info('filler-gateway: already holds the ticket action', { action: request.action, code: error.code });
+      if (error.code === 'TICKET_CLOSED') this.declineMetClosedTicket(request.message as TicketDecline);
+      else this.options.logger.info('filler-gateway: already holds the ticket action', { action: request.action, code: error.code });
     }
     if (request.action === 'receipt') await this.journalReceiptSent(request.message);
     if (ack) await this.ingest(ack, 'rest');
@@ -385,8 +386,14 @@ export class FillerProtocolClient implements SessionListener {
     } else started.resolve();
   }
 
-  private stage(stage: FillerStage, detail: Readonly<Record<string, string | number | boolean>>): void {
-    this.safely(() => this.options.events.emit({ type: 'stage', stage, atMs: this.options.clock.now(), detail }));
+  private stage(stage: FillerStage, detail: Readonly<Record<string, string | number | boolean>>, of?: { orderHash: Hex; attempt: number }): void {
+    this.safely(() => this.options.events.emit({ type: 'stage', stage, atMs: this.options.clock.now(), ...of, detail }));
+  }
+
+  /** Not sent again, but never silent: the closed ticket may be one filler-gateway holds receipted (stage `ticket.decline.closed`). */
+  private declineMetClosedTicket({ orderHash, attempt, reason }: TicketDecline): void {
+    this.options.logger.warn('tickets: declined locally, but filler-gateway had already closed the ticket — it may hold it as receipted', { orderHash, attempt, reason });
+    this.stage('ticket.decline.closed', { reason }, { orderHash, attempt });
   }
 
   private safely(run: () => unknown): void {

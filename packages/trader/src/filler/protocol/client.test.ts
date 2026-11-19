@@ -1054,6 +1054,25 @@ describe('REST fallback (protocol §3.6)', () => {
     expect(h.store.journal().filter((e) => e.direction === 'to-gateway')).toEqual([expect.objectContaining({ type: 'ticket.receipt' })]);
   });
 
+  // BUG-1615 review of #298: an abandoned receipt POST may land after the desk declined TICKET_TTL_TOO_SHORT; the
+  // gateway then holds the ticket RECEIPTED and answers the decline TICKET_CLOSED, and penalises a NO_SHOW.
+  test('a decline answered TICKET_CLOSED is not resent but made visible: a warn and stage ticket.decline.closed; REPLAYED_MESSAGE is neither', async () => {
+    const h = harness();
+    const route = `POST /v1/filler/tickets/${ORDER_HASH}/1/decline`;
+    const refuse = (code: string) => () => ({ status: 409, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code, message: 'refused' }) });
+    const decline = await h.client.seal<TicketDecline>({ type: 'ticket.decline', id: 'd-1', orderHash: ORDER_HASH, attempt: 1, reason: 'TICKET_TTL_TOO_SHORT' });
+    const closed = () => h.events.events.filter((e) => e.type === 'stage' && e.stage === 'ticket.decline.closed');
+    const warned = () => h.logger.entries.filter((e) => e.level === 'warn' && e.message.includes('filler-gateway had already closed the ticket'));
+    h.http.routes[route] = refuse('REPLAYED_MESSAGE');
+    await expect(h.client.submitTicket({ action: 'decline', message: decline })).resolves.toBeUndefined();
+    expect(closed()).toEqual([]);
+    expect(warned()).toEqual([]);
+    h.http.routes[route] = refuse('TICKET_CLOSED');
+    await expect(h.client.submitTicket({ action: 'decline', message: decline })).resolves.toBeUndefined();
+    expect(closed()).toEqual([{ type: 'stage', stage: 'ticket.decline.closed', atMs: h.clock.now(), orderHash: ORDER_HASH, attempt: 1, detail: { reason: 'TICKET_TTL_TOO_SHORT' } }]);
+    expect(warned()).toEqual([expect.objectContaining({ fields: expect.objectContaining({ orderHash: ORDER_HASH, attempt: 1, reason: 'TICKET_TTL_TOO_SHORT' }) })]);
+  });
+
   test.each(['intent', 'receipt'] as const)('a %s answered TICKET_CLOSED is refused, not delivered', async (action) => {
     const h = harness();
     h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/${action}`] = () => ({ status: 409, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code: 'TICKET_CLOSED', message: 'closed' }) });

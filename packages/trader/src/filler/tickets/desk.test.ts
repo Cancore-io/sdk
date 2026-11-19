@@ -422,6 +422,9 @@ describe('BUG-1615: a ticket action counts as delivered only once filler-gateway
     expect(await h.record()).toMatchObject({ state: 'declined', sentAtMs: expect.any(Number) });
     expect((await h.record())!.unsent).toBeUndefined();
     expect(h.stages()).toContain('ticket.declined');
+    // The closed ticket may be one the gateway holds RECEIPTED (an abandoned receipt POST that landed): never silent.
+    expect(h.stages()).toContain('ticket.decline.closed');
+    expect(h.logger.entries).toContainEqual(expect.objectContaining({ level: 'warn', message: expect.stringContaining('filler-gateway had already closed the ticket') }));
     await h.filler.stop();
   });
 });
