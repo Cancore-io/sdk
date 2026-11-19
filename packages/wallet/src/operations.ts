@@ -1,6 +1,9 @@
 import { bytesToBinaryString, hexToBytes } from './bytes';
 import { INTENT_OPERATIONS, isIntentOperation, type IntentSigningPolicy } from './canton/intentPolicy';
 import { verifyPreparedTransaction } from './canton/prepared';
+import { settleSubmitAnswer, type OperationStatusView, type OutcomePolling, type PendingSubmitAnswer } from './operation-outcome';
+
+export * from './operation-outcome';
 
 export { INTENT_OPERATIONS, IntentTransactionRefusedError, isIntentOperation, type IntentRoot, type IntentSigningPolicy } from './canton/intentPolicy';
 export { verifyPreparedTransaction } from './canton/prepared';
@@ -432,7 +435,7 @@ export const wallet: WalletOperations = {
  * A client of its own, for a consumer that wants one instead of the shared
  * `wallet` — a test, or a process serving several accounts at once.
  */
-export function createWalletOperations(request: WalletRequest): WalletOperations {
+export function createWalletOperations(request: WalletRequest, polling?: OutcomePolling): WalletOperations {
   const prepare = <TMeta = Record<string, unknown>>(
     type: string,
     params?: Record<string, unknown>,
@@ -445,7 +448,12 @@ export function createWalletOperations(request: WalletRequest): WalletOperations
   const submit = <TResult = unknown>(
     operationId: string,
     signatures: OperationSignature[],
-  ): Promise<TResult> => request<TResult>('/wallet/operations/submit', json({ operationId, signatures }));
+  ): Promise<TResult> => {
+    const send = () => request<TResult | PendingSubmitAnswer>('/wallet/operations/submit', json({ operationId, signatures }));
+    return send().then((answer) =>
+      settleSubmitAnswer(answer, () => request<OperationStatusView>(`/wallet/operations/${encodeURIComponent(operationId)}`), send, polling),
+    );
+  };
 
   return {
     list: () => request<OperationCatalogueEntry[]>('/wallet/operations'),

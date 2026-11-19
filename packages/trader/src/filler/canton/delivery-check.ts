@@ -13,7 +13,8 @@
  *   `validUntil` are the node's own and the ticket's; its `recipient`,
  *   instrument and `amount` encode to the offered order's `recipient`,
  *   `outputAsset` and an amount in `[minReceived, amountOut]`; its
- *   `fillDeadline` is the order's. This is where T-48 is enforced on the
+ *   `fillDeadline` is the order's; its `validFrom` is set and not before the
+ *   ticket's (BUG-1609). This is where T-48 is enforced on the
  *   ledger's own data: the operator writes `fillerId` and `repayTo` into the
  *   order, and nothing else compares them with the signed `ticket.intent`.
  * - A 0.5.0 fill names the operator's factory pin (`factoryPin`, CAN-3172),
@@ -56,6 +57,8 @@ export interface DeliveryFillExpectation {
   deliveryOrderCid: string;
   /** `ticket.issued.validUntil`, unix seconds. */
   validUntil: string;
+  /** `ticket.issued.validFrom`, else the offer's, unix seconds: V-E2 held it to the source `openedAt`. */
+  validFrom: string;
   /** The `repayTo` of the node's own `ticket.intent`. */
   repayTo: Hex;
   /** The offered order's `recipient`, `outputAsset`, `minReceived`, `fillDeadline` (unix s). */
@@ -76,6 +79,12 @@ const bytes32 = (v: DamlValue): string => {
 };
 const int = (v: DamlValue): bigint => (v.t === 'int64' ? BigInt(v.v) : refuse('expected an Int'));
 const micros = (v: DamlValue): bigint => (v.t === 'timestamp' ? BigInt(v.v) : refuse('expected a Time'));
+/** `DeliveryOrder.validFrom` is set and not before `floor` (unix s). An order without one (None, or no field at all: a 0.4.2 order, or a trailing None the ledger dropped) is refused: nothing would hold its fill to the source `openedAt`. */
+const requireValidFrom = (order: DamlValue, floor: bigint): void => {
+  const validFrom = order.t === 'record' ? order.v.validFrom : undefined;
+  if (validFrom?.t !== 'optional' || !validFrom.v) return refuse('the DeliveryOrder has no validFrom: the ledger would take a fill before the source openedAt');
+  if (micros(validFrom.v) < floor * 1_000_000n) refuse('the DeliveryOrder opens before the ticket’s validFrom: a fill that early is never repaid');
+};
 const seconds = (value: string, name: string): bigint => (/^(0|[1-9][0-9]*)$/.test(value) ? BigInt(value) : refuse(`${name} is not unix seconds`));
 const units = (amount: string): bigint => {
   try {
@@ -93,6 +102,7 @@ export function checkDeliveryFill(expect: DeliveryFillExpectation): CantonOpChec
     const orderHash = lowerHex(expect.orderHash);
     const repayTo = lowerHex(expect.repayTo);
     const validUntil = seconds(expect.validUntil, 'validUntil');
+    const validFrom = seconds(expect.validFrom, 'validFrom');
     const fillDeadline = seconds(expect.order.fillDeadline, 'fillDeadline');
 
     // -- The summary repeats the ticket (a cheap first look; the transaction decides) --
@@ -132,6 +142,7 @@ export function checkDeliveryFill(expect: DeliveryFillExpectation): CantonOpChec
     if (int(field(o, 'attempt')) !== BigInt(expect.attempt)) refuse('the DeliveryOrder is for another attempt');
     if (micros(field(o, 'validUntil')) !== validUntil * 1_000_000n) refuse('the DeliveryOrder has another validUntil than the ticket');
     if (micros(field(o, 'fillDeadline')) !== fillDeadline * 1_000_000n) refuse('the DeliveryOrder has another fillDeadline than the order');
+    requireValidFrom(o, validFrom);
     const recipient = party(field(o, 'recipient'));
     if (recipient !== s.recipient) refuse('the DeliveryOrder has another recipient than stated');
     const instrument = instrumentOf(field(o, 'instrumentId'));

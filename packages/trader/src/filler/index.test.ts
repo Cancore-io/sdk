@@ -1,4 +1,4 @@
-import type { Hex, QuoteReconfirm, QuoteRequest, StakeBindingRequest, TicketIssued, TicketOffer } from '@cancore/contracts';
+import type { Hex, QuoteReconfirm, QuoteRequest, TicketIssued, TicketOffer } from '@cancore/contracts';
 import {
   CANTON_TRANSFER_FACTORIES,
   CantonOperations,
@@ -7,7 +7,6 @@ import {
   FillerConfigError,
   NotImplementedError,
   type CantonConfig,
-  type DrawVerification,
   type EscrowVerification,
   type Filler,
   type FillerConfig,
@@ -159,8 +158,6 @@ describe('the skeleton of sdk.md §3.6', () => {
   });
 
   test.each([
-    ['verifyDraw', 'CAN-1848', (f: Filler) => f.verifyDraw('0x00')],
-    ['bindStake', 'CAN-1857', (f: Filler) => f.bindStake(createTestTypedDataSigner(FILL_KEY), { chain: 'eip155:1' })],
     ['stats', 'CAN-1940', (f: Filler) => f.stats()],
   ])('%s() names the task that implements it (%s)', async (method, task, call) => {
     const error = await call(withHooks()).then(
@@ -260,10 +257,7 @@ describe('the skeleton of sdk.md §3.6', () => {
     assert<Equal<ReturnType<Filler['start']>, Promise<void>>>();
     assert<Equal<ReturnType<Filler['selfSettle']>, Promise<SelfSettleResult>>>();
     assert<Equal<SelfSettleResult, { txHash: Hex }>>();
-    assert<Equal<ReturnType<Filler['verifyDraw']>, Promise<DrawVerification>>>();
-    assert<Equal<keyof DrawVerification, 'winner' | 'recomputedWinner' | 'match' | 'drandRound'>>();
     assert<Equal<ReturnType<Filler['verifyEscrow']>, Promise<EscrowVerification>>>();
-    assert<Equal<ReturnType<Filler['bindStake']>, Promise<StakeBindingRequest>>>();
     assert<Equal<keyof FillerStatsSnapshot, 'won' | 'delivered' | 'noShow' | 'reliability' | 'capacityUsd' | 'inFlightUsd'>>();
     expect(true).toBe(true);
   });

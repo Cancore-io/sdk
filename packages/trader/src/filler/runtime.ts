@@ -95,7 +95,7 @@ export interface FillerSocket {
 export type WebSocketFactory = (url: string, handlers: FillerSocketHandlers, protocols: readonly string[]) => FillerSocket;
 
 // ---------------------------------------------------------------------------
-// HTTP (REST fallback of filler-gateway, drand relays)
+// HTTP (REST fallback of filler-gateway)
 // ---------------------------------------------------------------------------
 
 export interface HttpRequest {

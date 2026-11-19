@@ -49,6 +49,14 @@ export const fillerStoreConformance: readonly FillerStoreConformanceCase[] = [
     },
   },
   {
+    name: 'a Canton-source settlement keeps the update id of its SwapIntent_SettleWithProof (CAN-2146)',
+    async run(store, equal) {
+      const confirmed = { orderHash: ORDER, attempt: 0, state: 'confirmed' as const, chain: 'canton:devnet' as const, updateId: `1220${'ab'.repeat(32)}`, updatedAtMs: 1 };
+      await store.withOrder(ORDER, (tx) => tx.putSettlement(confirmed));
+      equal(await store.withOrder(ORDER, (tx) => tx.getSettlement()), confirmed);
+    },
+  },
+  {
     name: 'an unsent decline stays open until sent, while an unsettled fill stays open',
     async run(store, equal) {
       await store.withOrder(ORDER, (tx) => tx.putTicket(ticket('declined')));
@@ -58,6 +66,31 @@ export const fillerStoreConformance: readonly FillerStoreConformanceCase[] = [
       await store.withOrder(ORDER, (tx) => tx.putFill(fill));
       equal(await store.listOpenOrders(), [ORDER]);
       await store.withOrder(ORDER, (tx) => tx.putSettlement({ orderHash: ORDER, attempt: 0, state: 'settled', updatedAtMs: 3 }));
+      equal(await store.listOpenOrders(), []);
+    },
+  },
+  {
+    name: 'a failed fill and a refunded settlement close the order; a retried or confirmed settlement keeps it open',
+    async run(store, equal) {
+      const refunded = 'refunded: the maker refunded before settle (R-5)';
+      const settlement = (state: 'failed' | 'confirmed', reason: string) => ({ orderHash: ORDER, attempt: 1, state, reason, updatedAtMs: 3 });
+      await store.withOrder(ORDER, async (tx) => {
+        await tx.putTicket(ticket('expired'));
+        await tx.putFill({ ...fill, state: 'failed', reason: 'cancelled: validUntil passed before the fill was included' });
+      });
+      equal(await store.listOpenOrders(), []);
+      await store.withOrder(ORDER, async (tx) => {
+        await tx.putTicket({ ...ticket('filled'), attempt: 1 });
+        await tx.putFill({ ...fill, attempt: 1, state: 'sent' });
+      });
+      equal(await store.listOpenOrders(), [ORDER]);
+      await store.withOrder(ORDER, (tx) => tx.putFill({ ...fill, attempt: 1, state: 'confirmed' }));
+      await store.withOrder(ORDER, (tx) => tx.putSettlement(settlement('failed', 'reverted in block 12')));
+      equal(await store.listOpenOrders(), [ORDER]);
+      // Only a `failed` settlement closes by its reason; a reason carried over to a later state does not.
+      await store.withOrder(ORDER, (tx) => tx.putSettlement(settlement('confirmed', refunded)));
+      equal(await store.listOpenOrders(), [ORDER]);
+      await store.withOrder(ORDER, (tx) => tx.putSettlement(settlement('failed', refunded)));
       equal(await store.listOpenOrders(), []);
     },
   },

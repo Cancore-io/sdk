@@ -40,8 +40,8 @@ import {
   PROOF_KIND_ATTESTATION,
   describeRevert,
   fillerIdHash,
+  inclusiveFeeSplit,
   settleAttestationsErrors,
-  settleAttestationsPayload,
   type AttestationEvm,
   type FillProofJson,
   type Hex,
@@ -69,6 +69,12 @@ import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, Settleme
 import { cantonFillRef } from '../delivery/canton';
 import { CANTON_ORIGIN_FLOOR, chainsOf, orderOf } from '../tickets/terms';
 import { collectAttestations, fillProofOf } from './attestations';
+import { cantonRefundAfter } from './canton-refund-after';
+import { sendSettle } from './send-settle';
+import { payloadFrom, payloadOf, refuseClosed, refuseFinal, SettleError, type SettleCheck, type Settleable, type SettleRefusal, type VerifyEffects } from './refusals';
+
+export { SettleError } from './refusals';
+export type { SettleCheck, SettleRefusal } from './refusals';
 
 export interface SettlementOptions {
   /** How often confirmed fills without a settlement pull their attestations (filler-node `settle.pullIntervalSec`). Default 15 s. */
@@ -78,47 +84,6 @@ export interface SettlementOptions {
 }
 
 export const DEFAULT_SETTLEMENT = { pullIntervalMs: 15_000, alertBeforeRefundMs: 3_600_000 } as const;
-
-/** Why `selfSettle` sent nothing. */
-export type SettleRefusal =
-  /** No confirmed fill of this filler for the order. */
-  | 'no-fill'
-  /** A Canton source settles with `SwapIntent_SettleWithProof`, not here. */
-  | 'canton-source'
-  /** No fill key (delivery key) or router for the source chain. */
-  | 'no-delivery-key'
-  /** filler-gateway holds no attestation set for the fill yet. */
-  | 'not-ready'
-  /** The payload does not describe the filler's own fill, ticket or set. */
-  | 'mismatch'
-  /** The signatures are over a proof other than the filler's own. */
-  | 'divergent'
-  /** Fewer than `threshold` signatures recover to non-revoked members of the set. */
-  | 'insufficient-signatures'
-  /** The set of `attestationSetFor(orderHash)` no longer verifies (the intent outlived its grace). */
-  | 'set-not-active'
-  /** The intent is settled already (by this filler or anyone). */
-  | 'already-settled'
-  /** The maker refunded first (R-5). */
-  | 'refunded'
-  /** `eth_call` of `settle` reverted: `detail` names the error. */
-  | 'reverted'
-  /** Priced above `maxFeePerGasWei`. */
-  | 'fee-ceiling'
-  /** A source chain read failed; try again. */
-  | 'unavailable'
-  /** Canton source: `refundAfter` has come; `SwapIntent_SettleWithProof` is refused from then on (T-37). */
-  | 'deadline-passed';
-
-export class SettleError extends Error {
-  override readonly name = 'SettleError';
-  constructor(
-    readonly reason: SettleRefusal,
-    readonly detail: string,
-  ) {
-    super(`settle: ${reason}: ${detail}`);
-  }
-}
 
 export interface SettlerOptions {
   store: FillerStore;
@@ -175,19 +140,6 @@ function ownFillRef(s: { fill: FillRecord; ticket: TicketRecord }): string | und
   return s.fill.txRef ? cantonFillRef(s.fill.txRef) : undefined;
 }
 
-/** What one order's settlement works from. */
-interface Settleable {
-  orderHash: Hex;
-  fill: FillRecord;
-  ticket: TicketRecord;
-  order: OrderJson;
-  settlement?: SettlementRecord;
-  payload?: SettleAttestationsPayload;
-  channel?: 'ws' | 'rest';
-  /** Why the set held for the fill failed verification (`<SettleRefusal>: <detail>`). */
-  rejected?: string;
-}
-
 export class Settler {
   private readonly settings: Required<SettlementOptions>;
   private readonly busy = new Map<string, Promise<Hex>>();
@@ -195,6 +147,7 @@ export class Settler {
   private readonly alerted = new Set<string>();
   /** `attested` emitted in this process, by `${orderHash}:${attempt}`. */
   private readonly attested = new Set<string>();
+  private readonly refundAfters = new Map<Hex, bigint>();
   private timer: Cancel | undefined;
   private stopped = false;
 
@@ -287,14 +240,14 @@ export class Settler {
       this.options.logger.warn('settle: sweep failed', { error: reasonOf(error) });
       return;
     }
+    for (const hash of this.refundAfters.keys()) if (!orders.includes(hash)) this.refundAfters.delete(hash);
     for (const orderHash of orders) {
       try {
         const s = await this.load(orderHash);
         if (!s || isTerminal(s.settlement)) continue;
         const source = chainsOf(s.order)?.source;
         if (!source) {
-          if (!this.isCantonOrigin(s.order)) continue;
-          if (s.payload && BigInt(Math.floor(this.options.clock.now() / 1000)) >= BigInt(s.payload.refundAfter)) continue;
+          if (!this.isCantonOrigin(s.order) || (await this.cantonWindowClosed(s))) continue;
           if (s.payload) await this.settle(orderHash).catch((error: unknown) => this.quiet(orderHash, error));
           else await this.pull(orderHash);
           continue;
@@ -326,16 +279,25 @@ export class Settler {
       return intent;
     }
     this.rearmAlert(s.orderHash, 'escrow-gone');
-    const nowS = BigInt(Math.floor(this.options.clock.now() / 1000));
-    const filledAt = s.fill.inclusion ? BigInt(String(s.fill.inclusion.header.timestamp ?? '0')) : undefined;
-    if (filledAt !== undefined && filledAt > 0n) {
-      const window = await readers.router.proofWindow(s.order.destination);
-      if (window > 0n && nowS >= filledAt + window / 2n) this.alert(s.orderHash, s.fill.attempt, 'half-window', { filledAt: filledAt.toString(), proofWindow: window.toString() });
-    }
-    if (nowS * 1000n + BigInt(this.settings.alertBeforeRefundMs) >= intent.refundAfter * 1000n) {
-      this.alert(s.orderHash, s.fill.attempt, 'refund-near', { refundAfter: intent.refundAfter.toString() });
-    }
+    await this.windowAlerts(s, intent.refundAfter, () => readers.router.proofWindow(s.order.destination));
     return intent;
+  }
+
+  /** R-4: an unsettled fill past half its proof window, or within `alertBeforeRefundMs` of `refundAfter`. */
+  private async windowAlerts(s: Settleable, refundAfter: bigint, proofWindow: () => Promise<bigint>): Promise<void> {
+    const nowS = BigInt(Math.floor(this.options.clock.now() / 1000));
+    const filledAt = s.fill.inclusion ? BigInt(String(s.fill.inclusion.header.timestamp ?? '0')) : 0n;
+    const window = filledAt > 0n ? await proofWindow() : 0n;
+    if (window > 0n && nowS >= filledAt + window / 2n) this.alert(s.orderHash, s.fill.attempt, 'half-window', { filledAt: filledAt.toString(), proofWindow: window.toString() });
+    if (nowS * 1000n + BigInt(this.settings.alertBeforeRefundMs) >= refundAfter * 1000n) this.alert(s.orderHash, s.fill.attempt, 'refund-near', { refundAfter: refundAfter.toString() });
+  }
+
+  /** A Canton source's window alerts; true from `refundAfter` on, when SwapIntent_SettleWithProof (ledger time < refundAfter) can no longer succeed. Unknown, it neither alerts nor stops. */
+  private async cantonWindowClosed(s: Settleable): Promise<boolean> {
+    const refundAfter = await cantonRefundAfter(s, this.refundAfters, this.options.canton, this.options.logger);
+    if (refundAfter === undefined) return false;
+    await this.windowAlerts(s, refundAfter, async () => refundAfter - BigInt(s.order.fillDeadline));
+    return BigInt(Math.floor(this.options.clock.now() / 1000)) >= refundAfter;
   }
 
   /** `GET /v1/filler/attestations/{orderHash}`; false while not ready or filler-gateway is unreachable. */
@@ -361,6 +323,74 @@ export class Settler {
     return { txHash: await this.settle(hash) };
   }
 
+  /**
+   * The checks and the `eth_call` of `selfSettle`, then a gas estimate; nothing
+   * is signed, sent, leased or written to the settlement record. A missing set
+   * is pulled as `selfSettle` pulls it. Throws the `SettleError` `selfSettle`
+   * would throw; a Canton source is `canton-source`.
+   */
+  async checkSettle(orderHash: Hex): Promise<SettleCheck> {
+    const hash = lower(orderHash) as Hex;
+    const loaded = await this.load(hash, 'check');
+    if (!loaded) throw new SettleError('no-fill', 'no confirmed fill of this filler for the order');
+    refuseClosed(loaded.settlement);
+    const s = loaded.payload || loaded.settlement?.state === 'sent' ? loaded : { ...loaded, ...(await this.peek(loaded)) };
+    if (s.settlement?.txHash && (s.settlement.state === 'sent' || s.settlement.state === 'confirmed')) throw new SettleError('unavailable', `settle ${s.settlement.txHash} is already ${s.settlement.state}`);
+    const { source, readers, driver } = this.evmSource(s, 'the source is not an EVM chain: no dry run of SwapIntent_SettleWithProof');
+    const payload = payloadOf(s);
+    const sigs = await this.verify(s, source, readers, 'check');
+    const call = await this.simulateSettle(s, payload, sigs, readers, 'check');
+    const gas = await driver.estimateGas(call).catch((error: unknown) => Promise.reject(new SettleError('unavailable', reasonOf(error))));
+    return { gas, repayTo: lower(ticketRepayTo(s.ticket.issued)) as Hex, payout: inclusiveFeeSplit(s.order.inputAmount, s.order.feeBps).payout };
+  }
+
+  /**
+   * The `eth_call` of `settle` with this set: one copy for both paths, so `checkSettle` refuses as `selfSettle` does.
+   * `IntentNotOpen` is explained by the intent's status — `settle` also closes the record and alerts, `check` only reads.
+   */
+  private async simulateSettle(s: Settleable, payload: SettleAttestationsPayload, sigs: AttestationEvm[], readers: ChainReaders, effects: VerifyEffects): Promise<TransactionCall> {
+    const call: TransactionCall = { to: readers.router.address, data: encodeFunctionCall(SETTLE, [orderOf(s.order), fillProofOf(payload.proof), sigs.map((x) => x.signature)]), value: 0n };
+    try {
+      await readers.client.call(call.to, call.data);
+      return call;
+    } catch (error) {
+      if (!(error instanceof ChainReadError) || error.reason !== 'reverted') throw new SettleError('unavailable', reasonOf(error));
+      const name = revertName(error);
+      const { orderHash, fill } = s;
+      if (name.startsWith('IntentNotOpen')) {
+        refuseFinal(effects === 'settle' ? await this.closeIfFinal(orderHash, fill.attempt, readers, 'settled by another transaction') : (await readers.router.intents(orderHash, readAtDepth(fillDepth(readers.config)))).status);
+      }
+      if (effects === 'settle') this.stage('settle.refused', orderHash, fill.attempt, { reason: 'reverted', error: name });
+      throw new SettleError('reverted', name);
+    }
+  }
+
+  /**
+   * The set filler-gateway holds now for this fill, read without keeping it: keeping it would settle (`onAttestations`).
+   * A set of another order or attempt is no set for this fill, as `selfSettle` would not use it either.
+   */
+  private async peek(s: Settleable): Promise<{ payload?: SettleAttestationsPayload }> {
+    const { orderHash } = s;
+    try {
+      const verified = await this.options.protocol.peekAttestations(orderHash);
+      const payload = verified ? payloadFrom(verified.frame as object) : undefined;
+      return payload && lower(payload.orderHash) === orderHash && payload.attempt === s.fill.attempt ? { payload } : {};
+    } catch (error) {
+      this.options.logger.warn('settle: attestation read failed', { orderHash, error: reasonOf(error) });
+      return {};
+    }
+  }
+
+  /** The source chain's readers and fill-key driver; a Canton source is `canton-source`. */
+  private evmSource(s: Settleable, cantonDetail: string): { source: EvmChainId; readers: ChainReaders; driver: NonNullable<ReturnType<Executor['driver']>> } {
+    const source = chainsOf(s.order)?.source;
+    if (!source) throw new SettleError('canton-source', cantonDetail);
+    const readers = this.options.chains.get(source);
+    const driver = this.options.executor.driver(source);
+    if (!readers || !driver) throw new SettleError('no-delivery-key', `no fill key or router for the source ${source}`);
+    return { source, readers, driver };
+  }
+
   /** One worker per order in this process. */
   private settle(orderHash: Hex): Promise<Hex> {
     const running = this.busy.get(orderHash);
@@ -371,45 +401,21 @@ export class Settler {
   }
 
   private async run(orderHash: Hex): Promise<Hex> {
-    const { store, instanceId, executor, clock } = this.options;
+    const { store, instanceId, executor } = this.options;
     const s = await this.load(orderHash);
     if (!s) throw new SettleError('no-fill', 'no confirmed fill of this filler for the order');
     const attempt = s.fill.attempt;
     const settled = s.settlement;
-    if (settled?.state === 'settled') throw new SettleError('already-settled', 'the intent is settled');
     if (settled?.txHash && (settled.state === 'sent' || settled.state === 'confirmed')) return settled.txHash;
-    if (settled?.state === 'failed' && settled.reason?.startsWith('refunded')) throw new SettleError('refunded', settled.reason);
+    refuseClosed(settled);
 
-    const chains = chainsOf(s.order);
-    if (!chains?.source && this.isCantonOrigin(s.order) && this.options.canton && this.options.cantonParty) return this.runCanton(s);
-    if (!chains?.source) throw new SettleError('canton-source', 'the source is not an EVM chain, and this node has no Canton party: SwapIntent_SettleWithProof');
-    const source = chains.source;
-    const readers = this.options.chains.get(source);
-    const driver = executor.driver(source);
-    if (!readers || !driver) throw new SettleError('no-delivery-key', `no fill key or router for the source ${source}`);
-    if (!s.payload) {
-      const [reason, ...detail] = (s.rejected ?? '').split(': ');
-      if (s.rejected) throw new SettleError(reason as SettleRefusal, detail.join(': '));
-      throw new SettleError('not-ready', 'filler-gateway holds no attestation set for the fill yet');
-    }
+    if (!chainsOf(s.order)?.source && this.isCantonOrigin(s.order) && this.options.canton && this.options.cantonParty) return this.runCanton(s);
+    const { source, readers, driver } = this.evmSource(s, 'the source is not an EVM chain, and this node has no Canton party: SwapIntent_SettleWithProof');
+    const payload = payloadOf(s);
 
     const sigs = await this.verify(s, source, readers);
-    const call: TransactionCall = { to: readers.router.address, data: encodeFunctionCall(SETTLE, [orderOf(s.order), fillProofOf(s.payload.proof), sigs.map((x) => x.signature)]), value: 0n };
-
     // eth_call first: a revert is named and nothing is sent (T-34).
-    try {
-      await readers.client.call(call.to, call.data);
-    } catch (error) {
-      if (!(error instanceof ChainReadError) || error.reason !== 'reverted') throw new SettleError('unavailable', reasonOf(error));
-      const name = revertName(error);
-      if (name.startsWith('IntentNotOpen')) {
-        const status = await this.closeIfFinal(orderHash, attempt, readers, 'settled by another transaction');
-        if (status === INTENT_STATUS.Settled) throw new SettleError('already-settled', 'the intent was settled by another transaction');
-        if (status === INTENT_STATUS.Refunded) throw new SettleError('refunded', 'the maker refunded before settle');
-      }
-      this.stage('settle.refused', orderHash, attempt, { reason: 'reverted', error: name });
-      throw new SettleError('reverted', name);
-    }
+    const call = await this.simulateSettle(s, payload, sigs, readers, 'settle');
 
     // Claim the settlement: one sender across replicas while the claim lasts.
     const claimed = await store.withOrder(orderHash, async (tx) => {
@@ -438,17 +444,7 @@ export class Settler {
         sent = recovered.tx;
       } else {
         const gasLimit = await driver.estimateGas(call);
-        lease = await executor.acquire(driver);
-        try {
-          sent = await driver.send(lease, call, gasLimit, await driver.marketFees(), { kind: 'settle', orderHash, attempt }, clock.now());
-        } catch (error) {
-          if (error instanceof LeaseLostError) throw error;
-          const record = await driver.record(lease);
-          const recorded = record?.transactions.at(-1);
-          if (record?.owner !== instanceId || !recorded || recorded.kind !== 'settle' || recorded.orderHash !== orderHash || recorded.attempt !== attempt || recorded.to !== call.to.toLowerCase() || recorded.data !== call.data || recorded.value !== call.value) throw error;
-          sent = recorded;
-          this.options.logger.warn('settle: broadcast refused, the tracker retries it', { orderHash, attempt, txHash: sent.hash, error: reasonOf(error) });
-        }
+        ({ lease, sent } = await executor.acquire(driver, async (taken) => ({ lease: taken, sent: await sendSettle(this.options, driver, taken, call, gasLimit, orderHash, attempt) })));
       }
       if (!(await driver.renew(lease))) throw new LeaseLostError(lease);
       await store.withOrder(orderHash, async (tx) => {
@@ -488,12 +484,7 @@ export class Settler {
     const party = this.options.cantonParty!;
     const { orderHash } = s;
     const attempt = s.fill.attempt;
-    if (!s.payload) {
-      const [reason, ...detail] = (s.rejected ?? '').split(': ');
-      if (s.rejected) throw new SettleError(reason as SettleRefusal, detail.join(': '));
-      throw new SettleError('not-ready', 'filler-gateway holds no attestation set for the fill yet');
-    }
-    const payload = s.payload;
+    const payload = payloadOf(s);
     const fail = async (reason: SettleRefusal, detail: string): Promise<never> => {
       await store.withOrder(orderHash, async (tx) => {
         const record = await tx.getAttestations(attempt);
@@ -553,9 +544,10 @@ export class Settler {
     }
     await store.withOrder(orderHash, async (tx) => {
       const current = await tx.getSettlement();
-      if (current?.state === 'settled') return;
+      if (current?.state === 'settled') return current.updateId ? undefined : tx.putSettlement({ ...current, updateId, updatedAtMs: await store.now() });
       await tx.putSettlement({ orderHash, attempt, state: 'confirmed', chain: payload.sourceChainId as SettlementRecord['chain'], updateId, updatedAtMs: await store.now(), ...(current?.orderSettled ? { orderSettled: current.orderSettled } : {}) });
     });
+    this.refundAfters.delete(orderHash);
     const k = `${orderHash}:${attempt}`;
     if (!this.attested.has(k)) {
       this.attested.add(k);
@@ -571,10 +563,11 @@ export class Settler {
    * signatures `settle` accepts. Records the verdict on the attestation record;
    * `attested` the first time a set passes.
    */
-  private async verify(s: Settleable, source: EvmChainId, readers: NonNullable<ReturnType<FillerChains['get']>>): Promise<AttestationEvm[]> {
+  private async verify(s: Settleable, source: EvmChainId, readers: NonNullable<ReturnType<FillerChains['get']>>, effects: VerifyEffects = 'settle'): Promise<AttestationEvm[]> {
     const payload = s.payload!;
     const attempt = s.fill.attempt;
     const fail = async (reason: SettleRefusal, detail: string): Promise<never> => {
+      if (effects === 'check') throw new SettleError(reason, detail);
       await this.options.store.withOrder(s.orderHash, async (tx) => {
         const record = await tx.getAttestations(attempt);
         if (record) await tx.putAttestations({ ...record, verified: false, reason: `${reason}: ${detail}` });
@@ -617,6 +610,7 @@ export class Settler {
     if (!collected.enough) {
       return fail('insufficient-signatures', `${collected.valid.length} valid of threshold ${set.threshold}; rejected ${collected.rejected.map((r) => `${r.signer}:${r.reason}`).join(', ') || 'none'}`);
     }
+    if (effects === 'check') return collected.selected;
     await this.options.store.withOrder(s.orderHash, async (tx) => {
       const record = await tx.getAttestations(attempt);
       if (record && !record.verified) await tx.putAttestations({ ...record, verified: true });
@@ -704,7 +698,7 @@ export class Settler {
   // -- store --------------------------------------------------------------------------------
 
   /** The order's confirmed fill with its ticket and the attestation set held for it. */
-  private async load(orderHash: Hex): Promise<Settleable | undefined> {
+  private async load(orderHash: Hex, effects: VerifyEffects = 'settle'): Promise<Settleable | undefined> {
     return this.options.store.withOrder(orderHash, async (tx) => {
       for (const ticket of [...(await tx.listTickets())].reverse()) {
         const fill = await tx.getFill(ticket.attempt);
@@ -717,14 +711,11 @@ export class Settler {
         let unreadable: string | undefined;
         if (record && (record.verified || !record.reason)) {
           try {
-            const parsed = settleAttestationsPayload(JSON.parse(decoder.decode(record.raw)) as object);
-            // Valid JSON is not yet a frame: without a proof object and a signature list every later rule throws a TypeError.
-            if (typeof parsed.proof !== 'object' || parsed.proof === null || !Array.isArray(parsed.signatures)) throw new TypeError('no proof or no signatures');
-            payload = parsed;
+            payload = payloadFrom(JSON.parse(decoder.decode(record.raw)) as object);
           } catch (error) {
             // A stored frame that does not parse is a failed set: the reason lets the next frame on either channel replace it.
             unreadable = `mismatch: the stored settle.attestations does not parse (${reasonOf(error)})`;
-            await tx.putAttestations({ ...record, verified: false, reason: unreadable });
+            if (effects === 'settle') await tx.putAttestations({ ...record, verified: false, reason: unreadable });
           }
         }
         return {

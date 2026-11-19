@@ -43,12 +43,12 @@
 import { type Hex, type TicketIssuedCanton } from '@cancore/contracts';
 import { keccak_256 } from '@noble/hashes/sha3';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
-import { CantonRefusal } from '../canton/legs';
+import { CantonRefusal, RegistryTransferRefusal } from '../canton/legs';
 import { CantonSubmitUnknown, type CantonOperations } from '../canton/operations';
 import { GatewayError } from '../errors';
 import type { EventSink, FillerEvent } from '../events';
 import type { Clock, Logger } from '../runtime';
-import type { FillerStore, TicketRecord } from '../store';
+import type { FillerStore, FillRecord, TicketRecord } from '../store';
 import { chainsOf, identityFor, type TicketKeys } from '../tickets/terms';
 import type { DeliveryResult, FillRefusal } from './executor';
 import { awaitClock, LEDGER_CLOCK_SLACK_MS } from './validFrom';
@@ -56,10 +56,16 @@ import { awaitClock, LEDGER_CLOCK_SLACK_MS } from './validFrom';
 /** `FillProof.fillRef` of a Canton delivery: `keccak256(utf8(updateId))` (attestors.md, protocol §3.13). */
 export const cantonFillRef = (updateId: string): Hex => `0x${bytesToHex(keccak_256(utf8ToBytes(updateId)))}` as Hex;
 
+/** A Canton claim only: an EVM fill is driven from its nonce, and closing it here would end that tracking. */
+export const isSignedClaim = (fill: FillRecord | undefined): fill is FillRecord & { sentAtMs: number } =>
+  fill?.state === 'pending' && fill.sentAtMs !== undefined && fill.chain.startsWith('canton:');
+
 /** Refusals after which the same ticket can still be delivered. */
 const TRANSIENT = new Set(['CANTON_NOT_READY', 'CANTON_UNAVAILABLE', 'OPERATION_EXPIRED', 'INTERNAL', 'RATE_LIMITED']);
 /** Refusals that say the ticket is no longer deliverable — or was delivered by an earlier try whose answer was lost. */
 const CLOSED = new Set(['TICKET_CLOSED', 'UNKNOWN_TICKET']);
+/** Cancore cannot pin the output instrument's registry factory: final for every order of the instrument, never retried. */
+const REGISTRY_FACTORY_UNTRUSTED = 'REGISTRY_FACTORY_UNTRUSTED';
 const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 const codeOf = (error: unknown): string => (error instanceof GatewayError ? error.code : error instanceof CantonRefusal ? 'REFUSED' : 'transport');
 
@@ -100,16 +106,14 @@ export class CantonDelivery {
     const now = await store.now();
     const existing = await store.withOrder(orderHash, (tx) => tx.getFill(attempt));
     if (existing && existing.state !== 'pending') return { status: 'tracking', ...(existing.txRef ? { detail: existing.txRef } : {}) };
-    if (existing && existing.owner !== instanceId && (existing.leaseUntilMs ?? 0) > now) {
-      // Looked at again once the lease runs out: a replica that died mid-delivery is taken over, never left pending.
-      if (!this.stopped) clock.schedule((existing.leaseUntilMs ?? now) - now + 1, again);
-      return { status: 'tracking', detail: 'another replica is delivering it' };
-    }
+    const elsewhere = existing && this.heldElsewhere(existing, now, again);
+    if (elsewhere) return elsewhere;
 
     const validUntilMs = Number(issued.validUntil) * 1000;
     // Signed by an earlier try — this replica's or a dead one's: it may have committed.
     const signedBefore = existing?.sentAtMs !== undefined;
-    const held = await this.outsideWindow(ticket, issued.validFrom ?? offer.validFrom, validUntilMs, signedBefore, existing !== undefined, again);
+    const validFrom = issued.validFrom ?? offer.validFrom;
+    const held = await this.outsideWindow(ticket, validFrom, validUntilMs, signedBefore, existing !== undefined, again);
     if (held) return held;
     const claimed = await store.withOrder(orderHash, async (tx) => {
       const fill = await tx.getFill(attempt);
@@ -138,6 +142,7 @@ export class CantonDelivery {
         attempt,
         deliveryOrderCid: issued.deliveryOrderCid,
         validUntil: issued.validUntil,
+        validFrom,
         repayTo: identity.repayTo,
         order: { recipient: offer.order.recipient, outputAsset: offer.order.outputAsset, minReceived: offer.order.minReceived, fillDeadline: offer.order.fillDeadline },
         amountOut: offer.amountOut,
@@ -160,6 +165,24 @@ export class CantonDelivery {
     this.emit({ type: 'filled', orderHash, attempt, txHash: fillRef, amount });
     this.options.onFilled?.(orderHash, attempt);
     return { status: 'sent', txHash: fillRef };
+  }
+
+  /**
+   * A signed claim whose ticket is no longer receipted — `ticket.expired` came while the replica that signed
+   * was down — may have committed: closed `sent`, outcome unknown, never prepared again. Undefined without one.
+   */
+  async closeSigned(orderHash: Hex, attempt: number, again: () => void): Promise<DeliveryResult | undefined> {
+    const { store } = this.options;
+    const fill = await store.withOrder(orderHash, (tx) => tx.getFill(attempt));
+    if (!isSignedClaim(fill)) return undefined;
+    return this.heldElsewhere(fill, await store.now(), again) ?? this.unknown(orderHash, attempt, 'the ticket is no longer receipted after a signed try');
+  }
+
+  private heldElsewhere(fill: FillRecord, now: number, again: () => void): DeliveryResult | undefined {
+    if (fill.owner === this.options.instanceId || (fill.leaseUntilMs ?? 0) <= now) return undefined;
+    // Looked at again once the lease runs out: a replica that died mid-delivery is taken over, never left pending.
+    if (!this.stopped) this.options.clock.schedule((fill.leaseUntilMs ?? now) - now + 1, again);
+    return { status: 'tracking', detail: 'another replica is delivering it' };
   }
 
   /**
@@ -216,6 +239,9 @@ export class CantonDelivery {
     const cause = error instanceof CantonSubmitUnknown ? error.cause : error;
     const code = codeOf(cause);
     const why = `${code}: ${reasonOf(cause)}`;
+    if (!mayHaveCommitted && (cause instanceof RegistryTransferRefusal || code === REGISTRY_FACTORY_UNTRUSTED)) {
+      return this.refuse(orderHash, attempt, 'output-unservable', cause instanceof CantonRefusal ? cause.detail : why, 'failed');
+    }
     if (error instanceof CantonRefusal && !mayHaveCommitted) {
       // The backend prepared something else than the ticket's delivery: nothing was signed for it.
       return this.refuse(orderHash, attempt, 'ticket-mismatch', error.detail, 'failed');

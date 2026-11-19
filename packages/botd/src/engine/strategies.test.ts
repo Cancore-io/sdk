@@ -1878,3 +1878,115 @@ describe('a cancel the venue refuses as no longer open (CAN-2826)', () => {
     expect(Object.keys(w.state().daemonCancels ?? {})).not.toContain(id);
   });
 });
+
+describe('a strategy step racing strategy.stop or pause (BUG-1621)', () => {
+  const held = <T = void>() => {
+    let release!: (v: T) => void;
+    let refuse!: (err: unknown) => void;
+    const gate = new Promise<T>((res, rej) => ((release = res), (refuse = rej)));
+    return { gate, release, refuse };
+  };
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const startGrid = async (w: ReturnType<typeof world>) => ((await w.call('strategy.start', grid, false)) as { result: { strategyId: string } }).result.strategyId;
+
+  it('(a) the order of a step whose make was in flight when strategy.stop returned is cancelled as it lands', async () => {
+    const w = world();
+    await w.unlock();
+    const id = await startGrid(w);
+    const make = held<{ orderId: string }>();
+    w.crash.slow = make.gate;
+    await w.tick();
+    await w.call('strategy.stop', { strategyId: id }, false);
+    make.release({ orderId: 'late' });
+    await flush();
+    expect(w.cancelled).toEqual(['late']);
+    expect(w.state().openOrders).toEqual([]);
+    expect(strategyOf(w).status).toBe('stopped');
+  });
+
+  it('(a) a stop that lands while the step\'s gate awaits prices sends nothing to the API', async () => {
+    const w = world();
+    await w.unlock();
+    const id = await startGrid(w);
+    const prices = held();
+    w.crash.pricesHold = prices.gate;
+    await w.tick();
+    await w.call('strategy.stop', { strategyId: id }, false);
+    prices.release();
+    await flush();
+    expect(w.made).toEqual([]);
+    expect(w.state().intents ?? []).toEqual([]);
+    expect(w.state().orderTimes ?? []).toEqual([]);
+    expect(w.audited.filter((a) => a.method === 'order.make').at(-1)).toMatchObject({ decision: 'error', reason: 'strategy stopped' });
+    expect(strategyOf(w).status).toBe('stopped');
+  });
+
+  it('(a) a step\'s order that lands while strategy.stop is still cancelling the book is cancelled too', async () => {
+    const w = world();
+    await w.unlock();
+    const id = await startGrid(w);
+    await w.tick();
+    const make = held<{ orderId: string }>();
+    w.crash.slow = make.gate;
+    await w.tick();
+    const cancels = held();
+    w.crash.cancelHold = cancels.gate;
+    const atCancel = new Promise<void>((r) => (w.crash.atCancel = r));
+    const stopping = w.call('strategy.stop', { strategyId: id }, false);
+    await atCancel;
+    w.crash.atCancel = undefined;
+    make.release({ orderId: 'late' });
+    await flush();
+    w.crash.cancelHold = undefined;
+    cancels.release();
+    await stopping;
+    await flush();
+    expect([...w.cancelled].sort()).toEqual(['late', 'o1']);
+    expect(w.state().openOrders).toEqual([]);
+    expect(strategyOf(w).status).toBe('stopped');
+  });
+
+  it('(b) a rate_limited strategy stopped while its step\'s make was in flight stays stopped when the make succeeds', async () => {
+    const w = world(LIMITS, 1);
+    await w.unlock();
+    const id = await startGrid(w);
+    await w.tick();
+    await w.tick();
+    expect(strategyOf(w).status).toBe('rate_limited');
+    w.advance(3_600_001);
+    const make = held<{ orderId: string }>();
+    w.crash.slow = make.gate;
+    await w.tick();
+    await w.call('strategy.stop', { strategyId: id }, false);
+    // Taken before its answer arrived: it cannot be cancelled, so the make succeeds and stays booked as a trade.
+    w.statuses.late = 'accepted';
+    make.release({ orderId: 'late' });
+    await flush();
+    w.crash.slow = undefined;
+    w.advance(3_600_001);
+    await w.tick();
+    expect(strategyOf(w).status).toBe('stopped');
+    expect(w.made.map((m) => m.orderId)).toEqual(['o1']);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['late']);
+  });
+
+  it('(c) a pause while a step\'s make is in flight holds through resume: the throttled answer does not make the strategy active again', async () => {
+    const w = world();
+    await w.unlock();
+    await startGrid(w);
+    await w.tick();
+    const make = held<{ orderId: string }>();
+    w.crash.slow = make.gate;
+    await w.tick();
+    await w.call('pause', {}, true);
+    make.refuse(Object.assign(new Error('POST /orders → 429'), { status: 429 }));
+    await flush();
+    expect(strategyOf(w)).toMatchObject({ status: 'stopped', reason: 'paused' });
+    await w.call('resume', {}, true);
+    w.crash.slow = undefined;
+    w.advance(3_600_001);
+    await w.tick();
+    expect(strategyOf(w).status).toBe('stopped');
+    expect(w.made.map((m) => m.orderId)).toEqual(['o1']);
+  });
+});

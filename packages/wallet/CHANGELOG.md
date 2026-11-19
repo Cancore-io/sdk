@@ -1,6 +1,6 @@
 # Changelog — `@cancore/wallet`
 
-## 0.4.8
+## 0.4.10
 
 ### Changed — `@noble/curves` and `@noble/hashes` 2.x (CAN-3207)
 
@@ -9,6 +9,17 @@
   package's `engines.node >= 26`. Ed25519 output is unchanged (the RFC 8032 KAT still passes).
 - `@scure/bip39` `^1.6.0` → `^2.4.0`, which depends on `@noble/hashes` 2.4.0: the package's runtime tree carries
   one `@noble/hashes` line, not two. Mnemonics, seeds and the wordlists are unchanged.
+
+## 0.4.8
+
+### Fixed — a `202 pending` submit is never reported as a success (CAN-3679)
+
+- `submit` (and so `execute`) answered `202 { operationId, status: "pending" }` polls
+  `GET /wallet/operations/{operationId}` until `committed` or `rejected`, then submits the same signatures once more,
+  which the backend answers by replaying the first outcome: the result, or the coded refusal. Nothing is resubmitted
+  while the status is `submitted`. `expired_not_committed` throws `OperationNotCommittedError`; a status still open
+  after ten minutes throws `OperationOutcomeUnknownError` (it may yet commit — do not prepare it again).
+  `createWalletOperations(request, polling?)` takes the interval and ceiling.
 
 ## 0.4.7
 

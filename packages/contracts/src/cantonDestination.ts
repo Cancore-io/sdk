@@ -5,10 +5,9 @@
  * backend OrderBuilder, the web app, the filler node and the attestors use;
  * nobody re-implements it.
  */
-import { utf8ToBytes } from '@noble/hashes/utils';
 import { CANTON_ORIGIN_ID, DAML_NUMERIC_SCALE, INSTRUMENT_LABEL_TAG } from './constants';
 import { abiEncodeStrings, exactUnits } from './encoding';
-import { keccak, toHex } from './protocol/bytes';
+import { keccak, toHex, wellFormedUtf8 } from './protocol/bytes';
 import type { Hex } from './protocol/typedData';
 
 /** A Canton network, as in its CAIP-2 id `canton:<network>`. */
@@ -16,7 +15,7 @@ export type CantonNetwork = keyof typeof CANTON_ORIGIN_ID;
 
 const NETWORKS = Object.keys(CANTON_ORIGIN_ID) as CantonNetwork[];
 
-const utf8Hash = (text: string): Hex => toHex(keccak(utf8ToBytes(text)));
+const utf8Hash = (text: string, field: string): Hex => toHex(keccak(wellFormedUtf8(text, field)));
 
 const nonEmpty = (value: unknown, field: string): string => {
   if (typeof value !== 'string' || value.length === 0) throw new TypeError(`${field}: a non-empty string`);
@@ -26,7 +25,7 @@ const nonEmpty = (value: unknown, field: string): string => {
 /** `Order.destination` and `FillProof.destination` of a Canton network: `keccak256(utf8("canton:<network>"))`. */
 export function encodeCantonDestination(network: CantonNetwork): Hex {
   if (!NETWORKS.includes(network)) throw new TypeError(`network: one of ${NETWORKS.join(', ')}, got ${JSON.stringify(network)}`);
-  return utf8Hash(`canton:${network}`);
+  return utf8Hash(`canton:${network}`, 'network');
 }
 
 /** The Canton network an order's `destination` names, or `undefined` when it is not a Canton destination. */
@@ -46,7 +45,7 @@ export function encodeCantonOutputAsset(instrument: { admin: string; id: string 
 
 /** `Order.recipient` and `FillProof.recipient` of a Canton party: `keccak256(utf8(partyId))` over the full party id. */
 export function encodeCantonRecipient(partyId: string): Hex {
-  return utf8Hash(nonEmpty(partyId, 'partyId'));
+  return utf8Hash(nonEmpty(partyId, 'partyId'), 'partyId');
 }
 
 /**

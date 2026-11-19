@@ -147,7 +147,7 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
     BigInt(await chains().get(chain)!.client.call(token, encodeFunctionCall(entryOf(abi(IBURN_MINT_ERC20_ABI), 'function', 'balanceOf'), [owner])));
 
   /** An intent to Canton devnet, opened on the stand router by FRANK; `salt` keeps orders apart. */
-  async function openToCanton(salt: number): Promise<{ order: OrderJson; orderHash: Hex; now: bigint }> {
+  async function openToCanton(salt: number): Promise<{ order: OrderJson; orderHash: Hex; now: bigint; openedAt: bigint }> {
     const user = createTestFillSigner(key('FRANK'));
     await send(key('FRANK'), token, `0xa0712d68${(10n ** 21n).toString(16).padStart(64, '0')}` as Hex);
     await send(key('FRANK'), token, encodeFunctionCall(entryOf(abi(IBURN_MINT_ERC20_ABI), 'function', 'approve'), [PERMIT2, 2n ** 255n]));
@@ -172,13 +172,18 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
     const permit = { permitted: { token, amount: order.inputAmount }, nonce: BigInt(`0x${bytesToHex(keccak_256(utf8ToBytes(orderHash)))}`) >> 8n, deadline: order.fillDeadline };
     const permitSig = signDigest(key('FRANK'), hashPermitWitness({ ...permit, spender: router, witness: order }, stand.chainId, PERMIT2));
     await send(key('FRANK'), router, encodeFunctionCall(entryOf(abi(CANCORE_ROUTER_ABI), 'function', 'openFor'), [order, permit, permitSig, quoteDeadline, quoteSig]));
-    return { order, orderHash, now };
+    const { openedAt } = await chains().get(chain)!.router.intents(orderHash);
+    return { order, orderHash, now, openedAt };
   }
 
-  /** The offer, the filler's consent, the Canton-form ticket and its DeliveryOrder, as filler-gateway would send and serve them. */
-  function ticketOf(order: OrderJson, orderHash: Hex, now: bigint, clock: Clock) {
+  /**
+   * The offer, the filler's consent, the Canton-form ticket and its DeliveryOrder, as filler-gateway would send and serve them.
+   * V-E2 refuses a `floor` below the escrow's openedAt (BUG-1609); the delivery tests, which skip the checks, keep
+   * `now − 5` so the executor does not wait out the ledger-clock slack.
+   */
+  function ticketOf(order: OrderJson, orderHash: Hex, now: bigint, clock: Clock, floor = now - 5n) {
     const repayTo = repayToFromEvm(createTestFillSigner(key('FILLER1')).address);
-    const validFrom = String(now - 5n);
+    const validFrom = String(floor);
     const validUntil = String(now + 600n);
     const offer = { type: 'ticket.offer', orderHash, attempt: 0, order, amountOut: order.minReceived, validFrom, validUntil, acceptBy: clock.now() + 5_000 } as unknown as TicketOffer;
     const intent = { type: 'ticket.intent', orderHash, attempt: 0, validFrom, validUntil, deliveryKey: ZERO_ADDRESS, repayTo } as unknown as TicketIntentMessage;
@@ -219,18 +224,18 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
     });
 
   test('TC-SDK-1867-COMP-01: a Canton-form ticket on a real escrow passes every check, from the router and the input token', async () => {
-    const { order, orderHash, now } = await openToCanton(1);
+    const { order, orderHash, now, openedAt } = await openToCanton(1);
     const clock = standClock(now);
-    const t = ticketOf(order, orderHash, now, clock);
+    const t = ticketOf(order, orderHash, now, clock, openedAt);
     const verdict = await verifierFor(clock, [t.deliveryOrder], [{ contractId: 'h1', asset: ASSET, amount: '30.0', locked: false }]).verify({ offer: t.offer, issued: t.issued, issuedAtMs: clock.now(), intent: t.intent });
     expect(verdict).toMatchObject({ ok: true });
     expect(verdict.checks.map((c) => [c.check, c.status])).toEqual(['form', 'V-T4', 'V-T2', 'V-T3', 'V-E1', 'V-E2', 'V-E3', 'V-E4', 'V-E5', 'V-R1'].map((c) => [c, 'passed']));
   }, 60_000);
 
   test('TC-SDK-1867-COMP-02: refused on the real escrow — another order, an operator repayTo (T-48), no inventory', async () => {
-    const { order, orderHash, now } = await openToCanton(2);
+    const { order, orderHash, now, openedAt } = await openToCanton(2);
     const clock = standClock(now);
-    const t = ticketOf(order, orderHash, now, clock);
+    const t = ticketOf(order, orderHash, now, clock, openedAt);
     const holdings: CantonHolding[] = [{ contractId: 'h1', asset: ASSET, amount: '30', locked: false }];
     const verify = (orders: CantonDeliveryOrder[], held: CantonHolding[], offer = t.offer) => verifierFor(clock, orders, held).verify({ offer, issued: t.issued, issuedAtMs: clock.now(), intent: t.intent });
 

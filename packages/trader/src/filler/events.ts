@@ -45,7 +45,7 @@ export interface PenaltyEvent {
   step: PenaltyStep;
 }
 
-/** The SDK refused a ticket itself (escrow, TTL; V2 also the draw). No penalty follows. */
+/** The SDK refused a ticket itself (escrow, TTL). No penalty follows. */
 export interface DeclinedEvent {
   type: 'declined';
   orderHash: Hex;
@@ -70,6 +70,12 @@ export type FillerStage =
   | 'ticket.checked'
   | 'ticket.receipted'
   | 'ticket.declined'
+  /**
+   * Operator alert: filler-gateway answered a decline `TICKET_CLOSED` (`detail.reason`: the decline's). It is not
+   * sent again; but the closed ticket may be one the gateway holds receipted — a receipt POST given up after its
+   * timeout that landed — and then it expects a fill this node will not make (a NO_SHOW).
+   */
+  | 'ticket.decline.closed'
   | 'ticket.expired'
   /** Delivery (`detail.reason`, `detail.detail`): not sent — no receipt, `sendGuard`, below `minReceived`, already filled, a revert in `eth_estimateGas`. */
   | 'fill.refused'

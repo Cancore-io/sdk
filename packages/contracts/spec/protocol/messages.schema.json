@@ -72,7 +72,7 @@
     },
     "errorCode": {
       "anyOf": [
-        { "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "STALE_MESSAGE", "REPLAYED_MESSAGE", "TICKET_REFUSED", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL", "ATTESTATIONS_NOT_READY", "CANTON_NOT_READY", "CANTON_REFUSED", "CANTON_UNAVAILABLE", "OPERATION_EXPIRED", "ROUTE_NOT_APPROVED"] },
+        { "enum": ["BAD_REQUEST", "UNAUTHENTICATED", "UNSUPPORTED_VERSION", "UNSUPPORTED_TYPE", "BAD_SIGNATURE", "STALE_MESSAGE", "REPLAYED_MESSAGE", "TICKET_REFUSED", "UNKNOWN_REQUEST", "UNKNOWN_TICKET", "TICKET_CLOSED", "NOT_ELIGIBLE", "RATE_LIMITED", "INTERNAL", "ATTESTATIONS_NOT_READY", "CANTON_NOT_READY", "CANTON_REFUSED", "CANTON_UNAVAILABLE", "OPERATION_EXPIRED", "ROUTE_NOT_APPROVED", "REGISTRY_FACTORY_UNTRUSTED"] },
         { "$ref": "#/$defs/futureEnumValue" }
       ]
     },
@@ -81,7 +81,7 @@
         { "enum": ["REPAY_TO_INVALID", "REPAY_TO_BLOCKLISTED", "DELIVERY_KEY_INVALID", "PAYOUT_NOT_READY", "RECIPIENT_NOT_READY", "OPEN_TICKET_LIMIT", "PROOF_WINDOW_TOO_SHORT", "ATTESTOR_REVOCATION_PENDING", "SERVICE_DEGRADED", "OTHER"] },
         { "$ref": "#/$defs/futureEnumValue" }
       ],
-      "description": "error.reason with TICKET_REFUSED: the pre-ticket check that failed (S-21); the order is re-drawn, nothing is recorded against the filler"
+      "description": "error.reason with TICKET_REFUSED: the pre-ticket check that failed (S-21); this filler gets no ticket for the attempt, nothing is recorded against it"
     },
     "expiredResult": { "anyOf": [{ "enum": ["FILLED", "NO_SHOW", "NO_SHOW_UNCONFIRMED", "EXEMPT"] }, { "$ref": "#/$defs/futureEnumValue" }] },
     "exemptReason": { "anyOf": [{ "enum": ["DESTINATION_HALTED", "GATEWAY_FAULT", "REORGED_AFTER_INCLUSION", "RECIPIENT_NOT_READY", "OTHER"] }, { "$ref": "#/$defs/futureEnumValue" }] },
@@ -216,19 +216,6 @@
       "allOf": [{ "$ref": "#/$defs/f2sBase" }],
       "required": ["type", "re", "code", "message"],
       "properties": { "type": { "const": "error" }, "re": { "$ref": "#/$defs/messageId" }, "code": { "$ref": "#/$defs/errorCode" }, "message": { "type": "string" } }
-    },
-    "epoch.weights": {
-      "x-direction": "S2F",
-      "type": "object",
-      "allOf": [{ "$ref": "#/$defs/s2fBase" }],
-      "required": ["type", "epochId", "startsAt", "endsAt", "weightsRoot"],
-      "properties": {
-        "type": { "const": "epoch.weights" },
-        "epochId": { "$ref": "#/$defs/uintDec64" },
-        "startsAt": { "$ref": "#/$defs/timeS" },
-        "endsAt": { "$ref": "#/$defs/timeS" },
-        "weightsRoot": { "$ref": "#/$defs/bytes32" }
-      }
     },
     "quote.request": {
       "x-direction": "S2F",

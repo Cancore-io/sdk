@@ -5,14 +5,14 @@
  * registration, and the methods with their final signatures. The protocol
  * behind each method lands in its own task, named in its `NotImplementedError`.
  */
-import type { DecString, Hex, StakeBindingRequest, TicketIssued, TicketOffer } from '@cancore/contracts';
+import type { DecString, Hex, TicketIssued, TicketOffer } from '@cancore/contracts';
 import { isEvmChainId, type EvmChainId } from './chains';
 import { FillerChains, type ChainConfig } from './chain';
 import { TicketVerifier, type EscrowVerification } from './tickets/checks';
 import { DEFAULT_OFFER_REPLY_MARGIN_MS, TicketDesk, type TicketOfferHook } from './tickets/desk';
 import { FillerConfigError, NotImplementedError } from './errors';
 import { Executor, type DeliveryOptions } from './delivery/executor';
-import { DEFAULT_SETTLEMENT, Settler, type SettlementOptions } from './settlement/settler';
+import { DEFAULT_SETTLEMENT, Settler, type SettleCheck, type SettlementOptions } from './settlement/settler';
 import { FillerProtocolClient, DEFAULT_REST_POLL_INTERVAL_MS } from './protocol/client';
 import { MinInputCache, routerMinInputSource } from './min-input-cache';
 import { createSealer } from './protocol/envelope';
@@ -39,7 +39,7 @@ import { CantonOperations, type CantonPartySigner } from './canton/operations';
 import type { CantonLedger } from './ledger';
 import type { EvmRpcMap } from './rpc';
 import { silentLogger, systemClock, type Clock, type HttpFetch, type Logger, type WebSocketFactory } from './runtime';
-import type { FillSigner, QuoteSigner, StakingSigner } from './signer';
+import type { FillSigner, QuoteSigner } from './signer';
 import type { FillerStore } from './store';
 
 // ---------------------------------------------------------------------------
@@ -189,22 +189,7 @@ export type { OfferDeclineReason, TicketOfferDecision, TicketOfferHook } from '.
 // Results
 // ---------------------------------------------------------------------------
 
-export interface SelfSettleResult {
-  txHash: Hex;
-}
-
-/** V2 only: the draw is recomputed locally (auction-and-draw.md §12). */
-export interface DrawVerification {
-  winner: string;
-  recomputedWinner: string;
-  match: boolean;
-  drandRound: DecString;
-}
-
-export interface BindStakeOptions {
-  /** EVM chain of the `CNRXStaking` deployment. */
-  chain: EvmChainId;
-}
+export interface SelfSettleResult { txHash: Hex }
 
 /** sdk.md §3.6. V1: `reliability`, `capacityUsd`, `inFlightUsd` are informational. */
 export interface FillerStatsSnapshot {
@@ -248,8 +233,8 @@ export interface Filler {
    * chain's fill key. Rejects with `SettleError` naming why nothing was sent.
    */
   selfSettle(orderHash: Hex): Promise<SelfSettleResult>;
-  /** V2. */
-  verifyDraw(orderHash: Hex): Promise<DrawVerification>;
+  /** `selfSettle` without sending: its checks, `eth_call` and a gas estimate; signs, sends and stores nothing (`Settler.checkSettle`). */
+  checkSettle(orderHash: Hex): Promise<SettleCheck>;
   /**
    * The checks before a receipt (fillers.md §4.5) for an issued ticket whose
    * offer is in the store: own RPC, pinned routers. Runs automatically before
@@ -258,8 +243,8 @@ export interface Filler {
   verifyEscrow(ticket: TicketIssued): Promise<EscrowVerification>;
   /** The Canton operations of the filler's party, over this filler's own login; undefined without `canton`. */
   readonly canton: CantonOperations | undefined;
-  /** Signs a `StakeBinding` with the staking key. */
-  bindStake(stakingSigner: StakingSigner, options: BindStakeOptions): Promise<StakeBindingRequest>;
+  /** A filler-gateway REST bearer valid for at least `TOKEN_MARGIN_MS` more, from the login the session shares; logs in when the held one is near expiry. */
+  restToken(): Promise<string>;
   stats(): Promise<FillerStatsSnapshot>;
 }
 
@@ -689,9 +674,8 @@ export function createFiller(config: FillerConfig): Filler {
     },
     canton,
     selfSettle: (orderHash) => settler.selfSettle(orderHash),
-    verifyDraw: async () => {
-      throw new NotImplementedError('verifyDraw', 'CAN-1848');
-    },
+    checkSettle: (orderHash) => settler.checkSettle(orderHash),
+    restToken: async () => (await rest.validToken()).token,
     verifyEscrow: async (ticket) => {
       const orderHash = typeof ticket?.orderHash === 'string' ? (ticket.orderHash.toLowerCase() as Hex) : undefined;
       if (!orderHash || !/^0x[0-9a-f]{64}$/.test(orderHash) || !Number.isSafeInteger(ticket.attempt)) {
@@ -704,9 +688,6 @@ export function createFiller(config: FillerConfig): Filler {
         return { ok: false, reason: 'TICKET_ISSUED_LATE', detail: 'V-T4: unverifiable: the arrival of ticket.issued is not recorded', checks: [] };
       }
       return verifier.verify({ offer: record.offer, issued: ticket, issuedAtMs: record.issuedAtMs, ...(record.intent ? { intent: record.intent } : {}) });
-    },
-    bindStake: async () => {
-      throw new NotImplementedError('bindStake', 'CAN-1857');
     },
     stats: async () => {
       throw new NotImplementedError('stats', 'CAN-1940');

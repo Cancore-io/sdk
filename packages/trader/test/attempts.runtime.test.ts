@@ -86,6 +86,7 @@ async function runtime() {
   const login = createFakeGatewayLogin(gateway, { fillerId: FILLER, clock, heartbeatIntervalMs: 60_000 });
   const offers: unknown[] = [];
   const reconfirms: unknown[] = [];
+  const http = createFakeFetch(login.routes);
   const filler: Filler = createFiller({
     gatewayUrl: 'wss://filler-gateway.example/v1',
     fillerId: FILLER,
@@ -98,7 +99,7 @@ async function runtime() {
     tickets: { deltaIssueMs: 3_000 },
     store,
     webSocket: ws.factory,
-    fetch: createFakeFetch(login.routes).fetch,
+    fetch: http.fetch,
     clock,
     events: createRecordingEventSink(),
     logger: createRecordingLogger(),
@@ -147,7 +148,9 @@ async function runtime() {
     ticketTtl: 180,
     replyBy: clock.now() + 2_000,
   });
-  const sent = (type: string) => socket.sentFrames().filter((f) => f.type === type);
+  // Ticket actions are POSTed (BUG-1615), everything else goes on the session.
+  const posted = (type: string) => http.requests.filter((r) => r.method === 'POST' && r.url.endsWith(`/${type.replace('ticket.', '')}`)).map((r) => JSON.parse(r.body!) as Record<string, unknown>);
+  const sent = (type: string) => (type.startsWith('ticket.') ? posted(type) : socket.sentFrames().filter((f) => f.type === type));
   const ticket = (attempt: number) => store.withOrder(w.orderHash, (tx) => tx.getTicket(attempt));
   return { clock, w, filler, offers, reconfirms, receive, offer, reconfirm, sent, ticket };
 }

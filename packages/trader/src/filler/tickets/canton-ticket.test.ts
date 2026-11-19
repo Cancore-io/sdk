@@ -159,6 +159,16 @@ describe('CAN-2808: V-E2 of a Canton-form ticket reads at the openConfirmations 
     expect(t.escrowReadBlocks()).toEqual([98n]);
   });
 
+  test('BUG-1609: V-E2 refuses a ticket whose validFrom is one second before the escrow openedAt (ESCROW_MISMATCH); exactly at it passes', async () => {
+    const t = cantonFormTicket(3);
+    t.escrow.openedAt += 51n; // openedAt = offer.validFrom + 1
+    const result = await t.verify();
+    expect(result).toMatchObject({ ok: false, reason: 'ESCROW_MISMATCH', detail: expect.stringContaining('V-E2') });
+    expect(result.checks.at(-1)).toMatchObject({ check: 'V-E2', status: 'failed' });
+    t.escrow.openedAt -= 1n;
+    await expect(t.verify()).resolves.toMatchObject({ ok: true });
+  });
+
   test('TC-SDK-1867-50: V-R1 — a recipient whose preapproval is gone is declined RECIPIENT_NOT_READY, no receipt', async () => {
     const t = cantonFormTicket(3, async (o) => ({ ...readyAbout(o), ready: false, reason: 'RECIPIENT_NOT_READY' }));
     await expect(t.verify()).resolves.toMatchObject({ ok: false, reason: 'RECIPIENT_NOT_READY', detail: expect.stringContaining('V-R1') });

@@ -24,7 +24,7 @@
  */
 import type { CantonOpParams, Hex } from '@cancore/contracts';
 import { CANTON_TRANSFER_FACTORIES, holdingTemplatesOf, type CantonTransferFactory } from './factories';
-import { CantonRefusal, cantonFingerprint } from './legs';
+import { CantonRefusal, cantonFingerprint, registryTransferChecked, StatedInputRefusal } from './legs';
 import type { CantonOpCheck } from './operations';
 import type { CantonTransaction, CreateNode, DamlValue, ExerciseNode, TransactionNode } from './transaction';
 
@@ -33,6 +33,10 @@ const TRANSFER_FACTORY = 'Splice.Api.Token.TransferInstructionV1:TransferFactory
 
 export const refuse = (detail: string): never => {
   throw new CantonRefusal('-', detail);
+};
+/** The holdings the backend chose for this fill: a refusal of them is one of the order, never of the registry (BUG-1528). */
+const refuseStatedInput = (detail: string): never => {
+  throw new StatedInputRefusal('-', detail);
 };
 
 /** `<module>:<entity>` of a `<package id>:<module>:<entity>` id. */
@@ -318,7 +322,7 @@ export function checkTransferExercise(tx: CantonTransaction, node: ExerciseNode,
   if (!sameSet(cids(field(transfer, 'inputHoldingCids')), o.stated)) refuse('the transfer spends other holdings than stated');
   const before = field(transfer, 'executeBefore');
   if (before.t !== 'timestamp' || BigInt(before.v) !== BigInt(o.executeBefore) * 1_000_000n) refuse('executeBefore is not the stated one');
-  checkTransferSubtree(tx, node, o);
+  registryTransferChecked(() => checkTransferSubtree(tx, node, o));
 }
 
 /**
@@ -366,13 +370,13 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
   let inputs = 0n;
   for (const cid of o.stated) {
     const disclosed = tx.inputContracts.find((c) => c.contractId === cid);
-    if (!disclosed) return refuse(`the stated input ${cid} is not disclosed with the transaction`);
-    if (!isHolding(disclosed.templateId)) refuse(`the stated input ${cid} is not a holding of the pinned registry`);
+    if (!disclosed) return refuseStatedInput(`the stated input ${cid} is not disclosed with the transaction`);
+    if (!isHolding(disclosed.templateId)) refuseStatedInput(`the stated input ${cid} is not a holding of the pinned registry`);
     const h = holdingOf(disclosed.argument, f);
-    if (h.owner !== sender || !sameInstrument(h) || h.locked) refuse(`the stated input ${cid} is not an unlocked holding of the sender in the instrument`);
+    if (h.owner !== sender || !sameInstrument(h) || h.locked) refuseStatedInput(`the stated input ${cid} is not an unlocked holding of the sender in the instrument`);
     inputs += h.amount;
   }
-  if (inputs < amount) refuse(`the stated inputs hold ${decimal(inputs)}, less than ${decimal(amount)}`);
+  if (inputs < amount) refuseStatedInput(`the stated inputs hold ${decimal(inputs)}, less than ${decimal(amount)}`);
 
   const nodes = subtree(tx, root.nodeId);
   const archived = new Set<string>();
@@ -407,7 +411,7 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
     }
   }
   const unspent = o.stated.filter((cid) => !archived.has(cid));
-  if (unspent.length > 0) refuse(`the stated inputs ${unspent.join(', ')} are not spent`);
+  if (unspent.length > 0) refuseStatedInput(`the stated inputs ${unspent.join(', ')} are not spent`);
 
   if (offers.length === 0) {
     if (receiver !== amount) refuse(`the receiver is credited ${decimal(receiver)}, not ${decimal(amount)}`);

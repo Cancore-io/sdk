@@ -68,9 +68,9 @@ for anything missing or malformed — never a `ReferenceError` later. It opens n
 | `start()` | `Promise<void>` | login over REST, then the WebSocket with the token; heartbeat, reconnect, REST fallback; reconcile from the store; then quote, take tickets, fill, settle. Needs all three hooks. Resolves at the first `auth.ok` | CAN-1847 |
 | `stop()` | `Promise<void>` | closes the session; in-flight work stays in the store for any replica | CAN-1847 |
 | `selfSettle(orderHash)` | `{ txHash }` | settle one order now from its verified attestation set (pulled when none is held); `SettleError` with its `reason` when nothing was sent | CAN-1856 |
-| `verifyDraw(orderHash)` | `{ winner, recomputedWinner, match, drandRound }` | V2 only: recompute the draw | CAN-1848 |
+| `checkSettle(orderHash)` | `{ gas, repayTo, payout }` | `selfSettle` without sending: the same checks of the held set (or the one filler-gateway holds, read without keeping it), the `eth_call` of `settle` and a gas estimate; signs, sends and stores nothing; `SettleError` as `selfSettle`. EVM source only | CAN-2713 |
 | `verifyEscrow(ticket)` | `{ ok, reason?, detail?, checks }` | the checks before a receipt for an issued ticket whose offer is stored; also runs before every receipt | CAN-1854 |
-| `bindStake(stakingSigner, { chain })` | `StakeBindingRequest` | sign a `StakeBinding` with the staking key | CAN-1857 |
+| `restToken()` | `Promise<string>` | a filler-gateway REST bearer valid for at least 30 s more, from the login the session shares; logs in again when the held one is near expiry, so a caller of the filler's own REST routes never holds an expired token while the WebSocket stays up | BUG-1602 |
 | `stats()` | `{ won, delivered, noShow, reliability, capacityUsd, inFlightUsd }` | filler statistics | CAN-1940 |
 
 ## The connection to filler-gateway
@@ -124,12 +124,20 @@ It connects only after logging in.
   `retryAfterMs` filler-gateway named.
 - **REST fallback** (§3.6) on the same host (`wss` → `https`), with the login's bearer token (renewed once on
   a 401). While the session is down it polls `GET /v1/filler/tickets` every
-  `transport.restPollIntervalMs` (2 s), and sends ticket intents, receipts and declines as
-  `POST /v1/filler/tickets/{orderHash}/{attempt}/{intent|receipt|decline}`. After every login it pulls once
-  more. Frames with no REST route (`quote`, `quote.reconfirm.reply`, `fill.reported`) are not sent while down.
+  `transport.restPollIntervalMs` (2 s). After every login it pulls once more. Frames with no REST route
+  (`quote`, `quote.reconfirm.reply`, `fill.reported`) are not sent while down.
+- **Ticket actions** (intents, receipts, declines) always go as
+  `POST /v1/filler/tickets/{orderHash}/{attempt}/{intent|receipt|decline}`, session up or down: the HTTP status
+  is the acknowledgement. Until a 2xx the action counts as not delivered: a receipt does not start the delivery,
+  and the action is sent again (fresh envelope) while its deadline lasts. A POST unanswered after
+  `TICKET_POST_TIMEOUT_MS` (2 s) counts as a transport failure and is sent again. A final refusal (`BAD_REQUEST`,
+  `BAD_SIGNATURE`, `TICKET_REFUSED`, `UNKNOWN_TICKET`, `TICKET_CLOSED`, `NOT_ELIGIBLE`, …) is not: the action is
+  marked unsent, as past its deadline. `REPLAYED_MESSAGE`, and `TICKET_CLOSED` on a decline, mean filler-gateway
+  already holds it: delivered (the latter visibly, see **Outcome**).
 - **Evidence.** Every verified frame is written to the store's evidence journal as the exact bytes received
   (id = keccak256 of the bytes), under the order lock when it names an order. `quote.ack` is attached to its
-  quote, `ticket.intent.ack` to its ticket attempt.
+  quote, `ticket.intent.ack` to its ticket attempt. Every receipt filler-gateway acknowledged is journalled
+  `to-gateway` as the bytes posted.
 - **Several replicas, one `fillerId`** (T-10). Any frame may arrive on any replica's session, twice, or over
   both WebSocket and REST; frame handling is idempotent against the store. Frame ids are
   `<instanceId>:<start time>:<sequence>`, unique across replicas and restarts.
@@ -218,7 +226,9 @@ offered ──► intent-sent ──► intent-acked ──► checking ──�
   other state there is nothing to fill.
 - **Outcome.** `ticket.expired` is stored on the attempt and reported as stage `ticket.expired` with its result
   (an unknown result as `OTHER`); `penalty.applied` and `order.settled` become the `penalty` and `settled`
-  events; every decline the `declined` event.
+  events; every decline the `declined` event. A decline filler-gateway answers `TICKET_CLOSED` is not sent again,
+  but it is logged at warn and reported as stage `ticket.decline.closed`: the gateway may hold that ticket
+  receipted (a receipt POST given up after its timeout that landed) and expect a fill the node will not make.
 - **One attempt per order** (filler-selection.md). The user picks the filler; there is no redraw. An offer
   of a later attempt of an order this filler was already offered is stale: declined `OTHER` without the hook.
 
@@ -269,8 +279,10 @@ receipted ──► pending ──► sent ──► included ──► confirme
   delivered.
 - **Allowance.** The router is approved for the output asset when the allowance cannot cover a fill — up to
   `delivery.approvals[<caip2>][<token>]`, or exactly the fill without a limit; never unlimited by default. With
-  a limit, the allowance is topped up at start when it has fallen below half of it. One approve per token at a
-  time; a token that refuses to change a non-zero allowance is approved to zero first.
+  a limit, the allowance is topped up at start and on every sweep (each `nonceLeaseTtlMs`) when it has fallen
+  below half of it, so V-E5 keeps passing while the filler runs. One approve per token at a time (an
+  approve in flight on any nonce of the key holds back the next); a token that refuses to change a non-zero
+  allowance is approved to zero first.
 - **Events.** `filled { orderHash, attempt, txHash, amount }` once confirmed; stages `fill.sent` (nonce,
   gas limit, fees), `fill.replaced`, `fill.included`, `fill.reorged`, `fill.reverted`, `fill.cancelled`,
   `fill.confirmed` (`gasUsed`, `effectiveGasPrice`, `latencyMs`, `replacements`), `fill.refused`,
@@ -324,7 +336,7 @@ They stop at the first failure, and the failure is the `ticket.decline` reason:
 | V-T2 | the ticket repeats the offer (`orderHash`, `attempt`, `validFrom`, `validUntil`), names this filler's `fillerId`, and carries the `deliveryKey` and `repayTo` of its signed `ticket.intent` (T-15) | `TICKET_MISMATCH` |
 | V-T3 | `validUntil < fillDeadline`; `validUntil − validFrom ≥ minTicketTtlSec`; at least `sendGuardSec` left | `TICKET_BEYOND_DEADLINE`, `TICKET_TTL_TOO_SHORT` |
 | V-E1 | `orderHash` is the order's digest in the source router's domain | `ESCROW_MISMATCH` |
-| V-E2 | `intents(orderHash).status == Opened`, read `openConfirmations` deep on the source (n confirmations, or the `'safe'` / `'finalized'` block) | `ESCROW_NOT_OPEN` |
+| V-E2 | `intents(orderHash).status == Opened`, read `openConfirmations` deep on the source (n confirmations, or the `'safe'` / `'finalized'` block); `validFrom ≥ openedAt`, since the router repays no fill before the open | `ESCROW_NOT_OPEN`; `ESCROW_MISMATCH` |
 | V-E3 | `refundAfter − fillDeadline ≥ requiredProofWindowSec` of the destination | `PROOF_WINDOW_TOO_SHORT` |
 | V-T1 | the ticket signer is in `ticketSigners` of the config and `ticketSigners(signer)` on the destination router | `TICKET_SIGNER_UNKNOWN` |
 | V-E4 | `repayTo` will be paid: the input token's blocklist view on the source (USDC `isBlacklisted`, USDT `isBlackListed`) is false for it; a token without one passes; that `repayTo` is the node's own is held by V-T2 | `OTHER` (`repayTo-blocklisted`) |
@@ -334,7 +346,7 @@ A fact that cannot be read declines with the code of the check that needed it (`
 detail): an unverifiable ticket is never receipted. No setting turns a check off. Each check's result —
 `passed`, `failed` or `skipped` — is emitted as stage `ticket.checked`. V-T4 compares the
 time `ticket.issued` arrived, which the protocol client writes on the attempt when the frame is received; a
-ticket whose arrival is not recorded is refused as unverifiable. V1 does not check the draw.
+ticket whose arrival is not recorded is refused as unverifiable.
 
 **Canton source** (an EVM-form ticket for an order whose `originChainId` is a `CANTON_ORIGIN_ID`). There is no
 escrow on a router: the owner's give is a committed allocation only `SwapIntent_SettleWithProof` — this filler's
@@ -373,7 +385,8 @@ the `repayTo` of the node's own `ticket.intent`, the order's `recipient` and `ou
 (`NO_INVENTORY`). Delivery is `delivery.fill` (`filler.canton.fill`): before the party key signs, the decoded
 transaction must be one `DeliveryOrder_Fill` of `cancore-intent` on that order, as the party alone; the order it
 discloses must name the party, the node's `fillerId` and `repayTo` (T-48 on the ledger's own data), the
-ticket's order, attempt, `validUntil` and the order's `fillDeadline`; under it, exactly the completed
+ticket's order, attempt, `validUntil` and the order's `fillDeadline`, and a `validFrom` no earlier than the
+ticket's; under it, exactly the completed
 `TransferFactory_Transfer` through a pinned factory of the order's amount to the recipient from the stated
 holdings, the registry-entry fetch and one `DeliveryReceipt` with the same terms. The committed fill is
 `confirmed` with its update id as `txRef`, and settles on the EVM source with `fillRef =
@@ -532,7 +545,7 @@ interface FillSigner extends TypedDataSigner, TransactionSigner {}
 Keys are separate by purpose: the **quote** key is the message key — it signs `FillerAuth`, `FillerQuote`,
 `TicketIntent`, `TicketReceipt` and the envelope `msgSig` of every message; the **fill** key of each EVM chain
 sends the `fill` / `settle` transactions and is the `deliveryKey` of its tickets; the **staking**
-key signs one `StakeBinding` and is passed to `bindStake` only. `createFiller` refuses a fill key equal to the
+key signs one `StakeBinding`. `createFiller` refuses a fill key equal to the
 quote key.
 
 **Signature contract** (protocol §3.1): 65 bytes `r ‖ s ‖ v`, `s ≤ n/2` (low-s), `v ∈ {27, 28}`. The SDK
@@ -619,7 +632,7 @@ const webSocket: WebSocketFactory = (url, h, protocols) => {
 - `EventSink` — `emit(event)`. Public events: `filled`, `attested`, `settled`, `penalty`, `declined`; plus
   `stage` events (`quote.sent`, `ticket.receipted`, `settle.sent`, …) for analytics. A throwing sink never
   stops the protocol. Defaults to a no-op.
-- `HttpFetch` — the slice of `fetch` used for the login, the REST fallback and drand relays (`status`,
+- `HttpFetch` — the slice of `fetch` used for the login, the REST fallback (`status`,
   `text()`, and `headers.get` for `Retry-After`). Defaults to the global `fetch`.
 
 ## Testing — `@cancore/trader/filler/testing`
