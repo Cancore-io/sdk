@@ -359,14 +359,13 @@ export class Executor {
     const now = await store.now();
     for (const record of open) {
       if (record.nonce >= highest || record.transactions.length > 0 || record.owner !== instanceId || record.expiresAtMs <= now) continue;
-      const lease = await driver.renew(record);
-      if (!lease) continue;
       try {
-        const tx = await driver.send(lease, { to: driver.address, data: '0x', value: 0n }, TRANSFER_GAS, await driver.marketFees(), { kind: 'cancel' }, clock.now());
-        logger.warn('delivery: filled a nonce gap with a transfer to self', { chain: driver.chain, nonce: lease.nonce.toString(), txHash: tx.hash });
-        this.track(driver, lease);
+        const gap = await driver.withEmptyNonce(record, async (lease) => ({ lease, tx: await driver.send(lease, { to: driver.address, data: '0x', value: 0n }, TRANSFER_GAS, await driver.marketFees(), { kind: 'cancel' }, clock.now()) }));
+        if (!gap) continue;
+        logger.warn('delivery: filled a nonce gap with a transfer to self', { chain: driver.chain, nonce: record.nonce.toString(), txHash: gap.tx.hash });
+        this.track(driver, gap.lease);
       } catch (error) {
-        logger.warn('delivery: a nonce gap could not be filled yet', { chain: driver.chain, nonce: lease.nonce.toString(), error: reasonOf(error) });
+        logger.warn('delivery: a nonce gap could not be filled yet', { chain: driver.chain, nonce: record.nonce.toString(), error: reasonOf(error) });
       }
     }
   }
@@ -374,11 +373,12 @@ export class Executor {
   /**
    * A nonce to send on: expired leases are claimed first, so an abandoned empty
    * nonce — a send that failed after its nonce was taken — is reused, never
-   * skipped (the lowest held empty nonce wins).
+   * skipped (the lowest held empty nonce wins). `use` runs in a turn of
+   * `TransactionDriver.withNonce`.
    */
-  async acquire(driver: TransactionDriver): Promise<NonceLease> {
+  async acquire<T>(driver: TransactionDriver, use: (lease: NonceLease) => Promise<T>): Promise<T> {
     await this.claimChain(driver);
-    return driver.acquire();
+    return driver.withNonce(use);
   }
 
   /** Recovers an unlinked settle before a new nonce can be allocated, fenced by the current nonce lease. */
@@ -510,9 +510,7 @@ export class Executor {
     let tx: InFlightTransaction;
     try {
       if (!(await this.holdClaim(orderHash, attempt))) return { status: 'tracking', detail: 'another replica took the attempt over' };
-      lease = await this.acquire(driver);
-      const fees = await driver.marketFees();
-      tx = await this.sendRecorded(driver, lease, call, gasLimit, fees, orderHash, attempt);
+      ({ lease, tx } = await this.acquire(driver, async (taken) => ({ lease: taken, tx: await this.sendRecorded(driver, taken, call, gasLimit, await driver.marketFees(), orderHash, attempt) })));
     } catch (error) {
       if (error instanceof FeeCeilingError) return this.refuse(orderHash, attempt, 'fee-ceiling', error.message, true);
       // Nothing was recorded on a nonce: the attempt is tried again (a held empty nonce is reused).
@@ -664,8 +662,7 @@ export class Executor {
   }
 
   private async sendApprove(driver: TransactionDriver, call: TransactionCall, gasLimit: bigint, token: Hex, amount: bigint): Promise<void> {
-    const lease = await this.acquire(driver);
-    const tx = await driver.send(lease, call, gasLimit, await driver.marketFees(), { kind: 'approve' }, this.options.clock.now());
+    const { lease, tx } = await this.acquire(driver, async (taken) => ({ lease: taken, tx: await driver.send(taken, call, gasLimit, await driver.marketFees(), { kind: 'approve' }, this.options.clock.now()) }));
     this.stage('approve.sent', undefined, undefined, { chain: driver.chain, token, amount: amount.toString(), txHash: tx.hash, nonce: lease.nonce.toString() });
     this.track(driver, lease);
   }
