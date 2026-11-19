@@ -740,6 +740,7 @@ export class Executor {
       return true;
     }
     if (tx.kind !== 'fill' || !tx.orderHash || tx.attempt === undefined) {
+      if (!(await this.deepEnough(t, receipt, depth))) return false;
       if (tx.kind === 'cancel') await this.cancelled(chain, tx, txs, receipt);
       else this.stage(tx.kind === 'approve' ? 'approve.confirmed' : 'tx.confirmed', tx.orderHash, tx.attempt, { chain, kind: tx.kind, txHash: tx.hash, status: receipt.status, gasUsed: receipt.gasUsed.toString() });
       await store.nonces.complete(t.lease, tx.hash);
