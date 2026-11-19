@@ -61,16 +61,16 @@ import { ChainReadError, readAtDepth } from '../chain/client';
 import { fillDepth, INTENT_STATUS, type ChainConfig, type ChainReaders, type FillerChains } from '../chain';
 import { evmChainNumber, type EvmChainId } from '../chains';
 import type { Executor } from '../delivery/executor';
-import { FeeCeilingError, LeaseLostError, type TransactionCall, type TransactionDriver, type TransactionReceipt } from '../delivery/transactions';
+import { FeeCeilingError, LeaseLostError, type TransactionCall, type TransactionReceipt } from '../delivery/transactions';
 import type { EventSink, FillerEvent, FillerStage } from '../events';
 import type { Delivery, FillerProtocolClient } from '../protocol/client';
 import type { Cancel, Clock, Logger } from '../runtime';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, SettlementRecord, TicketRecord } from '../store';
 import { cantonFillRef } from '../delivery/canton';
-import { sendSettle } from './send-settle';
 import { CANTON_ORIGIN_FLOOR, chainsOf, orderOf } from '../tickets/terms';
 import { collectAttestations, fillProofOf } from './attestations';
 import { cantonRefundAfter } from './canton-refund-after';
+import { sendSettle } from './send-settle';
 import { payloadFrom, payloadOf, refuseClosed, refuseFinal, SettleError, type SettleCheck, type Settleable, type SettleRefusal, type VerifyEffects } from './refusals';
 
 export { SettleError } from './refusals';

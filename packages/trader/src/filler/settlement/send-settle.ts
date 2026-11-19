@@ -1,9 +1,8 @@
 import type { Hex } from '@cancore/contracts';
+import { reasonOf } from '../delivery/reverts';
 import { LeaseLostError, type TransactionCall, type TransactionDriver } from '../delivery/transactions';
 import type { Clock, Logger } from '../runtime';
 import type { InFlightTransaction, NonceLease } from '../store';
-
-const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 export interface SendSettleContext {
   instanceId: string;
