@@ -91,7 +91,7 @@ export class CancoreProvider implements Cip0103Provider {
   private readonly options: CancoreProviderOptions;
   private session: CancoreSession | null;
   private stream: StreamLike | null = null;
-  private streaming = false;
+  private listening: Promise<void> | null = null;
   private closed = false;
   private streamFailures = 0;
   private nextId = 1;
@@ -214,27 +214,36 @@ export class CancoreProvider implements Cip0103Provider {
    * up in access logs and `Referer`. That also means the browser's own
    * reconnect — which replays the same spent ticket — cannot work, so a dropped
    * stream is re-opened here with a fresh one.
+   *
+   * A caller arriving mid-attempt joins it instead of returning early: a
+   * `connect` must not answer before its stream is up.
    */
   private async listen(): Promise<void> {
-    if (this.stream || this.streaming || this.closed) return;
+    if (this.stream || this.closed) return;
+    this.listening ??= this.subscribe().finally(() => (this.listening = null));
+    return this.listening;
+  }
+
+  private async subscribe(): Promise<void> {
     const openStream = this.options.openStream ?? defaultStream;
     if (!openStream) return;
-    this.streaming = true;
-    try {
-      const issued = (await this.send('cancore_streamTicket', undefined)) as { ticket?: unknown };
-      // `close()` or `disconnect` may have landed while the ticket was in flight.
-      if (this.closed || !this.session || typeof issued?.ticket !== 'string') return;
-      const url = `${this.session.rpcUrl}/events?token=${encodeURIComponent(issued.ticket)}`;
-      const stream = openStream(url);
-      for (const name of STREAM_EVENTS) {
-        stream.addEventListener(name, (event) => this.emit(name, parseFrame(event.data)));
-      }
-      stream.addEventListener('open', () => (this.streamFailures = 0));
-      stream.addEventListener('error', () => this.reopen());
-      this.stream = stream;
-    } finally {
-      this.streaming = false;
+    const session = this.session;
+    const issued = (await this.send('cancore_streamTicket', undefined)) as { ticket?: unknown };
+    // `close()`, `disconnect` or a whole new `connect` may have landed while the ticket was in flight.
+    if (this.closed) return;
+    // A ticket of a revoked grant must not open the stream of the grant that replaced it.
+    if (this.session !== session) return this.subscribe();
+    if (typeof issued?.ticket !== 'string') return;
+    const url = `${session!.rpcUrl}/events?token=${encodeURIComponent(issued.ticket)}`;
+    const stream = openStream(url);
+    for (const name of STREAM_EVENTS) {
+      stream.addEventListener(name, (event) => this.emit(name, parseFrame(event.data)));
     }
+    stream.addEventListener('open', () => (this.streamFailures = 0));
+    stream.addEventListener('error', () => {
+      if (this.stream === stream) this.reopen();
+    });
+    this.stream = stream;
   }
 
   private reopen(): void {
