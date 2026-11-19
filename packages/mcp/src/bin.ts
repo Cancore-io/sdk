@@ -17,7 +17,7 @@ if (!apiBaseUrl) {
   process.stderr.write('cancore-mcp: CANCORE_API_URL is not set — tools will refuse until it points at a Cancore gateway\n');
 }
 if (!appBaseUrl) {
-  process.stderr.write('cancore-mcp: CANCORE_APP_URL is not set — the consent link will be a path, not a URL\n');
+  process.stderr.write('cancore-mcp: CANCORE_APP_URL is not set — cancore_connect_wallet will refuse until it points at the Cancore wallet\n');
 }
 
 const session = new CancoreSession(

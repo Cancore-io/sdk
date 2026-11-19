@@ -322,7 +322,7 @@ describe('the consent link (BUG-1618)', () => {
         now: () => clock,
       },
     );
-    return { result: started.connectWallet({ waitSeconds: 5 }), opened, calls };
+    return { started, result: started.connectWallet({ waitSeconds: 5 }), opened, calls };
   }
 
   test('the path the gateway sends opens on the wallet origin', async () => {
@@ -338,11 +338,16 @@ describe('the consent link (BUG-1618)', () => {
     expect((await result).page).toBe(`${APP}/wallet/authorize?code=ABCD-EFGH`);
   });
 
-  test('with no wallet URL the path is shown as sent and nothing opens', async () => {
-    const { result, opened } = connect('/wallet/authorize?code=ABCD-EFGH', '');
+  // Without the wallet's origin there is nothing to check the gateway's link against.
+  test('with no wallet URL nothing is started, shown or opened', async () => {
+    const { result, opened, calls } = connect('https://evil.example/wallet/authorize', '');
 
-    expect((await result).page).toBe('/wallet/authorize?code=ABCD-EFGH');
+    const out = await result;
+
+    expect(out.error).toMatch(/CANCORE_APP_URL is not set/);
+    expect(out).not.toHaveProperty('page');
     expect(opened).toEqual([]);
+    expect(calls).toEqual([]);
   });
 
   test('a link without a leading slash stays a path on the wallet origin', async () => {
@@ -368,6 +373,15 @@ describe('the consent link (BUG-1618)', () => {
     expect(out).not.toHaveProperty('page');
     expect(opened).toEqual([]);
     expect(calls.map((c) => new URL(c.url).pathname)).toEqual(['/auth/device/authorize']);
+  });
+
+  test('a refused link is forgotten, so a retry starts a new request', async () => {
+    const { started, result, calls } = connect('https://evil.example/wallet/authorize');
+    await result;
+
+    await started.connectWallet({ waitSeconds: 5 });
+
+    expect(calls.filter((c) => c.url.endsWith('/auth/device/authorize'))).toHaveLength(2);
   });
 
   test('a CANCORE_APP_URL that is not a URL refuses instead of opening a guess', async () => {
