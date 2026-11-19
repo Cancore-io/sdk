@@ -251,7 +251,7 @@ describe('V-C1…V-C7 on the golden Canton-source order (CAN-1863, CAN-3408)', (
     const g = golden3();
     g.reader.intent = async () => Promise.reject(new GatewayError(code, true, `closed by ${choice} in update 1220cafe`));
     const r = await refusal(g.run());
-    expect(r).toMatchObject({ check: 'V-C1', reason: 'ESCROW_NOT_OPEN', detail: `the SwapIntent is ${closure}: closed by ${choice} in update 1220cafe` });
+    expect(r).toMatchObject({ check: 'V-C1', reason: 'ESCROW_NOT_OPEN', detail: `the SwapIntent is ${closure}: filler-gateway ${code}: closed by ${choice} in update 1220cafe` });
   });
 
   test('V-C1: a read that fails is unverifiable, never passed (N-12)', async () => {
