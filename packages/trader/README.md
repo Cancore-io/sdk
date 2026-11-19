@@ -323,7 +323,7 @@ They stop at the first failure, and the failure is the `ticket.decline` reason:
 | V-T2 | the ticket repeats the offer (`orderHash`, `attempt`, `validFrom`, `validUntil`), names this filler's `fillerId`, and carries the `deliveryKey` and `repayTo` of its signed `ticket.intent` (T-15) | `TICKET_MISMATCH` |
 | V-T3 | `validUntil < fillDeadline`; `validUntil − validFrom ≥ minTicketTtlSec`; at least `sendGuardSec` left | `TICKET_BEYOND_DEADLINE`, `TICKET_TTL_TOO_SHORT` |
 | V-E1 | `orderHash` is the order's digest in the source router's domain | `ESCROW_MISMATCH` |
-| V-E2 | `intents(orderHash).status == Opened`, read `openConfirmations` deep on the source (n confirmations, or the `'safe'` / `'finalized'` block) | `ESCROW_NOT_OPEN` |
+| V-E2 | `intents(orderHash).status == Opened`, read `openConfirmations` deep on the source (n confirmations, or the `'safe'` / `'finalized'` block); `validFrom ≥ openedAt`, since the router repays no fill before the open | `ESCROW_NOT_OPEN`; `ESCROW_MISMATCH` |
 | V-E3 | `refundAfter − fillDeadline ≥ requiredProofWindowSec` of the destination | `PROOF_WINDOW_TOO_SHORT` |
 | V-T1 | the ticket signer is in `ticketSigners` of the config and `ticketSigners(signer)` on the destination router | `TICKET_SIGNER_UNKNOWN` |
 | V-E4 | `repayTo` will be paid: the input token's blocklist view on the source (USDC `isBlacklisted`, USDT `isBlackListed`) is false for it; a token without one passes; that `repayTo` is the node's own is held by V-T2 | `OTHER` (`repayTo-blocklisted`) |
@@ -372,7 +372,8 @@ the `repayTo` of the node's own `ticket.intent`, the order's `recipient` and `ou
 (`NO_INVENTORY`). Delivery is `delivery.fill` (`filler.canton.fill`): before the party key signs, the decoded
 transaction must be one `DeliveryOrder_Fill` of `cancore-intent` on that order, as the party alone; the order it
 discloses must name the party, the node's `fillerId` and `repayTo` (T-48 on the ledger's own data), the
-ticket's order, attempt, `validUntil` and the order's `fillDeadline`; under it, exactly the completed
+ticket's order, attempt, `validUntil` and the order's `fillDeadline`, and a `validFrom` no earlier than the
+ticket's; under it, exactly the completed
 `TransferFactory_Transfer` through a pinned factory of the order's amount to the recipient from the stated
 holdings, the registry-entry fetch and one `DeliveryReceipt` with the same terms. The committed fill is
 `confirmed` with its update id as `txRef`, and settles on the EVM source with `fillRef =
