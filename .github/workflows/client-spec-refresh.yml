@@ -11,9 +11,11 @@ name: Client spec refresh
 #
 # Two jobs (BUG-1619): `refresh` runs code built from the gateway's document
 # (the generated sdk-error-codes.ts, then `npm test`) with a read-only token, no
-# credentials in .git/config and no pnpm cache it could write for publish.yml
-# to restore. `pr` holds the write token and runs no code of the repository: it
-# takes the refreshed files as an artifact, commits them and opens the PR.
+# credentials in .git/config and no pnpm cache of its own. `pr` holds the write
+# token and runs no code of the repository: it takes the refreshed files as an
+# artifact, commits them and opens the PR. A runner step has sudo, so code that
+# ran in `refresh` could still reach the Actions cache publish.yml restores:
+# what keeps the document from becoming code is refresh-spec.mjs's name check.
 on:
   schedule:
     - cron: '17 6 * * *'
