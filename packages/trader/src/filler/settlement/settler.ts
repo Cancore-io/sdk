@@ -69,6 +69,7 @@ import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, Settleme
 import { cantonFillRef } from '../delivery/canton';
 import { CANTON_ORIGIN_FLOOR, chainsOf, orderOf } from '../tickets/terms';
 import { collectAttestations, fillProofOf } from './attestations';
+import { cantonRefundAfter } from './canton-refund-after';
 import { cantonClosure, isTerminal, payloadFrom, payloadOf, refuseClosed, refuseFinal, SettleError, type Settleable, type SettleCheck, type SettleRefusal, type VerifyEffects } from './refusals';
 
 export { SettleError } from './refusals';
@@ -138,6 +139,7 @@ export class Settler {
   private readonly alerted = new Set<string>();
   /** `attested` emitted in this process, by `${orderHash}:${attempt}`. */
   private readonly attested = new Set<string>();
+  private readonly refundAfters = new Map<Hex, bigint>();
   private timer: Cancel | undefined;
   private stopped = false;
 
@@ -230,16 +232,16 @@ export class Settler {
       this.options.logger.warn('settle: sweep failed', { error: reasonOf(error) });
       return;
     }
+    for (const hash of this.refundAfters.keys()) if (!orders.includes(hash)) this.refundAfters.delete(hash);
     for (const orderHash of orders) {
       try {
         const s = await this.load(orderHash);
         if (!s || isTerminal(s.settlement)) continue;
         const source = chainsOf(s.order)?.source;
         if (!source) {
-          if (!this.isCantonOrigin(s.order)) continue;
-          const due = s.payload && BigInt(Math.floor(this.options.clock.now() / 1000)) < BigInt(s.payload.refundAfter);
-          if (due) await this.settle(orderHash).catch((error: unknown) => this.quiet(orderHash, error));
-          else if (!(await this.cantonClosed(s)) && !s.payload) await this.pull(orderHash);
+          if (!this.isCantonOrigin(s.order) || (await this.cantonWindowClosed(s))) continue;
+          if (s.payload) await this.settle(orderHash).catch((error: unknown) => this.quiet(orderHash, error));
+          else await this.pull(orderHash);
           continue;
         }
         // The alerts run for a settle in flight or one that failed, too.
@@ -269,26 +271,32 @@ export class Settler {
       return intent;
     }
     this.rearmAlert(s.orderHash, 'escrow-gone');
-    const nowS = BigInt(Math.floor(this.options.clock.now() / 1000));
-    const filledAt = s.fill.inclusion ? BigInt(String(s.fill.inclusion.header.timestamp ?? '0')) : undefined;
-    if (filledAt !== undefined && filledAt > 0n) {
-      const window = await readers.router.proofWindow(s.order.destination);
-      if (window > 0n && nowS >= filledAt + window / 2n) this.alert(s.orderHash, s.fill.attempt, 'half-window', { filledAt: filledAt.toString(), proofWindow: window.toString() });
-    }
-    if (nowS * 1000n + BigInt(this.settings.alertBeforeRefundMs) >= intent.refundAfter * 1000n) {
-      this.alert(s.orderHash, s.fill.attempt, 'refund-near', { refundAfter: intent.refundAfter.toString() });
-    }
+    await this.windowAlerts(s, intent.refundAfter, () => readers.router.proofWindow(s.order.destination));
     return intent;
+  }
+
+  /** R-4: an unsettled fill past half its proof window, or within `alertBeforeRefundMs` of `refundAfter`. */
+  private async windowAlerts(s: Settleable, refundAfter: bigint, proofWindow: () => Promise<bigint>): Promise<void> {
+    const nowS = BigInt(Math.floor(this.options.clock.now() / 1000));
+    const filledAt = s.fill.inclusion ? BigInt(String(s.fill.inclusion.header.timestamp ?? '0')) : 0n;
+    const window = filledAt > 0n ? await proofWindow() : 0n;
+    if (window > 0n && nowS >= filledAt + window / 2n) this.alert(s.orderHash, s.fill.attempt, 'half-window', { filledAt: filledAt.toString(), proofWindow: window.toString() });
+    if (nowS * 1000n + BigInt(this.settings.alertBeforeRefundMs) >= refundAfter * 1000n) this.alert(s.orderHash, s.fill.attempt, 'refund-near', { refundAfter: refundAfter.toString() });
+  }
+
+  /** A Canton source's window alerts; true from `refundAfter` on, when SwapIntent_SettleWithProof (ledger time < refundAfter) can no longer succeed, and once the intent is gone (CAN-3131). Unknown, it neither alerts nor stops. */
+  private async cantonWindowClosed(s: Settleable): Promise<boolean> {
+    const { refundAfter, closed } = await cantonRefundAfter(s, BigInt(Math.floor(this.options.clock.now() / 1000)), this.refundAfters, this.options.canton, this.options.logger);
+    if (closed) return this.closeCanton(s.orderHash, s.fill.attempt, closed.closure, closed.detail).then(() => true);
+    if (refundAfter === undefined) return false;
+    await this.windowAlerts(s, refundAfter, async () => refundAfter - BigInt(s.order.fillDeadline));
+    return BigInt(Math.floor(this.options.clock.now() / 1000)) >= refundAfter;
   }
 
   /** `GET /v1/filler/attestations/{orderHash}`; false while not ready or filler-gateway is unreachable. */
   private async pull(orderHash: Hex): Promise<boolean> {
-    try {
-      return await this.options.protocol.pullAttestations(orderHash);
-    } catch (error) {
-      this.options.logger.warn('settle: attestation pull failed', { orderHash, error: reasonOf(error) });
-      return false;
-    }
+    const failed = (error: unknown) => (this.options.logger.warn('settle: attestation pull failed', { orderHash, error: reasonOf(error) }), false);
+    return this.options.protocol.pullAttestations(orderHash).catch(failed);
   }
 
   // -- settling --------------------------------------------------------------------------
@@ -540,6 +548,7 @@ export class Settler {
       if (current?.state === 'settled') return current.updateId ? undefined : tx.putSettlement({ ...current, updateId, updatedAtMs: await store.now() });
       await tx.putSettlement({ orderHash, attempt, state: 'confirmed', chain: payload.sourceChainId as SettlementRecord['chain'], updateId, updatedAtMs: await store.now(), ...(current?.orderSettled ? { orderSettled: current.orderSettled } : {}) });
     });
+    this.refundAfters.delete(orderHash);
     const k = `${orderHash}:${attempt}`;
     if (!this.attested.has(k)) {
       this.attested.add(k);
@@ -724,7 +733,6 @@ export class Settler {
     });
   }
 
-  /** Whether the settlement took `state`: a settled one, or one already in it for the same reason, is left as it is. */
   private async close(orderHash: Hex, attempt: number, state: SettlementRecord['state'], reason?: string, txHash?: Hex): Promise<boolean> {
     return this.options.store.withOrder(orderHash, async (tx) => {
       const current = await tx.getSettlement();
@@ -746,19 +754,10 @@ export class Settler {
     return status;
   }
 
-  /** A settle of the Canton-source intent closes the settlement; a refund closes it failed with one `refunded` alert. */
   private async closeCanton(orderHash: Hex, attempt: number, closure: 'settled' | 'refunded', detail: string): Promise<SettleError> {
     if (closure === 'settled') return this.close(orderHash, attempt, 'settled', 'the intent is settled').then(() => new SettleError('already-settled', detail));
     if (await this.close(orderHash, attempt, 'failed', `refunded: ${detail}`)) this.alert(orderHash, attempt, 'refunded', { detail: detail.slice(0, 256) });
     return new SettleError('refunded', detail);
-  }
-
-  /** Whether filler-gateway reports the Canton-source intent gone; closes the settlement if so. Other read errors wait for the next sweep. */
-  private async cantonClosed(s: Settleable): Promise<boolean> {
-    const gone = await this.options.canton?.intent(s.orderHash).then(() => undefined, (error: unknown) => error);
-    const closure = cantonClosure(gone);
-    if (closure) await this.closeCanton(s.orderHash, s.fill.attempt, closure, reasonOf(gone));
-    return closure !== undefined;
   }
 
   private async release(orderHash: Hex): Promise<void> {

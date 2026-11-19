@@ -20,7 +20,7 @@
  * from the order, the instrument list and the fee configuration, and from the
  * account's own party.
  */
-import { decodePreparedTransaction, hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
+import { decodePreparedTransaction, hashPreparedTransactionV2 } from '@cancore/wallet/canton/proto';
 import type { DamlTransaction_Node, PreparedTransaction, Value } from '@canton-network/core-ledger-proto';
 import { deepFreeze, DEFAULT_HTLC_PACKAGES, instrumentKey } from './dvp-admins';
 
@@ -195,7 +195,7 @@ async function readPrepared(tx: PreparedToSign, what: string, party: string, ref
   let decoded: PreparedTransaction;
   try {
     decoded = decodePreparedTransaction(tx.preparedTransaction!);
-    recomputed = await hashPreparedTransaction(tx.preparedTransaction!, 'base64');
+    recomputed = btoa(String.fromCharCode(...hashPreparedTransactionV2(decoded)));
   } catch (err) {
     return refuse(`${what} cannot be read (${err instanceof Error ? err.message : String(err)})`);
   }

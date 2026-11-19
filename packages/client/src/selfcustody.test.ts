@@ -665,6 +665,9 @@ function venue({
 // The dev API host: its network (devnet) chooses the pinned instrument admins.
 const baseUrl = 'https://api-dev.cancore.app';
 
+/** A readable name as a contract id: Canton's are hex, and the hash refuses any other. */
+const hexCid = (name: string) => Buffer.from(name).toString('hex');
+
 /** The accept of the incoming transfer `cid` as the participant prepares it: CBTC from the venue, to `party`. */
 async function acceptLegs(party: string, cid: string, over: Partial<Parameters<typeof acceptTransferLeg>[0]> = {}): Promise<Leg[]> {
   const t = await acceptTransferLeg({ party, sender: DEV.venue, instrument: { id: 'CBTC', admin: DEV.cbtcRegistrar }, amount: '1', offerCid: cid, ...over });
@@ -1614,10 +1617,10 @@ test('collect accepts exactly the claim’s own payouts, and nothing else in the
     if (path === '/partner/cashback/claims') {
       return json([{ id: 'c1', status: 'settling', payouts: [
         { id: 'p1', tokenId: 'CC', settlementStatus: 'accepted', transferInstructionCid: null },
-        { id: 'p2', tokenId: 'USDCx', settlementStatus: 'pending', transferInstructionCid: 'ti-cashback' },
+        { id: 'p2', tokenId: 'USDCx', settlementStatus: 'pending', transferInstructionCid: hexCid('ti-cashback') },
       ] }]);
     }
-    if (path === '/tokens/transfer-requests/incoming') return json([ti('ti-cashback'), ti('ti-unrelated')]);
+    if (path === '/tokens/transfer-requests/incoming') return json([ti(hexCid('ti-cashback')), ti(hexCid('ti-unrelated'))]);
     const body = JSON.parse(String(init.body));
     if (path === '/wallet/operations/prepare') {
       accepted.push(body.params.instructionCid);
@@ -1627,7 +1630,7 @@ test('collect accepts exactly the claim’s own payouts, and nothing else in the
   };
   const acct = createSelfCustody({ baseUrl, signer, fetchImpl, ...fast });
   const { pending } = await acct.cashback.collect();
-  expect(accepted).toEqual(['ti-cashback']);
+  expect(accepted).toEqual([hexCid('ti-cashback')]);
   expect(pending).toBe(0);
 });
 
@@ -2114,11 +2117,11 @@ describe('what the key signs outside a trade is read first (CAN-2249)', () => {
       const api = stub({
         'GET /auth/me': () => ({ id: 'me', partyId: me }),
         'GET /tokens/transfer-requests/incoming': () => [
-          { contractId: 'ti-1', templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId: 'CBTC', executeBefore: new Date(Date.now() + 60_000).toISOString() },
+          { contractId: hexCid('ti-1'), templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId: 'CBTC', executeBefore: new Date(Date.now() + 60_000).toISOString() },
         ],
         'POST /wallet/operations/prepare': async (body) => {
           asked.push(body.params as Record<string, unknown>);
-          return { operationId: 'op', legs: await legsFor(me, 'ti-1'), meta: null };
+          return { operationId: 'op', legs: await legsFor(me, hexCid('ti-1')), meta: null };
         },
         'POST /wallet/operations/submit': () => ({ outcome: 'committed' }),
       });
@@ -2132,13 +2135,13 @@ describe('what the key signs outside a trade is read first (CAN-2249)', () => {
 
       expect([accepted.length, failed.length]).toEqual([1, 0]);
       // The account's own maxFee is for what the account starts — a send, a merge. It is not spent on a list the API supplies.
-      expect(asked[0]).toMatchObject({ instructionCid: 'ti-1' });
+      expect(asked[0]).toMatchObject({ instructionCid: hexCid('ti-1') });
       expect(asked[0]).not.toHaveProperty('withFeeLeg');
       expect(api.hits).toContain('POST /wallet/operations/submit');
     });
 
     test.each([
-      ['the accept of another transfer', (me: string) => acceptLegs(me, 'ti-other'), /accepts another transfer than the one it was asked for/],
+      ['the accept of another transfer', (me: string) => acceptLegs(me, hexCid('ti-other')), /accepts another transfer than the one it was asked for/],
       ['an accept that spends a holding of the account', (me: string, cid: string) => acceptLegs(me, cid, { alsoSpend: holding('d0'.repeat(34), me, { id: 'CBTC', admin: DEV.cbtcRegistrar }, '3') }), /spends this account's own holding/],
       ['an accept addressed to somebody else', (me: string, cid: string) => acceptLegs(me, cid, { receiver: MALLORY }), /accepts a transfer that is not to this account/],
     ])('%s is not signed, and the inbox says which transfer failed', async (_what, legsFor, reason) => {
@@ -2286,7 +2289,7 @@ describe('the network fee: one ceiling for a send, one budget for an inbox (CAN-
     const api = stub({
       'GET /auth/me': () => ({ id: 'me', partyId: me }),
       'GET /tokens/transfer-requests/incoming': () => Array.from({ length: count }, (_, i) => (
-        { contractId: `ti-${i}`, templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId: 'CBTC', executeBefore: new Date(Date.now() + 60_000).toISOString() })),
+        { contractId: hexCid(`ti-${i}`), templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId: 'CBTC', executeBefore: new Date(Date.now() + 60_000).toISOString() })),
       'POST /wallet/operations/prepare': async (body) => {
         const params = body.params as { instructionCid: string; withFeeLeg?: boolean };
         asked.push(params);
@@ -2314,10 +2317,10 @@ describe('the network fee: one ceiling for a send, one budget for an inbox (CAN-
   test('a filter that throws on what the API listed fails that transfer, and keeps what was accepted', async () => {
     const inbox = await madeUp(641, 3);
 
-    const { accepted, failed } = await inbox.acct.acceptIncoming((t) => { if (t.contractId === 'ti-1') throw new Error('not a transfer I know'); return true; });
+    const { accepted, failed } = await inbox.acct.acceptIncoming((t) => { if (t.contractId === hexCid('ti-1')) throw new Error('not a transfer I know'); return true; });
 
-    expect(accepted.map((t) => t.contractId)).toEqual(['ti-0', 'ti-2']);
-    expect(failed.map((f) => [f.transfer.contractId, String(f.error)])).toEqual([['ti-1', 'Error: not a transfer I know']]);
+    expect(accepted.map((t) => t.contractId)).toEqual([hexCid('ti-0'), hexCid('ti-2')]);
+    expect(failed.map((f) => [f.transfer.contractId, String(f.error)])).toEqual([[hexCid('ti-1'), 'Error: not a transfer I know']]);
   });
 
   test('a budget of nothing asks for no fee leg, in one accept as in an inbox; a budget that is not a number is refused outright', async () => {
@@ -2631,7 +2634,7 @@ describe('refusals that come before anything is signed', () => {
 test('acceptIncoming skips what expired and what the filter drops, and one refusal does not stop the rest', async () => {
   const at = (ms: number) => new Date(Date.now() + ms).toISOString();
   const ti = (contractId: string, executeBefore: string, instrumentId = 'CBTC') =>
-    ({ contractId, templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId, executeBefore });
+    ({ contractId: hexCid(contractId), templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId, executeBefore });
   const prepared: string[] = [];
   const signer = await providerFromMnemonic(PHRASE);
   const me = `party-me::${cantonFingerprint(signer.public_key)}`;
@@ -2643,7 +2646,7 @@ test('acceptIncoming skips what expired and what the filter drops, and one refus
     'POST /wallet/operations/prepare': (body) => {
       const cid = String((body.params as Record<string, unknown>).instructionCid);
       prepared.push(cid);
-      return cid === 'refused'
+      return cid === hexCid('refused')
         ? refuse(400, 'registry context unavailable')
         : acceptLegs(me, cid).then((legs) => ({ operationId: `op-${cid}`, legs, meta: null }));
     },
@@ -2651,10 +2654,10 @@ test('acceptIncoming skips what expired and what the filter drops, and one refus
   });
   const acct = createSelfCustody({ baseUrl, signer, fetchImpl: api.fetchImpl, ...fast });
   const { accepted, failed } = await acct.acceptIncoming((t) => t.instrumentId !== 'SPAM');
-  expect(accepted.map((t) => t.contractId)).toEqual(['fine']);
-  expect(failed.map((f) => f.transfer.contractId)).toEqual(['refused']);
+  expect(accepted.map((t) => t.contractId)).toEqual([hexCid('fine')]);
+  expect(failed.map((f) => f.transfer.contractId)).toEqual([hexCid('refused')]);
   expect(failed[0]!.error).toBeInstanceOf(CeremonyError);
-  expect(prepared).toEqual(['refused', 'fine']);
+  expect(prepared).toEqual([hexCid('refused'), hexCid('fine')]);
 });
 
 describe('the instrument admin is the SDK’s to pin, not the API’s to name', () => {

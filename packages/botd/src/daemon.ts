@@ -135,6 +135,7 @@ const ratio = (a: string, b: string) => fmt((dec(a) * SCALE) / dec(b));
 type Entry = { method: Method; riskClass: RiskClass; params: unknown };
 
 type Tag = { id: string; slot: string };
+const strategyStopped = (s: BotState, tag?: Tag) => tag !== undefined && s.strategies?.find((r) => r.strategyId === tag.id)?.status === 'stopped';
 
 type Taken = { base: string; quote: string; side: 'buy' | 'sell'; amount: string; price: string };
 
@@ -164,13 +165,13 @@ export function createDispatcher(deps: Deps): Dispatcher {
     return p;
   };
   /**
-   * The one pause check every risk-opening action goes through, inside the state queue: a pause that already
-   * returned is on disk, so the action sees it and refuses. `fn` is the action's own write, applied only if not paused.
+   * The one pause check every risk-opening action goes through, inside the state queue: a pause (or, for a strategy's order,
+   * that strategy's stop) that already returned is on disk, so the action sees it and refuses. `fn` is the action's own write, applied only if not refused.
    */
-  const unlessPaused = async (fn: (s: BotState) => BotState = (s) => s): Promise<void> => {
-    let paused = false;
-    await mutate((s) => (s.paused ? ((paused = true), s) : fn(s)));
-    if (paused) throw new RpcFault(ERROR.PAUSED, 'paused');
+  const unlessPaused = async (fn: (s: BotState) => BotState = (s) => s, tag?: Tag): Promise<void> => {
+    let refused: 'paused' | 'strategy stopped' | undefined;
+    await mutate((s) => ((refused = s.paused ? 'paused' : strategyStopped(s, tag) ? 'strategy stopped' : undefined) ? s : fn(s)));
+    if (refused) throw new RpcFault(ERROR.PAUSED, refused);
   };
   // Trade commands run one at a time from gate to book: two that each fit the limits alone must not both pass.
   let tradeQueue: Promise<unknown> = Promise.resolve();
@@ -237,14 +238,14 @@ export function createDispatcher(deps: Deps): Dispatcher {
     }
   }
   /**
-   * Books a confirmed order. One that lands after a pause (its make or its intent was in flight) is cancelled
-   * at once. True only when it was actually cancelled and unbooked; otherwise it stays booked as a trade.
+   * Books a confirmed order. One that lands after a pause or its strategy's stop (its make or its intent was in flight)
+   * is cancelled at once. True only when it was actually cancelled and unbooked; otherwise it stays booked as a trade.
    */
   async function adoptOrCancel(e: Engine, intent: OrderIntent, orderId: string): Promise<boolean> {
-    let paused = false;
-    await mutate((s) => ((paused = s.paused), adoptIntent(s, intent, orderId)));
+    let halted = false;
+    await mutate((s) => ((halted = s.paused || strategyStopped(s, intent.strategy)), adoptIntent(s, intent, orderId)));
     // A lock since the make started counts as a pause: nothing serves this order until the next unlock.
-    const late = paused || engine !== e;
+    const late = halted || engine !== e;
     if (!late || (await cancelResting(e, orderId, true)) !== 'cancelled') return false;
     await mutate((s) => ({ ...s, openOrders: s.openOrders.filter((o) => o.orderId !== orderId) }));
     return true;
@@ -441,9 +442,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
     return engine;
   };
 
-  const setStrategy = async (id: string, patch: Partial<StrategyRecord>) => {
-    await mutate((state) => ({ ...state, strategies: state.strategies?.map((s) => (s.strategyId === id ? { ...s, ...patch } : s)) }));
-  };
+  // Compare-and-set on the status the step read: a stop or pause that landed during the step is never written over.
+  const setStrategy = (rec: StrategyRecord, patch: Partial<StrategyRecord>) => mutate((state) => ({ ...state, strategies: state.strategies?.map((s) => (s.strategyId === rec.strategyId && s.status === rec.status ? { ...s, ...patch } : s)) }));
 
   /** One step of one strategy: at most one order, through the same gate, audit and engine path as an agent's. */
   async function step(rec: StrategyRecord, limits: Limits) {
@@ -454,10 +454,10 @@ export function createDispatcher(deps: Deps): Dispatcher {
     const state = await deps.state.load();
     // Done only once every placement is a real order: an intent still unresolved may yet be dropped and need placing again.
     const unresolved = (state.intents ?? []).some((i) => i.strategy?.id === rec.strategyId);
-    if (rec.kind === 'dca' && rec.placed.length >= dcaConfig.parse(rec.config).maxOrders) return unresolved ? undefined : setStrategy(rec.strategyId, { status: 'done' });
+    if (rec.kind === 'dca' && rec.placed.length >= dcaConfig.parse(rec.config).maxOrders) return unresolved ? undefined : setStrategy(rec, { status: 'done' });
     // The hourly budget is one for every source: waiting here beats a refused order.
     if (ordersLastHour(state, now) >= (deps.ordersPerHour ?? DEFAULT_ORDERS_PER_HOUR)) {
-      if (rec.status !== 'rate_limited') await setStrategy(rec.strategyId, { status: 'rate_limited', reason: 'rate_limited' });
+      if (rec.status !== 'rate_limited') await setStrategy(rec, { status: 'rate_limited', reason: 'rate_limited' });
       return;
     }
     const book = [...state.openOrders, ...(state.intents ?? [])];
@@ -471,22 +471,22 @@ export function createDispatcher(deps: Deps): Dispatcher {
       next = ref === undefined ? undefined : dcaNext(dcaConfig.parse(rec.config), rec.placed, now, ref);
     }
     if (!next) {
-      if (rec.status === 'rate_limited') await setStrategy(rec.strategyId, { status: 'running', reason: undefined });
+      if (rec.status === 'rate_limited') await setStrategy(rec, { status: 'running', reason: undefined });
       return;
     }
     const request = { jsonrpc: JSONRPC_VERSION, id: `${rec.strategyId}:${next.slot}`, method: 'order.make' as const, params: { base: rec.base, quote: rec.quote, side: next.side, amount: next.amount, price: next.price } };
     try {
       await run(request, { owner: false }, { id: rec.strategyId, slot: next.slot });
-      if (rec.status === 'rate_limited') await setStrategy(rec.strategyId, { status: 'running', reason: undefined });
+      if (rec.status === 'rate_limited') await setStrategy(rec, { status: 'running', reason: undefined });
     } catch (err) {
       const reason = err instanceof RpcFault ? (err.data?.reason ?? err.message) : 'internal error';
       // The gate's per-minute limit passes; any other refusal stops the strategy, and the daemon carries on.
-      if (reason === 'rate_limited') await setStrategy(rec.strategyId, { status: 'rate_limited', reason });
+      if (reason === 'rate_limited') await setStrategy(rec, { status: 'rate_limited', reason });
       // A lost answer is not a failure: the intent holds the slot until a tick confirms or drops it.
       else if (err instanceof RpcFault && err.code === ERROR.UNCONFIRMED) return;
       // A lock mid-tick is not the strategy's fault: it keeps its status and resumes on unlock.
       else if (err instanceof RpcFault && err.code === ERROR.LOCKED) return;
-      else await setStrategy(rec.strategyId, { status: err instanceof RpcFault && err.code === ERROR.DENIED ? 'denied' : 'failed', reason });
+      else await setStrategy(rec, { status: err instanceof RpcFault && err.code === ERROR.DENIED ? 'denied' : 'failed', reason });
     }
   }
 
@@ -507,20 +507,18 @@ export function createDispatcher(deps: Deps): Dispatcher {
 
   /** Marks the strategy ended and cancels its resting orders; one that will not cancel stays on the book. */
   async function endStrategy(id: string, status: StrategyRecord['status'], reason?: string) {
-    const state = await deps.state.load();
+    // Ended first, like a pause: a step's order that lands while the book below is being cancelled sees it and is cancelled too.
+    let book: BotState['openOrders'] = [];
+    await mutate((now) => ((book = now.openOrders), { ...now, strategies: now.strategies?.map((s) => (s.strategyId === id ? { ...s, status, ...(reason !== undefined && { reason }) } : s)) }));
     const cancelled: string[] = [];
-    // The engine as the stop began: a lock mid-loop must not turn the rest into a TypeError and skip the status write.
+    // The engine as the stop began: a lock mid-loop must not turn the rest into a TypeError and skip the book write.
     const e = engine;
     if (e) {
-      for (const o of state.openOrders.filter((x) => x.strategy?.id === id && !x.taken)) {
+      for (const o of book.filter((x) => x.strategy?.id === id && !x.taken)) {
         if ((await cancelResting(e, o.orderId, true).catch(() => 'failed' as const)) === 'cancelled') cancelled.push(o.orderId);
       }
     }
-    await mutate((now) => ({
-      ...now,
-      openOrders: now.openOrders.filter((o) => !cancelled.includes(o.orderId)),
-      strategies: now.strategies?.map((s) => (s.strategyId === id ? { ...s, status, ...(reason !== undefined && { reason }) } : s)),
-    }));
+    await mutate((now) => ({ ...now, openOrders: now.openOrders.filter((o) => !cancelled.includes(o.orderId)) }));
   }
 
   // unlock and lock one at a time: a lock that lands during an unlock's passphrase check must not be undone by it.
@@ -676,7 +674,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
           intents: [...(s.intents ?? []), intent],
           orderTimes: [...(s.orderTimes ?? []).filter((t) => t > at - 3_600_000), at],
           ...(tag && { strategies: s.strategies?.map((x) => (x.strategyId === tag.id ? { ...x, placed: [...x.placed, at] } : x)) }),
-        }));
+        }), tag);
         // A lock while that write waited: the key is gone, so nothing goes to the API; undone like a refusal.
         if (engine !== e) {
           await mutate((s) => ({ ...dropIntent(s, intent), orderTimes: withoutOne(s.orderTimes ?? [], at) }));

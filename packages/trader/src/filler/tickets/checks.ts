@@ -11,7 +11,7 @@
  * | V-T2 | the ticket repeats the offer and names this filler: its `fillerId`, and the `deliveryKey` and `repayTo` of its signed `ticket.intent` (T-15) | `TICKET_MISMATCH` |
  * | V-T3 | `validUntil < fillDeadline`; `validUntil − validFrom ≥ MIN_TICKET_TTL[dst]`; `sendGuard` left | `TICKET_BEYOND_DEADLINE`, `TICKET_TTL_TOO_SHORT` |
  * | V-E1 | `orderHash` = the order's digest in the source router's domain | `ESCROW_MISMATCH` |
- * | V-E2 | `intents(orderHash).status == Opened` at `openConfirmations` depth: N confirmations, or the `safe` / `finalized` block | `ESCROW_NOT_OPEN` |
+ * | V-E2 | `intents(orderHash).status == Opened` at `openConfirmations` depth: N confirmations, or the `safe` / `finalized` block; `validFrom ≥ openedAt` | `ESCROW_NOT_OPEN`; `ESCROW_MISMATCH` |
  * | V-E3 | `refundAfter − fillDeadline ≥` the filler's own proof window for the destination | `PROOF_WINDOW_TOO_SHORT` |
  * | V-T1 | the ticket signer is pinned and `ticketSigners(signer)` on the destination router | `TICKET_SIGNER_UNKNOWN` |
  * | V-E4 | `repayTo` will be paid: the input token's blocklist view on the source (USDC `isBlacklisted`, USDT `isBlackListed`) is false for it; that it is the node's own padded address is held by V-T2 | `OTHER` (detail `repayTo-blocklisted`) |
@@ -49,7 +49,7 @@ import type { Clock, Logger } from '../runtime';
 import { recoverAddress, type FillSigner } from '../signer';
 import { checkCantonSource, type CantonSourceReader } from './canton-source';
 import { verifyCantonTicket, type CantonTicketOptions } from './canton-ticket';
-import { readFor, TicketRefusal, type TicketCheckId } from './refusal';
+import { readFor, refuseBeforeOpen, TicketRefusal, type TicketCheckId } from './refusal';
 import { CANTON_ORIGIN_FLOOR, chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from './terms';
 
 export type { TicketCheckId } from './refusal';
@@ -215,6 +215,7 @@ export class TicketVerifier {
       const escrow = digest;
       const intent = await this.chainRead('V-E2', 'ESCROW_NOT_OPEN', () => source.router.intents(escrow, readAtDepth(source.config.openConfirmations)));
       if (intent.status !== INTENT_STATUS.Opened) throw new TicketRefusal('V-E2', 'ESCROW_NOT_OPEN', `status ${intent.status} at ${describeDepth(source.config.openConfirmations)}`);
+      refuseBeforeOpen(validFrom, intent.openedAt);
       pass('V-E2');
       const window = intent.refundAfter - fillDeadline;
       if (window < BigInt(policy.requiredProofWindowSec)) throw new TicketRefusal('V-E3', 'PROOF_WINDOW_TOO_SHORT', `refundAfter − fillDeadline = ${window} s < ${policy.requiredProofWindowSec} s`);

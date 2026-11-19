@@ -1,5 +1,5 @@
 import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
-import type { Create, PreparedTransaction } from '@canton-network/core-ledger-proto';
+import { type Create, type DamlTransaction_Node, PreparedTransaction } from '@canton-network/core-ledger-proto';
 import { acceptTransferLeg, allocationTree, createNode, DEV, exercise, factoryContract, factoryTransferLeg, holding, OFFER_CID, preapprovalContract, preapprovalProposalLeg, prepared, proposalAccept, remade, proposalCreate, selfSendLeg, spend, spendTransfer, v, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
 import { DEFAULT_INSTRUMENT_ADMINS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf } from './dvp-admins';
 import { DEFAULT_TRUSTED_PACKAGES, UnverifiedTransactionError, verifyAcceptPrepared, verifyConsolidatePrepared, verifyDvpPrepared, verifyFeePrepared, verifyPreapprovalSetupPrepared, verifySelfSendPrepared, verifySendPrepared, type AcceptTerms, type ConsolidateTerms, type DvpOperation, type DvpTerms, type PreapprovalSetupTerms, type SelfSendTerms, type SendTerms } from './dvp-verify';
@@ -207,6 +207,27 @@ describe('anything else is refused before the key is touched', () => {
   test('a hash with no bytes to check it against', async () => {
     const { preparedTransactionHash } = await fund('leg-main');
     await refused(verifyDvpPrepared('dvpAllocateLeg', [{ preparedTransactionHash }], terms(MAKER)), /without its bytes/);
+  });
+
+  const rollback = (nodeId: string, children: string[]): DamlTransaction_Node => ({ nodeId, versionedNode: { oneofKind: 'v1', v1: { nodeType: { oneofKind: 'rollback', rollback: { children } } } } });
+  const unhashable = (roots: string[], nodes: DamlTransaction_Node[]) => {
+    const message = PreparedTransaction.create({
+      transaction: { version: '2.1', roots, nodes, nodeSeeds: [] },
+      metadata: { submitterInfo: { actAs: [MAKER], commandId: 'bug-1617' }, synchronizerId: 'global-domain::1220dso', mediatorGroup: 0, transactionUuid: 'u', preparationTime: 1n, inputContracts: [], globalKeyMapping: [] },
+    });
+    return { preparedTransaction: Buffer.from(PreparedTransaction.toBinary(message)).toString('base64'), preparedTransactionHash: Buffer.alloc(32).toString('base64') };
+  };
+  test('a diamond of 30 levels (2^30 paths through 60 nodes) is refused at once, before its hash is compared (BUG-1617)', async () => {
+    const depth = 30;
+    const level = (i: number) => (i + 1 < depth ? [`${i + 1}a`, `${i + 1}b`] : []);
+    const diamond = unhashable(['0a'], Array.from({ length: depth }, (_, i) => [rollback(`${i}a`, level(i)), rollback(`${i}b`, level(i))]).flat());
+    const startedAt = performance.now();
+    await refused(verifyDvpPrepared('dvpAllocateLeg', [diamond], terms(MAKER)), /transaction 0 cannot be read \(node 29a is reached twice\)/);
+    expect(performance.now() - startedAt).toBeLessThan(500);
+  });
+  test('a cycle is refused at once as unreadable (BUG-1617)', async () => {
+    const cycle = unhashable(['0'], [rollback('0', ['1']), rollback('1', ['0'])]);
+    await refused(verifyDvpPrepared('dvpAllocateLeg', [cycle], terms(MAKER)), /transaction 0 cannot be read \(node 0 is reached twice\)/);
   });
   test('an allocation of more than the order says', async () => {
     await refused(verifyDvpPrepared('dvpAllocateLeg', [await fund('leg-main', { ...LEGS['leg-main']!, amount: '0.02' })], terms(MAKER)), /not the order's 0.01 CBTC/);

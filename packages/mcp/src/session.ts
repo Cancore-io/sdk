@@ -68,6 +68,11 @@ export class CancoreSession {
     if (!this.#config.apiBaseUrl) {
       return { error: 'CANCORE_API_URL is not set — point it at the Cancore gateway (e.g. https://api-dev.cancore.app)' };
     }
+    if (!this.#config.appBaseUrl) {
+      return {
+        error: 'CANCORE_APP_URL is not set — point it at the Cancore wallet (e.g. https://app-dev.cancore.app); the consent link is checked against it',
+      };
+    }
     if (!args.force && loadGrant(this.#grantPath, this.#config.apiBaseUrl)) {
       // Divergence from the Go server, deliberate: re-running the whole consent
       // dance for an owner who already approved is a worse answer than saying so.
@@ -85,8 +90,14 @@ export class CancoreSession {
     }
     const start = this.#pending.start;
 
-    const page = this.#config.appBaseUrl ? `${this.#config.appBaseUrl}${start.verificationUri}` : start.verificationUri;
-    const opened = this.#config.appBaseUrl && this.#deps.openBrowser ? await this.#deps.openBrowser(page) : false;
+    const page = this.#consentPage(start.verificationUri);
+    if (page === undefined) {
+      this.#pending = undefined;
+      return {
+        error: `the consent link from ${this.#config.apiBaseUrl} is not on ${this.#config.appBaseUrl} — not opening or showing it; check that CANCORE_API_URL and CANCORE_APP_URL name the same Cancore stand`,
+      };
+    }
+    const opened = this.#deps.openBrowser ? await this.#deps.openBrowser(page) : false;
 
     const budgetMs = clampWait(args.waitSeconds) * 1000;
     const outcome = await awaitGrant(this.#deps.fetchImpl, this.#config.apiBaseUrl, start, {
@@ -165,6 +176,19 @@ export class CancoreSession {
       const balances = await client.getBalances();
       return { balances, count: balances.length };
     });
+  }
+
+  /**
+   * The link comes from the gateway (BUG-1618): only a page on the wallet's own
+   * origin may reach the owner, or a compromised gateway sends them to a
+   * look-alike that asks for the same approval. User info is refused even on
+   * the right host — it is how `https://app@evil.example` hides the real one.
+   */
+  #consentPage(verificationUri: string): string | undefined {
+    const { appBaseUrl } = this.#config;
+    const page = URL.parse(verificationUri, appBaseUrl);
+    if (!page || page.origin !== URL.parse(appBaseUrl)?.origin || page.username || page.password) return undefined;
+    return page.href;
   }
 
   /**
