@@ -244,6 +244,16 @@ describe('V-C1…V-C7 on the golden Canton-source order (CAN-1863, CAN-3408)', (
     expect(g.passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7'].slice(0, ['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7'].indexOf(check)));
   });
 
+  test.each([
+    ['INTENT_REFUNDED', 'refunded', 'SwapIntent_Cancel'],
+    ['INTENT_SETTLED', 'settled', 'SwapIntent_SettleWithProof'],
+  ])('TC-SDK-3131-07: V-C1 on an intent filler-gateway reports closed (%s) names the closure, not an unverifiable read', async (code, closure, choice) => {
+    const g = golden3();
+    g.reader.intent = async () => Promise.reject(new GatewayError(code, true, `closed by ${choice} in update 1220cafe`));
+    const r = await refusal(g.run());
+    expect(r).toMatchObject({ check: 'V-C1', reason: 'ESCROW_NOT_OPEN', detail: `the SwapIntent is ${closure}: closed by ${choice} in update 1220cafe` });
+  });
+
   test('V-C1: a read that fails is unverifiable, never passed (N-12)', async () => {
     const g = golden3();
     g.reader.intent = async () => Promise.reject(new GatewayError('CANTON_UNAVAILABLE', true, 'participant down'));

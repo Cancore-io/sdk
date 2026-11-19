@@ -52,6 +52,7 @@ import {
 import { canonicalDecimal, scaled } from '../canton/checks';
 import { allocationTemplateOf, CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../canton/factories';
 import { GatewayError } from '../errors';
+import { cantonClosure } from '../settlement/refusals';
 import { TicketRefusal, type TicketCheckId } from './refusal';
 
 /** What the Canton-source checks read through Cancore: `CantonOperations` is one. */
@@ -125,6 +126,8 @@ export async function checkCantonSource(input: CantonSourceCheckInput, pass: (ch
   try {
     intent = await input.reader.intent(orderHash);
   } catch (error) {
+    const closed = cantonClosure(error);
+    if (closed) throw new TicketRefusal('V-C1', 'ESCROW_NOT_OPEN', `the SwapIntent is ${closed.closure}: ${closed.detail}`);
     if (error instanceof GatewayError && error.code === 'UNKNOWN_TICKET') throw new TicketRefusal('V-C1', 'ESCROW_NOT_OPEN', 'no live SwapIntent with this orderHash names this filler');
     throw new TicketRefusal('V-C1', 'ESCROW_NOT_OPEN', `unverifiable: ${String(error)}`);
   }

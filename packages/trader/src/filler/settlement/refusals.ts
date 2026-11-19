@@ -92,9 +92,16 @@ export function refuseFinal(status: number): void {
 }
 
 /** filler-gateway's word on a Canton-source intent that is gone: settled, or refunded by cancel, withdrawal, expiry or retirement. */
-export function cantonClosure(error: unknown): 'settled' | 'refunded' | undefined {
+export function cantonClosure(error: unknown): CantonClosed | undefined {
   if (!(error instanceof GatewayError)) return undefined;
-  return error.code === 'INTENT_SETTLED' ? 'settled' : error.code === 'INTENT_REFUNDED' ? 'refunded' : undefined;
+  const closure = error.code === 'INTENT_SETTLED' ? 'settled' : error.code === 'INTENT_REFUNDED' ? 'refunded' : undefined;
+  return closure && { closure, detail: error.message };
+}
+
+export type CantonClosed = { closure: 'settled' | 'refunded'; detail: string };
+
+export function assertNever(value: never): never {
+  throw new Error(`Unhandled variant: ${JSON.stringify(value)}`);
 }
 
 export function payloadFrom(value: object): SettleAttestationsPayload {

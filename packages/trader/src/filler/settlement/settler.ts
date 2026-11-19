@@ -69,8 +69,8 @@ import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, Settleme
 import { cantonFillRef } from '../delivery/canton';
 import { CANTON_ORIGIN_FLOOR, chainsOf, orderOf } from '../tickets/terms';
 import { collectAttestations, fillProofOf } from './attestations';
-import { cantonRefundAfter } from './canton-refund-after';
-import { cantonClosure, isTerminal, payloadFrom, payloadOf, refuseClosed, refuseFinal, SettleError, type Settleable, type SettleCheck, type SettleRefusal, type VerifyEffects } from './refusals';
+import { cantonRefundAfter, closeCantonSettlement } from './canton-refund-after';
+import { type CantonClosed, cantonClosure, isTerminal, payloadFrom, payloadOf, refuseClosed, refuseFinal, SettleError, type Settleable, type SettleCheck, type SettleRefusal, type VerifyEffects } from './refusals';
 
 export { SettleError } from './refusals';
 export type { SettleCheck, SettleRefusal } from './refusals';
@@ -105,7 +105,6 @@ const ROUTER_ABI = CANCORE_ROUTER_ABI as unknown as readonly AbiEntry[];
 const SETTLE = entryOf(ROUTER_ABI, 'function', 'settle');
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
 const REFUNDED = 'refunded: the maker refunded before settle (R-5)';
-/** The depth an outcome must read at before it is final: the same as the filler's own transactions (executor). */
 const decoder = new TextDecoder();
 
 const lower = (value: unknown): string => String(value).toLowerCase();
@@ -286,8 +285,9 @@ export class Settler {
 
   /** A Canton source's window alerts; true from `refundAfter` on, when SwapIntent_SettleWithProof (ledger time < refundAfter) can no longer succeed, and once the intent is gone (CAN-3131). Unknown, it neither alerts nor stops. */
   private async cantonWindowClosed(s: Settleable): Promise<boolean> {
-    const { refundAfter, closed } = await cantonRefundAfter(s, BigInt(Math.floor(this.options.clock.now() / 1000)), this.refundAfters, this.options.canton, this.options.logger);
-    if (closed) return this.closeCanton(s.orderHash, s.fill.attempt, closed.closure, closed.detail).then(() => true);
+    const window = await cantonRefundAfter(s, BigInt(Math.floor(this.options.clock.now() / 1000)), this.refundAfters, this.options.canton, this.options.logger);
+    if (window.kind === 'closed') return this.closeCanton(s.orderHash, s.fill.attempt, window.closed).then(() => true);
+    const { refundAfter } = window;
     if (refundAfter === undefined) return false;
     await this.windowAlerts(s, refundAfter, async () => refundAfter - BigInt(s.order.fillDeadline));
     return BigInt(Math.floor(this.options.clock.now() / 1000)) >= refundAfter;
@@ -295,8 +295,12 @@ export class Settler {
 
   /** `GET /v1/filler/attestations/{orderHash}`; false while not ready or filler-gateway is unreachable. */
   private async pull(orderHash: Hex): Promise<boolean> {
-    const failed = (error: unknown) => (this.options.logger.warn('settle: attestation pull failed', { orderHash, error: reasonOf(error) }), false);
-    return this.options.protocol.pullAttestations(orderHash).catch(failed);
+    try {
+      return await this.options.protocol.pullAttestations(orderHash);
+    } catch (error) {
+      this.options.logger.warn('settle: attestation pull failed', { orderHash, error: reasonOf(error) });
+      return false;
+    }
   }
 
   // -- settling --------------------------------------------------------------------------
@@ -537,8 +541,8 @@ export class Settler {
       if (error instanceof SettleError) throw error;
       if (error instanceof CantonRefusal) return fail('mismatch', error.message);
       if (error instanceof GatewayError && error.code === 'TICKET_CLOSED') throw new SettleError('deadline-passed', error.message);
-      const closure = cantonClosure(error);
-      if (closure) throw await this.closeCanton(orderHash, attempt, closure, reasonOf(error));
+      const closed = cantonClosure(error);
+      if (closed) throw await this.closeCanton(orderHash, attempt, closed);
       if (error instanceof GatewayError && error.code === 'UNKNOWN_TICKET') throw new SettleError('unavailable', `no intent of the order names the party: ${error.message}`);
       if (error instanceof GatewayError && error.code === 'CANTON_NOT_READY') throw new SettleError('not-ready', error.message);
       throw new SettleError('unavailable', reasonOf(error));
@@ -743,6 +747,7 @@ export class Settler {
     });
   }
 
+  /** The depth an outcome must read at before it is final: the same as the filler's own transactions (executor). */
   /** Reads the intent `fillConfirmations` deep and closes the settlement when it is settled or refunded there. Returns that status. */
   private async closeIfFinal(orderHash: Hex, attempt: number, readers: ChainReaders, settledReason: string): Promise<number> {
     const { status } = await readers.router.intents(orderHash, readAtDepth(fillDepth(readers.config)));
@@ -754,10 +759,9 @@ export class Settler {
     return status;
   }
 
-  private async closeCanton(orderHash: Hex, attempt: number, closure: 'settled' | 'refunded', detail: string): Promise<SettleError> {
-    if (closure === 'settled') return this.close(orderHash, attempt, 'settled', 'the intent is settled').then(() => new SettleError('already-settled', detail));
-    if (await this.close(orderHash, attempt, 'failed', `refunded: ${detail}`)) this.alert(orderHash, attempt, 'refunded', { detail: detail.slice(0, 256) });
-    return new SettleError('refunded', detail);
+  private closeCanton(orderHash: Hex, attempt: number, closed: CantonClosed): Promise<SettleError> {
+    const close = (state: 'settled' | 'failed', reason: string) => this.close(orderHash, attempt, state, reason);
+    return closeCantonSettlement(closed, close, (detail) => this.alert(orderHash, attempt, 'refunded', { detail }));
   }
 
   private async release(orderHash: Hex): Promise<void> {

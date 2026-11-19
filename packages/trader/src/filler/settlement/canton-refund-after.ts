@@ -1,9 +1,9 @@
 import type { Hex } from '@cancore/contracts';
 import type { CantonOperations } from '../canton/operations';
 import type { Logger } from '../runtime';
-import { cantonClosure, type Settleable } from './refusals';
+import { assertNever, cantonClosure, SettleError, type CantonClosed, type Settleable } from './refusals';
 
-export type CantonClosed = { closure: NonNullable<ReturnType<typeof cantonClosure>>; detail: string };
+export type CantonIntentWindow = { kind: 'closed'; closed: CantonClosed } | { kind: 'open'; refundAfter?: bigint };
 
 /**
  * `refundAfter` of a Canton-source intent: the held set's while it is ahead, else the intent's as filler-gateway reads it.
@@ -19,20 +19,41 @@ export async function cantonRefundAfter(
   known: Map<Hex, bigint>,
   canton: Pick<CantonOperations, 'intent'> | undefined,
   logger: Logger,
-): Promise<{ refundAfter?: bigint; closed?: CantonClosed }> {
+): Promise<CantonIntentWindow> {
   const held = s.payload ? BigInt(s.payload.refundAfter) : undefined;
-  if (held !== undefined && nowS < held) return { refundAfter: held };
+  if (held !== undefined && nowS < held) return { kind: 'open', refundAfter: held };
   const closed = canton && (await readIntent(s.orderHash, known, canton, logger));
-  return closed ? { closed } : { refundAfter: held ?? known.get(s.orderHash) };
+  return closed ? { kind: 'closed', closed } : { kind: 'open', refundAfter: held ?? known.get(s.orderHash) };
 }
 
 async function readIntent(orderHash: Hex, known: Map<Hex, bigint>, canton: Pick<CantonOperations, 'intent'>, logger: Logger): Promise<CantonClosed | undefined> {
   try {
     known.set(orderHash, BigInt((await canton.intent(orderHash)).refundAfter));
   } catch (error) {
-    const closure = cantonClosure(error);
-    if (closure) return { closure, detail: (error as Error).message };
+    const closed = cantonClosure(error);
+    if (closed) return closed;
     logger.warn('settle: intent read failed, pulling with refundAfter unknown', { orderHash, error: error instanceof Error ? error.message : String(error) });
   }
   return undefined;
+}
+
+/**
+ * Closes the settlement of a Canton-source intent filler-gateway reports gone: settled, or failed as refunded with one
+ * `refunded` alert — raised only when `close` wrote, so `order.settled` landing first or a repeat raises none.
+ */
+export async function closeCantonSettlement(
+  { closure, detail }: CantonClosed,
+  close: (state: 'settled' | 'failed', reason: string) => Promise<boolean>,
+  alert: (detail: string) => void,
+): Promise<SettleError> {
+  switch (closure) {
+    case 'settled':
+      await close('settled', 'the intent is settled');
+      return new SettleError('already-settled', detail);
+    case 'refunded':
+      if (await close('failed', `refunded: ${detail}`)) alert(detail.slice(0, 256));
+      return new SettleError('refunded', detail);
+    default:
+      return assertNever(closure);
+  }
 }

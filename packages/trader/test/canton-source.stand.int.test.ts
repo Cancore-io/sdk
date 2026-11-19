@@ -694,7 +694,7 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
       return error instanceof GatewayError && error.code !== 'CANTON_UNAVAILABLE' ? error : undefined;
     }, 3 * 60_000);
     expect({ code: gone.code, message: gone.message }).toEqual({ code: 'INTENT_SETTLED', message: expect.stringMatching(/^closed by SwapIntent_SettleWithProof in update /) });
-    expect(cantonClosure(gone)).toBe('settled');
+    expect(cantonClosure(gone)).toMatchObject({ closure: 'settled' });
     expect(refundedAlerts(orderHash)).toEqual([]);
   });
 
