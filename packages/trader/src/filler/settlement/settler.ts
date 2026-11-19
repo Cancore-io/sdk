@@ -724,12 +724,14 @@ export class Settler {
     });
   }
 
-  private async close(orderHash: Hex, attempt: number, state: SettlementRecord['state'], reason?: string, txHash?: Hex): Promise<void> {
-    await this.options.store.withOrder(orderHash, async (tx) => {
+  /** Whether the settlement took `state`: a settled one, or one already in it for the same reason, is left as it is. */
+  private async close(orderHash: Hex, attempt: number, state: SettlementRecord['state'], reason?: string, txHash?: Hex): Promise<boolean> {
+    return this.options.store.withOrder(orderHash, async (tx) => {
       const current = await tx.getSettlement();
-      if (current?.state === 'settled' || (current?.state === state && current.reason === reason && state !== 'confirmed')) return;
+      if (current?.state === 'settled' || (current?.state === state && current.reason === reason && state !== 'confirmed')) return false;
       const { owner: _o, leaseUntilMs: _l, ...rest } = current ?? ({} as Partial<SettlementRecord>);
       await tx.putSettlement({ ...rest, orderHash, attempt, state, ...(txHash ? { txHash } : {}), ...(reason ? { reason } : {}), updatedAtMs: await this.options.store.now() });
+      return true;
     });
   }
 
@@ -747,8 +749,7 @@ export class Settler {
   /** A settle of the Canton-source intent closes the settlement; a refund closes it failed with one `refunded` alert. */
   private async closeCanton(orderHash: Hex, attempt: number, closure: 'settled' | 'refunded', detail: string): Promise<SettleError> {
     if (closure === 'settled') return this.close(orderHash, attempt, 'settled', 'the intent is settled').then(() => new SettleError('already-settled', detail));
-    await this.close(orderHash, attempt, 'failed', `refunded: ${detail}`);
-    this.alert(orderHash, attempt, 'refunded', { detail: detail.slice(0, 256) });
+    if (await this.close(orderHash, attempt, 'failed', `refunded: ${detail}`)) this.alert(orderHash, attempt, 'refunded', { detail: detail.slice(0, 256) });
     return new SettleError('refunded', detail);
   }
 

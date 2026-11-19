@@ -235,4 +235,16 @@ describe('CAN-3131: a Canton-source intent gone before settle — refunded only 
     await expect(w.settlement()).resolves.toMatchObject({ state: 'failed', reason: expect.stringMatching(/^refunded/) });
     expect(alerts(w).map((d) => d?.kind)).toEqual(['refunded']);
   });
+
+  test('TC-SDK-3131-06: order.settled lands before a refund answer: the settlement stays settled, no refunded alert', async () => {
+    const w = await world();
+    const settled = { type: 'order.settled', orderHash: w.orderHash, payout: '99', fee: '1', penaltyWithheld: '0', txRef: '1220abcd' };
+    w.canton.run.mockImplementationOnce(async () => {
+      await w.handlers.get('order.settled')!({ frame: settled as never, raw: new Uint8Array(), id: '0x03', channel: 'ws', firstSeen: true });
+      throw closed('INTENT_REFUNDED', 'SwapIntent_Cancel');
+    });
+    await w.push(w.delivery());
+    await expect(w.settlement()).resolves.toMatchObject({ state: 'settled', orderSettled: settled });
+    expect(alerts(w)).toEqual([]);
+  });
 });
