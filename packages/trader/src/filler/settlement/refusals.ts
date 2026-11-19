@@ -4,6 +4,7 @@
  */
 import { settleAttestationsPayload, type Hex, type OrderJson, type SettleAttestationsPayload } from '@cancore/contracts';
 import { INTENT_STATUS } from '../chain';
+import { GatewayError } from '../errors';
 import type { FillRecord, SettlementRecord, TicketRecord } from '../store';
 
 /** Why `selfSettle` sent nothing. */
@@ -70,6 +71,14 @@ export interface Settleable {
   rejected?: string;
 }
 
+/**
+ * Nothing more to do for the settlement: confirmed, settled, or lost to a refund.
+ * A `failed` settle for any other reason, and a `sent` one whose nonce was lost,
+ * are retried while the intent is open and `refundAfter` has not come.
+ */
+export const isTerminal = (s: SettlementRecord | undefined): boolean =>
+  s?.state === 'confirmed' || s?.state === 'settled' || (s?.state === 'failed' && (s.reason?.startsWith('refunded') ?? false));
+
 /** A settlement already closed: settled, or lost to the maker's refund. */
 export function refuseClosed(settled: SettlementRecord | undefined): void {
   if (settled?.state === 'settled') throw new SettleError('already-settled', 'the intent is settled');
@@ -80,6 +89,12 @@ export function refuseClosed(settled: SettlementRecord | undefined): void {
 export function refuseFinal(status: number): void {
   if (status === INTENT_STATUS.Settled) throw new SettleError('already-settled', 'the intent was settled by another transaction');
   if (status === INTENT_STATUS.Refunded) throw new SettleError('refunded', 'the maker refunded before settle');
+}
+
+/** filler-gateway's word on a Canton-source intent that is gone: settled, or refunded by cancel, withdrawal, expiry or retirement. */
+export function cantonClosure(error: unknown): 'settled' | 'refunded' | undefined {
+  if (!(error instanceof GatewayError)) return undefined;
+  return error.code === 'INTENT_SETTLED' ? 'settled' : error.code === 'INTENT_REFUNDED' ? 'refunded' : undefined;
 }
 
 export function payloadFrom(value: object): SettleAttestationsPayload {

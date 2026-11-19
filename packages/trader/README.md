@@ -309,7 +309,11 @@ The filler settles its own fills; Cancore does not (fillers.md §4.7, T-33, T-34
   `checkIntentSettle` against the intent read afresh (it must still build the order delivered for) and the
   party's `ACTIVE` registry entry, signed with the party key, submitted. Only strictly before `refundAfter`
   (`deadline-passed` from then on). The k-of-n check against the `AttestorRegistry` is Daml's. The settlement
-  is `confirmed` with the `updateId`; `order.settled` closes it.
+  is `confirmed` with the `updateId`; `order.settled` closes it. An intent that is gone is told apart by
+  filler-gateway (CAN-3131): `INTENT_REFUNDED` — cancelled by the operator, withdrawn by the owner, expired or
+  retired — closes the settlement lost with one `refunded` alert; `INTENT_SETTLED` closes it settled, no alert;
+  `UNKNOWN_TICKET` and `CANTON_UNAVAILABLE` are no refund and are retried. The sweep asks this also past
+  `refundAfter` and before a set is held, when nothing is submitted.
 
 ## Checks before the receipt
 

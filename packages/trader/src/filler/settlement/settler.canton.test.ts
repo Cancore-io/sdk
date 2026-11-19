@@ -7,6 +7,7 @@ import { NODE_KEY, party } from '../canton/fixtures';
 import { CantonRefusal } from '../canton/legs';
 import type { CantonOperations } from '../canton/operations';
 import { Executor } from '../delivery/executor';
+import { GatewayError } from '../errors';
 import type { StageEvent } from '../events';
 import type { Delivery, FillerProtocolClient, FrameHandler } from '../protocol/client';
 import type { FillRecord, TicketRecord } from '../store';
@@ -168,5 +169,70 @@ describe('Settler on a Canton source: SwapIntent_SettleWithProof by the party (C
     const w = await world({ canton: false });
     await expect(w.settler.selfSettle(w.orderHash)).rejects.toBeInstanceOf(SettleError);
     await expect(w.settler.selfSettle(w.orderHash)).rejects.toMatchObject({ reason: 'canton-source' });
+  });
+});
+
+describe('CAN-3131: a Canton-source intent gone before settle — refunded only on a refund', () => {
+  const closed = (code: string, choice: string) => new GatewayError(code, true, `closed by ${choice} in update 1220cafe`);
+  const alerts = (w: Awaited<ReturnType<typeof world>>) => w.stages('settle.alert').map((e) => e.detail);
+
+  test('TC-SDK-3131-01: the operator cancelled the intent (INTENT_REFUNDED): one refunded alert naming the choice, the settlement closed, nothing prepared', async () => {
+    const w = await world();
+    w.canton.intent.mockRejectedValue(closed('INTENT_REFUNDED', 'SwapIntent_Cancel'));
+    await w.push(w.delivery());
+    expect(w.runs).toHaveLength(0);
+    await expect(w.settlement()).resolves.toMatchObject({ state: 'failed', reason: expect.stringMatching(/^refunded: .*SwapIntent_Cancel/) });
+    expect(alerts(w)).toEqual([expect.objectContaining({ kind: 'refunded', detail: expect.stringContaining('SwapIntent_Cancel') })]);
+    await expect(w.settler.selfSettle(w.orderHash)).rejects.toMatchObject({ reason: 'refunded' });
+    await w.settler.sweep();
+    expect(alerts(w)).toHaveLength(1);
+  });
+
+  test('TC-SDK-3131-02: the intent is settled, by this filler or anyone (INTENT_SETTLED): the settlement is settled, no alert, nothing prepared', async () => {
+    const w = await world();
+    w.canton.intent.mockRejectedValue(closed('INTENT_SETTLED', 'SwapIntent_SettleWithProof'));
+    await w.push(w.delivery());
+    expect(w.runs).toHaveLength(0);
+    await expect(w.settlement()).resolves.toMatchObject({ state: 'settled' });
+    expect(alerts(w)).toEqual([]);
+    await expect(w.settler.selfSettle(w.orderHash)).rejects.toMatchObject({ reason: 'already-settled' });
+  });
+
+  test.each([
+    ['UNKNOWN_TICKET', 'no intent of the order ever named the party'],
+    ['CANTON_UNAVAILABLE', 'the closure is not indexed yet'],
+  ])('TC-SDK-3131-03: %s is no refund: no alert, the settlement stays open and is retried', async (code, message) => {
+    const w = await world();
+    w.canton.intent.mockRejectedValue(new GatewayError(code, true, message));
+    await w.push(w.delivery());
+    await expect(w.settler.selfSettle(w.orderHash)).rejects.toMatchObject({ reason: 'unavailable' });
+    await expect(w.settlement()).resolves.toMatchObject({ state: 'pending', leaseUntilMs: 0 });
+    expect(alerts(w)).toEqual([]);
+  });
+
+  test('TC-SDK-3131-04: the owner withdrew after refundAfter: the sweep, which submits nothing past refundAfter, still learns it — one refunded alert', async () => {
+    const w = await world({ refundAfterS: 0 });
+    await w.push(w.delivery());
+    await w.settler.sweep();
+    expect(alerts(w)).toEqual([]);
+    expect(w.runs).toHaveLength(0);
+    w.canton.intent.mockRejectedValue(closed('INTENT_REFUNDED', 'SwapIntent_Withdraw'));
+    await w.settler.sweep();
+    await w.settler.sweep();
+    await expect(w.settlement()).resolves.toMatchObject({ state: 'failed', reason: expect.stringMatching(/^refunded: .*SwapIntent_Withdraw/) });
+    expect(alerts(w)).toEqual([expect.objectContaining({ kind: 'refunded', detail: expect.stringContaining('SwapIntent_Withdraw') })]);
+    expect(w.runs).toHaveLength(0);
+  });
+
+  test('TC-SDK-3131-05: a cancel races the prepare: the prepare answers UNKNOWN_TICKET (unavailable, no alert), the next settle reads INTENT_REFUNDED and alerts once', async () => {
+    const w = await world();
+    w.canton.run.mockRejectedValueOnce(new GatewayError('UNKNOWN_TICKET', true, 'no live SwapIntent'));
+    await w.push(w.delivery());
+    expect(alerts(w)).toEqual([]);
+    await expect(w.settlement()).resolves.toMatchObject({ state: 'pending', leaseUntilMs: 0 });
+    w.canton.intent.mockRejectedValue(closed('INTENT_REFUNDED', 'SwapIntent_Cancel'));
+    await w.settler.sweep();
+    await expect(w.settlement()).resolves.toMatchObject({ state: 'failed', reason: expect.stringMatching(/^refunded/) });
+    expect(alerts(w).map((d) => d?.kind)).toEqual(['refunded']);
   });
 });
