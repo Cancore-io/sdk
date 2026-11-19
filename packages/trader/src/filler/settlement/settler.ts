@@ -67,6 +67,7 @@ import type { Delivery, FillerProtocolClient } from '../protocol/client';
 import type { Cancel, Clock, Logger } from '../runtime';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, SettlementRecord, TicketRecord } from '../store';
 import { cantonFillRef } from '../delivery/canton';
+import { sendSettle } from './send-settle';
 import { CANTON_ORIGIN_FLOOR, chainsOf, orderOf } from '../tickets/terms';
 import { collectAttestations, fillProofOf } from './attestations';
 import { cantonRefundAfter } from './canton-refund-after';
@@ -443,7 +444,7 @@ export class Settler {
         sent = recovered.tx;
       } else {
         const gasLimit = await driver.estimateGas(call);
-        ({ lease, sent } = await executor.acquire(driver, async (taken) => ({ lease: taken, sent: await this.sendSettle(driver, taken, call, gasLimit, orderHash, attempt) })));
+        ({ lease, sent } = await executor.acquire(driver, async (taken) => ({ lease: taken, sent: await sendSettle(this.options, driver, taken, call, gasLimit, orderHash, attempt) })));
       }
       if (!(await driver.renew(lease))) throw new LeaseLostError(lease);
       await store.withOrder(orderHash, async (tx) => {
@@ -464,20 +465,6 @@ export class Settler {
     this.stage('settle.sent', orderHash, attempt, { chain: source, txHash: sent.hash, signers: sigs.map((x) => x.signer).join(','), maxFeePerGas: sent.maxFeePerGas.toString() });
     this.options.logger.info('settle: sent', { orderHash, attempt, chain: source, txHash: sent.hash });
     return sent.hash;
-  }
-
-  /** Sends the settle on `lease`; a broadcast the node refused after the record still counts as sent, the tracker retries it. */
-  private async sendSettle(driver: TransactionDriver, lease: NonceLease, call: TransactionCall, gasLimit: bigint, orderHash: Hex, attempt: number): Promise<InFlightTransaction> {
-    try {
-      return await driver.send(lease, call, gasLimit, await driver.marketFees(), { kind: 'settle', orderHash, attempt }, this.options.clock.now());
-    } catch (error) {
-      if (error instanceof LeaseLostError) throw error;
-      const record = await driver.record(lease);
-      const recorded = record?.transactions.at(-1);
-      if (record?.owner !== this.options.instanceId || !recorded || recorded.kind !== 'settle' || recorded.orderHash !== orderHash || recorded.attempt !== attempt || recorded.to !== call.to.toLowerCase() || recorded.data !== call.data || recorded.value !== call.value) throw error;
-      this.options.logger.warn('settle: broadcast refused, the tracker retries it', { orderHash, attempt, txHash: recorded.hash, error: reasonOf(error) });
-      return recorded;
-    }
   }
 
   private isCantonOrigin(order: OrderJson): boolean {
