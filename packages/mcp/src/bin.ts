@@ -1,31 +1,12 @@
 #!/usr/bin/env node
 import './install-http1-dispatcher';
-import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { openBrowser } from './browser';
 import { createServer } from './server';
 import { CancoreSession } from './session';
 
 const version = (createRequire(import.meta.url)('../package.json') as { version: string }).version;
-
-/**
- * Open the owner's browser at the consent page. Best effort by design: this
- * server also runs headless and over SSH, where there is no browser to ask —
- * the tool prints the URL either way, so a failure here costs a click.
- */
-function openBrowser(url: string): Promise<boolean> {
-  const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-  return new Promise((resolve) => {
-    try {
-      const child = spawn(command, [url], { stdio: 'ignore', detached: true, shell: process.platform === 'win32' });
-      child.on('error', () => resolve(false));
-      child.unref();
-      resolve(true);
-    } catch {
-      resolve(false);
-    }
-  });
-}
 
 const apiBaseUrl = (process.env.CANCORE_API_URL ?? '').replace(/\/+$/, '');
 const appBaseUrl = (process.env.CANCORE_APP_URL ?? '').replace(/\/+$/, '');
