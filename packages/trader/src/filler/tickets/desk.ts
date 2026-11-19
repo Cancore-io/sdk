@@ -44,7 +44,7 @@ import { EXPIRED_RESULTS } from '@cancore/contracts';
 import type { FillerChains } from '../chain';
 import type { EvmChainId } from '../chains';
 import type { EventSink, FillerEvent, FillerStage } from '../events';
-import type { Delivery, FillerProtocolClient } from '../protocol/client';
+import { isFinalTicketRefusal, type Delivery, type FillerProtocolClient } from '../protocol/client';
 import type { TicketAction } from '../protocol/rest';
 import type { Clock, Logger } from '../runtime';
 import type { FillSigner, QuoteSigner } from '../signer';
@@ -447,9 +447,10 @@ export class TicketDesk {
 
   /**
    * Sends the stored message of the current state and records that it went.
-   * Past its deadline it is marked `unsent` and never sent; refused by
-   * filler-gateway or the network, it is tried again after `SEND_RETRY_MS` —
-   * or, rate limited, not before the `retryAfterMs` filler-gateway named.
+   * Past its deadline, or refused for good (`isFinalTicketRefusal`), it is
+   * marked `unsent` and never sent again; otherwise refused by filler-gateway
+   * or the network, it is tried again after `SEND_RETRY_MS` — or, rate
+   * limited, not before the `retryAfterMs` filler-gateway named.
    */
   private async send(orderHash: Hex, attempt: number, first: Outgoing, stage: FillerStage): Promise<void> {
     if (this.options.clock.now() > first.deadlineMs) {
@@ -462,15 +463,9 @@ export class TicketDesk {
     try {
       await this.options.protocol.submitTicket({ action: out.action, message: out.message } as TicketAction);
     } catch (error) {
-      // Our own id already taken: the gateway holds this very message — delivered (protocol §3.4).
-      if (error instanceof GatewayError && error.code === 'REPLAYED_MESSAGE') {
-        this.options.logger.info('tickets: filler-gateway already holds the message', { orderHash, attempt, action: out.action });
-        await this.markSent(orderHash, attempt, out, false);
-        this.stage(stage, orderHash, attempt, out.action === 'decline' ? { reason: String((out.message as TicketDecline).reason) } : {});
-        if (out.action === 'receipt') this.options.onReceipted?.(orderHash, attempt);
-        return;
-      }
-      this.options.logger.warn('tickets: not delivered to filler-gateway', { orderHash, attempt, action: out.action, error: String(error) });
+      const final = isFinalTicketRefusal(error);
+      this.options.logger.warn(final ? 'tickets: refused by filler-gateway, not sent again' : 'tickets: not delivered to filler-gateway', { orderHash, attempt, action: out.action, error: String(error) });
+      if (final) return this.markSent(orderHash, attempt, out, true);
       const retryMs = Math.max(SEND_RETRY_MS, error instanceof GatewayError ? (error.retryAfterMs ?? 0) : 0);
       if (this.options.clock.now() + retryMs <= out.deadlineMs) this.options.clock.schedule(retryMs, () => void this.work(orderHash, attempt));
       return;

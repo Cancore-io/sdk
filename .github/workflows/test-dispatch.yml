@@ -1,36 +1,55 @@
-name: Unit tests on demand
+name: Tests on demand
 
 # CAN-3346: ci.yml runs no unit tests (CAN-2934), and publish.yml runs them only
 # right before it publishes. This workflow runs the same unit suite against a PR
 # head or a ref on request, and nothing else: no publish step, no secret, a
 # read-only token.
 #
+# CAN-3669: local test runs are banned, so a run of this workflow is the
+# evidence a ticket needs for In Testing. `grep` (jest -t) is required: a run
+# covers one ticket's tests, never the full suite by default, and a run where
+# it matches no test fails.
+#
 # The `pull_request` trigger is limited to this file: a change to the workflow
 # itself proves it on its own PR, since workflow_dispatch exists only once the
 # file is on the default branch. Every other PR is tested by dispatch alone.
+run-name: ${{ github.event_name == 'pull_request' && 'Tests on demand (workflow change)' || format('Tests {0} @ {1} ({2})', inputs.grep, inputs.pr && format('PR {0}', inputs.pr) || inputs.ref, inputs.suite) }}
+
 on:
   workflow_dispatch:
     inputs:
+      grep:
+        description: 'Test-name pattern (jest -t), e.g. CAN-3017 or TC-SDK-3017'
+        required: true
+        type: string
+      suite:
+        description: 'unit = npm test; integration = npm run test:int as ci.yml runs it (stand suites skip without a stand)'
+        type: choice
+        options: [unit, integration, both]
+        default: unit
       pr:
-        description: 'PR number: its head (refs/pull/<n>/head) is tested'
+        description: 'PR number: its head commit is tested, instead of ref; a PR from a fork is refused'
         required: false
         type: string
       ref:
-        description: 'A sha or branch, when no PR number is given'
+        description: 'A branch of this repository, when no PR number is given'
         required: false
+        default: main
         type: string
   pull_request:
     paths: ['.github/workflows/test-dispatch.yml']
 
 permissions:
   contents: read
+  # The fork check reads the PR's head repository.
+  pull-requests: read
 
 concurrency:
-  group: sdk-tests-${{ inputs.pr || inputs.ref || github.ref }}
+  group: sdk-tests-${{ inputs.pr || inputs.ref || github.ref }}-${{ inputs.grep }}-${{ inputs.suite }}
   cancel-in-progress: true
 
 jobs:
-  unit:
+  tests:
     # ubuntu-latest, not cancore-runners: a PR head may come from a fork (ci.yml, CAN-1120).
     runs-on: ubuntu-latest
     # publish.yml runs install, build and the unit suite in under 2 minutes; 30 covers a cold cache with room.
@@ -39,69 +58,107 @@ jobs:
       # ubuntu-latest has 16 GB; two jest workers and the parent stay well inside 6 GB each.
       NODE_OPTIONS: --max-old-space-size=6144
     steps:
+      # Operator decision on CAN-3669: only code from this repository runs here. A fork's head, run in main's
+      # context, could write main's cache with the runner token, and publish.yml restores a cache before npm publish.
+      # So a PR is resolved to its head sha only when its head repo is this one, and a ref only when it is a branch
+      # here; anything else, including any lookup failure, refuses the run.
       - name: What to test
         id: target
         env:
           EVENT: ${{ github.event_name }}
           PR: ${{ inputs.pr }}
           REF: ${{ inputs.ref }}
+          GREP: ${{ inputs.grep }}
+          SUITE: ${{ inputs.suite }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [[ "$EVENT" == pull_request ]]; then
-            echo "ref=" >> "$GITHUB_OUTPUT"
-          elif [[ -n "$PR" ]]; then
+            # A pull_request run has no inputs: it proves the filter on unit tests that exist on every branch.
+            { echo "sha="; echo "grep=TC-SDK-2352"; echo "suite=unit"; } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [[ -n "${GREP// /}" ]] || { echo "::error::grep is required: a full-suite run is never the default"; exit 1; }
+          [[ "$GREP" != *$'\n'* && "$GREP" != *$'\r'* ]] || { echo "::error::grep must be a single line"; exit 1; }
+          if [[ -n "$PR" ]]; then
             [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::pr must be a PR number, got '$PR'"; exit 1; }
-            echo "ref=refs/pull/$PR/head" >> "$GITHUB_OUTPUT"
+            head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '"\(.head.repo.full_name // "")|\(.head.sha)"')
+            IFS='|' read -r head_repo sha <<< "$head"
+            [[ "$head_repo" == "$GITHUB_REPOSITORY" ]] || { echo "::error::PR $PR comes from '${head_repo:-a deleted repository}', not $GITHUB_REPOSITORY: fork heads are not run"; exit 1; }
           elif [[ -n "$REF" ]]; then
-            [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "::error::ref must be a sha or a branch name, got '$REF'"; exit 1; }
-            echo "ref=$REF" >> "$GITHUB_OUTPUT"
+            [[ "$REF" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "::error::ref must be a branch name, got '$REF'"; exit 1; }
+            sha=$(gh api "repos/$GITHUB_REPOSITORY/branches/$REF" --jq .commit.sha) || { echo "::error::ref '$REF' is not a branch of $GITHUB_REPOSITORY"; exit 1; }
           else
             echo "::error::give pr or ref"; exit 1
           fi
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve a commit, got '$sha'"; exit 1; }
+          echo "Testing $sha"
+          { echo "sha=$sha"; echo "grep=$GREP"; echo "suite=$SUITE"; } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.target.outputs.ref }}
+          ref: ${{ steps.target.outputs.sha }}
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      # No pnpm cache: a dispatched run executes a branch's unreviewed code, and a cache it saved would be restored by main's runs.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-          cache: pnpm
 
       # The same commands as publish.yml, up to its publish step.
       - run: pnpm install --frozen-lockfile
       # Build before test: the bundle-isolation tests read dist (as in publish.yml).
       - run: npm run build
-      - name: Unit tests
+      - name: Unit tests matching ${{ steps.target.outputs.grep }}
+        if: steps.target.outputs.suite != 'integration'
         env:
+          GREP: ${{ steps.target.outputs.grep }}
           JEST_JUNIT_OUTPUT_FILE: rp-reports/sdk-unit.xml
         run: |
           set -euo pipefail
           # GNU time reports the peak RSS of the largest single process: the jest parent or one worker.
-          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" npm test -- --maxWorkers=2 --reporters=default --reporters=jest-junit --json --outputFile="$RUNNER_TEMP/unit.json"
+          /usr/bin/time -v -o "$RUNNER_TEMP/time.txt" npm test -- -t "$GREP" --maxWorkers=2 --reporters=default --reporters=jest-junit --json --outputFile="$RUNNER_TEMP/unit.json"
+      # The int project as ci.yml `check` runs it: suites against a local stand skip themselves without its artifacts.
+      - name: Integration tests matching ${{ steps.target.outputs.grep }}
+        if: ${{ !cancelled() && steps.target.outputs.suite != 'unit' }}
+        env:
+          GREP: ${{ steps.target.outputs.grep }}
+          JEST_JUNIT_OUTPUT_FILE: rp-reports-int/sdk-int-dispatch.xml
+        run: npm run test:int -- -t "$GREP" --reporters=default --reporters=jest-junit --json --outputFile="$RUNNER_TEMP/int.json"
 
+      # jest passes when -t matches nothing: that is no evidence for the ticket.
       - name: Summary
         if: ${{ !cancelled() }}
+        env:
+          GREP: ${{ steps.target.outputs.grep }}
+          CHOSEN: ${{ steps.target.outputs.suite }}
         run: |
           set -euo pipefail
           {
-            echo "### Unit tests at \`$(git rev-parse HEAD)\`"
-            if [[ -f "$RUNNER_TEMP/unit.json" ]]; then
+            echo "### Tests matching \`$GREP\` at \`$(git rev-parse HEAD)\`"
+            for suite in unit int; do
+              [[ -f "$RUNNER_TEMP/$suite.json" ]] || continue
               # shellcheck disable=SC2016 # the single quotes hold JavaScript template literals, not shell.
               node -e '
                 const r = require(process.argv[1]);
-                console.log(`- tests: ${r.numPassedTests}/${r.numTotalTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped`);
-                console.log(`- suites: ${r.numPassedTestSuites}/${r.numTotalTestSuites} passed`);
-              ' "$RUNNER_TEMP/unit.json"
-            else
-              echo "- no jest report: the run stopped before the tests finished"
-            fi
+                console.log(`- ${process.argv[2]}: ${r.numPassedTests} passed, ${r.numFailedTests} failed, ${r.numPendingTests} skipped of ${r.numTotalTests}`);
+              ' "$RUNNER_TEMP/$suite.json" "$suite"
+            done
             if [[ -f "$RUNNER_TEMP/time.txt" ]]; then
               grep -E 'Elapsed \(wall clock\)|Maximum resident set size' "$RUNNER_TEMP/time.txt" | sed 's/^\s*/- /'
             fi
           # Also in the log: the job summary has no API, the log does.
           } | tee -a "$GITHUB_STEP_SUMMARY"
+          # Each chosen suite must run a test of its own: under `both`, skipped stand suites must not hide behind units.
+          case "$CHOSEN" in unit) suites=(unit) ;; integration) suites=(int) ;; *) suites=(unit int) ;; esac
+          empty=()
+          for suite in "${suites[@]}"; do
+            f="$RUNNER_TEMP/$suite.json"
+            n=0
+            [[ -f "$f" ]] && n=$(node -e 'const r = require(process.argv[1]); console.log(r.numPassedTests + r.numFailedTests)' "$f")
+            [[ "$n" -gt 0 ]] || empty+=("$suite")
+          done
+          [[ ${#empty[@]} -eq 0 ]] || { echo "::error::no test matching '$GREP' ran in: ${empty[*]}"; exit 1; }
 
       - name: Upload test reports for rp-collect
         if: always()
@@ -111,5 +168,15 @@ jobs:
         with:
           name: rp-reports-unit
           path: rp-reports/
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Upload integration reports for rp-collect
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rp-reports-int
+          path: rp-reports-int/
           if-no-files-found: ignore
           retention-days: 7

@@ -396,7 +396,12 @@ export interface FillerStore {
   /**
    * Orders that still need work after a restart (N-15): a ticket in a
    * non-terminal state, a `declined` ticket whose decline has not gone out
-   * yet (`sentAtMs` unset), or a fill without a `settled` settlement.
+   * yet (`sentAtMs` unset), or a fill that is not `failed` while the
+   * settlement is not closed. Closed: `settled`, or `failed` with a `reason`
+   * starting `refunded`. A `failed` fill never comes back (a signed Canton
+   * claim ends `sent`, not `failed`); any other `failed` settlement is retried,
+   * and a `confirmed` one still waits for `order.settled`. Every
+   * `Settler.sweep` locks each listed order, so a finished one must drop out.
    */
   listOpenOrders(): Promise<readonly Hex[]>;
   readonly quotes: QuoteLedger;
