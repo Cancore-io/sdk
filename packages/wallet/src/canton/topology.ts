@@ -179,11 +179,13 @@ function rawEd25519(key: SigningPublicKey | undefined): string | undefined {
  * A topology transaction as the Ledger API serializes it: Canton's
  * `UntypedVersionedMessage` (`data` = 1, `version` = 2, which must be
  * {@link TOPOLOGY_TRANSACTION_VERSION}) around the `TopologyTransaction`, or the
- * bare message. Every field must be one Canton's schema has: an unknown one is
- * refused, so this check and Canton never read two different mappings.
+ * bare message. Every field must be one Canton's schema has, and the bytes must
+ * be the message's own encoding: an unknown field, a known one under another
+ * wire type, a repeated field or a padded varint is refused, so this check and
+ * Canton never read two different mappings.
  */
 export function decodeTopology(bytes: Uint8Array): TopologyTransaction {
-  if (bytes[0] !== 0x0a) return strictTransaction.fromBinary(bytes, STRICT);
+  if (bytes[0] !== 0x0a) return canonical(bytes);
   const [length, start] = varint(bytes, 1);
   const end = start + length;
   if (end > bytes.length) throw new TypeError('truncated versioned topology transaction');
@@ -192,7 +194,14 @@ export function decodeTopology(bytes: Uint8Array): TopologyTransaction {
   const [version, after] = varint(bytes, end + 1);
   if (after !== bytes.length) throw new TypeError('unexpected bytes after the version of the topology transaction');
   if (version !== TOPOLOGY_TRANSACTION_VERSION) throw new TypeError(`topology transaction version ${version}, not ${TOPOLOGY_TRANSACTION_VERSION}`);
-  return strictTransaction.fromBinary(bytes.subarray(start, end), STRICT);
+  return canonical(bytes.subarray(start, end));
+}
+
+/** The transaction, only if re-encoding it gives back these exact bytes (devsecops N1 on sdk#276). */
+function canonical(bytes: Uint8Array): TopologyTransaction {
+  const tx = strictTransaction.fromBinary(bytes, STRICT);
+  if (bytesToHex(strictTransaction.toBinary(tx)) !== bytesToHex(bytes)) throw new TypeError('topology transaction is not in its canonical encoding');
+  return tx;
 }
 
 /** A protobuf varint (≤ 5 bytes: a length or an int32) at `at`: its value and the index after it. */

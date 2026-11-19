@@ -32,7 +32,8 @@ function selfSigned(keys = [NODE_KEY], threshold = 1, extra: Uint8Array = new Ui
   if (hosting.oneofKind !== 'partyToParticipant') throw new Error('fixture has no hosting');
   const signing = new BinaryWriter();
   for (const key of keys) signing.tag(1, WireType.LengthDelimited).bytes(SigningPublicKey.toBinary(signingKey(key)));
-  signing.tag(2, WireType.Varint).uint32(threshold);
+  // proto3 omits a default: threshold 0 is written as Canton would, by leaving it out.
+  if (threshold) signing.tag(2, WireType.Varint).uint32(threshold);
   const wire = cat(PartyToParticipant.toBinary(hosting.partyToParticipant), new BinaryWriter().tag(6, WireType.LengthDelimited).bytes(signing.finish()).finish(), extra);
   hosting.partyToParticipant = PartyToParticipant.fromBinary(wire);
   return TopologyTransaction.toBinary(decoded);

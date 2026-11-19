@@ -59,6 +59,10 @@ describe('the topology of a new party is signed only when it is the expected one
     ['an onboarding flag on the hosting participant', [0x1a, 0x00], 'participant', /still onboarding/],
     ['an unknown field on the hosting', [0x38, 0x01], 'hosting', /does not decode/],
     ['an unknown field on the transaction', [0x20, 0x01], 'transaction', /does not decode/],
+    // devsecops on ab44196 (N1): only Canton's own encoding. Field 1 under wire type 5 is
+    // skipped by Canton but read by protobuf-ts, so the two would parse the bytes after it apart.
+    ['a known field under another wire type', [0x0d, 0x81, 0x00, 0x10, 0x01], 'transaction', /does not decode/],
+    ['a field repeated', [0x10, 0x01], 'transaction', /does not decode/],
   ] as const)('a transaction carrying %s', (_name, extra, where, detail) => {
     const tx = withExtra(own.topologyTransactions[0], [...extra], where);
     const multihash = bytesToHex(cantonHash(55, multiHashInput([cantonHash(11, fromBase64(tx))])));
