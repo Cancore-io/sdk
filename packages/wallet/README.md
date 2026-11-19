@@ -310,8 +310,10 @@ It refuses with `IntentTransactionRefusedError` (its `reason` is the sentence to
   widen it;
 - every action below it that carries the owner's authority is code of that package, or
   `AllocationFactory_Allocate` / `SettlementFactory_PublicFetch` on a factory of the registry of
-  `admin` — `isRegistryFactory`: the admin signs the factory, or its package is in the admin's
-  closed list (`REGISTRY_PACKAGES`); an admin with no list is refused. Of a CNRX admin the
+  `admin` — `isRegistryFactory`: the admin signs the factory, and its package is in the admin's
+  closed list (`REGISTRY_PACKAGES`); an admin with no list is refused. A factory package the
+  admin vets later is refused until the SDK pins it (BUG-1611): the walk does not descend below a
+  factory, so an unpinned package would run any code with the owner's authority. Of a CNRX admin the
   registry's guardian G must co-sign the factory as well (`REGISTRY_GUARDIANS`, CAN-3132): a
   `CnrxRules` / `CnrxAllocationRules` anchored on another guardian is admin-signed and of the same
   package. A wallet with its own CNRX pin passes `policy.guardians` next to `policy.registries`;

@@ -45,8 +45,12 @@ export interface RegistryContract {
 const CNRX_FACTORIES: ReadonlySet<string> = new Set(['Cnrx.Rules:CnrxRules', 'Cnrx.Allocation:CnrxAllocationRules']);
 
 /**
- * Whether `contract` is the registry's of `admin`: the admin signs it, or its template is of
- * one of the admin's registry packages. An admin with no entry is refused (fail-closed): a
+ * Whether `contract` is the registry's of `admin`: the admin signs it, and its template is of
+ * one of the admin's registry packages. Both, because the walk does not descend below a registry
+ * factory: an admin-signed contract of another package would run any code with the owner's
+ * authority, and a pinned template a stranger signs is not the admin's (BUG-1611). A registry
+ * whose admin vets a new factory package is refused until the SDK pins it, as its holdings
+ * already are. An admin with no entry is refused (fail-closed): a
  * registry nobody pinned is not one a signer lends authority to. Of an admin with a guardian G
  * (CNRX, CAN-3132) G must sign it too: a factory anchored on another guardian G' is admin-signed
  * and of the same package, and only G's signature tells it apart. A cnrx-registry factory of an
@@ -63,5 +67,5 @@ export function isRegistryFactory(
   const guardian = Object.hasOwn(guardians, admin) ? guardians[admin] : undefined;
   if (guardian === undefined ? CNRX_FACTORIES.has(contract.templateId.split(':').slice(1).join(':')) : !contract.signatories.includes(guardian)) return false;
   const packageId = contract.templateId.split(':')[0] ?? '';
-  return contract.signatories.includes(admin) || packages.includes(packageId);
+  return contract.signatories.includes(admin) && packages.includes(packageId);
 }
