@@ -118,8 +118,10 @@ provider.on('txChanged', (payload) => { /* … */ });
 | `messageSignature` | a message you asked about was signed |
 
 The stream is SSE, authenticated by a one-shot ticket, and reopened with a fresh ticket when
-the connection drops (3 s between attempts — the stream has no replay buffer, and a reconnect
-storm would only make that worse).
+the connection drops: 3 s after the drop, then doubling up to 30 s between attempts while the
+wallet stays unreachable, and back to 3 s once a stream is up (the stream has no replay buffer,
+and a reconnect storm would only make that worse). A revoked grant (`4100`) ends the retries;
+the next `connect` asks the user again, as it does after `disconnect`.
 
 **Because there is no replay buffer**, a dropped mobile connection must not leave a dApp
 unable to learn whether the user's money moved. That is what `cancore_getTxOutcome` and

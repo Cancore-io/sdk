@@ -44,7 +44,6 @@
   },
   "devDependencies": {
     "@jest/globals": "^29.7.0",
-    "@openzeppelin/merkle-tree": "^1.0.8",
     "@swc/core": "^1.7.0",
     "@swc/jest": "^0.2.36",
     "@types/jest": "^29.5.12",

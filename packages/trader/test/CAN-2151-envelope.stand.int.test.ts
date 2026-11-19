@@ -228,8 +228,7 @@ standSuite('CAN-2151: the signed envelope against the real filler-gateway', [...
 
     const base = standEvmOrder(2151_05);
     const order = { ...base.order, inputToken: token };
-    const o = { ...base, order, orderHash: hashOrder(order, { chainId: BigInt(env('EVM_CHAIN_ID')), router }) };
-    await openOnStand(o);
+    const o = await openOnStand({ ...base, order, orderHash: hashOrder(order, { chainId: BigInt(env('EVM_CHAIN_ID')), router }) });
 
     const stand = standFiller({ offer: async () => 'accept' });
     await stand.filler.start();

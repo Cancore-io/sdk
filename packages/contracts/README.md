@@ -18,7 +18,7 @@ need one dependency, `@noble/hashes`.
 | --- | --- | --- |
 | `@cancore/contracts/abi` | `HTLC_ABI`, `FEE_VAULT_ABI`, `CNRX_ABI`, `IHTLC_ABI`, `IBURN_MINT_ERC20_ABI`, `IPERMIT2_ABI`, `MULTI_BALANCE_CHECKER_ABI`, `CANCORE_ROUTER_ABI`, `ICANCORE_ROUTER_ABI`, `ATTESTOR_SET_ABI`, `CNRX_STAKING_ABI`, `POINTS_CLAIM_ABI`; an `*_ERRORS` table for each contract that declares custom errors | `Cancore-io/evm-contracts/abi/*.json` — the reviewed snapshots that repository keeps in lock-step with its compiled contracts; `CNRX` and `IBurnMintERC20` from `evm-contracts/vendor/*.json`, a build of `cancore-token-evm` vendored there |
 | `@cancore/contracts/networks` | `NETWORKS`, `networkOf`, `networkKindOf`, `networkByChainId` | the chain ids the Cancore API uses |
-| `@cancore/contracts` (filler protocol v1) | EIP-712 types and domains of the intent rail, `hashTypedData` / `jcs` / `gatewayBodyHash` / `fillerMessageBodyHash` / `requestIdHash`, one digest helper per settlement type (`hashFillTicket`, `hashFillerQuote`, `hashTicketIntent`, `hashFillerMessage`, `hashFillerKeyRegistration`), `fillerIdHash` / `repayToFromEvm` / `repayToFromParty` / `isEvmRepayTo` / `evmAddressFromRepayTo`, `isEoaSignature`, `fillerEnvelopeError`, `drawValue` / `drawWinner` / `firstRoundAtOrAfter`, wire message types and enums, `FILLER_GATEWAYS` | `docs/intents/protocol.md` and `auction-and-draw.md` in Cancore-io/meta; `CancoreRouter.sol` for the code types |
+| `@cancore/contracts` (filler protocol v1) | EIP-712 types and domains of the intent rail, `hashTypedData` / `jcs` / `gatewayBodyHash` / `fillerMessageBodyHash` / `requestIdHash`, one digest helper per settlement type (`hashFillTicket`, `hashFillerQuote`, `hashTicketIntent`, `hashFillerMessage`, `hashFillerKeyRegistration`), `fillerIdHash` / `repayToFromEvm` / `repayToFromParty` / `isEvmRepayTo` / `evmAddressFromRepayTo`, `isEoaSignature`, `fillerEnvelopeError`, wire message types and enums, `FILLER_GATEWAYS` | `docs/intents/protocol.md` in Cancore-io/meta; `CancoreRouter.sol` for the code types |
 | `@cancore/contracts` | all of the above, plus `DEPLOYMENTS` / `deploymentOf`, `FEE_CLAIM_TYPES` / `feeClaimDomain`, `FILL_PROOF_TYPES` / `fillProofDomain` / `hashFillProof` / `FillProof`, `BUILD_HASHES` (and its deprecated alias `BYTECODE_HASHES`), `CONTRACTS_RELEASE`, `describeRevert` | the contracts repository's `version.json` and bytecode hashes; the FeeVault contract's own struct and domain; `evm-contracts/abi/typed-data/FillProof.json` for the router's `FillProof` |
 
 The ABIs and selector tables are **generated**, never edited: `npm run sync` reads a checkout
@@ -206,19 +206,17 @@ Golden vectors are generated with ethers by `scripts/gen-protocol-vectors.mjs` f
 inputs in `scripts/protocol-fixtures.mjs`, and checked by this package's own encoder too. The
 `canton` Order vector equals `spec/vectors/canton-order.json`, a byte copy of
 `evm-contracts/test/vectors/canton-order.json` at `f936594`, which the router's test pins.
-`spec/protocol/vectors/jcs.json` holds RFC 8785 cases and `draw.json` the draw of
-auction-and-draw §3.7 (r = 417828, acme-markets) plus the test-kit fixture draw, both on real
-drand quicknet rounds.
+`spec/protocol/vectors/jcs.json` holds RFC 8785 cases.
 
 ### Schemas, AsyncAPI, examples
 
 | File (`@cancore/contracts/spec/protocol/…`) | Holds |
 | --- | --- |
-| `messages.schema.json` | one `$def` per frame type (23), `x-direction` S2F / F2S / both, `x-rest-only` on the two login types, and the primitives they share |
+| `messages.schema.json` | one `$def` per frame type (28), `x-direction` S2F / F2S / both, `x-rest-only` on the two login types, and the primitives they share |
 | `rest.schema.json` | REST bodies; `x-endpoints` (method, path, auth, query, request/response, `errorBody` where a refusal may be unsigned), `x-error-status` |
-| `records.schema.json` | the draw record, the epoch record, `GET /v1/gateway` |
+| `records.schema.json` | `GET /v1/gateway` |
 | `asyncapi.json` | AsyncAPI 3.0: channel `/v1` (the upgrade's subprotocols, its HTTP refusals `x-upgrade-refusals`, the close codes `x-close-codes`), the gateway's send/receive operations, examples |
-| `vectors/messages.json`, `vectors/records.json` | valid example frames and fixture records (hashes real, `sig` a placeholder: r = s = 0, v = 27) |
+| `vectors/messages.json` | valid example frames (hashes real, `sig` a placeholder: r = s = 0, v = 27) |
 | `vectors/settle-attestations.json` | `settle.attestations` golden vectors: EVM and Canton source, real TEST-key signatures, the pushed frame and the REST body with one payload, and schema-valid payloads a filler must refuse |
 
 The same objects are exported as `PROTOCOL_SCHEMAS`, `ASYNCAPI`, `MESSAGE_DIRECTIONS`,
@@ -353,7 +351,8 @@ On any difference it does not sign. The kind of a leg is closed: an unknown kind
 `/holdings`, `/delivery-orders`, and `/intents/{orderHash}` — the live Canton-source `SwapIntent`
 naming the party as its filler, with its committed allocation, which the node checks before
 `ticket.receipt` (V-C1…V-C7; 404 `UNKNOWN_TICKET` when none names it). Refusals: `CANTON_NOT_READY` (409), `CANTON_REFUSED` (422),
-`CANTON_UNAVAILABLE` (503, retry), `OPERATION_EXPIRED` (410, prepare again), plus
+`REGISTRY_FACTORY_UNTRUSTED` (422, the instrument's registry factory cannot be pinned: final for the
+instrument), `CANTON_UNAVAILABLE` (503, retry), `OPERATION_EXPIRED` (410, prepare again), plus
 `UNKNOWN_TICKET`, `TICKET_CLOSED` and `NOT_ELIGIBLE` for an operation on someone else's ticket or party.
 
 The filler's own routes (§3.20): Cancore staff approve the routes a filler may serve; the
@@ -466,6 +465,15 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.26` — the draw is gone (CAN-2532): the user picks the filler, nobody draws one.
+  Removed `drawValue`, `drawWinner`, `firstRoundAtOrAfter`, `DRAND_QUICKNET`, `DRAW_CLOSED_BY`,
+  the `DrawRecord` / `EpochRecord` types and their `records.schema.json` defs, the `epoch.weights`
+  frame, the `GET /v1/draws/*` routes, and the `draw.json` / `records.json` vectors.
+- `0.2.0-rc.25` — error code `REGISTRY_FACTORY_UNTRUSTED` (422, BUG-1528): Cancore refuses a
+  Canton operation because the registry factory of the instrument is one the operator may not pin
+  (not admin-signed, or a package `INTENT_FACTORY_PIN_ALLOWLIST` does not list for it). It holds
+  for every order of the instrument until the registry or the allowlist changes: not retried.
+  Additive.
 - `0.2.0-rc.24` — the testnet intent routers (CAN-2529): `router` and `routerBlock` on every
   `DEPLOYMENTS.testnet` row (Sepolia, BNB testnet, Arbitrum Sepolia, Robinhood testnet, Base Sepolia), and the
   ticket signer they register in `FILLER_GATEWAYS.testnet.ticketSigners`. Additive.

@@ -82,9 +82,6 @@
         "errorF2S": {
           "$ref": "#/components/messages/errorF2S"
         },
-        "epoch.weights": {
-          "$ref": "#/components/messages/epoch.weights"
-        },
         "quote.request": {
           "$ref": "#/components/messages/quote.request"
         },
@@ -223,17 +220,6 @@
       "messages": [
         {
           "$ref": "#/channels/filler/messages/errorF2S"
-        }
-      ]
-    },
-    "sendEpochWeights": {
-      "action": "send",
-      "channel": {
-        "$ref": "#/channels/filler"
-      },
-      "messages": [
-        {
-          "$ref": "#/channels/filler/messages/epoch.weights"
         }
       ]
     },
@@ -660,32 +646,6 @@
               "re": "g-77",
               "code": "UNKNOWN_TICKET",
               "message": "no ticket for this orderHash"
-            }
-          }
-        ]
-      },
-      "epoch.weights": {
-        "name": "epoch.weights",
-        "title": "epoch.weights (S2F)",
-        "payload": {
-          "schemaFormat": "application/schema+json;version=draft-2020-12",
-          "schema": {
-            "$ref": "messages.schema.json#/$defs/epoch.weights"
-          }
-        },
-        "examples": [
-          {
-            "name": "epoch-weights-1",
-            "payload": {
-              "type": "epoch.weights",
-              "id": "g-7",
-              "fillerId": "acme-markets",
-              "sig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
-              "sentAt": 1789999980300,
-              "epochId": "20717",
-              "startsAt": "1789948800",
-              "endsAt": "1790035200",
-              "weightsRoot": "0xa1c24765b55b34e0c206f808d2fac2e448d9db6f154d89f898921a80bad76e92"
             }
           }
         ]

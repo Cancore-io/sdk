@@ -1,6 +1,6 @@
 // Internal: the decimal and ABI encodings order.ts and cantonDestination.ts share. Not exported from the package.
-import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
-import { beBytes } from './protocol/bytes';
+import { concatBytes } from '@noble/hashes/utils';
+import { beBytes, wellFormedUtf8 } from './protocol/bytes';
 
 /** A decimal string at exactly `decimals` scale, in base units; anything that does not land on a whole unit is refused. */
 export function exactUnits(value: unknown, decimals: number, field: string): bigint {
@@ -13,8 +13,8 @@ export function exactUnits(value: unknown, decimals: number, field: string): big
 
 /** `abi.encode(string, …, string)`: one offset word per string, then each as length word and right-padded bytes. */
 export function abiEncodeStrings(values: readonly string[]): Uint8Array {
-  const tails = values.map((v) => {
-    const bytes = utf8ToBytes(v);
+  const tails = values.map((v, i) => {
+    const bytes = wellFormedUtf8(v, `string ${i}`);
     const body = new Uint8Array(Math.ceil(bytes.length / 32) * 32);
     body.set(bytes);
     return concatBytes(beBytes(BigInt(bytes.length), 32), body);

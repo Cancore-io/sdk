@@ -1,6 +1,7 @@
 /**
  * The REST side of filler-gateway (protocol §3.6), on the host of the
- * WebSocket URL: the login, and the fallback while the session is down.
+ * WebSocket URL: the login, every ticket action, and the fallback while the
+ * session is down.
  * Bodies are the WebSocket messages; every filler-gateway → filler message in
  * a response — the challenge, a list item, an ack, an error body — is
  * verified exactly like a WebSocket frame before it is returned.
@@ -48,7 +49,7 @@ import {
   type TicketReceiptMessage,
 } from '@cancore/contracts';
 import { GatewayError } from '../errors';
-import type { Clock, HttpFetch, Logger } from '../runtime';
+import type { Cancel, Clock, HttpFetch, Logger } from '../runtime';
 import { signTypedDataChecked, type QuoteSigner } from '../signer';
 import type { Sealer } from './envelope';
 import { frameBytes, gatewayErrorOf, retryAfterOf, utf8, verifyGatewayObject, type FrameExpectations, type VerifiedFrame } from './frames';
@@ -84,6 +85,12 @@ export interface QuoteListItem {
 
 /** Renew the token this long before filler-gateway's `expiresAt`, so a reconnect never offers an expired one. */
 export const TOKEN_MARGIN_MS = 30_000;
+/**
+ * A ticket POST unanswered this long fails as a transport error and is sent again: well under the shortest `acceptBy`
+ * window (`INTENT_TICKET_ACCEPT_TIMEOUT_MS`, 3–10 s), so the attempt's one worker is free to retry in time. The request
+ * is not aborted: the published `HttpRequest` cannot carry an `AbortSignal` (no DOM or Node types in the declarations).
+ */
+export const TICKET_POST_TIMEOUT_MS = 2_000;
 const PAGE_LIMIT = 100;
 /** A guard against a server that never ends a cursor chain. */
 const MAX_PAGES = 1_000;
@@ -136,7 +143,7 @@ export class GatewayRest {
   async postTicket(request: TicketAction): Promise<VerifiedFrame | undefined> {
     const { orderHash, attempt } = request.message;
     const path = `/v1/filler/tickets/${encodeURIComponent(orderHash)}/${attempt}/${request.action}`;
-    const { text } = await this.authed('POST', path, 'ticket', JSON.stringify(request.message));
+    const { text } = await this.authed('POST', path, 'ticket', JSON.stringify(request.message), TICKET_POST_TIMEOUT_MS);
     if (request.action !== 'intent') return undefined;
     const check = verifyGatewayObject(parseJson(text, path), utf8(text), this.expect);
     if (!check.ok || check.verified.frame.type !== 'ticket.intent.ack') {
@@ -327,11 +334,11 @@ export class GatewayRest {
    * A bearer call of `rateClass`; refused locally while that class is paused.
    * On 401 the token is renewed once and the call repeated.
    */
-  private async authed(method: 'GET' | 'POST', path: string, rateClass: RateClass, body?: string): Promise<Reply> {
+  private async authed(method: 'GET' | 'POST', path: string, rateClass: RateClass, body?: string, timeoutMs?: number): Promise<Reply> {
     for (let round = 0; ; round++) {
       this.limits.check(rateClass, `${method} ${path}`);
       const token = await this.validToken();
-      const response = await this.call(method, path, body, token.token);
+      const response = await this.call(method, path, body, token.token, timeoutMs);
       if (response.status === 401 && round === 0) {
         this.dropToken(token.token);
         continue;
@@ -380,12 +387,24 @@ export class GatewayRest {
     return this.token;
   }
 
-  private async call(method: 'GET' | 'POST', path: string, body?: string, token?: string): Promise<Reply> {
+  private async call(method: 'GET' | 'POST', path: string, body?: string, token?: string, timeoutMs?: number): Promise<Reply> {
     const headers: Record<string, string> = { accept: 'application/json' };
     if (body !== undefined) headers['content-type'] = 'application/json';
     if (token !== undefined) headers.authorization = `Bearer ${token}`;
-    const response = await this.options.fetch(`${this.origin}${path}`, { method, headers, ...(body !== undefined ? { body } : {}) });
-    return { status: response.status, text: await response.text(), retryAfter: response.headers?.get('retry-after') ?? null };
+    const exchange = (async (): Promise<Reply> => {
+      const response = await this.options.fetch(`${this.origin}${path}`, { method, headers, ...(body !== undefined ? { body } : {}) });
+      return { status: response.status, text: await response.text(), retryAfter: response.headers?.get('retry-after') ?? null };
+    })();
+    return timeoutMs === undefined ? exchange : this.within(exchange, timeoutMs, `${method} ${path}`);
+  }
+
+  /** `work`, or a rejection once `ms` passed without it: whether the request arrived is then unknown. */
+  private within<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+    let cancel: Cancel | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      cancel = this.options.clock.schedule(ms, () => reject(new Error(`${what}: no answer within ${ms} ms`)));
+    });
+    return Promise.race([work, timeout]).finally(() => cancel?.());
   }
 
   /**

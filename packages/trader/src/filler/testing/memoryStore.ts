@@ -39,6 +39,9 @@ interface OrderState {
 
 const TERMINAL_TICKET_STATES = new Set(['declined', 'expired']);
 
+const settlementClosed = (s: SettlementRecord | undefined): boolean =>
+  s?.state === 'settled' || (s?.state === 'failed' && s.reason?.startsWith('refunded') === true);
+
 const emptyOrder = (): OrderState => ({ tickets: new Map(), fills: new Map(), attestations: new Map(), settlement: undefined });
 
 /** Deep copy, so a caller holding a returned record cannot mutate the store behind its back. */
@@ -146,7 +149,7 @@ export class InMemoryFillerStore implements FillerStore {
       const liveTicket = [...order.tickets.values()].some(
         (t) => (!TERMINAL_TICKET_STATES.has(t.state) && t.state !== 'filled') || (t.state === 'declined' && t.sentAtMs === undefined),
       );
-      const unsettledFill = order.fills.size > 0 && order.settlement?.state !== 'settled';
+      const unsettledFill = [...order.fills.values()].some((f) => f.state !== 'failed') && !settlementClosed(order.settlement);
       if (liveTicket || unsettledFill) open.push(id as Hex);
     }
     return open.sort();

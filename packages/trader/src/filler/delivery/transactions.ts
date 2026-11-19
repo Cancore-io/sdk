@@ -91,6 +91,11 @@ export interface TransactionReceipt {
   raw: Readonly<Record<string, unknown>>;
 }
 
+interface NonceTurn {
+  end: () => void;
+  nonce?: bigint;
+}
+
 /** The lease of a nonce is no longer held: another replica drives it now. Nothing was broadcast. */
 export class LeaseLostError extends Error {
   override readonly name = 'LeaseLostError';
@@ -159,6 +164,8 @@ export class TransactionDriver {
   readonly chain: EvmChainId;
   readonly address: Hex;
   private readonly chainId: bigint;
+  private lastTurn: Promise<void> = Promise.resolve();
+  private turn: NonceTurn | undefined;
 
   constructor(private readonly options: TransactionDriverOptions) {
     this.chain = options.chain;
@@ -188,6 +195,55 @@ export class TransactionDriver {
     }
     const chainNonce = await this.plausiblePending(open.length);
     return store.nonces.allocate({ chain: this.chain, address: this.address, owner, ttlMs: leaseTtlMs, chainNonce });
+  }
+
+  /**
+   * Runs `use` on a nonce from `acquire`, one turn at a time per driver: the
+   * next turn starts once `use` has recorded a transaction on that nonce or
+   * ended. Concurrent sends of this replica never share a nonce taken empty
+   * (`acquire` alone cannot tell a nonce another send is about to record on
+   * from one a failed send abandoned).
+   */
+  async withNonce<T>(use: (lease: NonceLease) => Promise<T>): Promise<T> {
+    const turn = await this.nextTurn();
+    try {
+      return await use(this.holdTurn(turn, await this.acquire()));
+    } finally {
+      this.endTurn(turn);
+    }
+  }
+
+  /** `use` on `record`'s nonce in a turn of `withNonce`; undefined when the nonce is no longer held or no longer empty. */
+  async withEmptyNonce<T>(record: NonceLease, use: (lease: NonceLease) => Promise<T>): Promise<T | undefined> {
+    const turn = await this.nextTurn();
+    try {
+      if ((await this.record(record))?.transactions.length !== 0) return undefined;
+      const lease = await this.renew(record);
+      return lease ? await use(this.holdTurn(turn, lease)) : undefined;
+    } finally {
+      this.endTurn(turn);
+    }
+  }
+
+  private async nextTurn(): Promise<NonceTurn> {
+    const previous = this.lastTurn;
+    let end!: () => void;
+    this.lastTurn = new Promise<void>((resolve) => {
+      end = resolve;
+    });
+    await previous;
+    return { end };
+  }
+
+  private holdTurn(turn: NonceTurn, lease: NonceLease): NonceLease {
+    turn.nonce = lease.nonce;
+    this.turn = turn;
+    return lease;
+  }
+
+  private endTurn(turn: NonceTurn): void {
+    if (this.turn === turn) this.turn = undefined;
+    turn.end();
   }
 
   /**
@@ -311,7 +367,10 @@ export class TransactionDriver {
       ...fees,
       sentAtMs,
     };
-    if (!(await this.options.store.nonces.recordTransaction(lease, tx))) throw new LeaseLostError(lease);
+    const recorded = await this.options.store.nonces.recordTransaction(lease, tx);
+    // Only a definite answer ends the turn: after a store error the nonce may still be empty.
+    if (this.turn?.nonce === lease.nonce) this.endTurn(this.turn);
+    if (!recorded) throw new LeaseLostError(lease);
     await this.broadcast(tx);
     return tx;
   }

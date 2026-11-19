@@ -298,9 +298,11 @@ const signDigest = (key: Hex, digest: Hex): Hex => signRsv(hexToBytes(digest.sli
 
 /**
  * Opens `o` on the stand router as the maker (MAKER_EVM_KEY, Permit2-approved on the stand's test tokens) with a
- * quote of the stand's quote signer (QUOTE_SIGNER_KEY): the escrow a ticket's checks read past V-E2.
+ * quote of the stand's quote signer (QUOTE_SIGNER_KEY): the escrow a ticket's checks read past V-E2. Returns `o` with
+ * `nowS` no earlier than the open's block time: like trading, the ticket window starts no earlier than openedAt
+ * (V-E2, BUG-1609).
  */
-export async function openOnStand(o: { order: OrderJson; orderHash: Hex }): Promise<void> {
+export async function openOnStand<O extends { order: OrderJson; orderHash: Hex; nowS: number }>(o: O): Promise<O> {
   const rpc = httpRpc(env('EVM_RPC_URL'));
   const chainId = BigInt(env('EVM_CHAIN_ID'));
   const router = standRouter();
@@ -315,8 +317,10 @@ export async function openOnStand(o: { order: OrderJson; orderHash: Hex }): Prom
   const nonce = BigInt(await rpc.request<string>({ method: 'eth_getTransactionCount', params: [maker.address, 'pending'] }));
   const raw = await maker.signTransaction({ chainId, nonce, to: router, data, value: 0n, gasLimit: 1_500_000n, maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 1_000_000_000n });
   const tx = await rpc.request<Hex>({ method: 'eth_sendRawTransaction', params: [raw] });
-  const receipt = await until('the open mined', async () => (await rpc.request<{ status: string } | null>({ method: 'eth_getTransactionReceipt', params: [tx] })) ?? undefined, 60_000);
+  const receipt = await until('the open mined', async () => (await rpc.request<{ status: string; blockNumber: string } | null>({ method: 'eth_getTransactionReceipt', params: [tx] })) ?? undefined, 60_000);
   if (receipt.status !== '0x1') throw new Error(`openFor of ${o.orderHash} reverted`);
+  const opened = await rpc.request<{ timestamp: string }>({ method: 'eth_getBlockByNumber', params: [receipt.blockNumber, false] });
+  return { ...o, nowS: Math.max(o.nowS, Number(BigInt(opened.timestamp))) };
 }
 
 /** `ticket.offer` of `order` as trading sends it after the pick: attempt 0, a 15 min ticket, 15 s to accept. */
