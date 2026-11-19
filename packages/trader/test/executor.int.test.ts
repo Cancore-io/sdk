@@ -217,6 +217,19 @@ live('Executor against the stand router (make intent-genesis)', () => {
     s.executor.stop();
   });
 
+  type Scenario = Awaited<ReturnType<typeof scenario>>;
+  const gasEventsOf = (s: Scenario, hash?: string) => s.events.events.filter((e): e is GasSpentEvent => e.type === 'gas' && (hash === undefined || e.txHash === hash));
+  const gasOf = (s: Scenario, hash: string) => waitFor(async () => gasEventsOf(s, hash)[0], `the gas of ${hash}`);
+  /** Five polls of the executor: a repeated report would have landed by then. */
+  const quiet = () => new Promise((resolve) => setTimeout(resolve, 1_000));
+  /** The cost of `hash` as anvil's receipt states it. */
+  const receiptCost = async (hash: string) => {
+    const r = await rpc.request<{ gasUsed: string; effectiveGasPrice: string; blockHash: Hex; status: string }>({ method: 'eth_getTransactionReceipt', params: [hash] });
+    const gasUsed = BigInt(r.gasUsed);
+    const price = BigInt(r.effectiveGasPrice);
+    return { blockHash: r.blockHash, reverted: BigInt(r.status) === 0n, gasUsed: gasUsed.toString(), effectiveGasPrice: price.toString(), feeWei: (gasUsed * price).toString() };
+  };
+
   test('BUG-1589-08: a fill on the real router reports the gas anvil charged for it, once, charged to its order', async () => {
     const s = await scenario({ instanceId: 'int-gas' });
     await s.executor.start();
@@ -224,13 +237,11 @@ live('Executor against the stand router (make intent-genesis)', () => {
     await s.state('included');
     await mine(2);
     await s.state('confirmed');
-    const spent = await waitFor(async () => s.events.events.find((e): e is GasSpentEvent => e.type === 'gas' && e.txHash === txHash), 'the gas of the fill');
-    const receipt = await rpc.request<{ gasUsed: string; effectiveGasPrice: string; blockHash: Hex }>({ method: 'eth_getTransactionReceipt', params: [txHash] });
-    expect(spent).toMatchObject({ orderHash: s.orderHash, attempt: 0, kind: 'fill', chain, reverted: false, blockHash: receipt.blockHash, gasUsed: BigInt(receipt.gasUsed).toString(), effectiveGasPrice: BigInt(receipt.effectiveGasPrice).toString() });
-    expect(spent.feeWei).toBe((BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice)).toString());
+    const spent = await gasOf(s, txHash!);
+    expect(spent).toMatchObject({ orderHash: s.orderHash, attempt: 0, kind: 'fill', chain, ...(await receiptCost(txHash!)) });
     expect(BigInt(spent.feeWei)).toBeGreaterThan(0n);
-    expect(s.events.events.filter((e) => e.type === 'gas' && e.orderHash === s.orderHash)).toHaveLength(1);
-    s.executor.stop();
+    await quiet();
+    expect(gasEventsOf(s)).toHaveLength(1);
   });
 
   test('nothing is sent with less than sendGuard left, nor past validUntil', async () => {
@@ -263,7 +274,7 @@ live('Executor against the stand router (make intent-genesis)', () => {
     }
   });
 
-  test('replace-by-fee: a fill stuck in the mempool is replaced on its nonce and the replacement fills', async () => {
+  test('replace-by-fee: a fill stuck in the mempool is replaced on its nonce and the replacement fills; BUG-1589-10: gas only for the replacement that was mined', async () => {
     await rpc.request({ method: 'evm_setAutomine', params: [false] });
     const s2 = await scenario({ instanceId: 'int-rbf' });
     await s2.executor.start();
@@ -275,10 +286,13 @@ live('Executor against the stand router (make intent-genesis)', () => {
     await mine(3);
     const fill = await s2.state('confirmed');
     expect(fill.txRef).toBe(replaced.detail!.txHash);
+    expect(await gasOf(s2, fill.txRef)).toMatchObject({ kind: 'fill', orderHash: s2.orderHash, ...(await receiptCost(fill.txRef)) });
+    await quiet();
+    expect(gasEventsOf(s2).map((e) => e.txHash)).toEqual([fill.txRef]);
     s2.executor.stop();
   });
 
-  test('a fill reorged out before validUntil is resent on its nonce and confirms', async () => {
+  test('a fill reorged out before validUntil is resent on its nonce and confirms; BUG-1589-11: its gas is reported once, from the block that stayed', async () => {
     const s = await scenario({ chain: { fillConfirmations: 3 } });
     await s.executor.start();
     const snapshot = await rpc.request<string>({ method: 'evm_snapshot', params: [] });
@@ -291,10 +305,15 @@ live('Executor against the stand router (make intent-genesis)', () => {
     const fill = await s.state('confirmed');
     expect(fill.txRef).toBe(sent.txHash);
     expect(await s.filled()).toBe(true);
+    const cost = await receiptCost(sent.txHash!);
+    expect(cost.blockHash).toBe(fill.inclusion!.blockHash);
+    expect(await gasOf(s, sent.txHash!)).toMatchObject({ kind: 'fill', ...cost });
+    await quiet();
+    expect(gasEventsOf(s)).toHaveLength(1);
     s.executor.stop();
   });
 
-  test('restart between the nonce journal and the broadcast: another replica takes the lease after its TTL and sends those bytes; no second fill', async () => {
+  test('restart between the nonce journal and the broadcast: another replica takes the lease after its TTL and sends those bytes; no second fill; BUG-1589-12: the new owner reports its gas once', async () => {
     const s = await scenario({ instanceId: 'int-r2' });
     const dead = new TransactionDriver({ chain, client: s.chains.get(chain)!.client, signer: delivery, store: s.store, owner: 'int-dead', leaseTtlMs: 1_000, fees: { feeBumpPercent: 15, gasLimitMarginPercent: 20 }, logger });
     const lease = await dead.acquire();
@@ -311,13 +330,16 @@ live('Executor against the stand router (make intent-genesis)', () => {
     const fill = await s.state('confirmed');
     expect(fill.txRef).toBe(hash);
     expect(await s.filled()).toBe(true);
+    expect(await gasOf(s, hash)).toMatchObject({ kind: 'fill', orderHash: s.orderHash, attempt: 0, ...(await receiptCost(hash)) });
+    await quiet();
+    expect(gasEventsOf(s)).toHaveLength(1);
     s.executor.stop();
   });
   const ERC20 = IBURN_MINT_ERC20_ABI as unknown as readonly AbiEntry[];
   const pendingNonce = async () => rpc.request<string>({ method: 'eth_getTransactionCount', params: [delivery.address, 'pending'] });
   const balanceOf = async (asset: Hex, owner: Hex) => BigInt(await rpc.request<string>({ method: 'eth_call', params: [{ to: asset, data: encodeFunctionCall(entryOf(ERC20, 'function', 'balanceOf'), [owner]) }, 'latest'] }));
 
-  test('TC-SDK-1855-INT-02: a fee-on-transfer output token on the real router — sent without a margin it reverts and nothing goes out; with the margin the recipient gets at least minReceived, one filled', async () => {
+  test('TC-SDK-1855-INT-02 BUG-1589-13: a fee-on-transfer output token on the real router — sent without a margin it reverts and nothing goes out, so no gas; with the margin the recipient gets at least minReceived, one filled, its gas reported', async () => {
     const fot = evm.fixtures?.feeOnTransfer;
     if (!fot) throw new Error('evm.json has no fixtures.feeOnTransfer: the stand predates CAN-1855 INT-02 (test/stand/up.mjs)');
     const asset = fot.address.toLowerCase() as Hex;
@@ -331,6 +353,7 @@ live('Executor against the stand router (make intent-genesis)', () => {
     // eth_estimateGas refused it: no fill went out (the executor may still top up its allowance, T-25).
     expect(bare.stages('fill.sent')).toHaveLength(0);
     expect(await bare.filled()).toBe(false);
+    expect(gasEventsOf(bare).filter((e) => e.kind === 'fill')).toEqual([]);
 
     const s = await scenario({ outputToken: asset, instanceId: 'int-fot', delivery: { fillAmount: ({ order }) => grossUp(BigInt(order.minReceived)) } });
     const recipient = `0x${s.order.recipient.slice(26)}` as Hex;
@@ -344,7 +367,46 @@ live('Executor against the stand router (make intent-genesis)', () => {
     expect((await balanceOf(asset, recipient)) - before).toBeGreaterThanOrEqual(BigInt(s.order.minReceived));
     expect(await s.filled()).toBe(true);
     expect(s.events.events.filter((e) => e.type === 'filled')).toHaveLength(1);
+    expect(await gasOf(s, fill.txRef)).toMatchObject({ kind: 'fill', orderHash: s.orderHash, ...(await receiptCost(fill.txRef)) });
     s.executor.stop();
+  });
+
+  test('BUG-1589-14: a fill mined and reverted by the real router (TicketExpired) reports the gas it burnt, reverted, charged to its order', async () => {
+    await rpc.request({ method: 'evm_setAutomine', params: [false] });
+    const s = await scenario({ ttlS: 60, instanceId: 'int-gas-revert' });
+    await s.executor.start();
+    const { txHash } = await s.executor.deliver(s.orderHash, 0);
+    expect(txHash).toBeDefined();
+    // Estimated before validUntil, mined after it: the router reverts TicketExpired and the gas is spent.
+    await rpc.request({ method: 'evm_setNextBlockTimestamp', params: [`0x${(BigInt(s.ticket.validUntil) + 1n).toString(16)}`] });
+    await rpc.request({ method: 'evm_mine', params: [] });
+    await rpc.request({ method: 'evm_setAutomine', params: [true] });
+    await mine(2);
+    await s.state('failed');
+    const cost = await receiptCost(txHash!);
+    expect(cost.reverted).toBe(true);
+    expect(await gasOf(s, txHash!)).toMatchObject({ kind: 'fill', orderHash: s.orderHash, attempt: 0, ...cost });
+    expect(await s.filled()).toBe(false);
+  });
+
+  test('BUG-1589-15: with no allowance the executor approves the router itself; the approve reports its gas with no order, the fill with its own', async () => {
+    const approveCall = (amount: bigint) => encodeFunctionCall(entryOf(ERC20, 'function', 'approve'), [router, amount]);
+    await sendFrom(token, approveCall(0n));
+    try {
+      const s = await scenario({ instanceId: 'int-gas-approve' });
+      await s.executor.start();
+      const { txHash } = await s.executor.deliver(s.orderHash, 0);
+      const approveHash = s.stages('approve.sent')[0]!.detail!.txHash as Hex;
+      await s.state('included');
+      await mine(2);
+      await s.state('confirmed');
+      const approve = await gasOf(s, approveHash);
+      expect(approve).toMatchObject({ kind: 'approve', chain, ...(await receiptCost(approveHash)) });
+      expect(approve).not.toHaveProperty('orderHash');
+      expect(await gasOf(s, txHash!)).toMatchObject({ kind: 'fill', orderHash: s.orderHash, ...(await receiptCost(txHash!)) });
+    } finally {
+      await sendFrom(token, approveCall(10n ** 24n));
+    }
   });
 
   test.each([

@@ -55,7 +55,7 @@ import type { FillSigner } from '../signer';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, TicketRecord } from '../store';
 import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from '../tickets/terms';
 import { CantonDelivery, isSignedClaim } from './canton';
-import { completeMined } from './gas';
+import { lateReceipt, reportMined, unpricedNonce } from './gas';
 import { FeeCeilingError, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
 import { reasonOf, retryableEstimateFailure, revertName } from './reverts';
 import type { FillRefusal } from './refusal';
@@ -751,14 +751,14 @@ export class Executor {
     if (tx.kind === 'settle') {
       if (!(await this.deepEnough(t, receipt, depth))) return false;
       await this.settleListener?.(chain, tx, receipt);
-      await completeMined(store.nonces, t.lease, { chain, tx, receipt, nonceTransactions: txs }, (spent) => this.emit(spent));
+      await reportMined({ nonces: store.nonces, lease: t.lease, driver: t.driver, emit: (spent) => this.emit(spent) }, tx, receipt, txs);
       return true;
     }
     if (tx.kind !== 'fill' || !tx.orderHash || tx.attempt === undefined) {
       if (!(await this.deepEnough(t, receipt, depth))) return false;
       if (tx.kind === 'cancel') await this.cancelled(chain, tx, txs, receipt);
       else this.stage(tx.kind === 'approve' ? 'approve.confirmed' : 'tx.confirmed', tx.orderHash, tx.attempt, { chain, kind: tx.kind, txHash: tx.hash, status: receipt.status, gasUsed: receipt.gasUsed.toString() });
-      await completeMined(store.nonces, t.lease, { chain, tx, receipt, nonceTransactions: txs }, (spent) => this.emit(spent));
+      await reportMined({ nonces: store.nonces, lease: t.lease, driver: t.driver, emit: (spent) => this.emit(spent) }, tx, receipt, txs);
       return true;
     }
     const orderHash = tx.orderHash;
@@ -787,7 +787,7 @@ export class Executor {
     if (receipt.status === 0) {
       await this.fail(orderHash, attempt, `reverted in block ${receipt.blockNumber}`);
       this.stage('fill.reverted', orderHash, attempt, { chain, txHash: tx.hash, block: receipt.blockNumber.toString(), gasUsed: receipt.gasUsed.toString() });
-      await completeMined(store.nonces, t.lease, { chain, tx, receipt, nonceTransactions: txs }, (spent) => this.emit(spent));
+      await reportMined({ nonces: store.nonces, lease: t.lease, driver: t.driver, emit: (spent) => this.emit(spent) }, tx, receipt, txs);
       return true;
     }
     const confirmed = await store.withOrder(orderHash, async (otx) => {
@@ -814,7 +814,7 @@ export class Executor {
       this.options.logger.info('delivery: fill confirmed', { orderHash, attempt, chain, txHash: tx.hash });
       this.options.onFilled?.(orderHash, attempt);
     }
-    await completeMined(store.nonces, t.lease, { chain, tx, receipt, nonceTransactions: txs }, (spent) => this.emit(spent));
+    await reportMined({ nonces: store.nonces, lease: t.lease, driver: t.driver, emit: (spent) => this.emit(spent) }, tx, receipt, txs);
     return true;
   }
 
@@ -872,6 +872,8 @@ export class Executor {
     if ((await driver.transactionCount('latest')) > t.lease.nonce) {
       // Spent, with no receipt of ours: receipts may lag; past that, another transaction took the nonce.
       if (++t.spentTicks < SPENT_TICKS) return false;
+      const late = await lateReceipt(driver, txs);
+      if (late) return this.included(t, late.tx, late.receipt, late.depth, txs);
       if (fill?.orderHash && fill.attempt !== undefined) {
         // Only this delivery key can fill the order: filled(orderHash) means one of its fills executed, whatever an endpoint's receipts say.
         const executed = await this.executedFill(t, fill, txs);
@@ -881,6 +883,7 @@ export class Executor {
       if (fill?.orderHash && fill.attempt !== undefined) await this.fail(fill.orderHash, fill.attempt, 'its nonce was spent by another transaction');
       const settle = txs.find((x) => x.kind === 'settle' && x.orderHash);
       if (settle) await this.settleLostListener?.(driver.chain, settle);
+      this.emit(unpricedNonce(driver.chain, t.lease, txs, clock.now()));
       await store.nonces.complete(t.lease, ZERO_HASH);
       return true;
     }

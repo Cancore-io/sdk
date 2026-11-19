@@ -1114,6 +1114,21 @@ describe('BUG-1589: gas of own transactions, charged to the trade', () => {
     expect(gasEvents(w)).toEqual([{ type: 'gas', orderHash: w.orderHash, attempt: 0, kind: 'settle', chain: DST, txHash: settle.hash, reverted: false, ...(await costOf(w, settle.hash)) }]);
     executor.stop();
   });
+
+  test('BUG-1589-20: a nonce spent with no receipt of its own transaction visible is given up with a gas.unpriced alert naming them, and no gas', async () => {
+    const w = await world();
+    const executor = w.executor();
+    const driver = new TransactionDriver({ chain: DST, client: w.chains.get(DST)!.client, signer: fillSigner, store: w.store, owner: 'r1', leaseTtlMs: 5_000, fees: { feeBumpPercent: 15, gasLimitMarginPercent: 20 }, logger: w.logger });
+    const lease = await driver.acquire();
+    const settle = await driver.send(lease, { to: SRC_ROUTER, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now());
+    w.dst.hideReceipts = true;
+    executor.watch(driver, lease);
+    await w.tick(6_000);
+    expect(w.stages('gas.unpriced')).toEqual([expect.objectContaining({ orderHash: w.orderHash, attempt: 0, detail: { chain: DST, nonce: '0', kinds: 'settle', txHashes: settle.hash } })]);
+    expect(gasEvents(w)).toEqual([]);
+    expect(await w.store.nonces.listOpen(DST, fillSigner.address.toLowerCase() as Hex)).toEqual([]);
+    executor.stop();
+  });
 });
 
 describe('fillDepth', () => {

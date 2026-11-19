@@ -56,16 +56,22 @@ export interface DeclinedEvent {
 }
 
 /**
- * What one own EVM transaction cost, once its nonce is done — as deep as the
- * chain's `fillConfirmations` (BUG-1589): a fill, confirmed or reverted; the
- * cancel that freed an expired fill's nonce; a `settle`; an `approve`. Gas is
- * spent whether or not the call succeeded, so a reverted one is reported too.
- * Emitted by the replica that marks the nonce mined, once per transaction:
- * key it by `txHash`.
+ * What one own EVM transaction cost, once its nonce is done — its block as deep
+ * as the chain's `fillConfirmations` (BUG-1589): a fill, confirmed or reverted;
+ * a cancel (of an expired fill, or of a nonce gap); a `settle`; an `approve`.
+ * Gas is spent whether or not the call succeeded, so a reverted one is reported
+ * too. `blockHash` and the price are final only at that depth, which is why
+ * nothing is reported before it. At least once: a replica that crashes, or
+ * loses the store's reply, after reporting and before the nonce is marked
+ * mined reports it again — key it by `txHash`.
  */
 export interface GasSpentEvent {
   type: 'gas';
-  /** The trade the cost is charged to; absent for an `approve`, which serves every order of its token. */
+  /**
+   * The trade the cost is charged to: the fill's or the settle's own, and for
+   * the cancel of an expired fill, that fill's. Absent for an `approve`, which
+   * serves every order of its token, and for a cancel that filled a nonce gap.
+   */
   orderHash?: Hex;
   attempt?: number;
   kind: InFlightKind;
@@ -76,7 +82,11 @@ export interface GasSpentEvent {
   /** Mined and reverted: the gas was still spent. */
   reverted: boolean;
   gasUsed: DecString;
-  /** Wei per gas unit, from the receipt. */
+  /**
+   * Wei per gas unit: the receipt's; from an RPC that omits it,
+   * `min(maxFeePerGas, baseFeePerGas + maxPriorityFeePerGas)` of the
+   * transaction as sent, in its block.
+   */
   effectiveGasPrice: DecString;
   /** OP-stack chains only: the L1 data fee the receipt names, wei. */
   l1Fee?: DecString;
@@ -153,7 +163,12 @@ export type FillerStage =
   /** Own `settle` mined and reverted. */
   | 'settle.reverted'
   | 'settle.sent'
-  | 'settle.confirmed';
+  | 'settle.confirmed'
+  /**
+   * Operator alert: a nonce looked spent with no receipt of any of its own transactions and was given up, so
+   * their gas is unknown (`detail.chain`, `detail.nonce`, `detail.kinds`, `detail.txHashes` for reconciliation).
+   */
+  | 'gas.unpriced';
 
 export interface StageEvent {
   type: 'stage';
