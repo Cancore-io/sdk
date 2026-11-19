@@ -79,7 +79,7 @@ const bytes32 = (v: DamlValue): string => {
 };
 const int = (v: DamlValue): bigint => (v.t === 'int64' ? BigInt(v.v) : refuse('expected an Int'));
 const micros = (v: DamlValue): bigint => (v.t === 'timestamp' ? BigInt(v.v) : refuse('expected a Time'));
-/** `DeliveryOrder.validFrom` is set and not before `floor` (unix s). None, or no field at all (a 0.4.2 order; a trailing None is dropped), puts no floor under the fill. */
+/** `DeliveryOrder.validFrom` is set and not before `floor` (unix s). An order without one (None, or no field at all: a 0.4.2 order, or a trailing None the ledger dropped) is refused: nothing would hold its fill to the source `openedAt`. */
 const requireValidFrom = (order: DamlValue, floor: bigint): void => {
   const validFrom = order.t === 'record' ? order.v.validFrom : undefined;
   if (validFrom?.t !== 'optional' || !validFrom.v) return refuse('the DeliveryOrder has no validFrom: the ledger would take a fill before the source openedAt');
