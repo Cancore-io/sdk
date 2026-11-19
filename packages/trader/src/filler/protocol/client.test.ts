@@ -12,6 +12,7 @@ import {
   type QuoteMessage,
   type TicketDecline,
   type TicketIntentMessage,
+  type TicketReceiptEvm,
 } from '@cancore/contracts';
 import { FillerStoppedError, GatewayError, UnsupportedVersionError } from '../errors';
 import { createFiller, createFrameIds, type FillerConfig } from '../filler';
@@ -475,7 +476,7 @@ describe('rate limits per fillerId (RATE_LIMITED, retryAfterMs)', () => {
     expect(h.client.send(await quote('q-4'))).toBe(true);
   });
 
-  test('a ticket action is refused locally with the remaining retryAfterMs while the ticket class is paused, on either channel', async () => {
+  test('a ticket action is refused locally with the remaining retryAfterMs while the ticket class is paused, session up or down', async () => {
     const h = harness({ heartbeatIntervalMs: 600_000 });
     void h.client.start();
     const socket = await h.login();
@@ -883,6 +884,10 @@ describe('REST fallback (protocol §3.6)', () => {
     orderHash: ORDER_HASH, attempt: 1, validFrom: '1790000000', validUntil: '1790000180',
     deliveryKey: `0x${'42'.repeat(20)}`, repayTo: `0x${'00'.repeat(12)}${'42'.repeat(20)}`, sig: `0x${'00'.repeat(65)}`,
   });
+  const receipt = (over: Partial<TicketReceiptEvm> = {}): TicketReceiptEvm => ({
+    type: 'ticket.receipt', id: 'r-1', fillerId: FILLER, sentAt: 1790000000000, msgSig: `0x${'00'.repeat(65)}`,
+    orderHash: ORDER_HASH, attempt: 1, ticketHash: `0x${'01'.repeat(32)}`, ticketSigHash: `0x${'02'.repeat(32)}`, sig: `0x${'03'.repeat(65)}`, ...over,
+  });
 
   test('after a drop the client pulls GET /v1/filler/tickets with a bearer token and handles the items', async () => {
     const h = harness();
@@ -954,24 +959,50 @@ describe('REST fallback (protocol §3.6)', () => {
     await expect(h.rest.postTicket({ action: 'decline', message: decline })).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE', httpStatus: 409 });
   });
 
-  test('submitTicket: WebSocket when ready, REST while down; the REST ack is handled like a frame; a repeat is the same request', async () => {
+  // BUG-1615: a WebSocket send proves only that the bytes reached the socket; the HTTP status is the acknowledgement.
+  test('submitTicket: a POST even while the session is ready, nothing on the socket; the ack is handled like a frame; a repeat is the same request', async () => {
     const h = harness();
     void h.client.start();
     const socket = await h.login();
     await h.store.withOrder(ORDER_HASH, (tx) => tx.putTicket({ orderHash: ORDER_HASH, attempt: 1, state: 'intent-sent', updatedAtMs: h.clock.now() }));
-    await expect(h.client.submitTicket({ action: 'intent', message: intent() })).resolves.toBe('ws');
-    expect(socket.sentFrames().at(-1)).toMatchObject({ type: 'ticket.intent', orderHash: ORDER_HASH });
-
-    socket.drop();
     const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1, intentHash: `0x${'ef'.repeat(32)}`, receivedAt: h.clock.now() });
     h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/intent`] = () => ({ status: 200, body: ack });
-    await expect(h.client.submitTicket({ action: 'intent', message: intent() })).resolves.toBe('rest');
-    await expect(h.client.submitTicket({ action: 'intent', message: intent() })).resolves.toBe('rest');
+    await expect(h.client.submitTicket({ action: 'intent', message: intent() })).resolves.toBeUndefined();
+    await expect(h.client.submitTicket({ action: 'intent', message: intent() })).resolves.toBeUndefined();
+    expect(h.client.connected).toBe(true);
+    expect(socket.sentFrames().filter((f) => f.type === 'ticket.intent')).toEqual([]);
     const posts = h.http.requests.filter((r) => r.method === 'POST' && r.url.endsWith('/intent'));
     expect(posts).toHaveLength(2);
     expect(posts[0]!.body).toBe(posts[1]!.body);
     const ticket = await h.store.withOrder(ORDER_HASH, (tx) => tx.getTicket(1));
     expect(ticket).toMatchObject({ state: 'intent-acked', intentAck: { sig: ack.sig } });
+  });
+
+  test('BUG-1615: submitTicket rejects on a refusal while the session is ready, and nothing is journalled to-gateway', async () => {
+    const h = harness();
+    void h.client.start();
+    await h.login();
+    h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/receipt`] = () => ({ status: 500, body: h.gateway.frame({ type: 'error', fillerId: FILLER, code: 'INTERNAL', message: 'refused' }) });
+    await expect(h.client.submitTicket({ action: 'receipt', message: receipt() })).rejects.toMatchObject({ code: 'INTERNAL', httpStatus: 500 });
+    expect(h.store.journal().filter((e) => e.direction === 'to-gateway')).toEqual([]);
+  });
+
+  test('N-14: an acknowledged receipt is journalled to-gateway under its order as the bytes posted; an intent or a decline is not', async () => {
+    const h = harness();
+    const outsideAnOrder = jest.spyOn(h.store, 'appendEvidence');
+    const upper = `0x${'AB'.repeat(32)}` as Hex;
+    for (const action of ['receipt', 'decline'] as const) h.http.routes[`POST /v1/filler/tickets/${upper}/1/${action}`] = () => ({ status: 200, body: {} });
+    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: upper, attempt: 1, intentHash: `0x${'ef'.repeat(32)}`, receivedAt: h.clock.now() });
+    h.http.routes[`POST /v1/filler/tickets/${upper}/1/intent`] = () => ({ status: 200, body: ack });
+    await h.client.submitTicket({ action: 'intent', message: { ...intent(), orderHash: upper } });
+    await h.client.submitTicket({ action: 'decline', message: { type: 'ticket.decline', id: 'd-1', fillerId: FILLER, sentAt: 1790000000000, msgSig: `0x${'00'.repeat(65)}`, orderHash: upper, attempt: 1, reason: 'OTHER' } });
+    await h.client.submitTicket({ action: 'receipt', message: receipt({ orderHash: upper }) });
+    const [posted] = h.http.requests.filter((r) => r.url.endsWith('/receipt'));
+    const raw = new TextEncoder().encode(posted!.body!);
+    const lower = upper.toLowerCase() as Hex;
+    expect(h.store.journal().filter((e) => e.direction === 'to-gateway')).toEqual([{ id: keccakHex(raw), direction: 'to-gateway', type: 'ticket.receipt', raw, atMs: h.clock.now(), orderHash: lower, attempt: 1 }]);
+    // Under the order's lock, as every entry that names an order.
+    expect(outsideAnOrder).not.toHaveBeenCalled();
   });
 
   test('frames with no REST route are not sent while down', async () => {

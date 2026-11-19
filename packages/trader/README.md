@@ -123,12 +123,16 @@ It connects only after logging in.
   `retryAfterMs` filler-gateway named.
 - **REST fallback** (§3.6) on the same host (`wss` → `https`), with the login's bearer token (renewed once on
   a 401). While the session is down it polls `GET /v1/filler/tickets` every
-  `transport.restPollIntervalMs` (2 s), and sends ticket intents, receipts and declines as
-  `POST /v1/filler/tickets/{orderHash}/{attempt}/{intent|receipt|decline}`. After every login it pulls once
-  more. Frames with no REST route (`quote`, `quote.reconfirm.reply`, `fill.reported`) are not sent while down.
+  `transport.restPollIntervalMs` (2 s). After every login it pulls once more. Frames with no REST route
+  (`quote`, `quote.reconfirm.reply`, `fill.reported`) are not sent while down.
+- **Ticket actions** (intents, receipts, declines) always go as
+  `POST /v1/filler/tickets/{orderHash}/{attempt}/{intent|receipt|decline}`, session up or down: the HTTP status
+  is the acknowledgement. Until a 2xx the action counts as not delivered: a receipt does not start the delivery,
+  and the action is sent again (fresh envelope) while its deadline lasts.
 - **Evidence.** Every verified frame is written to the store's evidence journal as the exact bytes received
   (id = keccak256 of the bytes), under the order lock when it names an order. `quote.ack` is attached to its
-  quote, `ticket.intent.ack` to its ticket attempt.
+  quote, `ticket.intent.ack` to its ticket attempt. Every receipt filler-gateway acknowledged is journalled
+  `to-gateway` as the bytes posted.
 - **Several replicas, one `fillerId`** (T-10). Any frame may arrive on any replica's session, twice, or over
   both WebSocket and REST; frame handling is idempotent against the store. Frame ids are
   `<instanceId>:<start time>:<sequence>`, unique across replicas and restarts.

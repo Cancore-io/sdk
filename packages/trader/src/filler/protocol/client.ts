@@ -13,21 +13,25 @@
  *   sessions, or over WebSocket and REST (S-16); handlers are idempotent
  *   against the store (T-10).
  * - **Fallback.** While the session is down the client polls
- *   `GET /v1/filler/tickets` and feeds the items through the same path, and
- *   ticket actions go out as `POST /v1/filler/tickets/…`. After every login it
- *   pulls once more, for whatever was sent while it was away.
+ *   `GET /v1/filler/tickets` and feeds the items through the same path. After
+ *   every login it pulls once more, for whatever was sent while it was away.
+ * - **Ticket actions** always go out as `POST /v1/filler/tickets/…`, session
+ *   up or down: the HTTP status is their acknowledgement. A WebSocket send
+ *   only says the bytes reached the socket, and filler-gateway's `error{re}`
+ *   could not be tied back to the action (BUG-1615). An acknowledged receipt
+ *   is journalled `to-gateway` as the bytes posted (N-14).
  * - **Rate limits.** An `error RATE_LIMITED` with `retryAfterMs` pauses the
  *   rate class of the frame it refuses (`re`; every WebSocket class when it
  *   names none of ours), shared with the REST side's pauses: until it ends
  *   `send` returns false and `submitTicket` rejects with `RATE_LIMITED` and the
  *   remaining `retryAfterMs`, so no component resends into the limit.
  */
-import type { F2SMessage, Hex, QuoteAck, TicketIntentAck } from '@cancore/contracts';
+import type { F2SMessage, Hex, QuoteAck, TicketIntentAck, TicketReceiptMessage } from '@cancore/contracts';
 import { FillerStoppedError, GatewayError } from '../errors';
 import type { EventSink, FillerStage } from '../events';
 import type { Clock, Logger } from '../runtime';
 import type { EvidenceEntry, FillerStore } from '../store';
-import { gatewayErrorOf, type VerifiedFrame } from './frames';
+import { frameBytes, gatewayErrorOf, keccakHex, type VerifiedFrame } from './frames';
 import type { GatewayRest, QuoteListItem, TicketAction } from './rest';
 import type { Sealer } from './envelope';
 import { rateClassOfFrame, WS_RATE_CLASSES, type RateClass, type RateLimits } from './limits';
@@ -152,19 +156,18 @@ export class FillerProtocolClient implements SessionListener {
   }
 
   /**
-   * Sends a ticket action: on the session when it is ready, otherwise as
-   * `POST /v1/filler/tickets/{orderHash}/{attempt}/{action}`. The REST answer
-   * to an intent (`ticket.intent.ack`) goes through the same handling as a
-   * WebSocket frame. A message is sent again under a fresh envelope (new `id`,
-   * `sentAt`): the gateway refuses a reused `id` and a stale `sentAt` (§3.4),
-   * and answers a repeated consent or receipt with the same ack (§6).
+   * Sends a ticket action as `POST /v1/filler/tickets/{orderHash}/{attempt}/{action}`
+   * and resolves only once filler-gateway acknowledged it (2xx); any refusal
+   * rejects, so the caller sends it again. The answer to an intent
+   * (`ticket.intent.ack`) goes through the same handling as a WebSocket frame.
+   * A message is sent again under a fresh envelope (new `id`, `sentAt`): the
+   * gateway refuses a reused `id` and a stale `sentAt` (§3.4), and answers a
+   * repeated consent or receipt with the same ack (§6).
    */
-  async submitTicket(request: TicketAction): Promise<FrameChannel> {
-    this.requireRest().limits.check(rateClassOfFrame(request.message.type), `ticket.${request.action}`);
-    if (this.session?.send(request.message)) return 'ws';
+  async submitTicket(request: TicketAction): Promise<void> {
     const ack = await this.requireRest().postTicket(request);
+    if (request.action === 'receipt') await this.journalReceiptSent(request.message);
     if (ack) await this.ingest(ack, 'rest');
-    return 'rest';
   }
 
   /**
@@ -301,6 +304,14 @@ export class FillerProtocolClient implements SessionListener {
       }
       return fresh;
     });
+  }
+
+  /** The filler's own evidence in a dispute over a delivery: the receipt filler-gateway took, as posted. */
+  private async journalReceiptSent(receipt: TicketReceiptMessage): Promise<void> {
+    const raw = frameBytes(receipt);
+    const orderHash = receipt.orderHash.toLowerCase() as Hex;
+    const entry: EvidenceEntry = { id: keccakHex(raw), direction: 'to-gateway', type: receipt.type, raw, atMs: this.options.clock.now(), orderHash, attempt: receipt.attempt };
+    await this.options.store.withOrder(orderHash, (tx) => tx.appendEvidence(entry));
   }
 
   /** Pauses the class of the frame a `RATE_LIMITED` refuses; one it cannot name pauses every WebSocket class. */
