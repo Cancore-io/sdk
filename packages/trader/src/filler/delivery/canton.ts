@@ -48,13 +48,16 @@ import { CantonSubmitUnknown, type CantonOperations } from '../canton/operations
 import { GatewayError } from '../errors';
 import type { EventSink, FillerEvent } from '../events';
 import type { Clock, Logger } from '../runtime';
-import type { FillerStore, TicketRecord } from '../store';
+import type { FillerStore, FillRecord, TicketRecord } from '../store';
 import { chainsOf, identityFor, type TicketKeys } from '../tickets/terms';
 import type { DeliveryResult, FillRefusal } from './executor';
 import { awaitClock, LEDGER_CLOCK_SLACK_MS } from './validFrom';
 
 /** `FillProof.fillRef` of a Canton delivery: `keccak256(utf8(updateId))` (attestors.md, protocol §3.13). */
 export const cantonFillRef = (updateId: string): Hex => `0x${bytesToHex(keccak_256(utf8ToBytes(updateId)))}` as Hex;
+
+/** Only a Canton claim is still `pending` once signed: an EVM fill turns `sent` with its broadcast. */
+export const isSignedClaim = (fill: FillRecord | undefined): fill is FillRecord & { sentAtMs: number } => fill?.state === 'pending' && fill.sentAtMs !== undefined;
 
 /** Refusals after which the same ticket can still be delivered. */
 const TRANSIENT = new Set(['CANTON_NOT_READY', 'CANTON_UNAVAILABLE', 'OPERATION_EXPIRED', 'INTERNAL', 'RATE_LIMITED']);
@@ -102,11 +105,8 @@ export class CantonDelivery {
     const now = await store.now();
     const existing = await store.withOrder(orderHash, (tx) => tx.getFill(attempt));
     if (existing && existing.state !== 'pending') return { status: 'tracking', ...(existing.txRef ? { detail: existing.txRef } : {}) };
-    if (existing && existing.owner !== instanceId && (existing.leaseUntilMs ?? 0) > now) {
-      // Looked at again once the lease runs out: a replica that died mid-delivery is taken over, never left pending.
-      if (!this.stopped) clock.schedule((existing.leaseUntilMs ?? now) - now + 1, again);
-      return { status: 'tracking', detail: 'another replica is delivering it' };
-    }
+    const elsewhere = existing && this.heldElsewhere(existing, now, again);
+    if (elsewhere) return elsewhere;
 
     const validUntilMs = Number(issued.validUntil) * 1000;
     // Signed by an earlier try — this replica's or a dead one's: it may have committed.
@@ -162,6 +162,24 @@ export class CantonDelivery {
     this.emit({ type: 'filled', orderHash, attempt, txHash: fillRef, amount });
     this.options.onFilled?.(orderHash, attempt);
     return { status: 'sent', txHash: fillRef };
+  }
+
+  /**
+   * A signed claim whose ticket is no longer receipted — `ticket.expired` came while the replica that signed
+   * was down — may have committed: closed `sent`, outcome unknown, never prepared again. Undefined without one.
+   */
+  async closeSigned(orderHash: Hex, attempt: number, again: () => void): Promise<DeliveryResult | undefined> {
+    const { store } = this.options;
+    const fill = await store.withOrder(orderHash, (tx) => tx.getFill(attempt));
+    if (!isSignedClaim(fill)) return undefined;
+    return this.heldElsewhere(fill, await store.now(), again) ?? this.unknown(orderHash, attempt, 'the ticket is no longer receipted after a signed try');
+  }
+
+  private heldElsewhere(fill: FillRecord, now: number, again: () => void): DeliveryResult | undefined {
+    if (fill.owner === this.options.instanceId || (fill.leaseUntilMs ?? 0) <= now) return undefined;
+    // Looked at again once the lease runs out: a replica that died mid-delivery is taken over, never left pending.
+    if (!this.stopped) this.options.clock.schedule((fill.leaseUntilMs ?? now) - now + 1, again);
+    return { status: 'tracking', detail: 'another replica is delivering it' };
   }
 
   /**
