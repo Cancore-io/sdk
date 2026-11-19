@@ -154,8 +154,8 @@ describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery
     expect(() => check(prepared(), [honest({ extra: [allocate(`${REG_PKG}:Cnrx.Allocation:CnrxAllocationRules`, [ADMIN, G])] })])).not.toThrow();
   });
 
-  test('TC-SDK-3352-04: a receipt allocation through an unlisted template the instrument admin signs passes', () => {
-    expect(() => check(prepared(), [honest({ extra: [allocate(`${'97'.repeat(32)}:Cnrx.Allocation:CnrxAllocationRulesV3`, [ADMIN, G])] })])).not.toThrow();
+  test('TC-SDK-3352-04 (BUG-1611): a receipt allocation through a package outside the pin is refused, even signed by the instrument admin and G', () => {
+    expect(() => check(prepared(), [honest({ extra: [allocate(`${'97'.repeat(32)}:Cnrx.Allocation:CnrxAllocationRulesV3`, [ADMIN, G])] })])).toThrow(/allocation factory .* is not of a pinned registry/);
   });
 
   test('TC-SDK-3172-05: a 0.4.2 settle names no pin and runs the factory stored at Open: passes', () => {

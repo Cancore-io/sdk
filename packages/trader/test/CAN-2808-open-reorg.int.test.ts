@@ -167,7 +167,8 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
     const permit = { permitted: { token, amount: order.inputAmount }, nonce: BigInt(`0x${bytesToHex(keccak_256(utf8ToBytes(orderHash)))}`) >> 8n, deadline: order.fillDeadline };
     const permitSig = signDigest(key('FRANK'), hashPermitWitness({ ...permit, spender: router, witness: order }, stand.chainId, PERMIT2));
     const mined = await send(key('FRANK'), router, encodeFunctionCall(entryOf(abi(CANCORE_ROUTER_ABI), 'function', 'openFor'), [order, permit, permitSig, quoteDeadline, quoteSig]));
-    return { order, orderHash, block: mined.blockNumber, blockHash: mined.blockHash, nowMs: Number(now) * 1000 };
+    // The open's own block time is its openedAt: the ticket's validFrom, as the backend floors it, is no earlier (BUG-1609).
+    return { order, orderHash, block: mined.blockNumber, blockHash: mined.blockHash, nowMs: Number(BigInt((await block(mined.blockNumber)).timestamp)) * 1000 };
   }
 
   /** The checks before a receipt for `intent`, with the source's `openConfirmations`; every RPC request recorded. */

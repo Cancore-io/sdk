@@ -27,9 +27,11 @@ if (typeof doc?.openapi !== 'string' || Object.keys(doc.paths ?? {}).length === 
   throw new Error(`${url} did not return an OpenAPI document with paths`);
 }
 // A gateway that does not publish the registry yet must fail the refresh too: the client's union is this enum.
+// Each code is spliced into a TS literal that `npm test` then runs in a job holding a write token: only
+// UPPER_SNAKE names, so a quote in a value from the gateway cannot become code (BUG-1619).
 const codes = doc.components?.schemas?.SdkErrorCode?.enum;
-if (!Array.isArray(codes) || codes.length === 0 || !codes.every((c) => typeof c === 'string' && c !== '')) {
-  throw new Error(`${url} has no components.schemas.SdkErrorCode enum of strings`);
+if (!Array.isArray(codes) || codes.length === 0 || !codes.every((c) => typeof c === 'string' && /^[A-Z][A-Z0-9_]*$/.test(c))) {
+  throw new Error(`${url} has no components.schemas.SdkErrorCode enum of UPPER_SNAKE names`);
 }
 
 const sortKeys = (v) =>

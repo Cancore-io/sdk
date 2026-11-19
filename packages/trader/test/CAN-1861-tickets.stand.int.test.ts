@@ -139,8 +139,7 @@ standSuite('CAN-1861: the ticket desk against the real filler-gateway', [...GATE
     await pinnedElsewhere.filler.start();
     try {
       // V-T1 is read after the escrow checks: only an open escrow lets the ticket reach it.
-      const o = standEvmOrder(120);
-      await openOnStand(o);
+      const o = await openOnStand(standEvmOrder(120));
       const from = await issueEvmTicket(pinnedElsewhere, o, STAND_TICKET_SIGNER_KEY);
       expect((await declined(o.orderHash, from)).data).toMatchObject({ reason: 'TICKET_SIGNER_UNKNOWN' });
       expect((await eventsAfter(STREAMS.ticketEvents, from, ofOrder(o.orderHash))).map((e) => e.kind)).not.toContain('ticket.receipt');
@@ -170,8 +169,7 @@ standSuite('CAN-1861: the ticket desk against the real filler-gateway', [...GATE
     await strict.filler.start();
     try {
       // V-E3 is read after V-E2: only an open escrow lets the ticket reach it.
-      const o = standEvmOrder(122);
-      await openOnStand(o);
+      const o = await openOnStand(standEvmOrder(122));
       const from = await issueEvmTicket(strict, o, STAND_TICKET_SIGNER_KEY);
       expect((await declined(o.orderHash, from)).data).toMatchObject({ reason: 'PROOF_WINDOW_TOO_SHORT' });
       expect((await eventsAfter(STREAMS.ticketEvents, from, ofOrder(o.orderHash))).map((e) => e.kind)).not.toContain('ticket.receipt');
@@ -244,8 +242,7 @@ standSuite('CAN-1861: the ticket desk against the real filler-gateway', [...GATE
     stand = first;
     try {
       await first.filler.start();
-      const o = standEvmOrder(130);
-      await openOnStand(o);
+      const o = await openOnStand(standEvmOrder(130));
       // The consent must still be in time when the restarted node is logged in to send it.
       const from = await offerEvmOrder(o, { acceptBy: Date.now() + 120_000 });
       const unsent = await until(
@@ -288,8 +285,7 @@ standSuite('CAN-1861: the ticket desk against the real filler-gateway', [...GATE
     stand = first;
     try {
       await first.filler.start();
-      const o = standEvmOrder(131);
-      await openOnStand(o);
+      const o = await openOnStand(standEvmOrder(131));
       const { from, intent } = await offerEvmTicket(first, o);
       // From here the node's chain reads never come back: the escrow check (V-E2) it starts is left in flight.
       io.cutChain();
