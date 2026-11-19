@@ -386,9 +386,13 @@ live('Executor against the stand router (make intent-genesis)', () => {
     expect(approve).toMatchObject({ kind: 'approve', chain, ...(await receiptCost(approveHash)) });
     expect(approve).not.toHaveProperty('orderHash');
     expect(approve).not.toHaveProperty('attempt');
+    // start() also resumes the receipted ticket of the scenario: its fill reports its own gas, charged to the order.
+    const fill = await s.state('confirmed');
+    expect(await gasOf(s, fill.txRef)).toMatchObject({ kind: 'fill', orderHash: s.orderHash, attempt: 0, ...(await receiptCost(fill.txRef)) });
     await quiet();
-    expect(gasEventsOf(s)).toHaveLength(1);
-    expect(await allowance()).toBe(limit);
+    expect(gasEventsOf(s, approveHash)).toHaveLength(1);
+    expect(gasEventsOf(s).filter((e) => e.kind === 'approve')).toHaveLength(1);
+    expect(gasEventsOf(s, fill.txRef)).toHaveLength(1);
   });
 
   test('BUG-1589-14: a fill mined and reverted by the real router (TicketExpired) reports the gas it burnt, reverted, charged to its order', async () => {
