@@ -17,7 +17,8 @@ import {
   transactionLeg,
   tx,
 } from './fixtures';
-import { CantonRefusal, cantonFingerprint, decodeTopology, legKind, verifyTopologyLeg, verifyTransactionLeg } from './legs';
+import { decodeTopology } from '@cancore/wallet/canton/proto';
+import { CantonRefusal, cantonFingerprint, legKind, verifyTopologyLeg, verifyTransactionLeg } from './legs';
 
 const expect_ = { partyId: party(), publicKey: `0x${NODE_KEY}` as Hex, participantUid: PARTICIPANT };
 const refusedWith = async (p: Promise<unknown>, detail: RegExp) => {
@@ -32,7 +33,8 @@ function selfSigned(keys = [NODE_KEY], threshold = 1, extra: Uint8Array = new Ui
   if (hosting.oneofKind !== 'partyToParticipant') throw new Error('fixture has no hosting');
   const signing = new BinaryWriter();
   for (const key of keys) signing.tag(1, WireType.LengthDelimited).bytes(SigningPublicKey.toBinary(signingKey(key)));
-  signing.tag(2, WireType.Varint).uint32(threshold);
+  // proto3 omits a default: threshold 0 is written as Canton would, by leaving it out.
+  if (threshold) signing.tag(2, WireType.Varint).uint32(threshold);
   const wire = cat(PartyToParticipant.toBinary(hosting.partyToParticipant), new BinaryWriter().tag(6, WireType.LengthDelimited).bytes(signing.finish()).finish(), extra);
   hosting.partyToParticipant = PartyToParticipant.fromBinary(wire);
   return TopologyTransaction.toBinary(decoded);
@@ -59,7 +61,7 @@ describe('self-signed PartyToParticipant onboarding', () => {
 
   test('refuses an unsupported hosting field', async () => {
     const extra = new BinaryWriter().tag(7, WireType.Varint).uint32(1).finish();
-    await refusedWith(verifyTopologyLeg(topologyLeg([selfSigned([NODE_KEY], 1, extra)]), expect_), /unsupported party hosting fields/);
+    await refusedWith(verifyTopologyLeg(topologyLeg([selfSigned([NODE_KEY], 1, extra)]), expect_), /does not decode/);
   });
 
   test.each([
@@ -100,10 +102,16 @@ describe('the fingerprint and the multihash are Canton’s', () => {
     expect(decodeTopology(wrapped)).toEqual(decodeTopology(raw!));
     // Only the version field may follow the data, once; nothing after it.
     const head = cat(new Uint8Array([0x0a, ...varint]), raw!);
-    expect(decodeTopology(head)).toEqual(decodeTopology(raw!));
+    // The version is pinned (CAN-2414): absent or another one is refused.
+    expect(() => decodeTopology(head)).toThrow(/unexpected field/);
+    expect(() => decodeTopology(cat(head, new Uint8Array([0x10, 0x1f])))).toThrow(/version 31, not 30/);
     expect(() => decodeTopology(cat(head, new Uint8Array([0x18, 0x01])))).toThrow(/unexpected field/);
     expect(() => decodeTopology(cat(head, new Uint8Array([0x10, 0x1e, 0x00])))).toThrow(/unexpected bytes/);
     expect(() => decodeTopology(cat(new Uint8Array([0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01]), raw!))).toThrow(/varint/);
+    // Only minimal varints in the wrapper too (F-4 on sdk#276): a padded length or version is refused.
+    const padded = [...varint.slice(0, -1), varint[varint.length - 1]! | 0x80, 0x00];
+    expect(() => decodeTopology(cat(new Uint8Array([0x0a, ...padded]), raw!, new Uint8Array([0x10, 0x1e])))).toThrow(/padded varint/);
+    expect(() => decodeTopology(cat(head, new Uint8Array([0x10, 0x9e, 0x00])))).toThrow(/padded varint/);
   });
 });
 
@@ -114,7 +122,7 @@ describe('a topology leg is refused, never signed, when', () => {
   });
 
   test('the party is not in the namespace of the node key', async () => {
-    await refusedWith(verifyTopologyLeg(topologyLeg(allocation()), { ...expect_, partyId: party(OTHER_KEY) }), /namespace of the node key/);
+    await refusedWith(verifyTopologyLeg(topologyLeg(allocation()), { ...expect_, partyId: party(OTHER_KEY) }), /namespace of the signing key/);
   });
 
   test.each([

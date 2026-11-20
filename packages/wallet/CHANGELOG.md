@@ -1,5 +1,23 @@
 # Changelog — `@cancore/wallet`
 
+## 0.4.9
+
+### Added — the party-topology check, for the account's own onboarding (CAN-2414)
+
+- `verifyPartyTopology` (`@cancore/wallet/canton/proto`) holds the topology a key is asked to sign to the party it
+  expects. It recomputes the multihash from the topology transactions (purpose 11 per transaction, 55 over the set),
+  then requires that the party is in the namespace of the signing key, that this key is the party's only signing key
+  at threshold 1, and that the party is hosted on the expected participant alone, with Confirmation. Anything else
+  throws `TopologyRefusal`, and the leg is never signed blind. Moved from `@cancore/trader`'s filler, which now calls
+  it; tested on topology a real Canton 3.4.11 participant generated and accepted.
+- `OperationLeg.topologyTransactions`: the base64 transactions a `topology` leg's multihash covers, as the backend
+  sends them from backend#2822 on.
+
+### Fixed — `fromBase64` trims padding in linear time
+
+- At most two `=` of padding are accepted, trimmed without a regex: `/=+$/` took seconds on a long run of `=`, and the
+  topology check decodes what the server sends. Three or more `=` are refused as not base64.
+
 ## 0.4.8
 
 ### Fixed — a `202 pending` submit is never reported as a success (CAN-3679)
