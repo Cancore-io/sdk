@@ -1,4 +1,4 @@
-import { ed25519 } from '@noble/curves/ed25519';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { binaryStringToBytes, bytesToBinaryString, bytesToHex, hexToBytes } from './bytes';
 import { createEd25519Signer, generateEd25519KeyPair } from './ed25519';
 import {
