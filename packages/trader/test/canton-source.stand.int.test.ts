@@ -7,7 +7,10 @@
  * reads: V-C3 against the stand router, V-C5 with a registry not pinned as
  * paying, V-C1 while the participant is down, V-C6 at its exact bound.
  * CAN-2321 INT-06: the filler's first settle submit answer is lost on the
- * way back; the payout of INT-01 comes from its retry. Every
+ * way back; the payout of INT-01 comes from its retry. CAN-3131: filler-gateway
+ * tells the SDK why an intent is gone — the operator's SwapIntent_Cancel closes
+ * the filler's settlement as refunded with one alert, the payout of INT-01 reads
+ * as settled. Every
  * component is the stand's own — Canton participant with cancore-intent and
  * cnrx-registry, trading and filler-gateway (decision T-1: the party's
  * operations go through Cancore), the attestor daemons, anvil with the
@@ -35,7 +38,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { buildCantonSourceOrder, CANCORE_ROUTER_ABI, cantonInclusiveFeeSplit, repayToFromParty, type CantonParty, type Hex } from '@cancore/contracts';
+import { buildCantonSourceOrder, CANCORE_ROUTER_ABI, cantonInclusiveFeeSplit, fillerIdHash, repayToFromParty, type CantonParty, type Hex, type OrderJson } from '@cancore/contracts';
 import { ed25519 } from '@noble/curves/ed25519';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
 import { createCantonOperations, type CantonOperations, type CantonPartySigner } from '../src/filler/canton/operations';
@@ -43,7 +46,9 @@ import { registriesProblem, type CantonTransferFactory } from '../src/filler/can
 import { scaled } from '../src/filler/canton/checks';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { createFiller, type Filler } from '../src/filler/filler';
+import { GatewayError } from '../src/filler/errors';
 import type { StageEvent } from '../src/filler/events';
+import { cantonClosure } from '../src/filler/settlement/refusals';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { HttpFetch, WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
@@ -675,5 +680,50 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
     expect(settle.at(-1)).toMatchObject({ answered: true });
     expect(new Set(submits.map((x) => x.operationId)).size).toBe(1);
     // One payout: TC-SDK-2321-INT-01 held the party's CNRX to exactly the net of the give, and the intent is consumed.
+  });
+  /** The intent of TC-SDK-2321-INT-01, paid by the stand filler's SwapIntent_SettleWithProof. */
+  const paidOrder = () => [...new Set(events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === 'settle.confirmed').map((e) => String(e.orderHash).toLowerCase() as Hex))][0];
+  const refundedAlerts = (orderHash: Hex) =>
+    events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === 'settle.alert' && e.detail?.kind === 'refunded' && String(e.orderHash).toLowerCase() === orderHash);
+
+  test('TC-SDK-3131-STAND-01: the intent paid in TC-SDK-2321-INT-01 reads as settled through filler-gateway (410 INTENT_SETTLED naming SwapIntent_SettleWithProof), never as a refund', async () => {
+    const orderHash = paidOrder();
+    if (!orderHash) throw new Error(`TC-SDK-2321-INT-01 paid no intent\n${diagnostics()}`);
+    const gone = await until('filler-gateway explains the settled intent', async () => {
+      const error = await opsOf().intent(orderHash).then(() => undefined, (e: unknown) => e);
+      return error instanceof GatewayError && error.code !== 'CANTON_UNAVAILABLE' ? error : undefined;
+    }, 3 * 60_000);
+    expect({ code: gone.code, message: gone.message }).toEqual({ code: 'INTENT_SETTLED', message: expect.stringMatching(/^filler-gateway INTENT_SETTLED: closed by SwapIntent_SettleWithProof in update /) });
+    expect(cantonClosure(gone)).toMatchObject({ closure: 'settled' });
+    expect(refundedAlerts(orderHash)).toEqual([]);
+  });
+
+  test('TC-SDK-3131-STAND-02: the operator cancels an intent the filler delivered for — the sweep reads 410 INTENT_REFUNDED, closes the settlement refunded with one alert naming SwapIntent_Cancel, submits nothing', async () => {
+    const nowS = Math.floor(Date.now() / 1000);
+    const opened = await openIntent({ fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S });
+    await until('trading indexed the opened intent', () => opsOf().intent(opened.orderHash), 3 * 60_000);
+    // The filler's own record of its delivery for the intent: the sweep picks the order up from it, as after a fill.
+    const ticket = { orderHash: opened.orderHash, fillerId: fillerIdHash(E.STAND_FILLER_ID), deliveryKey: `0x${'dd'.repeat(20)}`, repayTo: repayToFromParty(E.STAND_FILLER_CANTON_PARTY), attempt: 0, validFrom: String(nowS - 60), validUntil: String(nowS + 60) };
+    await store.withOrder(opened.orderHash, async (tx) => {
+      await tx.putTicket({
+        orderHash: opened.orderHash, attempt: 0, state: 'filled', updatedAtMs: Date.now(),
+        offer: { type: 'ticket.offer', orderHash: opened.orderHash, attempt: 0, order: opened.order as OrderJson, amountOut: '1', validFrom: ticket.validFrom, validUntil: ticket.validUntil } as never,
+        issued: { type: 'ticket.issued', form: 'evm', orderHash: opened.orderHash, attempt: 0, ticket, ticketSig: '0x' } as never,
+      });
+      await tx.putFill({ orderHash: opened.orderHash, attempt: 0, chain: DST, txRef: `0x${'cc'.repeat(32)}`, amount: '1', received: '1', state: 'confirmed', updatedAtMs: Date.now() });
+    });
+    const submitted = submits.length;
+
+    await submit([E.INTENT_OPERATOR_PARTY_ID], exercise(`${INTENT}:SwapIntent`, opened.intentCid, 'SwapIntent_Cancel', { extraArgs: { context: { values: {} }, meta: { values: {} } } }), [E.STAND_OWNER_PARTY, E.CNRX_ADMIN_PARTY]);
+
+    const closed = await until('the sweep closes the settlement as refunded', async () => {
+      const s = await store.withOrder(opened.orderHash, (tx) => tx.getSettlement());
+      return s?.state === 'failed' ? s : undefined;
+    }, 5 * 60_000, diagnostics);
+    expect(closed.reason).toMatch(/^refunded: filler-gateway INTENT_REFUNDED: closed by SwapIntent_Cancel in update /);
+    expect(refundedAlerts(opened.orderHash).map((e) => e.detail?.detail)).toEqual([expect.stringContaining('SwapIntent_Cancel')]);
+    expect(submits.length).toBe(submitted);
+    await expect(filler.selfSettle(opened.orderHash)).rejects.toMatchObject({ reason: 'refunded' });
+    expect(refundedAlerts(opened.orderHash)).toHaveLength(1);
   });
 });
