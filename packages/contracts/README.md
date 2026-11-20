@@ -465,6 +465,9 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.28` — `@noble/hashes` `^1.8.0` → `^2.4.0` (CAN-3207). No API or output change: keccak-256 and
+  the byte utilities are the same functions, the generated vectors are byte-identical. The 2.x line is ESM-only and
+  needs Node ≥ 20.19, inside `engines.node >= 26`.
 - `0.2.0-rc.26` — the draw is gone (CAN-2532): the user picks the filler, nobody draws one.
   Removed `drawValue`, `drawWinner`, `firstRoundAtOrAfter`, `DRAND_QUICKNET`, `DRAW_CLOSED_BY`,
   the `DrawRecord` / `EpochRecord` types and their `records.schema.json` defs, the `epoch.weights`
