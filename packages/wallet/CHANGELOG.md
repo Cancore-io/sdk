@@ -1,5 +1,15 @@
 # Changelog — `@cancore/wallet`
 
+## 0.4.9
+
+### Security — `intent.refund` is signed from its prepared transaction under the intent policy (BUG-1685)
+
+- `INTENT_ROOTS.withdraw` (`Intent.SwapIntent:SwapIntent.SwapIntent_Withdraw`) and `INTENT_OPERATIONS['intent.refund']`:
+  a refund leg is no longer signed from its bare hash. `signLegs` / `execute` need `intentPolicy` for it, as for Open.
+- Under the withdraw the owner's authority reaches one action: `Allocation_Withdraw` of the `allocationCid` of the
+  owner's `SwapIntent` the transaction discloses (read by position, label empty or matching). Another allocation,
+  any other owner action, a package outside `INTENT_PACKAGE_IDS` or an undisclosed intent is refused before signing.
+
 ## 0.4.8
 
 ### Fixed — a `202 pending` submit is never reported as a success (CAN-3679)
