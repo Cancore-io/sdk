@@ -196,6 +196,7 @@ function childrenToCheck(node: TransactionNode, policy: IntentSigningPolicy, rea
     case 'fetch':
       return [];
     case 'create':
+      if (node.signatories.includes(policy.owner) && reach.kind === 'withdraw') refuse(`the owner signs a ${qualified(node.templateId)} created under a withdraw`);
       if (node.signatories.includes(policy.owner) && !isIntentCode(node, policy)) refuse(`the owner signs a ${qualified(node.templateId)} created outside the registry`);
       return [];
     case 'exercise':
