@@ -1,6 +1,6 @@
 # Changelog — `@cancore/wallet`
 
-## 0.4.9
+## 0.4.11
 
 ### Security — `intent.refund` is signed from its prepared transaction under the intent policy (BUG-1685)
 
@@ -9,6 +9,16 @@
 - Under the withdraw the owner's authority reaches one action: `Allocation_Withdraw` of the `allocationCid` of the
   owner's `SwapIntent` the transaction discloses (read by position, label empty or matching). Another allocation,
   any other owner action, a package outside `INTENT_PACKAGE_IDS` or an undisclosed intent is refused before signing.
+
+## 0.4.10
+
+### Changed — `@noble/curves` and `@noble/hashes` 2.x (CAN-3207)
+
+- Runtime dependencies `@noble/curves` `^1.9.7` → `^2.4.0` and `@noble/hashes` `^1.8.0` → `^2.4.0`. No public
+  type or signature changes: noble stays internal. The 2.x line is ESM-only and needs Node ≥ 20.19, inside the
+  package's `engines.node >= 26`. Ed25519 output is unchanged (the RFC 8032 KAT still passes).
+- `@scure/bip39` `^1.6.0` → `^2.4.0`, which depends on `@noble/hashes` 2.4.0: the package's runtime tree carries
+  one `@noble/hashes` line, not two. Mnemonics, seeds and the wordlists are unchanged.
 
 ## 0.4.8
 

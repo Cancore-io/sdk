@@ -1,7 +1,7 @@
 import { fillerIdHash, repayToFromEvm, type AttestationEvm, type FillProofJson, type Hex, type OrderJson, type TicketJson } from '@cancore/contracts';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { FillerChains, hashFillProof, hashOrder, type ChainConfig, type OpenDepth } from '../chain';
 import { Executor } from '../delivery/executor';
 import type { StageEvent } from '../events';
@@ -12,6 +12,7 @@ import { addressOfPublicKey } from '../signer';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, FakeChain, FakeClock, InMemoryFillerStore } from '../testing';
 import { fillProofOf } from './attestations';
 import { Settler, SettleError } from './settler';
+import { signRsv } from '../testing/fakes';
 
 const FILL_KEY: Hex = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
 const ATTESTOR_KEYS: Hex[] = [
@@ -32,10 +33,7 @@ const flush = async () => {
   for (let i = 0; i < 80; i++) await new Promise((resolve) => setImmediate(resolve));
 };
 const addressOf = (key: Hex): Hex => addressOfPublicKey(secp256k1.getPublicKey(hexToBytes(key.slice(2)), false));
-const sign = (key: Hex, digest: Hex): AttestationEvm => {
-  const sig = secp256k1.sign(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)), { lowS: true });
-  return { signer: addressOf(key), signature: `0x${bytesToHex(sig.toCompactRawBytes())}${(27 + sig.recovery).toString(16)}` };
-};
+const sign = (key: Hex, digest: Hex): AttestationEvm => ({ signer: addressOf(key), signature: signRsv(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2))) });
 const ascending = (entries: AttestationEvm[]) => [...entries].sort((a, b) => (a.signer < b.signer ? -1 : 1));
 
 /** A BSC → Ethereum order this filler delivered (fill confirmed), its escrow open on the fake BSC router, attestor set 1 of 2-of-3. */

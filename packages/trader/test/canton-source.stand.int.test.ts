@@ -36,8 +36,8 @@
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { buildCantonSourceOrder, CANCORE_ROUTER_ABI, cantonInclusiveFeeSplit, repayToFromParty, type CantonParty, type Hex } from '@cancore/contracts';
-import { ed25519 } from '@noble/curves/ed25519';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { createCantonOperations, type CantonOperations, type CantonPartySigner } from '../src/filler/canton/operations';
 import { registriesProblem, type CantonTransferFactory } from '../src/filler/canton/factories';
 import { scaled } from '../src/filler/canton/checks';

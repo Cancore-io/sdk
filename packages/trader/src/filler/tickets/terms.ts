@@ -37,8 +37,8 @@ import {
   type TicketReceiptMessage,
   type TypedDataInput,
 } from '@cancore/contracts';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { hashTicket } from '../chain/hashes';
 import type { EvmChainId } from '../chains';
 import type { Unsealed } from '../protocol/envelope';

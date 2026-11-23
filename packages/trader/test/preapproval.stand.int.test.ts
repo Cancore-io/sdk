@@ -19,9 +19,9 @@
  * Skipped without INTENT_STAND_ENV; with it, a missing key fails naming every missing key.
  */
 import type { Hex } from '@cancore/contracts';
-import { ed25519 } from '@noble/curves/ed25519';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { CantonTransferFactory } from '../src/filler/canton/factories';
 import { createCantonOperations, type CantonOperations } from '../src/filler/canton/operations';
 import { GatewayError } from '../src/filler/errors';
@@ -145,7 +145,7 @@ describe('CAN-2904: preapproval.create on the full intent stand', () => {
     const oldKey = env('STAND_FILLER2_MESSAGE_KEY') as Hex;
     expect((await operations('STAND_FILLER2', oldKey).party()).party).toBe(env('STAND_FILLER2_CANTON_PARTY'));
 
-    const newKey = `0x${bytesToHex(secp256k1.utils.randomPrivateKey())}` as Hex;
+    const newKey = `0x${bytesToHex(secp256k1.utils.randomSecretKey())}` as Hex;
     const registration = await signFillerKeyRegistration(createTestTypedDataSigner(newKey), { fillerId, issuedAt: BigInt(Math.floor(Date.now() / 1000)) });
     const change = await adminApi<{ kind: string; previousAddress: string | null; address: string }>('POST', `/admin/fillers/${encodeURIComponent(fillerId)}/message-key`, {
       registration, reason: 'TC-SDK-2151-INT-07: manual key change on the intent stand', requestRef: 'TC-SDK-2151-INT-07',
