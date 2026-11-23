@@ -466,6 +466,19 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
     ['the disclosed contract is not a SwapIntent', [swapIntent({ template: intent('Intent.SwapIntent:IntentFactory') })], /does not disclose the SwapIntent it withdraws/],
     ['its allocationCid is not a contract id', [swapIntent({ allocationCid: party(OWNER) })], /allocationCid is not a contract id/],
     ['a field label repeats', [swapIntent({ fields: (f) => f.map((x, i) => (i === 1 ? { label: 'filler', value: x.value } : x)) })], /does not decode .*repeats/],
+    [
+      'a __proto__ label hides field 1 so the allocationCid label at position 9 reads as position 8',
+      [
+        swapIntent({
+          allocationCid: contractId(OTHER_ALLOCATION_CID),
+          fields: (f) =>
+            f.map((x, i) =>
+              i === 1 ? { label: '__proto__', value: x.value } : i === 8 ? { label: 'x', value: x.value } : i === 9 ? { label: 'allocationCid', value: contractId(ALLOCATION_CID) } : x,
+            ),
+        }),
+      ],
+      /does not decode .*__proto__/,
+    ],
   ])("TC-SDK-1685-06: the intent's own allocation is read strictly from the disclosed SwapIntent — refused when %s", async (_name, contracts, reason) => {
     const key = signer();
     expect(await refusal(async () => signRefund(key, await refundLeg(withdraw(), contracts)))).toMatch(reason);
