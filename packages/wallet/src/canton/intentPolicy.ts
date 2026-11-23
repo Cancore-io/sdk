@@ -158,14 +158,14 @@ function assertNever(value: never): never {
 }
 
 /**
- * Under a withdraw the owner's authority reaches the intent's own allocation alone, consumed by the registry's
+ * Under a withdraw the owner's authority reaches the intent's own allocation alone, released by the registry's
  * Allocation_Withdraw. The walk stops there, so the allocation must be the registry's as a factory must
  * ({@link isRegistryFactory}): the admin signs it and its package is the admin's.
  */
 function checkWithdrawExercise(node: ExerciseNode, name: string, allocationCid: string, policy: IntentSigningPolicy): boolean {
   if (node.choice !== ALLOCATION_WITHDRAW.choice || qualified(node.interfaceId ?? '') !== ALLOCATION_WITHDRAW.interface) refuse(`the owner's authority reaches ${name}`);
   if (node.contractId !== allocationCid) refuse(`the withdraw releases ${node.contractId}, not the intent's allocation ${allocationCid}`);
-  if (!node.consuming) refuse("the withdraw does not consume the intent's allocation");
+  // AllocationV2 declares Allocation_Withdraw nonconsuming: the pinned registry code archives the allocation in the body.
   const registries = policy.registries ?? REGISTRY_PACKAGES;
   const packages = Object.hasOwn(registries, policy.admin) ? registries[policy.admin] : undefined;
   if (!packages?.includes(packageOf(node.templateId)) || !node.signatories.includes(policy.admin)) {
