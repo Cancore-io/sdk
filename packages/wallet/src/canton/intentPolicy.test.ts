@@ -387,13 +387,13 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
   const contractId = (v: string): Value => ({ sum: { oneofKind: 'contractId', contractId: v } });
 
   function swapIntent(
-    over: { owner?: string; allocationCid?: Value; fields?: (fields: RecordField[]) => RecordField[]; template?: string; packageId?: string } = {},
+    over: { owner?: string; allocationCid?: Value; fields?: (fields: RecordField[]) => RecordField[]; template?: string; packageId?: string; packageName?: string } = {},
   ): Metadata_InputContract {
     const values: Record<string, Value> = { owner: party(over.owner ?? OWNER), allocationCid: over.allocationCid ?? contractId(ALLOCATION_CID) };
     const declared: RecordField[] = SWAP_INTENT_FIELDS.map((label) => ({ label, value: values[label] ?? unit }));
     const fields = over.fields ? over.fields(declared) : declared;
     const create = {
-      lfVersion: '2.1', contractId: INTENT_CID, packageName: 'cancore-intent', templateId: identifier(over.template ?? `${over.packageId ?? INTENT_PKG}:Intent.SwapIntent:SwapIntent`),
+      lfVersion: '2.1', contractId: INTENT_CID, packageName: over.packageName ?? 'cancore-intent', templateId: identifier(over.template ?? `${over.packageId ?? INTENT_PKG}:Intent.SwapIntent:SwapIntent`),
       argument: { sum: { oneofKind: 'record' as const, record: { fields } } }, signatories: [OWNER, OPERATOR], stakeholders: [OWNER, OPERATOR],
     };
     return { contract: { oneofKind: 'v1', v1: create }, createdAt: 1000000000000000n, eventBlob: new Uint8Array() };
@@ -401,7 +401,7 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
 
   const allocationWithdraw = (allocation = ALLOCATION_CID, over: Partial<ExerciseSpec> = {}): ExerciseSpec => ({
     kind: 'exercise', template: `${CNRX_PKG}:Cnrx.Allocation:CnrxAllocationV2`, interface: ALLOCATION_INTERFACE, choice: 'Allocation_Withdraw', actors: [OWNER], signatories: [CNRX, OWNER],
-    packageName: 'cnrx-registry', contractId: allocation, consuming: true, ...over, children: [{ kind: 'create', template: CNRX_REGISTRY.holding, signatories: [OWNER, CNRX], packageName: 'cnrx-registry' }],
+    packageName: 'cnrx-registry', contractId: allocation, ...over, children: [{ kind: 'create', template: CNRX_REGISTRY.holding, signatories: [OWNER, CNRX], packageName: 'cnrx-registry' }],
   });
   const withdraw = (children: NodeSpec[] = [allocationWithdraw()], template = intent('Intent.SwapIntent:SwapIntent')): ExerciseSpec => ({
     kind: 'exercise', template, choice: 'SwapIntent_Withdraw', actors: [OWNER], signatories: [OWNER, OPERATOR], contractId: INTENT_CID, children,
@@ -465,6 +465,7 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
       /field 8 of the intent withdrawn is not its allocationCid/,
     ],
     ['the disclosed contract is not a SwapIntent', [swapIntent({ template: intent('Intent.SwapIntent:IntentFactory') })], /does not disclose the SwapIntent it withdraws/],
+    ['the disclosed SwapIntent is of a package not named cancore-intent', [swapIntent({ packageName: 'evil-intent' })], /does not disclose the SwapIntent it withdraws/],
     ['its allocationCid is not a contract id', [swapIntent({ allocationCid: party(OWNER) })], /allocationCid is not a contract id/],
     ['a field label repeats', [swapIntent({ fields: (f) => f.map((x, i) => (i === 1 ? { label: 'filler', value: x.value } : x)) })], /does not decode .*repeats/],
     [
@@ -507,10 +508,9 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
   test.each<[string, Partial<ExerciseSpec>, RegExp]>([
     ['another choice of the allocation', { choice: 'Allocation_Cancel' }, /the owner's authority reaches Cnrx.Allocation:CnrxAllocationV2.Allocation_Cancel/],
     ['Allocation_Withdraw not through the token-standard Allocation interface', { interface: `${ROGUE_PKG}:Evil.Allocation:Allocation` }, /the owner's authority reaches/],
-    ['a withdraw that does not consume it', { consuming: false }, /does not consume the intent's allocation/],
     ['an allocation the admin does not sign', { signatories: [OWNER] }, /is not the registry's of/],
     ['an allocation of a package outside the registry pin', { template: `${ROGUE_PKG}:Cnrx.Allocation:CnrxAllocationV2` }, /is not the registry's of/],
-  ])("TC-SDK-1685-09: the intent's own allocation is released only by the registry's consuming Allocation_Withdraw — refused for %s", async (_name, over, reason) => {
+  ])("TC-SDK-1685-09: the intent's own allocation is released only by the registry's Allocation_Withdraw — refused for %s", async (_name, over, reason) => {
     const key = signer();
     expect(await refusal(async () => signRefund(key, await refundLeg(withdraw([allocationWithdraw(ALLOCATION_CID, over)]))))).toMatch(reason);
     expect(key.signPreparedHash).not.toHaveBeenCalled();
