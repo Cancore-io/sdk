@@ -1,7 +1,7 @@
 import type { Hex } from '@cancore/contracts';
 import { Enums_ParticipantPermission, Enums_TopologyChangeOp, PartyToParticipant, SigningPublicKey, TopologyTransaction } from '@canton-network/core-ledger-proto';
 import { BinaryWriter, WireType } from '@protobuf-ts/runtime';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import {
   allocation,
   b64,

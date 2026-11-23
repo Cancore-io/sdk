@@ -1,7 +1,7 @@
 import { FILLER_PROTOCOL_DOMAIN, FILLER_QUOTE_TYPES, hashTypedData, requestIdHash, type Hex, type TypedDataInput } from '@cancore/contracts';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Wallet } from 'ethers';
@@ -27,7 +27,7 @@ const quote: TypedDataInput = {
   },
 };
 
-const N = secp256k1.CURVE.n;
+const N = secp256k1.Point.CURVE().n;
 const hex = (n: bigint) => n.toString(16).padStart(64, '0');
 const split = (sig: Hex) => ({ r: BigInt(`0x${sig.slice(2, 66)}`), s: BigInt(`0x${sig.slice(66, 130)}`), v: parseInt(sig.slice(130), 16) });
 
@@ -82,8 +82,8 @@ describe('signer contract: 65 bytes r‖s‖v, low-s, v ∈ {27, 28} (protocol �
     // why the rule exists: OpenZeppelin ECDSA.recover rejects it on chain.
     const twin = (await highS.signTypedData(quote)) as Hex;
     const { r, s, v } = split(twin);
-    const recovered = secp256k1.Signature.fromCompact(`${hex(r)}${hex(s)}`).addRecoveryBit(v - 27).recoverPublicKey(hashTypedData(quote).slice(2));
-    expect(recovered.toHex(false)).toBe(bytesToHex(secp256k1.getPublicKey(KEY_A.slice(2), false)));
+    const recovered = secp256k1.Signature.fromHex(`${hex(r)}${hex(s)}`, 'compact').addRecoveryBit(v - 27).recoverPublicKey(hexToBytes(hashTypedData(quote).slice(2)));
+    expect(recovered.toHex(false)).toBe(bytesToHex(secp256k1.getPublicKey(hexToBytes(KEY_A.slice(2)), false)));
     expect(await violationOf(highS)).toBe('high-s');
   });
 
@@ -120,6 +120,15 @@ describe('signer contract: 65 bytes r‖s‖v, low-s, v ∈ {27, 28} (protocol �
     const sig = await createTestTypedDataSigner(KEY_A).signTypedData(quote);
     expect(assertSignature(sig.toUpperCase().replace('0X', '0x'))).toBe(sig);
     expect(() => recoverAddress(hashTypedData(quote), sig.slice(0, 130) as Hex)).toThrow(SignatureContractError);
+  });
+
+  // KAT pinned on @noble/curves 1.9.7 before the v2 upgrade (CAN-3207): v2 ECDSA hashes its input by
+  // default (prehash), so a recovery that hashes the digest again lands on another address and this fails.
+  test('recoverAddress KAT: a fixed digest and signature recover to the same address as on noble v1', () => {
+    const digest: Hex = '0x78d80d4ac5af5bdcc983baa96a79c8ace5b56dde5770b9331555c8c596eea12e';
+    const signature: Hex = '0x9a668f1bf3d74228b5d56d8c5e83d11d79984b9b96ffc6f148af4bdd9257fe7843a0bef4d770ecebe7e509b2a46fa13ba50f435c40df5e08eb936da85e5ad2c41b';
+    expect(digest).toBe(`0x${bytesToHex(keccak_256(utf8ToBytes('CAN-3207 recoverAddress KAT')))}`);
+    expect(recoverAddress(digest, signature)).toBe(ADDRESS_A);
   });
 });
 

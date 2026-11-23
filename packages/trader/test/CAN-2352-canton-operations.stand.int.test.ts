@@ -11,8 +11,8 @@
  * Skipped without INTENT_STAND_ENV; with it, a missing key fails naming every missing key.
  */
 import type { Hex } from '@cancore/contracts';
-import { ed25519 } from '@noble/curves/ed25519';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { CantonTransferFactory } from '../src/filler/canton/factories';
 import { CantonRefusal } from '../src/filler/canton/legs';
 import { createCantonOperations, type CantonOperations } from '../src/filler/canton/operations';
