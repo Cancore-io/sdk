@@ -1,5 +1,5 @@
 import { inspect } from 'node:util';
-import { ed25519 } from '@noble/curves/ed25519';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { deriveWalletKey, providerFromMnemonic } from '@cancore/wallet';
 import { createSigner } from './signer';
 

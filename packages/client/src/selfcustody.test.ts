@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ed25519 } from '@noble/curves/ed25519';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { cantonFingerprint, deriveWalletKey, LOGIN_CHALLENGE_PREFIX as WALLET_CHALLENGE_PREFIX, providerFromMnemonic } from '@cancore/wallet';
 import { acceptTransferLeg, allocationTree, DEV, factoryTransferLeg, holding, preapprovalProposalLeg, prepared, proposalAccept, proposalCreate, selfSendLeg, withdrawTree, type FixtureLeg } from './dvp-prepared.fixture';
 import { refusalBody, wireLeg } from './wire.fixture';

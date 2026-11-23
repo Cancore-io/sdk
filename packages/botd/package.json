@@ -64,7 +64,7 @@
     "zod": "^4.6.6"
   },
   "devDependencies": {
-    "@noble/curves": "^1.9.7"
+    "@noble/curves": "^2.4.0"
   },
   "engines": {
     "node": ">=26"
