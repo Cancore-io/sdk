@@ -441,9 +441,10 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
     ['an AllocationFactory_Allocate on a genuine factory of the registry', registryCalls(CNRX_REGISTRY)[1] as NodeSpec],
     ['the FillerRegistryEntry_PublicFetch an Open makes', { kind: 'exercise', template: intent('Intent.FillerRegistry:FillerRegistryEntry'), choice: 'FillerRegistryEntry_PublicFetch', actors: [OWNER], signatories: [OPERATOR, FILLER] }],
     ['a holding the owner signs, created outside the registry', { kind: 'create', template: `${ROGUE_PKG}:Evil.Holding:Holding`, signatories: [OWNER], packageName: 'evil' }],
+    ['a pinned cancore-intent contract the owner signs, which SwapIntent_Withdraw never creates', { kind: 'create', template: intent('Intent.SwapIntent:SwapIntent'), signatories: [OWNER, OPERATOR] }],
   ])('TC-SDK-1685-04: an owner action besides the withdraw is refused — %s', async (_name, extra) => {
     const key = signer();
-    expect(await refusal(async () => signRefund(key, await refundLeg(withdraw([allocationWithdraw(), extra]))))).toMatch(/owner's authority reaches|created outside the registry|not the intent's allocation/);
+    expect(await refusal(async () => signRefund(key, await refundLeg(withdraw([allocationWithdraw(), extra]))))).toMatch(/owner's authority reaches|created outside the registry|created under a withdraw|not the intent's allocation/);
     expect(key.signPreparedHash).not.toHaveBeenCalled();
   });
 
@@ -466,6 +467,11 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
     ['the disclosed contract is not a SwapIntent', [swapIntent({ template: intent('Intent.SwapIntent:IntentFactory') })], /does not disclose the SwapIntent it withdraws/],
     ['its allocationCid is not a contract id', [swapIntent({ allocationCid: party(OWNER) })], /allocationCid is not a contract id/],
     ['a field label repeats', [swapIntent({ fields: (f) => f.map((x, i) => (i === 1 ? { label: 'filler', value: x.value } : x)) })], /does not decode .*repeats/],
+    [
+      'a numeric label on field 1 would sort first and shift every position',
+      [swapIntent({ fields: (f) => f.map((x, i) => (i === 1 ? { label: '0', value: x.value } : x)) })],
+      /does not decode .*a number/,
+    ],
     [
       'a __proto__ label hides field 1 so the allocationCid label at position 9 reads as position 8',
       [
