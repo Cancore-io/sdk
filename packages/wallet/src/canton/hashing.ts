@@ -33,8 +33,8 @@ import {
   PreparedTransaction,
   type Value,
 } from '@canton-network/core-ledger-proto';
-import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 
 /** `HashPurpose.PreparedSubmission` = 48, as int32BE. */
 const PREPARED_TRANSACTION_PURPOSE = Uint8Array.of(0, 0, 0, 48);
