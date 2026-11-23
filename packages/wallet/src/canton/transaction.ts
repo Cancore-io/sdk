@@ -58,7 +58,10 @@ function recordFields(fields: ReadonlyArray<{ label: string; value?: Value }>): 
   const out: Record<string, DamlValue> = {};
   fields.forEach((f, i) => {
     const key = f.label || `#${i}`;
-    if (/^\d+$/.test(key) || Object.hasOwn(out, key)) throw new TypeError(`a record field label ${JSON.stringify(f.label)} that is a number or repeats`);
+    // `__proto__` would replace the prototype instead of adding a field and shift every later position.
+    if (/^\d+$/.test(key) || key === '__proto__' || Object.hasOwn(out, key)) {
+      throw new TypeError(`a record field label ${JSON.stringify(f.label)} that is a number, __proto__ or repeats`);
+    }
     out[key] = damlValue(f.value);
   });
   return out;
