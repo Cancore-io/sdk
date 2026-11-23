@@ -55,7 +55,8 @@ import type { FillSigner } from '../signer';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, TicketRecord } from '../store';
 import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from '../tickets/terms';
 import { CantonDelivery, isSignedClaim } from './canton';
-import { FeeCeilingError, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
+import { GasReporter, lateReceipt } from './gas';
+import { FeeCeilingError, inclusionDepth, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
 import { reasonOf, retryableEstimateFailure, revertName } from './reverts';
 import type { FillRefusal } from './refusal';
 import { awaitValidFrom } from './validFrom';
@@ -195,8 +196,10 @@ export class Executor {
   private started = false;
   private stopped = false;
   private readonly canton: CantonDelivery | undefined;
+  private readonly gas: GasReporter;
 
   constructor(private readonly options: ExecutorOptions) {
+    this.gas = new GasReporter({ events: options.events, alert: (event) => this.emit(event), logger: options.logger, clock: options.clock });
     const d = options.delivery ?? {};
     this.delivery = {
       pollIntervalMs: d.pollIntervalMs ?? DEFAULT_DELIVERY.pollIntervalMs,
@@ -724,7 +727,7 @@ export class Executor {
       const receipt = await t.driver.receipt(tx.hash);
       if (!receipt) continue;
       if (!(await t.driver.isCanonical(receipt))) break; // a reorg is under way: look again next tick
-      const depth = (await t.driver.client.head()) - receipt.blockNumber + 1n;
+      const depth = inclusionDepth(await t.driver.client.head(), receipt);
       return this.included(t, tx, receipt, depth, txs);
     }
     return this.pending(t, txs);
@@ -747,15 +750,11 @@ export class Executor {
   private async included(t: Tracker, tx: InFlightTransaction, receipt: TransactionReceipt, depth: bigint, txs: readonly InFlightTransaction[]): Promise<boolean> {
     const { store } = this.options;
     const chain = t.driver.chain;
-    if (tx.kind === 'settle') {
-      if (!(await this.deepEnough(t, receipt, depth))) return false;
-      await this.settleListener?.(chain, tx, receipt);
-      await store.nonces.complete(t.lease, tx.hash);
-      return true;
-    }
     if (tx.kind !== 'fill' || !tx.orderHash || tx.attempt === undefined) {
       if (!(await this.deepEnough(t, receipt, depth))) return false;
-      if (tx.kind === 'cancel') await this.cancelled(chain, tx, txs, receipt);
+      await this.gas.report(t, tx, receipt, txs);
+      if (tx.kind === 'settle') await this.settleListener?.(chain, tx, receipt);
+      else if (tx.kind === 'cancel') await this.cancelled(chain, tx, txs, receipt);
       else this.stage(tx.kind === 'approve' ? 'approve.confirmed' : 'tx.confirmed', tx.orderHash, tx.attempt, { chain, kind: tx.kind, txHash: tx.hash, status: receipt.status, gasUsed: receipt.gasUsed.toString() });
       await store.nonces.complete(t.lease, tx.hash);
       return true;
@@ -782,7 +781,7 @@ export class Executor {
       this.stage('fill.included', orderHash, attempt, { chain, txHash: tx.hash, block: receipt.blockNumber.toString(), status: receipt.status });
     }
     if (!(await this.deepEnough(t, receipt, depth))) return false;
-
+    await this.gas.report(t, tx, receipt, txs);
     if (receipt.status === 0) {
       await this.fail(orderHash, attempt, `reverted in block ${receipt.blockNumber}`);
       this.stage('fill.reverted', orderHash, attempt, { chain, txHash: tx.hash, block: receipt.blockNumber.toString(), gasUsed: receipt.gasUsed.toString() });
@@ -871,6 +870,8 @@ export class Executor {
     if ((await driver.transactionCount('latest')) > t.lease.nonce) {
       // Spent, with no receipt of ours: receipts may lag; past that, another transaction took the nonce.
       if (++t.spentTicks < SPENT_TICKS) return false;
+      const late = await lateReceipt(driver, txs);
+      if (late) return this.included(t, late.tx, late.receipt, late.depth, txs);
       if (fill?.orderHash && fill.attempt !== undefined) {
         // Only this delivery key can fill the order: filled(orderHash) means one of its fills executed, whatever an endpoint's receipts say.
         const executed = await this.executedFill(t, fill, txs);
@@ -880,6 +881,7 @@ export class Executor {
       if (fill?.orderHash && fill.attempt !== undefined) await this.fail(fill.orderHash, fill.attempt, 'its nonce was spent by another transaction');
       const settle = txs.find((x) => x.kind === 'settle' && x.orderHash);
       if (settle) await this.settleLostListener?.(driver.chain, settle);
+      this.gas.unpriced(driver.chain, t.lease, txs);
       await store.nonces.complete(t.lease, ZERO_HASH);
       return true;
     }
@@ -931,7 +933,7 @@ export class Executor {
       return false;
     }
     const ours = txs.find((x) => x.hash === hash) ?? { ...fill, hash };
-    return this.included(t, ours, receipt, head - receipt.blockNumber + 1n, txs);
+    return this.included(t, ours, receipt, inclusionDepth(head, receipt), txs);
   }
 
   /**
