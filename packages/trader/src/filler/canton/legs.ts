@@ -19,8 +19,8 @@
  */
 import type { CantonLeg, CantonLegTopology, CantonLegTransaction, Hex } from '@cancore/contracts';
 import { Enums_ParticipantPermission, Enums_TopologyChangeOp, type SigningPublicKey, TopologyTransaction } from '@canton-network/core-ledger-proto';
-import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { cantonHash, decodePreparedTransaction, fromBase64, hashPreparedTransactionV2, multiHashInput } from './hashing';
 import { type CantonTransaction, transactionView } from './transaction';
 import { partySigningKeys } from './party-signing-keys';

@@ -20,7 +20,7 @@ import { defineConfig } from 'tsup';
  */
 export default defineConfig({
   // Without a tsconfig the dts step falls back to TypeScript's defaults
-  // (classic resolution) and cannot find `@noble/curves/ed25519`, whose types
+  // (classic resolution) and cannot find `@noble/curves/ed25519.js`, whose types
   // live behind package `exports`.
   tsconfig: './tsconfig.json',
   entry: { index: 'src/index.ts', operations: 'src/operations.ts', 'web/index': 'src/web/index.ts', 'canton/index': 'src/canton/index.ts', 'canton/proto': 'src/canton/proto.ts' },

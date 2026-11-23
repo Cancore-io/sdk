@@ -1,6 +1,6 @@
 import { buildCantonSourceOrder, fillerIdHash, repayToFromParty, type CantonIntent, type CantonParty, type FillProofJson, type Hex, type OrderJson, type TicketJson } from '@cancore/contracts';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { FillerChains } from '../chain';
 import { CANTON_TRANSFER_FACTORIES } from '../canton/factories';
 import { NODE_KEY, party } from '../canton/fixtures';

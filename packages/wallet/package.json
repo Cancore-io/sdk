@@ -1,6 +1,6 @@
 {
   "name": "@cancore/wallet",
-  "version": "0.4.8",
+  "version": "0.4.10",
   "type": "module",
   "description": "Cancore wallet core — key material, signing and storage contracts. Runtime-agnostic: no browser, no React.",
   "exports": {
@@ -69,10 +69,10 @@
   },
   "dependencies": {
     "@canton-network/core-ledger-proto": "^1.13.0",
-    "@noble/curves": "^1.9.7",
-    "@noble/hashes": "^1.8.0",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
     "@protobuf-ts/runtime": "^2.11.1",
-    "@scure/bip39": "^1.6.0"
+    "@scure/bip39": "^2.4.0"
   },
   "engines": {
     "node": ">=26"

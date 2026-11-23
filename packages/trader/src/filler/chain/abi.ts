@@ -11,8 +11,8 @@
  * `0x` hex, `bool` as boolean, tuples as objects keyed by component name.
  */
 import type { Hex } from '@cancore/contracts';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 
 export interface AbiParam {
   readonly name?: string;
