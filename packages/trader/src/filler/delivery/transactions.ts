@@ -91,6 +91,9 @@ export interface TransactionReceipt {
   raw: Readonly<Record<string, unknown>>;
 }
 
+/** How deep a receipt's block is at `head`: 1 in the head block itself. */
+export const inclusionDepth = (head: bigint, receipt: Pick<TransactionReceipt, 'blockNumber'>): bigint => head - receipt.blockNumber + 1n;
+
 interface NonceTurn {
   end: () => void;
   nonce?: bigint;

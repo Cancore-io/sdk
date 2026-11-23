@@ -143,6 +143,7 @@ export type {
   FilledEvent,
   FillerEvent,
   FillerStage,
+  GasSpentEvent,
   PenaltyEvent,
   SettledEvent,
   StageEvent,
