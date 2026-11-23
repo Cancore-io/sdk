@@ -4,13 +4,14 @@ import type { CantonTransaction, CreateNode, DamlValue, ExerciseNode, Transactio
 /**
  * What an owner's key signs for the intent rail (CAN-3340): a prepared transaction whose root is
  * one of the owner's own choices of an allowed `cancore-intent` package, in which the owner's
- * authority reaches nothing but that package's code and the registry's own factories.
+ * authority reaches nothing but that package's code and the registry's own factories — or, under
+ * the owner's withdraw (BUG-1685), nothing but the release of the intent's own allocation.
  */
 
 export const INTENT_PACKAGE_NAME = 'cancore-intent';
 
 /**
- * Package ids of the `cancore-intent` versions whose Open and Renew this wallet signs: 0.6.2 and 0.6.3 (CAN-3340, CAN-2716,
+ * Package ids of the `cancore-intent` versions whose Open, Renew and Withdraw this wallet signs: 0.6.2 and 0.6.3 (CAN-3340, CAN-2716,
  * CAN-3588). 0.6.2 is an SCU of 0.4.2–0.6.1, so a root of an older package still runs: up to 0.5.2 their Open stores a settlement
  * factory without the owner's PublicFetch and their settle runs the operator's pin under the owner's authority; 0.6.0
  * and 0.6.1 read an attestor registry whose sets may start on a fractional second (CAN-2716).
@@ -30,6 +31,7 @@ export const INTENT_ROOTS = {
   // Checked against the cancore-intent 0.6.0 DAR of canton-contracts#327 (973d063); unchanged through 0.6.2 (#319).
   renewSettlementFactory: { template: 'Intent.SwapIntent:SwapIntent', choice: 'SwapIntent_RenewSettlementFactory' },
   // BUG-1685: the owner's take-back past refundAfter; its only owner action is Allocation_Withdraw of the intent's own allocation.
+  // Checked against canton-contracts dev Intent/SwapIntent.daml (cancore-intent 0.6.3): `controller owner`, body `exercise allocationCid AV2.Allocation_Withdraw`.
   withdraw: { template: 'Intent.SwapIntent:SwapIntent', choice: 'SwapIntent_Withdraw' },
 } as const;
 
@@ -69,7 +71,7 @@ type OwnerReach = { kind: 'intent' } | { kind: 'withdraw'; allocationCid: string
 export interface IntentSigningPolicy {
   /** The party the key signs for. */
   owner: string;
-  /** The instrument admin of the intent's give: the registry whose factories the owner's authority may reach. */
+  /** The instrument admin of the intent's give: the registry whose factories (Open, Renew) or allocation (Withdraw) the owner's authority may reach. */
   admin: string;
   /** Package ids of the `cancore-intent` versions this signature may be for: a subset of {@link INTENT_PACKAGE_IDS}, which is the default. */
   intentPackageIds?: readonly string[];
@@ -130,7 +132,8 @@ function swapIntentField(argument: DamlValue, label: keyof typeof SWAP_INTENT_FI
 /** The allocation a withdraw may release: the `allocationCid` of the owner's SwapIntent the root runs on, as the transaction discloses it. */
 function withdrawnAllocationOf(tx: CantonTransaction, root: ExerciseNode, policy: IntentSigningPolicy): string {
   const intent = tx.inputContracts.find((c) => c.contractId === root.contractId);
-  if (!intent || !isIntentCode(intent, policy) || qualified(intent.templateId) !== INTENT_ROOTS.withdraw.template) refuse('the transaction does not disclose the SwapIntent it withdraws');
+  // The creation package, not the pin: an intent opened under a version the wallet later drops stays the owner's to withdraw, and SCU keeps field positions.
+  if (!intent || intent.packageName !== INTENT_PACKAGE_NAME || qualified(intent.templateId) !== INTENT_ROOTS.withdraw.template) refuse('the transaction does not disclose the SwapIntent it withdraws');
   const owner = swapIntentField(intent.argument, 'owner');
   if (owner.t !== 'party' || owner.v !== policy.owner) refuse("the intent withdrawn is not the owner's");
   const allocation = swapIntentField(intent.argument, 'allocationCid');
@@ -154,10 +157,20 @@ function assertNever(value: never): never {
   throw new Error(`Unhandled variant: ${JSON.stringify(value)}`);
 }
 
-/** Under a withdraw the owner's authority reaches the intent's own allocation alone; the registry's Allocation_Withdraw returns it to the owner. */
-function checkWithdrawExercise(node: ExerciseNode, name: string, allocationCid: string): boolean {
-  const isOwnAllocation = node.choice === ALLOCATION_WITHDRAW.choice && qualified(node.interfaceId ?? '') === ALLOCATION_WITHDRAW.interface && node.contractId === allocationCid;
-  if (!isOwnAllocation) refuse(`the owner's authority reaches ${name}`);
+/**
+ * Under a withdraw the owner's authority reaches the intent's own allocation alone, consumed by the registry's
+ * Allocation_Withdraw. The walk stops there, so the allocation must be the registry's as a factory must
+ * ({@link isRegistryFactory}): the admin signs it and its package is the admin's.
+ */
+function checkWithdrawExercise(node: ExerciseNode, name: string, allocationCid: string, policy: IntentSigningPolicy): boolean {
+  if (node.choice !== ALLOCATION_WITHDRAW.choice || qualified(node.interfaceId ?? '') !== ALLOCATION_WITHDRAW.interface) refuse(`the owner's authority reaches ${name}`);
+  if (node.contractId !== allocationCid) refuse(`the withdraw releases ${node.contractId}, not the intent's allocation ${allocationCid}`);
+  if (!node.consuming) refuse("the withdraw does not consume the intent's allocation");
+  const registries = policy.registries ?? REGISTRY_PACKAGES;
+  const packages = Object.hasOwn(registries, policy.admin) ? registries[policy.admin] : undefined;
+  if (!packages?.includes(packageOf(node.templateId)) || !node.signatories.includes(policy.admin)) {
+    refuse(`the allocation ${node.contractId} (${qualified(node.templateId)}) is not the registry's of ${policy.admin}`);
+  }
   return false;
 }
 
@@ -166,7 +179,7 @@ function checkExercise(node: ExerciseNode, policy: IntentSigningPolicy, reach: O
   const lendsOwnerAuthority = node.actingParties.includes(policy.owner) || node.signatories.includes(policy.owner);
   if (!lendsOwnerAuthority) return true;
   const name = `${qualified(node.templateId)}.${node.choice}`;
-  if (reach.kind === 'withdraw') return checkWithdrawExercise(node, name, reach.allocationCid);
+  if (reach.kind === 'withdraw') return checkWithdrawExercise(node, name, reach.allocationCid, policy);
   if (isIntentCode(node, policy) && INTENT_OWNER_CHOICES.has(name)) return true;
   const factoryInterface = Object.hasOwn(REGISTRY_FACTORY_CHOICES, node.choice) ? REGISTRY_FACTORY_CHOICES[node.choice] : undefined;
   if (!factoryInterface || qualified(node.interfaceId ?? '') !== factoryInterface) refuse(`the owner's authority reaches ${name}`);

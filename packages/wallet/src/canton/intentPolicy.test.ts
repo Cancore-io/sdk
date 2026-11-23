@@ -72,6 +72,7 @@ interface ExerciseSpec {
   interface?: string;
   packageName?: string;
   contractId?: string;
+  consuming?: boolean;
   children?: NodeSpec[];
 }
 interface CreateSpec {
@@ -149,7 +150,7 @@ function build(spec: NodeSpec, nodes: DamlTransaction_Node[], seeds: Array<{ nod
     const children = (spec.children ?? []).map((child) => build(child, nodes, seeds));
     nodeType = {
       oneofKind: 'exercise',
-      exercise: { ...common, ...(spec.interface ? { interfaceId: identifier(spec.interface) } : {}), actingParties: spec.actors, choiceId: spec.choice, chosenValue: unit, consuming: false, choiceObservers: [], children },
+      exercise: { ...common, ...(spec.interface ? { interfaceId: identifier(spec.interface) } : {}), actingParties: spec.actors, choiceId: spec.choice, chosenValue: unit, consuming: spec.consuming ?? false, choiceObservers: [], children },
     };
   }
   nodes[slot] = { nodeId, versionedNode: { oneofKind: 'v1', v1: { nodeType } } };
@@ -385,19 +386,22 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
   const party = (v: string): Value => ({ sum: { oneofKind: 'party', party: v } });
   const contractId = (v: string): Value => ({ sum: { oneofKind: 'contractId', contractId: v } });
 
-  function swapIntent(over: { owner?: string; allocationCid?: string; labels?: (label: string, i: number) => string; template?: string } = {}): Metadata_InputContract {
-    const values: Record<string, Value> = { owner: party(over.owner ?? OWNER), allocationCid: contractId(over.allocationCid ?? ALLOCATION_CID), allocationFactoryCid: contractId(OTHER_ALLOCATION_CID) };
-    const fields: RecordField[] = SWAP_INTENT_FIELDS.map((label, i) => ({ label: over.labels ? over.labels(label, i) : label, value: values[label] ?? unit }));
+  function swapIntent(
+    over: { owner?: string; allocationCid?: Value; fields?: (fields: RecordField[]) => RecordField[]; template?: string; packageId?: string } = {},
+  ): Metadata_InputContract {
+    const values: Record<string, Value> = { owner: party(over.owner ?? OWNER), allocationCid: over.allocationCid ?? contractId(ALLOCATION_CID) };
+    const declared: RecordField[] = SWAP_INTENT_FIELDS.map((label) => ({ label, value: values[label] ?? unit }));
+    const fields = over.fields ? over.fields(declared) : declared;
     const create = {
-      lfVersion: '2.1', contractId: INTENT_CID, packageName: 'cancore-intent', templateId: identifier(over.template ?? intent('Intent.SwapIntent:SwapIntent')),
+      lfVersion: '2.1', contractId: INTENT_CID, packageName: 'cancore-intent', templateId: identifier(over.template ?? `${over.packageId ?? INTENT_PKG}:Intent.SwapIntent:SwapIntent`),
       argument: { sum: { oneofKind: 'record' as const, record: { fields } } }, signatories: [OWNER, OPERATOR], stakeholders: [OWNER, OPERATOR],
     };
     return { contract: { oneofKind: 'v1', v1: create }, createdAt: 1000000000000000n, eventBlob: new Uint8Array() };
   }
 
-  const allocationWithdraw = (allocation = ALLOCATION_CID): ExerciseSpec => ({
+  const allocationWithdraw = (allocation = ALLOCATION_CID, over: Partial<ExerciseSpec> = {}): ExerciseSpec => ({
     kind: 'exercise', template: `${CNRX_PKG}:Cnrx.Allocation:CnrxAllocationV2`, interface: ALLOCATION_INTERFACE, choice: 'Allocation_Withdraw', actors: [OWNER], signatories: [CNRX, OWNER],
-    packageName: 'cnrx-registry', contractId: allocation, children: [{ kind: 'create', template: CNRX_REGISTRY.holding, signatories: [OWNER, CNRX], packageName: 'cnrx-registry' }],
+    packageName: 'cnrx-registry', contractId: allocation, consuming: true, ...over, children: [{ kind: 'create', template: CNRX_REGISTRY.holding, signatories: [OWNER, CNRX], packageName: 'cnrx-registry' }],
   });
   const withdraw = (children: NodeSpec[] = [allocationWithdraw()], template = intent('Intent.SwapIntent:SwapIntent')): ExerciseSpec => ({
     kind: 'exercise', template, choice: 'SwapIntent_Withdraw', actors: [OWNER], signatories: [OWNER, OPERATOR], contractId: INTENT_CID, children,
@@ -428,7 +432,7 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
 
   test("TC-SDK-1685-03: a withdraw of another allocation than the intent's is refused", async () => {
     const key = signer();
-    expect(await refusal(async () => signRefund(key, await refundLeg(withdraw([allocationWithdraw(OTHER_ALLOCATION_CID)]))))).toMatch(/the owner's authority reaches Cnrx.Allocation:CnrxAllocationV2.Allocation_Withdraw/);
+    expect(await refusal(async () => signRefund(key, await refundLeg(withdraw([allocationWithdraw(OTHER_ALLOCATION_CID)]))))).toMatch(/the withdraw releases .*, not the intent's allocation/);
     expect(key.signPreparedHash).not.toHaveBeenCalled();
   });
 
@@ -439,7 +443,7 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
     ['a holding the owner signs, created outside the registry', { kind: 'create', template: `${ROGUE_PKG}:Evil.Holding:Holding`, signatories: [OWNER], packageName: 'evil' }],
   ])('TC-SDK-1685-04: an owner action besides the withdraw is refused — %s', async (_name, extra) => {
     const key = signer();
-    expect(await refusal(async () => signRefund(key, await refundLeg(withdraw([allocationWithdraw(), extra]))))).toMatch(/owner's authority reaches|created outside the registry/);
+    expect(await refusal(async () => signRefund(key, await refundLeg(withdraw([allocationWithdraw(), extra]))))).toMatch(/owner's authority reaches|created outside the registry|not the intent's allocation/);
     expect(key.signPreparedHash).not.toHaveBeenCalled();
   });
 
@@ -454,7 +458,14 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
   test.each<[string, Metadata_InputContract[], RegExp]>([
     ['the intent is not disclosed', [], /does not disclose the SwapIntent it withdraws/],
     ["the intent is another party's", [swapIntent({ owner: OPERATOR })], /not the owner's/],
-    ['an allocationCid label moved off its position onto another allocation', [swapIntent({ allocationCid: OTHER_ALLOCATION_CID, labels: (l, i) => (i === 8 ? 'allocationFactoryCid' : i === 9 ? 'allocationCid' : l) })], /field 8 of the intent withdrawn is not its allocationCid/],
+    [
+      'the allocationCid label moved to position 9, onto the allocation the withdraw releases',
+      [swapIntent({ allocationCid: contractId(OTHER_ALLOCATION_CID), fields: (f) => f.map((x, i) => (i === 8 ? { label: 'allocationFactoryCid', value: x.value } : i === 9 ? { label: 'allocationCid', value: contractId(ALLOCATION_CID) } : x)) })],
+      /field 8 of the intent withdrawn is not its allocationCid/,
+    ],
+    ['the disclosed contract is not a SwapIntent', [swapIntent({ template: intent('Intent.SwapIntent:IntentFactory') })], /does not disclose the SwapIntent it withdraws/],
+    ['its allocationCid is not a contract id', [swapIntent({ allocationCid: party(OWNER) })], /allocationCid is not a contract id/],
+    ['a field label repeats', [swapIntent({ fields: (f) => f.map((x, i) => (i === 1 ? { label: 'filler', value: x.value } : x)) })], /does not decode .*repeats/],
   ])("TC-SDK-1685-06: the intent's own allocation is read strictly from the disclosed SwapIntent — refused when %s", async (_name, contracts, reason) => {
     const key = signer();
     expect(await refusal(async () => signRefund(key, await refundLeg(withdraw(), contracts)))).toMatch(reason);
@@ -462,7 +473,7 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
   });
 
   test('TC-SDK-1685-07: unlabelled fields are read by position: the honest withdraw is signed', async () => {
-    const leg = await refundLeg(withdraw(), [swapIntent({ labels: () => '' })]);
+    const leg = await refundLeg(withdraw(), [swapIntent({ fields: (f) => f.map((x) => ({ label: '', value: x.value })) })]);
     await expect(signRefund(signer(), leg)).resolves.toHaveLength(1);
   });
 
@@ -472,5 +483,22 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
     await expect(signPreparedHashBase64(key, leg.hash, 'intent.refund')).rejects.toThrow(UnexpectedLegError);
     await expect(signLegs(key, [leg], { operation: 'intent.refund' })).rejects.toThrow(/only under an intent signing policy/);
     expect(key.signPreparedHash).not.toHaveBeenCalled();
+  });
+
+  test.each<[string, Partial<ExerciseSpec>, RegExp]>([
+    ['another choice of the allocation', { choice: 'Allocation_Cancel' }, /the owner's authority reaches Cnrx.Allocation:CnrxAllocationV2.Allocation_Cancel/],
+    ['Allocation_Withdraw not through the token-standard Allocation interface', { interface: `${ROGUE_PKG}:Evil.Allocation:Allocation` }, /the owner's authority reaches/],
+    ['a withdraw that does not consume it', { consuming: false }, /does not consume the intent's allocation/],
+    ['an allocation the admin does not sign', { signatories: [OWNER] }, /is not the registry's of/],
+    ['an allocation of a package outside the registry pin', { template: `${ROGUE_PKG}:Cnrx.Allocation:CnrxAllocationV2` }, /is not the registry's of/],
+  ])("TC-SDK-1685-09: the intent's own allocation is released only by the registry's consuming Allocation_Withdraw — refused for %s", async (_name, over, reason) => {
+    const key = signer();
+    expect(await refusal(async () => signRefund(key, await refundLeg(withdraw([allocationWithdraw(ALLOCATION_CID, over)]))))).toMatch(reason);
+    expect(key.signPreparedHash).not.toHaveBeenCalled();
+  });
+
+  test('TC-SDK-1685-10: an intent created under a cancore-intent version outside the pin stays withdrawable: the root runs pinned code', async () => {
+    const leg = await refundLeg(withdraw(), [swapIntent({ packageId: INTENT_0_5_1 })]);
+    await expect(signRefund(signer(), leg)).resolves.toHaveLength(1);
   });
 });
