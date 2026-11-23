@@ -467,11 +467,14 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
-- `0.2.0-rc.27` — error codes `INTENT_SETTLED` and `INTENT_REFUNDED` (410, CAN-3131): `GET
+- `0.2.0-rc.29` — error codes `INTENT_SETTLED` and `INTENT_REFUNDED` (410, CAN-3131): `GET
   /v1/filler/canton/intents/{orderHash}` tells the filler why the Canton-source intent that named
   its party is gone — settled, or refunded by `SwapIntent_Cancel`, `_Withdraw`, `_Expire` or
   `_Retire` — instead of `UNKNOWN_TICKET`, which now means no such intent ever named the party.
   Additive.
+- `0.2.0-rc.28` — `@noble/hashes` `^1.8.0` → `^2.4.0` (CAN-3207). No API or output change: keccak-256 and
+  the byte utilities are the same functions, the generated vectors are byte-identical. The 2.x line is ESM-only and
+  needs Node ≥ 20.19, inside `engines.node >= 26`.
 - `0.2.0-rc.26` — the draw is gone (CAN-2532): the user picks the filler, nobody draws one.
   Removed `drawValue`, `drawWinner`, `firstRoundAtOrAfter`, `DRAND_QUICKNET`, `DRAW_CLOSED_BY`,
   the `DrawRecord` / `EpochRecord` types and their `records.schema.json` defs, the `epoch.weights`

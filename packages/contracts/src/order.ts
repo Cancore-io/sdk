@@ -6,7 +6,7 @@
  * (`CancoreRouter.WITNESS_TYPE_STRING`). Digests only: signing stays with the
  * consumer's own secp256k1 key.
  */
-import { concatBytes, utf8ToBytes } from '@noble/hashes/utils';
+import { concatBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { CANTON_ORIGIN_ID, CANTON_SOURCE_ANCHOR, DAML_NUMERIC_SCALE, EIP2294_MAX_CHAIN_ID, INSTRUMENT_LABEL_TAG, MAX_FEE_BPS, OWNER_LABEL_TAG } from './constants';
 import { PERMIT2_ADDRESS } from './deployments';
 import { abiEncodeStrings, exactUnits } from './encoding';

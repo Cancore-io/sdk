@@ -6,7 +6,7 @@
  * `FillProof` always carry the same 32 bytes. No secp256k1: recovering the
  * signer stays with the consumer's own library.
  */
-import { utf8ToBytes } from '@noble/hashes/utils';
+import { utf8ToBytes } from '@noble/hashes/utils.js';
 import { hexBytes, keccak, toHex, wellFormedUtf8 } from './bytes';
 import type { Hex } from './typedData';
 

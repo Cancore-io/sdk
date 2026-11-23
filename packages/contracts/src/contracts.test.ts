@@ -1,4 +1,4 @@
-import { keccak_256 } from '@noble/hashes/sha3';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as abi from './abi';

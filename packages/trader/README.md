@@ -286,7 +286,19 @@ receipted ──► pending ──► sent ──► included ──► confirme
 - **Events.** `filled { orderHash, attempt, txHash, amount }` once confirmed; stages `fill.sent` (nonce,
   gas limit, fees), `fill.replaced`, `fill.included`, `fill.reorged`, `fill.reverted`, `fill.cancelled`,
   `fill.confirmed` (`gasUsed`, `effectiveGasPrice`, `latencyMs`, `replacements`), `fill.refused`,
-  `approve.sent`, `approve.confirmed`, `tx.capped`.
+  `approve.sent`, `approve.confirmed`, `tx.capped`, `gas.unpriced`; `gas` for every own transaction.
+- **Gas** (`gas`, `GasSpentEvent`) — the cost of every own EVM transaction once its block is
+  `fillConfirmations` deep, reverted ones included; its block hash and price are as final as that depth makes
+  them: `{ orderHash?, attempt?, kind, chain, txHash, blockNumber, blockHash, reverted, gasUsed,
+  effectiveGasPrice, l1Fee?, feeWei }`, `feeWei = gasUsed × effectiveGasPrice + l1Fee` in the chain's native wei
+  (`l1Fee`: the OP-stack L1 data fee; a receipt without `effectiveGasPrice` is priced
+  `min(maxFeePerGas, baseFee + tip)` from its block). `kind` is `fill` or `settle` (charged to its order),
+  `cancel` (charged to the expired fill it freed; a cancel that filled a nonce gap has no `orderHash`) or
+  `approve` (no `orderHash`: it serves every order of its token). At least once, dedupe by `txHash` keeping
+  the first: the sink is awaited before the nonce is marked mined, and a rejection, a crash or a lost store
+  reply reports it again on the next look. A sink that rejects it 10 looks in a row gets an error log and
+  `gas.unpriced` instead, and the nonce is closed. `gas.unpriced` (`detail.txHashes`) also marks a nonce given
+  up with no receipt of its own transactions, or closed by a receipt of a transaction not journaled on it.
 
 ## Settlement
 
@@ -313,7 +325,7 @@ The filler settles its own fills; Cancore does not (fillers.md §4.7, T-33, T-34
 - **Reorgs.** A refund or a settlement read at the head alone leaves the settlement pending; it closes once it
   reads `fillConfirmations` deep on the source chain.
 - **Events.** `attested` once a set passes; stages `attestations.received`, `settle.sent`, `settle.confirmed`,
-  `settle.reverted`, `settle.refused`; `settled` from `order.settled`.
+  `settle.reverted`, `settle.refused`; `settled` from `order.settled`; `gas` for an EVM `settle` (see Delivery).
 - **For a relayer**: `verifyAttestations` and `collectAttestations` are pure functions over a proof, its
   signatures and the set read from the router — no session, no store.
 - **Canton source** (T-35…T-37, CAN-2321), with `canton` configured: the same two channels and the same
@@ -633,7 +645,7 @@ const webSocket: WebSocketFactory = (url, h, protocols) => {
 - `Clock` — `now()` (unix ms) and `schedule(delayMs, callback) → cancel`. Defaults to the system clock.
 - `Logger` — `debug/info/warn/error(message, fields?)`. The SDK never logs signatures, signed payloads,
   prepared transactions or keys. Defaults to silent.
-- `EventSink` — `emit(event)`. Public events: `filled`, `attested`, `settled`, `penalty`, `declined`; plus
+- `EventSink` — `emit(event)`. Public events: `filled`, `attested`, `settled`, `penalty`, `declined`, `gas`; plus
   `stage` events (`quote.sent`, `ticket.receipted`, `settle.sent`, …) for analytics. A throwing sink never
   stops the protocol. Defaults to a no-op.
 - `HttpFetch` — the slice of `fetch` used for the login, the REST fallback (`status`,
