@@ -265,8 +265,8 @@ importers:
   packages/contracts:
     dependencies:
       '@noble/hashes':
-        specifier: ^1.8.0
-        version: 1.8.0
+        specifier: ^2.4.0
+        version: 2.4.0
 
   packages/dapp-connector: {}
 
