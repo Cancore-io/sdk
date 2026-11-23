@@ -624,8 +624,14 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
       if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
       const withdraw = exercise(`${INTENT}:SwapIntent`, opened.intentCid, 'SwapIntent_Withdraw', { extraArgs: { context: { values: {} }, meta: { values: {} } } });
       const readAs = [E.INTENT_OPERATOR_PARTY_ID, E.CNRX_ADMIN_PARTY];
+      const { connectedSynchronizers } = await api<{ connectedSynchronizers: { synchronizerId: string }[] }>(
+        `/v2/state/connected-synchronizers?party=${encodeURIComponent(E.STAND_OWNER_PARTY)}`,
+      );
+      const [synchronizer] = connectedSynchronizers;
+      if (!synchronizer) throw new Error(`the stand owner ${E.STAND_OWNER_PARTY} is connected to no synchronizer`);
       const prepared = await api<{ preparedTransaction: string; preparedTransactionHash: string }>('/v2/interactive-submission/prepare', {
         commandId: `bug-1685-${randomUUID()}`, actAs: [E.STAND_OWNER_PARTY], readAs, commands: [withdraw], packageIdSelectionPreference: [],
+        synchronizerId: synchronizer.synchronizerId,
       });
       try {
         // The stand owner is a participant-hosted party with no external key, so the check runs on the bytes signLegs would sign.
