@@ -235,10 +235,11 @@ describe('the owner signs an intent root from its prepared transaction (CAN-3340
   });
 
   test.each(['open', 'renewSettlementFactory'] as const)('CAN-3588: a cancore-intent 0.6.3 %s is signed before 0.6.3 is uploaded', async (kind) => {
-    const v063 = INTENT_PACKAGE_IDS[2] as string;
+    const v063 = INTENT_PACKAGE_IDS.find((id) => id.startsWith('58e6e789')) as string;
     const at0_6_3 = JSON.parse(JSON.stringify(honest(kind, AMULET)).replaceAll(INTENT_PKG, v063)) as ExerciseSpec;
     const { tx, hash } = await prepared(at0_6_3);
     expect(v063).toBe('58e6e78939044edae7fc85c50800dd054d481c0fd8f057f3755b6d621313f305');
+    expect(INTENT_PACKAGE_IDS).not.toContain('535cb88a2faec69ec361089d1d5ecbbe150cd50a00b736b2941b52c6b820b6fa');
     expect(verifyPreparedTransaction(tx, hash, policy(AMULET))).toBe(kind);
   });
 
