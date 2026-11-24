@@ -4,7 +4,7 @@ import { describe, expect, jest, test } from '@jest/globals';
 import { signLegs, signPreparedHashBase64, signPreparedTransaction, UnexpectedLegError, type HashSigner } from '../operations';
 import { INTENT_PACKAGE_IDS, IntentTransactionRefusedError, type IntentRoot, type IntentSigningPolicy } from './intentPolicy';
 import { verifyPreparedTransaction } from './prepared';
-import { isRegistryFactory, REGISTRY_GUARDIANS, REGISTRY_PACKAGES, registryGuardiansOf } from './registry';
+import { isRegistryFactory, REGISTRY_GUARDIANS, REGISTRY_PACKAGES, registryGuardiansOf, registryPackagesOf } from './registry';
 import { CANTON_TRANSFER_FACTORIES } from './factories';
 
 const INTENT_PKG = INTENT_PACKAGE_IDS[0] as string;
@@ -387,14 +387,18 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
   const contractId = (v: string): Value => ({ sum: { oneofKind: 'contractId', contractId: v } });
 
   function swapIntent(
-    over: { owner?: string; allocationCid?: Value; fields?: (fields: RecordField[]) => RecordField[]; template?: string; packageId?: string; packageName?: string } = {},
+    over: {
+      owner?: Value; allocationCid?: Value; fields?: (fields: RecordField[]) => RecordField[]; argument?: (fields: RecordField[]) => Value;
+      contractId?: string; template?: string; packageId?: string; packageName?: string;
+    } = {},
   ): Metadata_InputContract {
-    const values: Record<string, Value> = { owner: party(over.owner ?? OWNER), allocationCid: over.allocationCid ?? contractId(ALLOCATION_CID) };
+    const values: Record<string, Value> = { owner: over.owner ?? party(OWNER), allocationCid: over.allocationCid ?? contractId(ALLOCATION_CID) };
     const declared: RecordField[] = SWAP_INTENT_FIELDS.map((label) => ({ label, value: values[label] ?? unit }));
     const fields = over.fields ? over.fields(declared) : declared;
     const create = {
-      lfVersion: '2.1', contractId: INTENT_CID, packageName: over.packageName ?? 'cancore-intent', templateId: identifier(over.template ?? `${over.packageId ?? INTENT_PKG}:Intent.SwapIntent:SwapIntent`),
-      argument: { sum: { oneofKind: 'record' as const, record: { fields } } }, signatories: [OWNER, OPERATOR], stakeholders: [OWNER, OPERATOR],
+      lfVersion: '2.1', contractId: over.contractId ?? INTENT_CID, packageName: over.packageName ?? 'cancore-intent',
+      templateId: identifier(over.template ?? `${over.packageId ?? INTENT_PKG}:Intent.SwapIntent:SwapIntent`),
+      argument: over.argument ? over.argument(fields) : { sum: { oneofKind: 'record' as const, record: { fields } } }, signatories: [OWNER, OPERATOR], stakeholders: [OWNER, OPERATOR],
     };
     return { contract: { oneofKind: 'v1', v1: create }, createdAt: 1000000000000000n, eventBlob: new Uint8Array() };
   }
@@ -458,7 +462,13 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
 
   test.each<[string, Metadata_InputContract[], RegExp]>([
     ['the intent is not disclosed', [], /does not disclose the SwapIntent it withdraws/],
-    ["the intent is another party's", [swapIntent({ owner: OPERATOR })], /not the owner's/],
+    ["the intent is another party's", [swapIntent({ owner: party(OPERATOR) })], /not the owner's/],
+    ["its owner is the owner's party id as text, not a party", [swapIntent({ owner: { sum: { oneofKind: 'text', text: OWNER } } })], /not the owner's/],
+    [
+      'its argument is a text map of the same labels in declaration order, not a record',
+      [swapIntent({ argument: (fields) => ({ sum: { oneofKind: 'textMap', textMap: { entries: fields.map((f) => ({ key: f.label, value: f.value })) } } }) })],
+      /field 0 of the intent withdrawn is not its owner/,
+    ],
     [
       'the allocationCid label moved to position 9, onto the allocation the withdraw releases',
       [swapIntent({ allocationCid: contractId(OTHER_ALLOCATION_CID), fields: (f) => f.map((x, i) => (i === 8 ? { label: 'allocationFactoryCid', value: x.value } : i === 9 ? { label: 'allocationCid', value: contractId(ALLOCATION_CID) } : x)) })],
@@ -514,6 +524,27 @@ describe("BUG-1685: intent.refund is signed only as the owner's SwapIntent_Withd
     const key = signer();
     expect(await refusal(async () => signRefund(key, await refundLeg(withdraw([allocationWithdraw(ALLOCATION_CID, over)]))))).toMatch(reason);
     expect(key.signPreparedHash).not.toHaveBeenCalled();
+  });
+
+  test("TC-SDK-1685-11: the SwapIntent is the disclosed contract of the root's id, wherever it sits among the inputs", async () => {
+    const DECOY_INTENT_CID = cid(203);
+    const decoy = swapIntent({ contractId: DECOY_INTENT_CID, allocationCid: contractId(OTHER_ALLOCATION_CID) });
+    const holding = swapIntent({ contractId: cid(204), template: CNRX_REGISTRY.holding, packageName: 'cnrx-registry' });
+    await expect(signRefund(signer(), await refundLeg(withdraw(), [holding, swapIntent()]))).resolves.toHaveLength(1);
+    await expect(signRefund(signer(), await refundLeg(withdraw(), [decoy, swapIntent()]))).resolves.toHaveLength(1);
+    const key = signer();
+    const decoysAllocation = await refundLeg(withdraw([allocationWithdraw(OTHER_ALLOCATION_CID)]), [decoy, swapIntent()]);
+    expect(await refusal(() => signRefund(key, decoysAllocation))).toMatch(/the withdraw releases .*, not the intent's allocation/);
+    expect(key.signPreparedHash).not.toHaveBeenCalled();
+  });
+
+  test("TC-SDK-1685-12: an allocation of the registry's allocationPackageId, a package none of its other templates use, is the registry's", async () => {
+    const ALLOCATION_PKG = 'c4'.repeat(32);
+    const cnrx = CANTON_TRANSFER_FACTORIES[CNRX] ?? [];
+    const registries = registryPackagesOf({ [CNRX]: cnrx.map((f) => ({ ...f, allocationPackageId: ALLOCATION_PKG })) });
+    const leg = await refundLeg(withdraw([allocationWithdraw(ALLOCATION_CID, { template: `${ALLOCATION_PKG}:Cnrx.Allocation:CnrxAllocationV2` })]));
+    await expect(signLegs(signer(), [leg], { operation: 'intent.refund', intentPolicy: policy(CNRX_REGISTRY, { registries }) })).resolves.toHaveLength(1);
+    expect(await refusal(() => signRefund(signer(), leg))).toMatch(/is not the registry's of/);
   });
 
   test('TC-SDK-1685-10: an intent created under a cancore-intent version outside the pin stays withdrawable: the root runs pinned code', async () => {
