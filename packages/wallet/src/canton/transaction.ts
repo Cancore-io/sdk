@@ -38,7 +38,7 @@ export function damlValue(value: Value | undefined): DamlValue {
     case 'textMap':
       return { t: 'textMap', v: Object.fromEntries(sum.textMap.entries.map((e) => [e.key, damlValue(e.value)])) };
     case 'record':
-      return { t: 'record', v: Object.fromEntries(sum.record.fields.map((f, i) => [f.label || `#${i}`, damlValue(f.value)])) };
+      return { t: 'record', v: recordFields(sum.record.fields) };
     case 'variant':
       return { t: 'variant', constructor: sum.variant.constructor, v: damlValue(sum.variant.value) };
     case 'enum':
@@ -48,6 +48,23 @@ export function damlValue(value: Value | undefined): DamlValue {
     default:
       throw new TypeError(`unsupported value ${String(sum?.oneofKind)}`);
   }
+}
+
+/**
+ * Fields by label, in declaration order. A duplicate or integer-like label would let the object reorder or merge fields,
+ * so a field read by its position (BUG-1685) could land on another one: such a record is refused, never decoded.
+ */
+function recordFields(fields: ReadonlyArray<{ label: string; value?: Value }>): Record<string, DamlValue> {
+  const out: Record<string, DamlValue> = {};
+  fields.forEach((f, i) => {
+    const key = f.label || `#${i}`;
+    // `__proto__` would replace the prototype instead of adding a field and shift every later position.
+    if (/^\d+$/.test(key) || key === '__proto__' || Object.hasOwn(out, key)) {
+      throw new TypeError(`a record field label ${JSON.stringify(f.label)} that is a number, __proto__ or repeats`);
+    }
+    out[key] = damlValue(f.value);
+  });
+  return out;
 }
 
 function node(n: DamlTransaction_Node): TransactionNode {

@@ -56,6 +56,7 @@ import { checkCantonSource, intentOrder } from '../src/filler/tickets/canton-sou
 import { TicketRefusal } from '../src/filler/tickets/refusal';
 import { attestationsOf, ledgerEffects } from './stand/attestors';
 import { standToken } from './stand/keycloak';
+import { IntentTransactionRefusedError, registryPackagesOf, verifyPreparedTransaction, type IntentSigningPolicy } from '@cancore/wallet/canton';
 
 const ENV_FILE = process.env.CANCORE_INTENT_STAND_ENV ?? process.env.INTENT_STAND_ENV;
 const KEYS = [
@@ -439,6 +440,8 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
   const events = createRecordingEventSink();
   const logger = createRecordingLogger();
   let filler: Filler;
+  let withdrawable = { fillDeadline: 0, refundAfter: 0 };
+  let expiring: Awaited<ReturnType<typeof openIntent>> | Error = new Error('not opened');
   /** Every `canton.submit` the filler sent, in order: the first one's answer is lost on the way back (TC-SDK-2321-INT-06). */
   const submits: Array<{ operationId: string; answered: boolean }> = [];
   const losingFirstSubmitAnswer: HttpFetch = async (url, request) => {
@@ -490,6 +493,10 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
     filler.onTicketOffer(async () => 'accept');
     await approveRouter(httpRpc(E.EVM_RPC_URL), E.STAND_FILLER_EVM_KEY as Hex, E.STAND_ROUTE_OUTPUT_TOKEN, E.INTENT_ROUTER_ADDRESS);
     await filler.start();
+    // BUG-1685: refundAfter comes MIN_PROOF_WINDOW_S after a near fillDeadline; the specs below run while it nears.
+    const nowS = Math.floor(Date.now() / 1000);
+    withdrawable = { fillDeadline: nowS + 120, refundAfter: nowS + 120 + MIN_PROOF_WINDOW_S };
+    expiring = await openIntent(withdrawable).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
   });
 
   afterAll(async () => {
@@ -610,6 +617,44 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
     expect(result).toBeUndefined();
     expect(passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
   });
+
+  // Past refundAfter by more than the participant's clock skew: SwapIntent_Withdraw asserts ledger time > refundAfter.
+  const WITHDRAW_SKEW_MS = 20_000;
+  test(
+    "TC-SDK-1685-STAND-01 (BUG-1685): the participant's own prepared SwapIntent_Withdraw of the owner passes @cancore/wallet's intent.refund policy; the same bytes for another owner are refused",
+    async () => {
+      const opened = expiring;
+      if (opened instanceof Error) throw opened;
+      const wait = withdrawable.refundAfter * 1000 + WITHDRAW_SKEW_MS - Date.now();
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      const withdraw = exercise(`${INTENT}:SwapIntent`, opened.intentCid, 'SwapIntent_Withdraw', { extraArgs: { context: { values: {} }, meta: { values: {} } } });
+      const readAs = [E.INTENT_OPERATOR_PARTY_ID, E.CNRX_ADMIN_PARTY];
+      const { connectedSynchronizers } = await api<{ connectedSynchronizers: { synchronizerId: string }[] }>(
+        `/v2/state/connected-synchronizers?party=${encodeURIComponent(E.STAND_OWNER_PARTY)}`,
+      );
+      const [synchronizer] = connectedSynchronizers;
+      if (!synchronizer) throw new Error(`the stand owner ${E.STAND_OWNER_PARTY} is connected to no synchronizer`);
+      const prepared = await api<{ preparedTransaction: string; preparedTransactionHash: string }>('/v2/interactive-submission/prepare', {
+        commandId: `bug-1685-${randomUUID()}`, actAs: [E.STAND_OWNER_PARTY], readAs, commands: [withdraw], packageIdSelectionPreference: [],
+        synchronizerId: synchronizer.synchronizerId,
+      });
+      try {
+        // The stand owner is a participant-hosted party with no external key, so the check runs on the bytes signLegs would sign.
+        const refundPolicy: IntentSigningPolicy = {
+          owner: E.STAND_OWNER_PARTY, admin: E.CNRX_ADMIN_PARTY, roots: ['withdraw'], registries: registryPackagesOf(registries()),
+        };
+        const verify = (policy: IntentSigningPolicy) => verifyPreparedTransaction(prepared.preparedTransaction, prepared.preparedTransactionHash, policy);
+        expect(verify(refundPolicy)).toBe('withdraw');
+        expect(() => verify({ ...refundPolicy, owner: E.INTENT_OPERATOR_PARTY_ID })).toThrow(IntentTransactionRefusedError);
+        expect(() => verify({ ...refundPolicy, admin: E.INTENT_OPERATOR_PARTY_ID })).toThrow(/is not the registry's of/);
+      } finally {
+        // The owner takes the give back, so the stand owner's CNRX does not stay locked in the allocation.
+        await submit([E.STAND_OWNER_PARTY], withdraw, readAs);
+      }
+      expect(await active(E.INTENT_OPERATOR_PARTY_ID, `${INTENT}:SwapIntent`, (a) => hexOf(a.orderHash) === opened.orderHash)).toHaveLength(0);
+    },
+    (MIN_PROOF_WINDOW_S + 15 * 60) * 1000,
+  );
 
   test('TC-SDK-1863-INT-07 TC-SDK-2321-INT-01: ticketed, checked V-C1…V-C7, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
     const before = await freeCnrx(E.STAND_FILLER_CANTON_PARTY);

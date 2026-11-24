@@ -10,6 +10,8 @@ export type RegistryPackages = Readonly<Record<string, readonly string[]>>;
 
 const packagesOf = (f: CantonTransferFactory): string[] => [
   f.packageId,
+  // BUG-1685: the owner's withdraw runs on the registry's allocation, of another package for DA Utilities (CAN-3587).
+  ...(f.allocationPackageId ? [f.allocationPackageId] : []),
   ...(f.holdingPackageId ? [f.holdingPackageId] : []),
   ...(f.upgradedHoldingPackageIds ?? []),
   ...(f.transferRecords ?? []).map((template) => template.split(':')[0] ?? ''),
