@@ -1,5 +1,13 @@
 # Changelog — `@cancore/wallet`
 
+## 0.4.12
+
+### Changed — intent operations are signed for the rebuilt cancore-intent 0.6.3 (CAN-3588)
+
+- `INTENT_PACKAGE_IDS` also pins `58e6e78939044edae7fc85c50800dd054d481c0fd8f057f3755b6d621313f305`, the 0.6.3 DAR rebuilt by
+  canton-contracts#371 after it bounded the attestor set id to `uint32`. The first 0.6.3 build (`535cb88a…`) was never
+  uploaded and stays pinned until the rollout ends.
+
 ## 0.4.11
 
 ### Security — `intent.refund` is signed from its prepared transaction under the intent policy (BUG-1685)
