@@ -165,6 +165,19 @@ describe('hashing scheme V2, ported: the same bytes as @canton-network/core-tx-v
 });
 
 describe('topology multihash and base64', () => {
+  test('BUG-1629 topology hash order is independent of host collation', () => {
+    const compare = jest.spyOn(String.prototype, 'localeCompare').mockImplementation(function (this: string, other: string) {
+      return new Intl.Collator('da').compare(String(this), other);
+    });
+    let actual: Uint8Array;
+    try {
+      actual = multiHashInput([Uint8Array.of(0xab), Uint8Array.of(0xaa)]);
+    } finally {
+      compare.mockRestore();
+    }
+    expect(bytesToHex(actual)).toBe('0000000200000001aa00000001ab');
+  });
+
   test('the purpose hash and the multihash input match the library', async () => {
     const hashes = [new Uint8Array([9, 9]), new Uint8Array([1, 2, 3])].map((b) => cantonHash(11, b));
     for (const [i, b] of [new Uint8Array([9, 9]), new Uint8Array([1, 2, 3])].entries()) {
