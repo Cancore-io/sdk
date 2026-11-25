@@ -999,7 +999,7 @@ describe('REST fallback (protocol §3.6)', () => {
     const outsideAnOrder = jest.spyOn(h.store, 'appendEvidence');
     const upper = `0x${'AB'.repeat(32)}` as Hex;
     for (const action of ['receipt', 'decline'] as const) h.http.routes[`POST /v1/filler/tickets/${upper}/1/${action}`] = () => ({ status: 200, body: {} });
-    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: upper, attempt: 1, intentHash: hashTicketIntent(intent()), receivedAt: h.clock.now() });
+    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: upper, attempt: 1, intentHash: hashTicketIntent({ ...intent(), orderHash: upper }), receivedAt: h.clock.now() });
     h.http.routes[`POST /v1/filler/tickets/${upper}/1/intent`] = () => ({ status: 200, body: ack });
     await h.client.submitTicket({ action: 'intent', message: { ...intent(), orderHash: upper } });
     await h.client.submitTicket({ action: 'decline', message: { type: 'ticket.decline', id: 'd-1', fillerId: FILLER, sentAt: 1790000000000, msgSig: `0x${'00'.repeat(65)}`, orderHash: upper, attempt: 1, reason: 'OTHER' } });
