@@ -54,7 +54,7 @@ export const DEFAULT_LOGIN_TIMEOUT_MS = 15_000;
 const SESSION_SCOPED_TYPES: ReadonlySet<string> = new Set(['auth.ok', 'ping', 'pong']);
 
 /** filler-gateway's own default `maxMessageAgeMs` (FILLER_GATEWAY_MAX_MESSAGE_AGE_MS). */
-export { DEFAULT_MAX_MESSAGE_AGE_MS } from './rest';
+export { DEFAULT_MAX_MESSAGE_AGE_MS } from './frames';
 
 /**
  * Delay before reconnect number `attempt` (0-based): `min(max, initial × 2^attempt)`,
