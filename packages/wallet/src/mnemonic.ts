@@ -146,7 +146,9 @@ export function describeMnemonicError(
 
   // Judge against the language the phrase looks like when none was given, so a
   // Spanish phrase is not reported as "not English words".
-  const resolved = asMnemonicLanguage(language) ?? detectMnemonicLanguage(normalized) ?? 'en';
+  const resolved = asMnemonicLanguage(language) ?? MNEMONIC_LANGUAGES.map((code) => ({
+    code, matches: words.filter((word) => WORDLISTS[code].includes(word)).length,
+  })).sort((a, b) => b.matches - a.matches)[0]!.code;
   const wordset = new Set<string>(WORDLISTS[resolved]);
   const unknown = [...new Set(words.filter((word) => !wordset.has(word)))];
   if (unknown.length > 0) {
