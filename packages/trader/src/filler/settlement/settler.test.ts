@@ -572,7 +572,7 @@ describe('write-ahead settlement recovery (CAN-1856 R2)', () => {
     expect(payee(w)).toBe(100n);
   });
 
-  test('accepted then timeout, crash before linking, restart: claims old journal before allocation', async () => {
+  test.each([false, true])('BUG-1616 restart with a recorded settlement and changed signers=%s reuses its nonce', async (rotate) => {
     const w = await world();
     const request = w.src.request.bind(w.src);
     w.src.request = async <T>(r: EvmRpcRequest): Promise<T> => {
@@ -592,15 +592,19 @@ describe('write-ahead settlement recovery (CAN-1856 R2)', () => {
     w.store.withOrder = withOrder;
     w.src.request = request;
     w.clock.advance(61_000);
+    if (rotate) w.router.revokedAttestors.add(w.router.attestorSets.get(1)!.members[0]!);
     const next = w.restart();
-    await expect(next.settler.selfSettle(w.orderHash)).resolves.toEqual({ txHash: recorded.hash });
+    const { txHash } = await next.settler.selfSettle(w.orderHash);
+    if (rotate) expect(txHash).not.toBe(recorded.hash);
+    else expect(txHash).toBe(recorded.hash);
     const open = await w.store.nonces.listOpen(SRC, fillSigner.address);
     expect(open).toHaveLength(1);
-    expect(w.signer.signTransaction).toHaveBeenCalledTimes(1);
-    expect(open[0]).toMatchObject({ nonce: old!.nonce, owner: 'r2', transactions: [recorded] });
+    expect(w.signer.signTransaction).toHaveBeenCalledTimes(rotate ? 2 : 1);
+    expect(open[0]).toMatchObject({ nonce: old!.nonce, owner: 'r2' });
+    expect(open[0]!.transactions.at(-1)!.hash).toBe(txHash);
     w.src.mine();
     await w.tick(1_000);
-    expect(await w.settlement()).toMatchObject({ state: 'confirmed', txHash: recorded.hash });
+    expect(await w.settlement()).toMatchObject({ state: 'confirmed', txHash });
     next.executor.stop();
   });
 

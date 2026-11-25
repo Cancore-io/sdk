@@ -44,6 +44,7 @@ import {
   type TicketIssuedEvm,
 } from '@cancore/contracts';
 import { decodeEventLog, decodeParams, encodeFunctionCall, entryOf, topicOf, type AbiEntry } from '../chain/abi';
+import { recoverSettleCall } from '../settlement/send-settle';
 import { ChainReadError, toQuantity } from '../chain/client';
 import { erc20Allowance } from '../chain/erc20';
 import { fillDepth, type ChainReaders, type FillerChains } from '../chain';
@@ -396,10 +397,10 @@ export class Executor {
       const lease = await driver.renew(record);
       if (!lease) throw new LeaseLostError(record);
       const tx = record.transactions.at(-1)!;
-      if (tx.kind !== 'settle' || tx.orderHash !== orderHash || tx.attempt !== attempt || tx.to !== call.to.toLowerCase() || tx.data !== call.data || tx.value !== call.value) {
+      if (tx.kind !== 'settle' || tx.orderHash !== orderHash || tx.attempt !== attempt || tx.to !== call.to.toLowerCase() || tx.value !== call.value) {
         throw new Error('settle: the recorded transaction belongs to another operation');
       }
-      return { lease, tx };
+      return { lease, tx: await recoverSettleCall(this.options, driver, lease, tx, call) };
     }
     return undefined;
   }
