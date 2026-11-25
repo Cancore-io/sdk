@@ -114,6 +114,11 @@ export class RouterEventWatcher {
         }
         return;
       }
+      // The range may be on a new fork since the previous chunk was reported.
+      if (this.lastScanned) {
+        await this.detectReorg();
+        if (!this.lastScanned) return;
+      }
       this.stalled = 0;
       for (const log of logs) await this.add(log);
       this.lastScanned = { number: header.number, hash: header.hash };
