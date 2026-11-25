@@ -457,6 +457,7 @@ function parseJson(text: string, path: string): unknown {
 }
 
 const strings = (o: Record<string, unknown>, keys: readonly string[]): boolean => keys.every((k) => typeof o[k] === 'string');
+const optionalGuardian = (v: unknown): boolean => v === undefined || (typeof v === 'string' && v.length > 0);
 const nullableString = (v: unknown): boolean => v === null || typeof v === 'string';
 
 /** The shape of a recipient-readiness answer; whether it is about the ticket's `DeliveryOrder` is V-R1's to check. */
@@ -491,6 +492,7 @@ export function isCantonIntent(body: unknown): body is CantonIntent {
   const a = body.allocation;
   if (a === null) return true;
   if (!isObject(a) || !strings(a, ['contractId', 'templateId', 'admin', 'settlementId']) || typeof a.committed !== 'boolean') return false;
+  if (!optionalGuardian(a.lockedHoldingGuardian)) return false;
   if (!nullableString(a.authorizer) || !nullableString(a.settlementDeadline)) return false;
   if (!Array.isArray(a.executors) || !a.executors.every((e) => typeof e === 'string')) return false;
   return Array.isArray(a.legs) && a.legs.every((l) => isObject(l) && strings(l, ['legId', 'side', 'amount', 'instrumentId']) && nullableString(l.otherside));

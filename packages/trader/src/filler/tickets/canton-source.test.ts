@@ -280,6 +280,7 @@ describe('V-C1…V-C7 on the golden Canton-source order (CAN-1863, CAN-3408)', (
     const { input, orderHash } = golden.vector;
     const ok = intentOf(input, orderHash, GOLDEN_LEGS, '1');
     expect(isCantonIntent(ok)).toBe(true);
+    expect(isCantonIntent({ ...ok, allocation: { ...ok.allocation!, lockedHoldingGuardian: 1 } })).toBe(false);
     expect(isCantonIntent({ ...ok, allocation: null })).toBe(true);
     expect(isCantonIntent({ ...ok, amount: 1250.5 })).toBe(false);
     expect(isCantonIntent({ ...ok, allocation: { ...ok.allocation!, legs: [{ ...ok.allocation!.legs[0]!, amount: 1 }] } })).toBe(false);
