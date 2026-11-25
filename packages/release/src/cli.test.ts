@@ -322,14 +322,14 @@ describe('release version --cut --cut-branch dev', () => {
   });
 
   // Exact match on every recognition path: a near-miss name or ref never passes for dev (sdk#326 audit RX-1).
-  it.each(['dev-evil', 'develop', 'dev/x'])('checked-out branch %s: refused, nothing tagged', async (branch) => {
+  it.each(['dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev'])('checked-out branch %s: refused, nothing tagged', async (branch) => {
     const r = seeded('v1.4.2', branch);
     r.commit('feat: x');
     expect((await run(r, cutOnDev)).code).toBe(1);
     expect(r.tags()).toEqual(['v1.4.2']);
   });
 
-  it.each(['refs/heads/dev-evil', 'refs/heads/develop', 'refs/heads/dev/x', 'refs/tags/dev', 'refs/pull/1/merge', 'refs/remotes/origin/dev', 'dev'])(
+  it.each(['refs/heads/dev-evil', 'refs/heads/develop', 'refs/heads/dev/x', 'refs/tags/dev', 'refs/pull/1/merge', 'refs/remotes/origin/dev', 'dev', 'refs/heads/feature/dev'])(
     'detached, a run started for %s: refused, nothing tagged',
     async (ref) => {
       const r = seeded('v1.4.2', 'feature');
@@ -340,7 +340,7 @@ describe('release version --cut --cut-branch dev', () => {
     },
   );
 
-  it.each(['dev-evil', 'feature-dev'])('detached, HEAD only on origin/%s: refused, nothing tagged', async (branch) => {
+  it.each(['dev-evil', 'feature-dev', 'feature/dev'])('detached, HEAD only on origin/%s: refused, nothing tagged', async (branch) => {
     const r = seeded('v1.4.2', branch);
     r.commit('feat: x');
     r.git('push', '-q', '-u', 'origin', branch);
