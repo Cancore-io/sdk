@@ -2,7 +2,7 @@ import { FILL_TICKET_DOMAIN, FILL_TICKET_TYPES, fillerIdHash, repayToFromEvm, ty
 import { CANCORE_ROUTER_ABI } from '@cancore/contracts';
 import { ChainClient, FillerChains, fillDepth, hashOrder, readAtDepth, type ChainConfig, type OpenDepth } from '../chain';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../chain/abi';
-import type { FillerEvent, StageEvent } from '../events';
+import type { FillerEvent, GasSpentEvent, StageEvent } from '../events';
 import type { TicketRecord } from '../store';
 import {
   createRecordingEventSink,
@@ -381,11 +381,79 @@ describe('Executor — router allowance', () => {
     const delivering = executor.deliver(w.orderHash, 0);
     await flush();
     expect(w.stages('approve.sent').map((s) => s.detail!.amount)).toEqual(['0']);
-    await w.tick(2_000);
+    await w.tick(4_000);
     expect(w.stages('approve.sent').map((s) => s.detail!.amount)).toEqual(['0', '5000']);
     await w.tick(2_000);
     expect(await delivering).toMatchObject({ status: 'sent' });
     executor.stop();
+  });
+});
+
+describe('BUG-1588: the sweep keeps the router allowance topped up, not only the start', () => {
+  // The ticket is not receipted: no fill at start spends the allowance these tests read.
+  const LIMIT = 5_000n;
+  const routerAllowance = (w: Awaited<ReturnType<typeof world>>) => String(w.dst.token(TOKEN).allowances.get(`${fillSigner.address.toLowerCase()}:${DST_ROUTER}`));
+  const spendAllowanceTo = (w: Awaited<ReturnType<typeof world>>, left: bigint) => w.dst.token(TOKEN).approve(fillSigner.address, DST_ROUTER, left);
+
+  test('BUG-1588-01: an allowance spent below half of its limit after start is approved back to the limit by the next sweep; exactly half is left alone', async () => {
+    const w = await world({ state: 'checking', allowance: LIMIT, delivery: { approvals: { [DST]: { [TOKEN]: LIMIT } } } });
+    const executor = w.executor();
+    await executor.start();
+    await w.tick(6_000);
+    expect(w.stages('approve.sent')).toEqual([]);
+
+    spendAllowanceTo(w, LIMIT / 2n);
+    await w.tick(12_000);
+    expect(w.stages('approve.sent')).toEqual([]);
+
+    spendAllowanceTo(w, LIMIT / 2n - 1n);
+    await w.tick(6_000);
+    expect(w.stages('approve.sent').map((s) => s.detail)).toEqual([expect.objectContaining({ token: TOKEN, amount: LIMIT.toString() })]);
+    await w.tick(2_000);
+    expect(routerAllowance(w)).toBe(LIMIT.toString());
+    executor.stop();
+  });
+
+  test('BUG-1588-02: an approve still pending is not sent again by later sweeps of this replica or by a second replica; none once it lands', async () => {
+    const w = await world({ state: 'checking', allowance: 1_000n, delivery: { approvals: { [DST]: { [TOKEN]: LIMIT } } } });
+    w.dst.minTip = 10n ** 12n;
+    const slowReplace = { ...TIMING, replaceAfterMs: 600_000, approvals: { [DST]: { [TOKEN]: LIMIT } } };
+    const r1 = w.executor('r1', slowReplace);
+    await r1.start();
+    await flush();
+    const r2 = w.executor('r2', slowReplace);
+    await r2.start();
+    await w.tick(16_000);
+    expect(w.stages('approve.sent')).toHaveLength(1);
+
+    w.dst.minTip = 0n;
+    await w.tick(3_000);
+    expect(routerAllowance(w)).toBe(LIMIT.toString());
+    await w.tick(12_000);
+    expect(w.stages('approve.sent')).toHaveLength(1);
+    r1.stop();
+    r2.stop();
+  });
+
+  test('BUG-1588-03: a limit configured under a mixed-case token address is topped up as well', async () => {
+    const mixedCaseToken = `0x${TOKEN.slice(2, -2)}AA` as Hex;
+    const w = await world({ state: 'checking', allowance: 0n, delivery: { approvals: { [DST]: { [mixedCaseToken]: LIMIT } } } });
+    const executor = w.executor();
+    await executor.start();
+    await w.tick(2_000);
+    expect(w.stages('approve.sent').map((s) => s.detail)).toEqual([expect.objectContaining({ token: TOKEN, amount: LIMIT.toString() })]);
+    expect(routerAllowance(w)).toBe(LIMIT.toString());
+    executor.stop();
+  });
+
+  test('BUG-1588-04: a stopped executor tops up nothing, whatever the allowance falls to', async () => {
+    const w = await world({ state: 'checking', allowance: LIMIT, delivery: { approvals: { [DST]: { [TOKEN]: LIMIT } } } });
+    const executor = w.executor();
+    await executor.start();
+    executor.stop();
+    spendAllowanceTo(w, 0n);
+    await w.tick(12_000);
+    expect(w.stages('approve.sent')).toEqual([]);
   });
 });
 
@@ -436,6 +504,8 @@ describe('Executor — replace-by-fee (T-29)', () => {
     expect(cancel).toMatchObject({ to: fillSigner.address.toLowerCase(), data: '0x', value: 0n, nonce: 0n });
     w.dst.minTip = 0n;
     await w.tick(1_000);
+    expect(w.stages('fill.cancelled')).toHaveLength(0);
+    await w.tick(2_000);
     expect(w.stages('fill.cancelled')).toHaveLength(1);
     expect(await fillOf(w)).toMatchObject({ state: 'failed', reason: expect.stringContaining('cancelled') });
     expect(await w.store.nonces.listOpen(DST, fillSigner.address.toLowerCase() as Hex)).toEqual([]);
@@ -508,7 +578,7 @@ describe('Executor — replacement caps (F-3, R-14, CAN-2299)', () => {
     expect(mined[0]).toMatchObject({ nonce: 0n, to: ME, data: '0x', value: 0n });
     expect(w.stages('fill.cancelled')).toHaveLength(1);
     expect(await openNonce(w)).toBeUndefined();
-    const next = await executor.acquire(executor.driver(DST)!);
+    const next = await executor.acquire(executor.driver(DST)!, async (lease) => lease);
     expect(next.nonce).toBe(1n);
     executor.stop();
   });
@@ -516,9 +586,8 @@ describe('Executor — replacement caps (F-3, R-14, CAN-2299)', () => {
   /** A settle of this replica's on the fake chain, priced at the market now and tracked by the executor. */
   async function trackedSettle(w: Awaited<ReturnType<typeof world>>, executor: Executor) {
     const driver = executor.driver(DST)!;
-    const lease = await executor.acquire(driver);
     // To self with no data: the fake chain executes it as a plain transfer.
-    const tx = await driver.send(lease, { to: ME, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now());
+    const { lease, tx } = await executor.acquire(driver, async (taken) => ({ lease: taken, tx: await driver.send(taken, { to: ME, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now()) }));
     executor.watch(driver, lease);
     return tx;
   }
@@ -631,6 +700,62 @@ describe('Executor — reorgs (T-30)', () => {
     await w.tick(3_000);
     expect(await fillOf(w)).toMatchObject({ state: 'confirmed', txRef: sent.txHash });
     expect(w.events.events.filter((e: FillerEvent) => e.type === 'filled')).toHaveLength(1);
+    executor.stop();
+  });
+
+  test('BUG-1556 S-01: a cancel counts only fillConfirmations deep; a reorg that mines the fill instead confirms the fill', async () => {
+    const w = await world({ ttlS: 40 });
+    const me = fillSigner.address.toLowerCase() as Hex;
+    w.dst.minTip = 10n ** 12n;
+    const executor = w.executor('r1', { ...TIMING, replaceAfterMs: 60_000 });
+    await executor.start();
+    await executor.deliver(w.orderHash, 0);
+    const fillRaw = (await w.store.nonces.listOpen(DST, me))[0]!.transactions[0]!.raw;
+    await w.tick(45_000);
+    const [cancel] = [...w.dst.mempool.values()];
+    expect(cancel).toMatchObject({ to: me, data: '0x', nonce: 0n });
+    w.dst.minTip = 0n;
+    await w.tick(1_000);
+    const block = w.dst.minedTransactions.get(cancel!.hash)!.blockNumber;
+    expect(w.dst.head - block + 1n).toBeLessThan(3n);
+    expect(w.stages('fill.cancelled')).toHaveLength(0);
+    expect(await fillOf(w)).not.toMatchObject({ state: 'failed' });
+    expect((await w.store.nonces.listOpen(DST, me)).map((r) => r.nonce)).toEqual([0n]);
+
+    w.dst.dropOnReorg = true;
+    w.dst.reorg(block - 1n);
+    w.dst.setTimestamp(w.dst.head + 1n, w.validUntil);
+    await w.dst.request({ method: 'eth_sendRawTransaction', params: [fillRaw] });
+    w.dst.mine();
+    for (let i = 0; i < 6; i++) {
+      w.clock.advance(1_000);
+      w.dst.mine();
+      await flush();
+    }
+    expect(w.stages('fill.cancelled')).toHaveLength(0);
+    expect(await fillOf(w)).toMatchObject({ state: 'confirmed' });
+    expect(await w.store.nonces.listOpen(DST, me)).toEqual([]);
+    executor.stop();
+  });
+
+  test('BUG-1556 S-01: a cancel reorged out before it is fillConfirmations deep keeps its nonce tracked, so the next nonce is not stuck behind a hole', async () => {
+    const w = await world({ ttlS: 40 });
+    const me = fillSigner.address.toLowerCase() as Hex;
+    w.dst.minTip = 10n ** 12n;
+    const executor = w.executor('r1', { ...TIMING, replaceAfterMs: 60_000 });
+    await executor.start();
+    await executor.deliver(w.orderHash, 0);
+    await w.tick(45_000);
+    const [cancel] = [...w.dst.mempool.values()];
+    w.dst.minTip = 0n;
+    await w.tick(1_000);
+    const block = w.dst.minedTransactions.get(cancel!.hash)!.blockNumber;
+    w.dst.dropOnReorg = true;
+    w.dst.reorg(block);
+    await w.tick(10_000);
+    expect(BigInt(await w.dst.request<string>({ method: 'eth_getTransactionCount', params: [me, 'latest'] }))).toBe(1n);
+    expect(w.stages('fill.cancelled')).toHaveLength(1);
+    expect(await w.store.nonces.listOpen(DST, me)).toEqual([]);
     executor.stop();
   });
 
@@ -909,6 +1034,192 @@ async function forDraws(draws: number, check: (rng: Rng) => void | Promise<void>
 const ascending = (values: readonly bigint[]): bigint[] => [...values].sort((x, y) => (x < y ? -1 : x > y ? 1 : 0));
 
 const chainWith = (openConfirmations: OpenDepth, fillConfirmations?: number): ChainConfig => ({ ...POLICY, openConfirmations, fillConfirmations });
+
+describe('BUG-1589: gas of own transactions, charged to the trade', () => {
+  type World = Awaited<ReturnType<typeof world>>;
+  const gasEvents = (w: World) => w.events.events.filter((e): e is GasSpentEvent => e.type === 'gas');
+  /** The cost as the chain's own receipt states it. */
+  const costOf = async (w: World, hash: Hex) => {
+    const raw = await w.dst.request<{ gasUsed: string; effectiveGasPrice: string; blockNumber: string; blockHash: Hex }>({ method: 'eth_getTransactionReceipt', params: [hash] });
+    const gasUsed = BigInt(raw.gasUsed);
+    const price = BigInt(raw.effectiveGasPrice);
+    return { gasUsed: gasUsed.toString(), effectiveGasPrice: price.toString(), feeWei: (gasUsed * price).toString(), blockNumber: BigInt(raw.blockNumber).toString(), blockHash: raw.blockHash };
+  };
+
+  test('BUG-1589-01: a confirmed fill reports gasUsed × effectiveGasPrice once, charged to its order and attempt', async () => {
+    const w = await world();
+    const executor = w.executor();
+    await executor.start();
+    const { txHash } = await executor.deliver(w.orderHash, 0);
+    await w.tick(1_000);
+    expect(gasEvents(w)).toEqual([]);
+    await w.tick(4_000);
+    expect(gasEvents(w)).toEqual([{ type: 'gas', orderHash: w.orderHash, attempt: 0, kind: 'fill', chain: DST, txHash, reverted: false, ...(await costOf(w, txHash!)) }]);
+    expect(BigInt(gasEvents(w)[0]!.feeWei)).toBeGreaterThan(0n);
+    executor.stop();
+  });
+
+  test('BUG-1589-02: a fill mined and reverted still reports the gas it burnt, reverted', async () => {
+    const w = await world();
+    const executor = w.executor();
+    await executor.start();
+    const { txHash } = await executor.deliver(w.orderHash, 0);
+    w.dst.token(TOKEN).setBalance(fillSigner.address, 0n);
+    await w.tick(5_000);
+    expect(await fillOf(w)).toMatchObject({ state: 'failed' });
+    expect(gasEvents(w)).toEqual([{ type: 'gas', orderHash: w.orderHash, attempt: 0, kind: 'fill', chain: DST, txHash, reverted: true, ...(await costOf(w, txHash!)) }]);
+    expect(gasEvents(w)[0]!.gasUsed).toBe('30000');
+    executor.stop();
+  });
+
+  test('BUG-1589-03: the cancel that frees an expired fill nonce is charged to that fill order', async () => {
+    const w = await world({ ttlS: 40 });
+    w.dst.minTip = 10n ** 12n;
+    const executor = w.executor('r1', { ...TIMING, replaceAfterMs: 60_000 });
+    await executor.start();
+    await executor.deliver(w.orderHash, 0);
+    await w.tick(45_000);
+    const [cancel] = [...w.dst.mempool.values()];
+    expect(cancel).toMatchObject({ data: '0x', nonce: 0n });
+    w.dst.minTip = 0n;
+    await w.tick(3_000);
+    expect(w.stages('fill.cancelled')).toHaveLength(1);
+    expect(gasEvents(w)).toEqual([{ type: 'gas', orderHash: w.orderHash, attempt: 0, kind: 'cancel', chain: DST, txHash: cancel!.hash, reverted: false, ...(await costOf(w, cancel!.hash)) }]);
+    executor.stop();
+  });
+
+  test('BUG-1589-04: an approve reports its gas with no order: it serves every order of its token', async () => {
+    const w = await world({ allowance: 0n });
+    const executor = w.executor();
+    await executor.start();
+    const delivering = executor.deliver(w.orderHash, 0);
+    await flush();
+    const approveHash = w.stages('approve.sent')[0]!.detail!.txHash as Hex;
+    await w.tick(10_000);
+    const { txHash } = await delivering;
+    const approve = gasEvents(w).find((e) => e.kind === 'approve');
+    expect(approve).toEqual({ type: 'gas', kind: 'approve', chain: DST, txHash: approveHash, reverted: false, ...(await costOf(w, approveHash)) });
+    expect(gasEvents(w).filter((e) => e.kind === 'fill').map((e) => e.txHash)).toEqual([txHash]);
+    executor.stop();
+  });
+
+  test('BUG-1589-05: a settle on a leased nonce reports its gas, charged to the order it settles', async () => {
+    const w = await world();
+    const executor = w.executor();
+    const driver = new TransactionDriver({ chain: DST, client: w.chains.get(DST)!.client, signer: fillSigner, store: w.store, owner: 'r1', leaseTtlMs: 5_000, fees: { feeBumpPercent: 15, gasLimitMarginPercent: 20 }, logger: w.logger });
+    const lease = await driver.acquire();
+    const settle = await driver.send(lease, { to: SRC_ROUTER, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now());
+    executor.watch(driver, lease);
+    await w.tick(5_000);
+    expect(gasEvents(w)).toEqual([{ type: 'gas', orderHash: w.orderHash, attempt: 0, kind: 'settle', chain: DST, txHash: settle.hash, reverted: false, ...(await costOf(w, settle.hash)) }]);
+    executor.stop();
+  });
+
+  test('BUG-1589-20: a nonce spent with no receipt of its own transaction visible is given up with a gas.unpriced alert naming them, and no gas', async () => {
+    const w = await world();
+    const executor = w.executor();
+    const driver = new TransactionDriver({ chain: DST, client: w.chains.get(DST)!.client, signer: fillSigner, store: w.store, owner: 'r1', leaseTtlMs: 5_000, fees: { feeBumpPercent: 15, gasLimitMarginPercent: 20 }, logger: w.logger });
+    const lease = await driver.acquire();
+    const settle = await driver.send(lease, { to: SRC_ROUTER, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now());
+    w.dst.hideReceipts = true;
+    executor.watch(driver, lease);
+    await w.tick(6_000);
+    expect(w.stages('gas.unpriced')).toEqual([expect.objectContaining({ orderHash: w.orderHash, attempt: 0, detail: { chain: DST, nonce: '0', kinds: 'settle', txHashes: settle.hash } })]);
+    expect(gasEvents(w)).toEqual([]);
+    expect(await w.store.nonces.listOpen(DST, fillSigner.address.toLowerCase() as Hex)).toEqual([]);
+    executor.stop();
+  });
+
+  /** A settle on a leased nonce of the delivery key, sent and handed to the executor to track. */
+  const watchedSettle = async (w: World, executor: Executor) => {
+    const driver = new TransactionDriver({ chain: DST, client: w.chains.get(DST)!.client, signer: fillSigner, store: w.store, owner: 'r1', leaseTtlMs: 5_000, fees: { feeBumpPercent: 15, gasLimitMarginPercent: 20 }, logger: w.logger });
+    const lease = await driver.acquire();
+    const settle = await driver.send(lease, { to: SRC_ROUTER, data: '0x', value: 0n }, 21_000n, await driver.marketFees(), { kind: 'settle', orderHash: w.orderHash, attempt: 0 }, w.clock.now());
+    return { driver, lease, settle, watch: () => executor.watch(driver, lease) };
+  };
+  /** A sink that rejects `gas` events while `refuse()` holds and records everything else, and what it accepted. */
+  const refusingSink = (w: World, refuse: () => boolean) => ({
+    emit: (event: FillerEvent): void | Promise<void> => (event.type === 'gas' && refuse() ? Promise.reject(new Error('the database is down')) : w.events.emit(event)),
+  });
+  const me = fillSigner.address.toLowerCase() as Hex;
+
+  test('BUG-1589-23: a sink that rejects the gas keeps the nonce open and gets it again on the next looks; once it accepts, the gas arrives once and the nonce closes', async () => {
+    const w = await world();
+    let refused = 0;
+    const executor = w.executor('r1', TIMING, { events: refusingSink(w, () => refused++ < 3) });
+    const { settle, watch } = await watchedSettle(w, executor);
+    watch();
+    await w.tick(4_000);
+    expect(refused).toBeGreaterThanOrEqual(1);
+    expect(gasEvents(w)).toEqual([]);
+    expect((await w.store.nonces.listOpen(DST, me)).map((r) => r.nonce)).toEqual([0n]);
+    await w.tick(6_000);
+    expect(gasEvents(w)).toEqual([expect.objectContaining({ kind: 'settle', txHash: settle.hash, orderHash: w.orderHash })]);
+    expect(await w.store.nonces.listOpen(DST, me)).toEqual([]);
+    expect(w.stages('gas.unpriced')).toEqual([]);
+    executor.stop();
+  });
+
+  test('BUG-1589-24: a sink that never accepts the gas holds the nonce for GAS_REPORT_ATTEMPTS looks only: then an error log, gas.unpriced, and the nonce closes', async () => {
+    const w = await world();
+    const executor = w.executor('r1', TIMING, { events: refusingSink(w, () => true) });
+    const { settle, watch } = await watchedSettle(w, executor);
+    watch();
+    await w.tick(8_000);
+    expect((await w.store.nonces.listOpen(DST, me)).map((r) => r.nonce)).toEqual([0n]);
+    await w.tick(10_000);
+    expect(await w.store.nonces.listOpen(DST, me)).toEqual([]);
+    expect(w.logger.entries).toContainEqual(expect.objectContaining({ level: 'error', message: expect.stringContaining('gas report given up'), fields: expect.objectContaining({ txHash: settle.hash }) }));
+    expect(w.stages('gas.unpriced')).toEqual([expect.objectContaining({ orderHash: w.orderHash, detail: expect.objectContaining({ kinds: 'settle', txHashes: settle.hash }) })]);
+    executor.stop();
+  });
+
+  test('BUG-1589-25: a nonce spent by another transaction while the router holds a fill of an earlier attempt: no gas for that fill twice, gas.unpriced for the nonce own fill', async () => {
+    const w = await world();
+    const executor = w.executor();
+    await executor.start();
+    const first = await executor.deliver(w.orderHash, 0);
+    await w.tick(5_000);
+    expect(gasEvents(w).map((e) => e.txHash)).toEqual([first.txHash]);
+    const driver = new TransactionDriver({ chain: DST, client: w.chains.get(DST)!.client, signer: fillSigner, store: w.store, owner: 'r1', leaseTtlMs: 5_000, fees: { feeBumpPercent: 15, gasLimitMarginPercent: 20 }, logger: w.logger });
+    const lease = await driver.acquire();
+    const call = { to: DST_ROUTER, data: w.fills()[0]!.data, value: 0n, gasLimit: 200_000n, maxFeePerGas: 10n ** 11n, maxPriorityFeePerGas: 10n ** 9n };
+    const raw = await fillSigner.signTransaction({ chainId: 1n, nonce: lease.nonce, ...call });
+    const { hash } = decodeSignedTransaction(raw);
+    expect(await w.store.nonces.recordTransaction(lease, { hash, raw, kind: 'fill', orderHash: w.orderHash, attempt: 1, ...call, sentAtMs: w.clock.now() })).toBe(true);
+    const other = await fillSigner.signTransaction({ chainId: 1n, nonce: lease.nonce, to: me, data: '0x', value: 0n, gasLimit: 21_000n, maxFeePerGas: 10n ** 11n, maxPriorityFeePerGas: 10n ** 9n });
+    await w.dst.request({ method: 'eth_sendRawTransaction', params: [other] });
+    executor.watch(driver, lease);
+    await w.tick(8_000);
+    expect(w.stages('gas.unpriced')).toEqual([expect.objectContaining({ orderHash: w.orderHash, attempt: 1, detail: expect.objectContaining({ nonce: '1', kinds: 'fill', txHashes: hash }) })]);
+    expect(gasEvents(w).map((e) => e.txHash)).toEqual([first.txHash]);
+    expect(await w.store.nonces.listOpen(DST, me)).toEqual([]);
+    executor.stop();
+  });
+
+  test('BUG-1589-26: a receipt that lags the nonce for SPENT_TICKS looks shows on the extra read: the nonce closes with its own hash and gas, no gas.unpriced', async () => {
+    const w = await world();
+    const executor = w.executor();
+    const { driver, settle, watch } = await watchedSettle(w, executor);
+    const visible = driver.receipt.bind(driver);
+    let hidden = 0;
+    driver.receipt = async (hash) => {
+      const receipt = await visible(hash);
+      if (receipt && hidden < 3) {
+        hidden++;
+        return undefined;
+      }
+      return receipt;
+    };
+    watch();
+    await w.tick(8_000);
+    expect(hidden).toBe(3);
+    expect(gasEvents(w)).toEqual([expect.objectContaining({ kind: 'settle', txHash: settle.hash, orderHash: w.orderHash })]);
+    expect(w.stages('gas.unpriced')).toEqual([]);
+    expect(await w.store.nonces.listOpen(DST, me)).toEqual([]);
+    executor.stop();
+  });
+});
 
 describe('fillDepth', () => {
   test('CAN-2893: fillDepth never reads below one confirmation, whatever integer the config holds, with or without fillConfirmations (RX-1)', async () => {

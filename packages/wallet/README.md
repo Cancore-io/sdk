@@ -288,7 +288,7 @@ for an unlocked local key.
 
 ### Intent operations: signed from the prepared transaction
 
-An intent operation (`INTENT_OPERATIONS`: `intent.open`, `intent.renew-settlement-factory`) is
+An intent operation (`INTENT_OPERATIONS`: `intent.open`, `intent.renew-settlement-factory`, `intent.refund`) is
 never signed from a bare hash. Its legs carry `preparedTransaction`, and the wallet recomputes the
 hash and reads the transaction before the key signs:
 
@@ -302,7 +302,7 @@ const signature = await signPreparedTransaction(signer, preparedTransactionB64, 
 It refuses with `IntentTransactionRefusedError` (its `reason` is the sentence to show) unless:
 
 - the recomputed V2 hash is `expectedHashB64`, and the transaction acts as `owner` alone;
-- the one root is `IntentFactory_Open` or `SwapIntent_RenewSettlementFactory` of a `cancore-intent`
+- the one root is `IntentFactory_Open`, `SwapIntent_RenewSettlementFactory` or `SwapIntent_Withdraw` of a `cancore-intent`
   package in `INTENT_PACKAGE_IDS` — 0.6.2 and 0.6.3. 0.6.2 is a Smart Contract Upgrade of 0.4.2–0.6.1,
   so a root of an older version still runs: up to 0.5.2 its code takes the operator's pinned
   settlement factory under the owner's authority, and 0.6.0–0.6.1 accept an attestor registry
@@ -310,12 +310,19 @@ It refuses with `IntentTransactionRefusedError` (its `reason` is the sentence to
   widen it;
 - every action below it that carries the owner's authority is code of that package, or
   `AllocationFactory_Allocate` / `SettlementFactory_PublicFetch` on a factory of the registry of
-  `admin` — `isRegistryFactory`: the admin signs the factory, or its package is in the admin's
-  closed list (`REGISTRY_PACKAGES`); an admin with no list is refused. Of a CNRX admin the
+  `admin` — `isRegistryFactory`: the admin signs the factory, and its package is in the admin's
+  closed list (`REGISTRY_PACKAGES`); an admin with no list is refused. A factory package the
+  admin vets later is refused until the SDK pins it (BUG-1611): the walk does not descend below a
+  factory, so an unpinned package would run any code with the owner's authority. Of a CNRX admin the
   registry's guardian G must co-sign the factory as well (`REGISTRY_GUARDIANS`, CAN-3132): a
   `CnrxRules` / `CnrxAllocationRules` anchored on another guardian is admin-signed and of the same
   package. A wallet with its own CNRX pin passes `policy.guardians` next to `policy.registries`;
-  a cnrx-registry factory of an admin with no guardian there is refused.
+  a cnrx-registry factory of an admin with no guardian there is refused;
+- under `SwapIntent_Withdraw` (`intent.refund`, BUG-1685) the one action carrying the owner's authority is
+  `Allocation_Withdraw` (`Splice.Api.Token.AllocationV2:Allocation`) of the intent's own allocation: the
+  `allocationCid` of the owner's `SwapIntent` the transaction discloses, read by its position in the declaration
+  (field 8, its label empty or `allocationCid`). Any other owner action — another allocation, a factory call,
+  an Open's filler fetch — is refused.
 
 `verifyPreparedTransaction` is the same check without signing, for a screen or for a Renew the
 wallet signs unattended. `execute(signer, type, params, confirm, intentPolicy)` and

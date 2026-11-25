@@ -8,8 +8,8 @@
  *   INTENT_STAND_ENV=<stand env> npx jest --selectProjects int --runInBand packages/trader/test/BUG-1396-quote-window.stand.int.test.ts
  */
 import { encodeCantonAmount } from '@cancore/contracts';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import type { FillerQuoteRequest } from '../src/filler/quotes';
 import type { EvmRpc, EvmRpcRequest } from '../src/filler/rpc';
 import type { StoredQuote } from '../src/filler/store';

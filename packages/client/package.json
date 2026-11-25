@@ -76,7 +76,7 @@
     "@cancore/wallet": "workspace:>=0.4.8 <1.0.0"
   },
   "devDependencies": {
-    "@noble/curves": "^1.9.7"
+    "@noble/curves": "^2.4.0"
   },
   "scripts": {
     "build": "tsup",
@@ -85,7 +85,7 @@
     "spec:refresh": "node scripts/refresh-spec.mjs"
   },
   "dependencies": {
-    "@canton-network/core-ledger-proto": "^1.12.0",
+    "@canton-network/core-ledger-proto": "1.13.0",
     "@canton-network/core-tx-visualizer": "^1.12.0"
   }
 }

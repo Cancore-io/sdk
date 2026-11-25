@@ -34,6 +34,11 @@ export class TicketRefusal extends Error {
   }
 }
 
+/** V-E2: the source router repays no fill before the escrow's `openedAt` (settle reverts `FilledBeforeOpen`). */
+export function refuseBeforeOpen(validFrom: bigint, openedAt: bigint): void {
+  if (validFrom < openedAt) throw new TicketRefusal('V-E2', 'ESCROW_MISMATCH', `validFrom ${validFrom} < openedAt ${openedAt}: a fill that early is never repaid`);
+}
+
 /** A read the check needs; any failure to read is a refusal by that check (N-12). */
 export async function readFor<T>(check: TicketCheckId, reason: DeclineReason, read: () => Promise<T>): Promise<T> {
   try {

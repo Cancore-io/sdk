@@ -9,6 +9,7 @@
     "paths": {
       "@cancore/wallet": ["../wallet/src/index.ts"],
       "@cancore/wallet/operations": ["../wallet/src/operations.ts"],
+      "@cancore/wallet/canton/proto": ["../wallet/src/canton/proto.ts"],
       // The examples import this package by its published name, as a partner's code does.
       "@cancore/client": ["./src/index.ts"],
       "@cancore/client/*": ["./src/*.ts"]

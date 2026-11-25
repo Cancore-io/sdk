@@ -10,7 +10,7 @@
  * express, and recovering each signer and checking it against
  * `attestationSetFor(orderHash)` stays with the consumer (T-7).
  */
-import { utf8ToBytes } from '@noble/hashes/utils';
+import { utf8ToBytes } from '@noble/hashes/utils.js';
 import { keccak, toHex } from './bytes';
 import { jcs } from './hash';
 import type { DecString, S2FBase } from './messages';

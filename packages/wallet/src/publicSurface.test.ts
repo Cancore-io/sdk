@@ -28,9 +28,10 @@ const SURFACE: Record<string, { module: Record<string, unknown>; names: string[]
   './operations': {
     module: operations,
     names: [
-      'INTENT_OPERATIONS', 'IntentTransactionRefusedError', 'OperationDeclinedError', 'TOPOLOGY_OPERATION', 'UnexpectedLegError',
-      'assertOperationLegs', 'base64ToBinaryString', 'configureWalletOperations', 'createWalletOperations', 'hexSignatureToBase64',
-      'isIntentOperation', 'signLegs', 'signPreparedHashBase64', 'signPreparedTransaction', 'verifyPreparedTransaction', 'wallet',
+      'INTENT_OPERATIONS', 'IntentTransactionRefusedError', 'OperationDeclinedError', 'OperationNotCommittedError',
+      'OperationOutcomeUnknownError', 'TOPOLOGY_OPERATION', 'UnexpectedLegError', 'assertOperationLegs', 'base64ToBinaryString',
+      'configureWalletOperations', 'createWalletOperations', 'hexSignatureToBase64', 'isIntentOperation', 'isPendingSubmitAnswer',
+      'settleSubmitAnswer', 'signLegs', 'signPreparedHashBase64', 'signPreparedTransaction', 'verifyPreparedTransaction', 'wallet',
     ],
   },
   './canton': {
@@ -53,12 +54,13 @@ const TYPES: Record<string, string[]> = {
   '.': [
     'Bytes', 'DerivationScheme', 'DerivedCandidate', 'DerivedWalletKey', 'Ed25519KeyPair', 'Ed25519Signer', 'KekRole', 'KeyStore',
     'MnemonicErrorReport', 'MnemonicLanguage', 'PasskeySigningProvider', 'PersistedKeyPasswordWalletRecord', 'PersistedPasskeyWalletRecord',
-    'PhraseMatch', 'ProviderFromMnemonicOptions', 'RegisterResult', 'RevealedWalletSecret', 'Signer', 'StoredRecord',
+    'PhraseDamage', 'PhraseMatch', 'ProviderFromMnemonicOptions', 'RegisterResult', 'RevealedWalletSecret', 'Signer', 'StoredRecord',
     'UnlockedKeyPasswordWallet', 'WalletPasswordProblem', 'WrappedSeed',
   ],
   './operations': [
     'HashSigner', 'IntentRoot', 'IntentSigningPolicy', 'OperationCatalogueEntry', 'OperationConfirm', 'OperationLeg', 'OperationSignature',
-    'PreparedOperation', 'SignLegsOptions', 'WalletOperations', 'WalletRequest',
+    'OperationStatus', 'OperationStatusView', 'OutcomePolling', 'PendingSubmitAnswer', 'PreparedOperation', 'SignLegsOptions',
+    'WalletOperations', 'WalletRequest',
   ],
   './canton': [
     'CantonTransaction', 'CantonTransferFactory', 'CreateNode', 'DamlValue', 'ExerciseNode', 'FetchNode', 'IntentRoot', 'IntentSigningPolicy',

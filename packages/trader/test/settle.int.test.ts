@@ -43,14 +43,14 @@ import {
   type OrderJson,
   type TicketJson,
 } from '@cancore/contracts';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
-import { keccak_256 } from '@noble/hashes/sha3';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { FillerChains, hashFillProof, hashOrder, INTENT_STATUS, type ChainConfig } from '../src/filler/chain';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { Executor } from '../src/filler/delivery/executor';
 import { TransactionDriver } from '../src/filler/delivery/transactions';
-import type { StageEvent } from '../src/filler/events';
+import type { GasSpentEvent, StageEvent } from '../src/filler/events';
 import type { Delivery, FillerProtocolClient, FrameHandler } from '../src/filler/protocol/client';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { Clock } from '../src/filler/runtime';
@@ -60,6 +60,7 @@ import { addressOfPublicKey } from '../src/filler/signer';
 import type { TicketRecord } from '../src/filler/store';
 import { orderOf } from '../src/filler/tickets/terms';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, decodeSignedTransaction, InMemoryFillerStore } from '../src/filler/testing';
+import { signRsv } from '../src/filler/testing/fakes';
 
 const INTENT = process.env.CANCORE_INTENT_JSON;
 const ACTORS = process.env.CANCORE_ACTORS_ENV;
@@ -106,10 +107,7 @@ async function waitFor<T>(read: () => Promise<T | undefined>, what: string, time
 
 const abi = (entries: unknown) => entries as unknown as readonly AbiEntry[];
 const ROUTER = abi(CANCORE_ROUTER_ABI);
-const signDigest = (key: Hex, digest: Hex): Hex => {
-  const sig = secp256k1.sign(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)), { lowS: true });
-  return `0x${bytesToHex(sig.toCompactRawBytes())}${(27 + sig.recovery).toString(16)}`;
-};
+const signDigest = (key: Hex, digest: Hex): Hex => signRsv(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)));
 /** The same signature with `s` mirrored to `n − s` and `v` flipped: it recovers to the same signer, and the router refuses it. */
 const highS = (signature: Hex): Hex => {
   const s = BigInt(`0x${signature.slice(66, 130)}`);
@@ -305,6 +303,23 @@ live('selfSettle against the stand router (make intent-genesis)', () => {
     // FILLER1 is both the delivery key and the payee: it spent the fill, it got the payout.
     expect((await balanceOf(d.delivery.address.toLowerCase() as Hex)) - payeeBefore).toBe(payoutOf(d.order));
     d.executor.stop();
+  }, 60_000);
+
+  test('BUG-1589-09: the fill and the settle of one trade each report the gas anvil charged, once, both charged to the order', async () => {
+    const d = await delivered();
+    const { settler, serve } = d.settlerFor();
+    serve(await d.frameOf(d.signed(attestorKeys())));
+    const { txHash } = await settler.selfSettle(d.orderHash);
+    const gasEvents = () => d.events.events.filter((e): e is GasSpentEvent => e.type === 'gas' && e.orderHash === d.orderHash);
+    for (const [kind, hash] of [['fill', d.fill.txRef], ['settle', txHash]] as const) {
+      const spent = await waitFor(async () => gasEvents().find((e) => e.txHash === hash), `the gas of ${hash}`);
+      const receipt = await rpc.request<{ gasUsed: string; effectiveGasPrice: string; blockHash: Hex }>({ method: 'eth_getTransactionReceipt', params: [hash] });
+      expect(spent).toMatchObject({ kind, attempt: 0, chain, reverted: false, blockHash: receipt.blockHash });
+      expect(spent.feeWei).toBe((BigInt(receipt.gasUsed) * BigInt(receipt.effectiveGasPrice)).toString());
+    }
+    // Five polls of the executor: a repeated report would have landed by then.
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(gasEvents().map((e) => e.kind).sort()).toEqual(['fill', 'settle']);
   }, 60_000);
 
   test.each([

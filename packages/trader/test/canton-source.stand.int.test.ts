@@ -7,7 +7,10 @@
  * reads: V-C3 against the stand router, V-C5 with a registry not pinned as
  * paying, V-C1 while the participant is down, V-C6 at its exact bound.
  * CAN-2321 INT-06: the filler's first settle submit answer is lost on the
- * way back; the payout of INT-01 comes from its retry. Every
+ * way back; the payout of INT-01 comes from its retry. CAN-3131: filler-gateway
+ * tells the SDK why an intent is gone — the operator's SwapIntent_Cancel closes
+ * the filler's settlement as refunded with one alert, the payout of INT-01 reads
+ * as settled. Every
  * component is the stand's own — Canton participant with cancore-intent and
  * cnrx-registry, trading and filler-gateway (decision T-1: the party's
  * operations go through Cancore), the attestor daemons, anvil with the
@@ -35,15 +38,17 @@
  */
 import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { buildCantonSourceOrder, CANCORE_ROUTER_ABI, cantonInclusiveFeeSplit, repayToFromParty, type CantonParty, type Hex } from '@cancore/contracts';
-import { ed25519 } from '@noble/curves/ed25519';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { buildCantonSourceOrder, CANCORE_ROUTER_ABI, cantonInclusiveFeeSplit, fillerIdHash, repayToFromParty, type CantonParty, type Hex, type OrderJson } from '@cancore/contracts';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { createCantonOperations, type CantonOperations, type CantonPartySigner } from '../src/filler/canton/operations';
 import { registriesProblem, type CantonTransferFactory } from '../src/filler/canton/factories';
 import { scaled } from '../src/filler/canton/checks';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { createFiller, type Filler } from '../src/filler/filler';
+import { GatewayError } from '../src/filler/errors';
 import type { StageEvent } from '../src/filler/events';
+import { cantonClosure } from '../src/filler/settlement/refusals';
 import type { EvmRpc } from '../src/filler/rpc';
 import type { HttpFetch, WebSocketFactory } from '../src/filler/runtime';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, InMemoryFillerStore } from '../src/filler/testing';
@@ -51,6 +56,7 @@ import { checkCantonSource, intentOrder } from '../src/filler/tickets/canton-sou
 import { TicketRefusal } from '../src/filler/tickets/refusal';
 import { attestationsOf, ledgerEffects } from './stand/attestors';
 import { standToken } from './stand/keycloak';
+import { IntentTransactionRefusedError, registryPackagesOf, verifyPreparedTransaction, type IntentSigningPolicy } from '@cancore/wallet/canton';
 
 const ENV_FILE = process.env.CANCORE_INTENT_STAND_ENV ?? process.env.INTENT_STAND_ENV;
 const KEYS = [
@@ -434,6 +440,8 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
   const events = createRecordingEventSink();
   const logger = createRecordingLogger();
   let filler: Filler;
+  let withdrawable = { fillDeadline: 0, refundAfter: 0 };
+  let expiring: Awaited<ReturnType<typeof openIntent>> | Error = new Error('not opened');
   /** Every `canton.submit` the filler sent, in order: the first one's answer is lost on the way back (TC-SDK-2321-INT-06). */
   const submits: Array<{ operationId: string; answered: boolean }> = [];
   const losingFirstSubmitAnswer: HttpFetch = async (url, request) => {
@@ -485,6 +493,10 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
     filler.onTicketOffer(async () => 'accept');
     await approveRouter(httpRpc(E.EVM_RPC_URL), E.STAND_FILLER_EVM_KEY as Hex, E.STAND_ROUTE_OUTPUT_TOKEN, E.INTENT_ROUTER_ADDRESS);
     await filler.start();
+    // BUG-1685: refundAfter comes MIN_PROOF_WINDOW_S after a near fillDeadline; the specs below run while it nears.
+    const nowS = Math.floor(Date.now() / 1000);
+    withdrawable = { fillDeadline: nowS + 120, refundAfter: nowS + 120 + MIN_PROOF_WINDOW_S };
+    expiring = await openIntent(withdrawable).catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
   });
 
   afterAll(async () => {
@@ -606,6 +618,44 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
     expect(passed).toEqual(['V-C1', 'V-C2', 'V-C3', 'V-C4', 'V-C5', 'V-C6', 'V-C7']);
   });
 
+  // Past refundAfter by more than the participant's clock skew: SwapIntent_Withdraw asserts ledger time > refundAfter.
+  const WITHDRAW_SKEW_MS = 20_000;
+  test(
+    "TC-SDK-1685-STAND-01 (BUG-1685): the participant's own prepared SwapIntent_Withdraw of the owner passes @cancore/wallet's intent.refund policy; the same bytes for another owner are refused",
+    async () => {
+      const opened = expiring;
+      if (opened instanceof Error) throw opened;
+      const wait = withdrawable.refundAfter * 1000 + WITHDRAW_SKEW_MS - Date.now();
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      const withdraw = exercise(`${INTENT}:SwapIntent`, opened.intentCid, 'SwapIntent_Withdraw', { extraArgs: { context: { values: {} }, meta: { values: {} } } });
+      const readAs = [E.INTENT_OPERATOR_PARTY_ID, E.CNRX_ADMIN_PARTY];
+      const { connectedSynchronizers } = await api<{ connectedSynchronizers: { synchronizerId: string }[] }>(
+        `/v2/state/connected-synchronizers?party=${encodeURIComponent(E.STAND_OWNER_PARTY)}`,
+      );
+      const [synchronizer] = connectedSynchronizers;
+      if (!synchronizer) throw new Error(`the stand owner ${E.STAND_OWNER_PARTY} is connected to no synchronizer`);
+      const prepared = await api<{ preparedTransaction: string; preparedTransactionHash: string }>('/v2/interactive-submission/prepare', {
+        commandId: `bug-1685-${randomUUID()}`, actAs: [E.STAND_OWNER_PARTY], readAs, commands: [withdraw], packageIdSelectionPreference: [],
+        synchronizerId: synchronizer.synchronizerId,
+      });
+      try {
+        // The stand owner is a participant-hosted party with no external key, so the check runs on the bytes signLegs would sign.
+        const refundPolicy: IntentSigningPolicy = {
+          owner: E.STAND_OWNER_PARTY, admin: E.CNRX_ADMIN_PARTY, roots: ['withdraw'], registries: registryPackagesOf(registries()),
+        };
+        const verify = (policy: IntentSigningPolicy) => verifyPreparedTransaction(prepared.preparedTransaction, prepared.preparedTransactionHash, policy);
+        expect(verify(refundPolicy)).toBe('withdraw');
+        expect(() => verify({ ...refundPolicy, owner: E.INTENT_OPERATOR_PARTY_ID })).toThrow(IntentTransactionRefusedError);
+        expect(() => verify({ ...refundPolicy, admin: E.INTENT_OPERATOR_PARTY_ID })).toThrow(/is not the registry's of/);
+      } finally {
+        // The owner takes the give back, so the stand owner's CNRX does not stay locked in the allocation.
+        await submit([E.STAND_OWNER_PARTY], withdraw, readAs);
+      }
+      expect(await active(E.INTENT_OPERATOR_PARTY_ID, `${INTENT}:SwapIntent`, (a) => hexOf(a.orderHash) === opened.orderHash)).toHaveLength(0);
+    },
+    (MIN_PROOF_WINDOW_S + 15 * 60) * 1000,
+  );
+
   test('TC-SDK-1863-INT-07 TC-SDK-2321-INT-01: ticketed, checked V-C1…V-C7, filled on anvil, paid by SwapIntent_SettleWithProof', async () => {
     const before = await freeCnrx(E.STAND_FILLER_CANTON_PARTY);
     const opened = await openAsUser(`0x${'b0'.repeat(20)}`);
@@ -675,5 +725,50 @@ live('Canton → EVM on the intent stand: V-C1…V-C7 (CAN-1863) and SwapIntent_
     expect(settle.at(-1)).toMatchObject({ answered: true });
     expect(new Set(submits.map((x) => x.operationId)).size).toBe(1);
     // One payout: TC-SDK-2321-INT-01 held the party's CNRX to exactly the net of the give, and the intent is consumed.
+  });
+  /** The intent of TC-SDK-2321-INT-01, paid by the stand filler's SwapIntent_SettleWithProof. */
+  const paidOrder = () => [...new Set(events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === 'settle.confirmed').map((e) => String(e.orderHash).toLowerCase() as Hex))][0];
+  const refundedAlerts = (orderHash: Hex) =>
+    events.events.filter((e): e is StageEvent => e.type === 'stage' && e.stage === 'settle.alert' && e.detail?.kind === 'refunded' && String(e.orderHash).toLowerCase() === orderHash);
+
+  test('TC-SDK-3131-STAND-01: the intent paid in TC-SDK-2321-INT-01 reads as settled through filler-gateway (410 INTENT_SETTLED naming SwapIntent_SettleWithProof), never as a refund', async () => {
+    const orderHash = paidOrder();
+    if (!orderHash) throw new Error(`TC-SDK-2321-INT-01 paid no intent\n${diagnostics()}`);
+    const gone = await until('filler-gateway explains the settled intent', async () => {
+      const error = await opsOf().intent(orderHash).then(() => undefined, (e: unknown) => e);
+      return error instanceof GatewayError && error.code !== 'CANTON_UNAVAILABLE' ? error : undefined;
+    }, 3 * 60_000);
+    expect({ code: gone.code, message: gone.message }).toEqual({ code: 'INTENT_SETTLED', message: expect.stringMatching(/^filler-gateway INTENT_SETTLED: closed by SwapIntent_SettleWithProof in update /) });
+    expect(cantonClosure(gone)).toMatchObject({ closure: 'settled' });
+    expect(refundedAlerts(orderHash)).toEqual([]);
+  });
+
+  test('TC-SDK-3131-STAND-02: the operator cancels an intent the filler delivered for — the sweep reads 410 INTENT_REFUNDED, closes the settlement refunded with one alert naming SwapIntent_Cancel, submits nothing', async () => {
+    const nowS = Math.floor(Date.now() / 1000);
+    const opened = await openIntent({ fillDeadline: nowS + 600, refundAfter: nowS + 600 + MIN_PROOF_WINDOW_S });
+    await until('trading indexed the opened intent', () => opsOf().intent(opened.orderHash), 3 * 60_000);
+    // The filler's own record of its delivery for the intent: the sweep picks the order up from it, as after a fill.
+    const ticket = { orderHash: opened.orderHash, fillerId: fillerIdHash(E.STAND_FILLER_ID), deliveryKey: `0x${'dd'.repeat(20)}`, repayTo: repayToFromParty(E.STAND_FILLER_CANTON_PARTY), attempt: 0, validFrom: String(nowS - 60), validUntil: String(nowS + 60) };
+    await store.withOrder(opened.orderHash, async (tx) => {
+      await tx.putTicket({
+        orderHash: opened.orderHash, attempt: 0, state: 'filled', updatedAtMs: Date.now(),
+        offer: { type: 'ticket.offer', orderHash: opened.orderHash, attempt: 0, order: opened.order as OrderJson, amountOut: '1', validFrom: ticket.validFrom, validUntil: ticket.validUntil } as never,
+        issued: { type: 'ticket.issued', form: 'evm', orderHash: opened.orderHash, attempt: 0, ticket, ticketSig: '0x' } as never,
+      });
+      await tx.putFill({ orderHash: opened.orderHash, attempt: 0, chain: DST, txRef: `0x${'cc'.repeat(32)}`, amount: '1', received: '1', state: 'confirmed', updatedAtMs: Date.now() });
+    });
+    const submitted = submits.length;
+
+    await submit([E.INTENT_OPERATOR_PARTY_ID], exercise(`${INTENT}:SwapIntent`, opened.intentCid, 'SwapIntent_Cancel', { extraArgs: { context: { values: {} }, meta: { values: {} } } }), [E.STAND_OWNER_PARTY, E.CNRX_ADMIN_PARTY]);
+
+    const closed = await until('the sweep closes the settlement as refunded', async () => {
+      const s = await store.withOrder(opened.orderHash, (tx) => tx.getSettlement());
+      return s?.state === 'failed' ? s : undefined;
+    }, 5 * 60_000, diagnostics);
+    expect(closed.reason).toMatch(/^refunded: filler-gateway INTENT_REFUNDED: closed by SwapIntent_Cancel in update /);
+    expect(refundedAlerts(opened.orderHash).map((e) => e.detail?.detail)).toEqual([expect.stringContaining('SwapIntent_Cancel')]);
+    expect(submits.length).toBe(submitted);
+    await expect(filler.selfSettle(opened.orderHash)).rejects.toMatchObject({ reason: 'refunded' });
+    expect(refundedAlerts(opened.orderHash)).toHaveLength(1);
   });
 });

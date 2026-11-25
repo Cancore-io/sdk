@@ -191,7 +191,7 @@ export function decodeTopology(bytes: Uint8Array): TopologyTransaction {
   if (end > bytes.length) throw new TypeError('truncated versioned topology transaction');
   // After `data` only the `version` field (2, varint) may follow, once; anything else is refused.
   if (end === bytes.length || bytes[end] !== 0x10) throw new TypeError('unexpected field after the versioned topology transaction');
-  const [version, after] = varint(bytes, end + 1);
+  const [version, after] = varint(bytes, end + 1, 0x07);
   if (after !== bytes.length) throw new TypeError('unexpected bytes after the version of the topology transaction');
   if (version !== TOPOLOGY_TRANSACTION_VERSION) throw new TypeError(`topology transaction version ${version}, not ${TOPOLOGY_TRANSACTION_VERSION}`);
   return canonical(bytes.subarray(start, end));
@@ -204,12 +204,13 @@ function canonical(bytes: Uint8Array): TopologyTransaction {
   return tx;
 }
 
-/** A minimal protobuf varint (≤ 5 bytes: a length or an int32) at `at`: its value and the index after it. */
-function varint(bytes: Uint8Array, at: number): [number, number] {
+/** Reads a minimal uint32 varint. The version field limits the fifth byte to the positive int32 range. */
+function varint(bytes: Uint8Array, at: number, maxLastByte = 0x0f): [number, number] {
   let value = 0;
   for (let i = 0; i < 5; i++) {
     const b = bytes[at + i];
     if (b === undefined) throw new TypeError('truncated varint');
+    if (i === 4 && (b & 0x7f) > maxLastByte) throw new TypeError('varint out of range');
     value |= (b & 0x7f) << (7 * i);
     if ((b & 0x80) === 0) {
       // A last byte of 0 after the first only pads the value: not the bytes Canton writes.

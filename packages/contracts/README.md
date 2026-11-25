@@ -350,7 +350,9 @@ On any difference it does not sign. The kind of a leg is closed: an unknown kind
 `preapprovals`, the party's live transfer preapprovals),
 `/holdings`, `/delivery-orders`, and `/intents/{orderHash}` — the live Canton-source `SwapIntent`
 naming the party as its filler, with its committed allocation, which the node checks before
-`ticket.receipt` (V-C1…V-C7; 404 `UNKNOWN_TICKET` when none names it). Refusals: `CANTON_NOT_READY` (409), `CANTON_REFUSED` (422),
+`ticket.receipt` (V-C1…V-C7; 404 `UNKNOWN_TICKET` when none ever named it; 410 `INTENT_SETTLED` /
+`INTENT_REFUNDED` when the one that named it is closed by a settle / by a refund; 503
+`CANTON_UNAVAILABLE` while that closure is not indexed yet). Refusals: `CANTON_NOT_READY` (409), `CANTON_REFUSED` (422),
 `REGISTRY_FACTORY_UNTRUSTED` (422, the instrument's registry factory cannot be pinned: final for the
 instrument), `CANTON_UNAVAILABLE` (503, retry), `OPERATION_EXPIRED` (410, prepare again), plus
 `UNKNOWN_TICKET`, `TICKET_CLOSED` and `NOT_ELIGIBLE` for an operation on someone else's ticket or party.
@@ -465,6 +467,14 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.29` — error codes `INTENT_SETTLED` and `INTENT_REFUNDED` (410, CAN-3131): `GET
+  /v1/filler/canton/intents/{orderHash}` tells the filler why the Canton-source intent that named
+  its party is gone — settled, or refunded by `SwapIntent_Cancel`, `_Withdraw`, `_Expire` or
+  `_Retire` — instead of `UNKNOWN_TICKET`, which now means no such intent ever named the party.
+  Additive.
+- `0.2.0-rc.28` — `@noble/hashes` `^1.8.0` → `^2.4.0` (CAN-3207). No API or output change: keccak-256 and
+  the byte utilities are the same functions, the generated vectors are byte-identical. The 2.x line is ESM-only and
+  needs Node ≥ 20.19, inside `engines.node >= 26`.
 - `0.2.0-rc.26` — the draw is gone (CAN-2532): the user picks the filler, nobody draws one.
   Removed `drawValue`, `drawWinner`, `firstRoundAtOrAfter`, `DRAND_QUICKNET`, `DRAW_CLOSED_BY`,
   the `DrawRecord` / `EpochRecord` types and their `records.schema.json` defs, the `epoch.weights`

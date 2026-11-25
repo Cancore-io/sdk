@@ -302,3 +302,92 @@ describe('every agent tool (CAN-2628)', () => {
     expect(calls[0]?.headers.authorization).toBe('Bearer tok');
   });
 });
+
+// BUG-1618: the consent link comes from the gateway. A link off the wallet's origin would send the
+// owner to a look-alike page asking for the same approval.
+describe('the consent link (BUG-1618)', () => {
+  function connect(verificationUri: string, appBaseUrl = APP) {
+    const opened: string[] = [];
+    const { fetchImpl, calls } = routingFetch({
+      'POST /auth/device/authorize': { status: 200, body: { ...DEVICE_START.body, verificationUri } },
+      'POST /auth/device/token': { status: 200, body: { status: 'pending' } },
+    });
+    let clock = 0;
+    const started = new CancoreSession(
+      { apiBaseUrl: API, appBaseUrl, appName: 'Claude', grantPath: tempPath() },
+      {
+        fetchImpl,
+        openBrowser: async (url) => (opened.push(url), true),
+        sleep: async (ms) => void (clock += ms),
+        now: () => clock,
+      },
+    );
+    return { started, result: started.connectWallet({ waitSeconds: 5 }), opened, calls };
+  }
+
+  test('the path the gateway sends opens on the wallet origin', async () => {
+    const { result, opened } = connect('/wallet/authorize?code=ABCD-EFGH');
+
+    expect((await result).page).toBe(`${APP}/wallet/authorize?code=ABCD-EFGH`);
+    expect(opened).toEqual([`${APP}/wallet/authorize?code=ABCD-EFGH`]);
+  });
+
+  test('a trailing slash on the wallet URL does not double the slash or refuse the link', async () => {
+    const { result } = connect('/wallet/authorize?code=ABCD-EFGH', `${APP}/`);
+
+    expect((await result).page).toBe(`${APP}/wallet/authorize?code=ABCD-EFGH`);
+  });
+
+  // Without the wallet's origin there is nothing to check the gateway's link against.
+  test('with no wallet URL nothing is started, shown or opened', async () => {
+    const { result, opened, calls } = connect('https://evil.example/wallet/authorize', '');
+
+    const out = await result;
+
+    expect(out.error).toMatch(/CANCORE_APP_URL is not set/);
+    expect(out).not.toHaveProperty('page');
+    expect(opened).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  test('a link without a leading slash stays a path on the wallet origin', async () => {
+    const { result, opened } = connect('@evil.example/connect');
+
+    await result;
+
+    expect(opened.map((url) => new URL(url).origin)).toEqual([APP]);
+  });
+
+  test.each([
+    ['user info in front of a foreign host', 'https://app-dev.cancore.app@evil.example/wallet/authorize'],
+    ['a foreign origin', 'https://evil.example/wallet/authorize'],
+    ['a protocol-relative host', '//evil.example/wallet/authorize'],
+    ['a user name on the wallet host', 'https://owner@app-dev.cancore.app/wallet/authorize'],
+    ['a password on the wallet host', 'https://:secret@app-dev.cancore.app/wallet/authorize'],
+  ])('%s is refused: not opened, not shown, not polled', async (_case, verificationUri) => {
+    const { result, opened, calls } = connect(verificationUri);
+
+    const out = await result;
+
+    expect(out.error).toMatch(/is not on https:\/\/app-dev\.cancore\.app/);
+    expect(out).not.toHaveProperty('page');
+    expect(opened).toEqual([]);
+    expect(calls.map((c) => new URL(c.url).pathname)).toEqual(['/auth/device/authorize']);
+  });
+
+  test('a refused link is forgotten, so a retry starts a new request', async () => {
+    const { started, result, calls } = connect('https://evil.example/wallet/authorize');
+    await result;
+
+    await started.connectWallet({ waitSeconds: 5 });
+
+    expect(calls.filter((c) => c.url.endsWith('/auth/device/authorize'))).toHaveLength(2);
+  });
+
+  test('a CANCORE_APP_URL that is not a URL refuses instead of opening a guess', async () => {
+    const { result, opened } = connect('/wallet/authorize?code=ABCD-EFGH', 'app-dev.cancore.app');
+
+    expect((await result).error).toMatch(/is not on app-dev\.cancore\.app/);
+    expect(opened).toEqual([]);
+  });
+});

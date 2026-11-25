@@ -1,4 +1,4 @@
-import { ed25519 } from '@noble/curves/ed25519';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { deriveWalletKey, providerFromMnemonic } from '@cancore/wallet';
 import { CancoreApiError, type FetchLike } from './http';
 import { BOT_ACCOUNTS_MAX, createSelfCustody, nextBotAccount, type BotAccount } from './selfcustody';

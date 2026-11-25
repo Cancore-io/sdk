@@ -1,6 +1,6 @@
 # Changelog — `@cancore/wallet`
 
-## 0.4.9
+## 0.4.13
 
 ### Added — the party-topology check, for the account's own onboarding (CAN-2414)
 
@@ -13,10 +13,42 @@
 - `OperationLeg.topologyTransactions`: the base64 transactions a `topology` leg's multihash covers, as the backend
   sends them from backend#2822 on.
 
+The versioned topology envelope rejects overlong and out-of-range length and version fields before decoding the transaction.
+
 ### Fixed — `fromBase64` trims padding in linear time
 
 - At most two `=` of padding are accepted, trimmed without a regex: `/=+$/` took seconds on a long run of `=`, and the
   topology check decodes what the server sends. Three or more `=` are refused as not base64.
+
+## 0.4.12
+
+### Changed — intent operations are signed for the rebuilt cancore-intent 0.6.3 (CAN-3588)
+
+- `INTENT_PACKAGE_IDS` also pins `58e6e78939044edae7fc85c50800dd054d481c0fd8f057f3755b6d621313f305`, the 0.6.3 DAR rebuilt by
+  canton-contracts#371 after it bounded the attestor set id to `uint32`.
+- The first 0.6.3 build (`535cb88a…`, pinned in 0.4.7–0.4.11) is dropped: it lacks the set-id bound and was only ever
+  built on the canton-contracts#371 branch, so no contract runs under it. Should it reach a participant, the wallet
+  refuses to sign for it; no funds move.
+
+## 0.4.11
+
+### Security — `intent.refund` is signed from its prepared transaction under the intent policy (BUG-1685)
+
+- `INTENT_ROOTS.withdraw` (`Intent.SwapIntent:SwapIntent.SwapIntent_Withdraw`) and `INTENT_OPERATIONS['intent.refund']`:
+  a refund leg is no longer signed from its bare hash. `signLegs` / `execute` need `intentPolicy` for it, as for Open.
+- Under the withdraw the owner's authority reaches one action: `Allocation_Withdraw` of the `allocationCid` of the
+  owner's `SwapIntent` the transaction discloses (read by position, label empty or matching). Another allocation,
+  any other owner action, a package outside `INTENT_PACKAGE_IDS` or an undisclosed intent is refused before signing.
+
+## 0.4.10
+
+### Changed — `@noble/curves` and `@noble/hashes` 2.x (CAN-3207)
+
+- Runtime dependencies `@noble/curves` `^1.9.7` → `^2.4.0` and `@noble/hashes` `^1.8.0` → `^2.4.0`. No public
+  type or signature changes: noble stays internal. The 2.x line is ESM-only and needs Node ≥ 20.19, inside the
+  package's `engines.node >= 26`. Ed25519 output is unchanged (the RFC 8032 KAT still passes).
+- `@scure/bip39` `^1.6.0` → `^2.4.0`, which depends on `@noble/hashes` 2.4.0: the package's runtime tree carries
+  one `@noble/hashes` line, not two. Mnemonics, seeds and the wordlists are unchanged.
 
 ## 0.4.8
 

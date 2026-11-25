@@ -1,10 +1,4 @@
-import {
-  bytesToHex,
-  hexToBytes,
-  binaryStringToBytes,
-  bytesToBinaryString,
-  type Bytes,
-} from './bytes';
+import { bytesToHex, hexToBytes, type Bytes } from './bytes';
 import { wrapSeed, unwrapSeed } from './aesGcm';
 import {
   ed25519PublicKeyFromSeed,
@@ -24,6 +18,7 @@ import {
   WALLET_RECORD_VERSION,
   walletRecordVersion,
 } from './recordVersion';
+import { phraseBytesOf, storedPhrase, type StoredPhrase } from './storedPhrase';
 
 export { WALLET_RECORD_VERSION, walletRecordVersion } from './recordVersion';
 
@@ -55,7 +50,7 @@ function recordAad(publicKeyHex: string, role: KekRole): Bytes {
 async function openRecord(
   record: PersistedKeyPasswordWalletRecord,
   password: string,
-): Promise<{ seed: Bytes; mnemonic?: string }> {
+): Promise<{ seed: Bytes; phrase?: StoredPhrase }> {
   const salt = hexToBytes(record.saltHex);
   const legacy = walletRecordVersion(record) <= LEGACY_WALLET_RECORD_VERSION;
 
@@ -93,7 +88,7 @@ async function openRecord(
     { ivHex: record.mnemonicIvHex, ciphertextHex: record.mnemonicCiphertextHex },
     legacy ? undefined : recordAad(record.publicKeyHex, 'mnemonic'),
   );
-  return { seed, mnemonic: bytesToBinaryString(mnemonicBytes) };
+  return { seed, phrase: storedPhrase(mnemonicBytes) };
 }
 
 /** True when the record was written by an older format or weaker parameters. */
@@ -193,7 +188,25 @@ export interface UnlockedKeyPasswordWallet {
    * Absent when the record was already current, which is the ordinary case.
    */
   upgraded?: PersistedKeyPasswordWalletRecord;
+  /** Set when a release before BUG-1612 stored this wallet's phrase damaged: see {@link PhraseDamage}. */
+  phraseDamage?: PhraseDamage;
 }
+
+/**
+ * How a release before BUG-1612 damaged the stored recovery phrase (zh/ko/es/fr phrases were
+ * stored as latin1). Either way the private key is intact and so is the phrase shown at sign-up;
+ * a copy taken from the profile before the fix is not, and the user has to be told to re-check it.
+ *
+ * - `restored`: the phrase was rebuilt exactly and is revealed again; an older copy may be wrong.
+ * - `lost`: it cannot be rebuilt (zh); no phrase is revealed — back up the private key or rotate the phrase.
+ */
+export type PhraseDamage = 'restored' | 'lost';
+
+const damageOf = (phrase: StoredPhrase | undefined): { phraseDamage?: PhraseDamage } =>
+  phrase === undefined || phrase.state === 'intact' ? {} : { phraseDamage: phrase.state };
+
+const mnemonicOf = (phrase: StoredPhrase | undefined): string | undefined =>
+  phrase === undefined || phrase.state === 'lost' ? undefined : phrase.mnemonic;
 
 interface BuildOpts {
   iterations?: number;
@@ -205,7 +218,7 @@ async function buildRecord(
   seed: Bytes,
   publicKey: Bytes,
   password: string,
-  mnemonic?: string,
+  phrase?: Bytes,
   opts?: BuildOpts,
 ): Promise<PersistedKeyPasswordWalletRecord> {
   const iterations = opts?.iterations ?? PBKDF2_ITERATIONS;
@@ -216,9 +229,9 @@ async function buildRecord(
   // The recovery phrase gets its OWN key, not the seed's (KS-4). It is the more
   // portable secret of the two — a seed is ours, a phrase types into any BIP39
   // wallet — and one key for both meant one mistake could hand over either.
-  // (BIP39 words are ASCII, so latin1 bytes round-trip exactly.)
-  const wrappedMnemonic = mnemonic
-    ? await wrapSeed(keks.mnemonic, binaryStringToBytes(mnemonic), recordAad(publicKeyHex, 'mnemonic'))
+  // UTF-8, not latin1: zh/ko/es/fr words are not ASCII (BUG-1612, see storedPhrase).
+  const wrappedMnemonic = phrase
+    ? await wrapSeed(keks.mnemonic, phrase, recordAad(publicKeyHex, 'mnemonic'))
     : null;
   return {
     method: 'pbkdf2',
@@ -259,7 +272,7 @@ export async function importKeyPasswordWallet(
   if (seed.length !== SEED_BYTES) throw new InvalidPrivateKeyError();
 
   const publicKey = ed25519PublicKeyFromSeed(seed);
-  const record = await buildRecord(seed, publicKey, password, mnemonic, opts);
+  const record = await buildRecord(seed, publicKey, password, mnemonic ? new TextEncoder().encode(mnemonic) : undefined, opts);
   const signer = await createEd25519Signer(seed);
   const publicKeyHex = bytesToHex(publicKey);
   await assertKeyBinding(signer, publicKeyHex);
@@ -281,7 +294,7 @@ export async function unlockKeyPasswordWallet(
   password: string,
   opts?: BuildOpts,
 ): Promise<UnlockedKeyPasswordWallet> {
-  const { seed, mnemonic } = await openRecord(record, password);
+  const { seed, phrase } = await openRecord(record, password);
 
   const signer = await createEd25519Signer(seed);
   // The record's public key is stored, not recomputed — check the unwrapped seed
@@ -289,14 +302,15 @@ export async function unlockKeyPasswordWallet(
   await assertKeyBinding(signer, record.publicKeyHex);
 
   if (!isStale(record, opts?.iterations ?? PBKDF2_ITERATIONS)) {
-    return { record, publicKeyHex: record.publicKeyHex, signer };
+    return { record, publicKeyHex: record.publicKeyHex, signer, ...damageOf(phrase) };
   }
 
-  const rebuilt = await buildRecord(seed, hexToBytes(record.publicKeyHex), password, mnemonic, opts);
+  const rebuilt = await buildRecord(seed, hexToBytes(record.publicKeyHex), password, phrase && phraseBytesOf(phrase), opts);
   return {
     record,
     publicKeyHex: record.publicKeyHex,
     signer,
+    ...damageOf(phrase),
     // Creation time belongs to the wallet, not to the wrapping.
     upgraded: { ...rebuilt, createdAt: record.createdAt },
   };
@@ -308,9 +322,12 @@ export interface RevealedWalletSecret {
   privateKeyHex: string;
   /**
    * The original BIP39 recovery phrase, or `null` for legacy/private-key-only
-   * records that never persisted one (caller falls back to `privateKeyHex`).
+   * records that never persisted one, and for a phrase an older release damaged
+   * beyond repair (`phraseDamage: 'lost'`). The caller falls back to `privateKeyHex`.
    */
   mnemonic: string | null;
+  /** Set when a release before BUG-1612 stored the phrase damaged: tell the user to re-check their backup ({@link PhraseDamage}). */
+  phraseDamage?: PhraseDamage;
 }
 
 /**
@@ -322,8 +339,8 @@ export async function revealWalletSecret(
   record: PersistedKeyPasswordWalletRecord,
   password: string,
 ): Promise<RevealedWalletSecret> {
-  const { seed, mnemonic } = await openRecord(record, password);
-  return { privateKeyHex: bytesToHex(seed), mnemonic: mnemonic ?? null };
+  const { seed, phrase } = await openRecord(record, password);
+  return { privateKeyHex: bytesToHex(seed), mnemonic: mnemonicOf(phrase) ?? null, ...damageOf(phrase) };
 }
 
 /**
@@ -339,9 +356,9 @@ export async function changeKeyPasswordWalletPassword(
   newPassword: string,
   opts?: BuildOpts,
 ): Promise<PersistedKeyPasswordWalletRecord> {
-  const { seed, mnemonic } = await openRecord(record, oldPassword);
+  const { seed, phrase } = await openRecord(record, oldPassword);
   const publicKey = hexToBytes(record.publicKeyHex);
-  const rebuilt = await buildRecord(seed, publicKey, newPassword, mnemonic, opts);
+  const rebuilt = await buildRecord(seed, publicKey, newPassword, phrase && phraseBytesOf(phrase), opts);
   // Only the wrapping changed — keep the original creation timestamp.
   return { ...rebuilt, createdAt: record.createdAt };
 }

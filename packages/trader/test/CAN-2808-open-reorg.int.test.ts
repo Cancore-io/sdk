@@ -30,15 +30,16 @@ import {
   type TicketIssuedEvm,
   type TicketOffer,
 } from '@cancore/contracts';
-import { secp256k1 } from '@noble/curves/secp256k1';
-import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils';
-import { keccak_256 } from '@noble/hashes/sha3';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { FillerChains, hashOrder, INTENT_STATUS, RouterEventWatcher, type ChainConfig, type OpenDepth, type RouterEventUpdate } from '../src/filler/chain';
 import { encodeFunctionCall, entryOf, type AbiEntry } from '../src/filler/chain/abi';
 import { toQuantity } from '../src/filler/chain/client';
 import type { EvmRpc, EvmRpcRequest } from '../src/filler/rpc';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, createTestTypedDataSigner, FakeClock } from '../src/filler/testing';
 import { TicketVerifier, type EscrowVerification } from '../src/filler/tickets/checks';
+import { signRsv } from '../src/filler/testing/fakes';
 
 const INTENT = process.env.CANCORE_INTENT_JSON;
 const ACTORS = process.env.CANCORE_ACTORS_ENV;
@@ -94,10 +95,7 @@ async function waitFor<T>(read: () => Promise<T | undefined>, what: string, time
 }
 
 const abi = (entries: unknown) => entries as unknown as readonly AbiEntry[];
-const signDigest = (key: Hex, digest: Hex): Hex => {
-  const sig = secp256k1.sign(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)), { lowS: true });
-  return `0x${bytesToHex(sig.toCompactRawBytes())}${(27 + sig.recovery).toString(16)}`;
-};
+const signDigest = (key: Hex, digest: Hex): Hex => signRsv(hexToBytes(digest.slice(2)), hexToBytes(key.slice(2)));
 
 interface OpenedIntent {
   order: OrderJson;
@@ -167,7 +165,8 @@ live('CAN-2808: V-E2 against reorgs of the open on the stand router', () => {
     const permit = { permitted: { token, amount: order.inputAmount }, nonce: BigInt(`0x${bytesToHex(keccak_256(utf8ToBytes(orderHash)))}`) >> 8n, deadline: order.fillDeadline };
     const permitSig = signDigest(key('FRANK'), hashPermitWitness({ ...permit, spender: router, witness: order }, stand.chainId, PERMIT2));
     const mined = await send(key('FRANK'), router, encodeFunctionCall(entryOf(abi(CANCORE_ROUTER_ABI), 'function', 'openFor'), [order, permit, permitSig, quoteDeadline, quoteSig]));
-    return { order, orderHash, block: mined.blockNumber, blockHash: mined.blockHash, nowMs: Number(now) * 1000 };
+    // The open's own block time is its openedAt: the ticket's validFrom, as the backend floors it, is no earlier (BUG-1609).
+    return { order, orderHash, block: mined.blockNumber, blockHash: mined.blockHash, nowMs: Number(BigInt((await block(mined.blockNumber)).timestamp)) * 1000 };
   }
 
   /** The checks before a receipt for `intent`, with the source's `openConfirmations`; every RPC request recorded. */

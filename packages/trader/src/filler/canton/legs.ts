@@ -18,11 +18,11 @@
  * - Any other leg kind is refused.
  */
 import type { CantonLeg, CantonLegTopology, CantonLegTransaction, Hex } from '@cancore/contracts';
-import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
-import { cantonHash, decodePreparedTransaction, fromBase64, hashPreparedTransactionV2, multiHashInput } from './hashing';
-import { type CantonTransaction, transactionView } from './transaction';
 import { TopologyRefusal, verifyPartyTopology } from '@cancore/wallet/canton/proto';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { decodePreparedTransaction, hashPreparedTransactionV2 } from './hashing';
+import { type CantonTransaction, transactionView } from './transaction';
 
 /** The only hashing scheme a transaction leg may name. */
 export const HASHING_SCHEME_V2 = 'HASHING_SCHEME_VERSION_V2';
@@ -74,8 +74,6 @@ export function cantonFingerprint(publicKey: string | Uint8Array): string {
   input.set(key, 4);
   return `1220${bytesToHex(sha256(input))}`;
 }
-
-
 
 /** Recomputes the hash of a transaction leg; returns the decoded transaction, as plain data, for the op's checks. */
 export async function verifyTransactionLeg(leg: CantonLegTransaction): Promise<CantonTransaction> {

@@ -1,11 +1,11 @@
 import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from '@scure/bip39';
-import { wordlist } from '@scure/bip39/wordlists/english';
-import { wordlist as spanishWordlist } from '@scure/bip39/wordlists/spanish';
-import { wordlist as frenchWordlist } from '@scure/bip39/wordlists/french';
-import { wordlist as koreanWordlist } from '@scure/bip39/wordlists/korean';
-import { wordlist as simplifiedChineseWordlist } from '@scure/bip39/wordlists/simplified-chinese';
-import { hmac } from '@noble/hashes/hmac';
-import { sha512 } from '@noble/hashes/sha512';
+import { wordlist } from '@scure/bip39/wordlists/english.js';
+import { wordlist as spanishWordlist } from '@scure/bip39/wordlists/spanish.js';
+import { wordlist as frenchWordlist } from '@scure/bip39/wordlists/french.js';
+import { wordlist as koreanWordlist } from '@scure/bip39/wordlists/korean.js';
+import { wordlist as simplifiedChineseWordlist } from '@scure/bip39/wordlists/simplified-chinese.js';
+import { hmac } from '@noble/hashes/hmac.js';
+import { sha512 } from '@noble/hashes/sha2.js';
 import type { Bytes } from './bytes';
 import { bytesToHex } from './bytes';
 import { ed25519PublicKeyFromSeed } from './ed25519';

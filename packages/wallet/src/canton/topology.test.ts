@@ -1,7 +1,7 @@
 import { CAPTURE } from './topology.capture';
 import { cantonHash, fromBase64, multiHashInput } from './hashing';
 import { bytesToHex } from '../bytes';
-import { TopologyRefusal, verifyPartyTopology, type PartyExpectation } from './topology';
+import { decodeTopology, TopologyRefusal, verifyPartyTopology, type PartyExpectation } from './topology';
 
 // CAN-2414: the check runs on what a real Canton 3.4.11 participant generates,
 // not on topology built by hand (see topology.capture.ts).
@@ -67,6 +67,13 @@ describe('the topology of a new party is signed only when it is the expected one
     const tx = withExtra(own.topologyTransactions[0], [...extra], where);
     const multihash = bytesToHex(cantonHash(55, multiHashInput([cantonHash(11, fromBase64(tx))])));
     refusedWith(() => verifyPartyTopology([tx], multihash, expectA), detail);
+  });
+
+  test.each([
+    ['length above uint32', [0x0a, 0x80, 0x80, 0x80, 0x80, 0x10]],
+    ['version above int32', [0x0a, 0x00, 0x10, 0x80, 0x80, 0x80, 0x80, 0x08]],
+  ] as const)('rejects a versioned wrapper with a %s (CAN-2414)', (_name, bytes) => {
+    expect(() => decodeTopology(Uint8Array.from(bytes))).toThrow('varint out of range');
   });
 
   test('a versioned wrapper of another version', () => {

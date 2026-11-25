@@ -3,3 +3,6 @@ packages:
 allowBuilds:
   '@swc/core': true
   esbuild: true
+overrides:
+  # BUG-1714: 1.18.0 moves the v30 topology types under v30_topology (trader imports them from the top level); 1.14+ makes byKey required on Exercise and Fetch.
+  '@canton-network/core-ledger-proto': 1.13.0

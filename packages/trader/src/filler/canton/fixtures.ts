@@ -11,15 +11,15 @@ import {
   TopologyTransaction,
 } from '@canton-network/core-ledger-proto';
 import { hashPreparedTransaction } from '@canton-network/core-tx-visualizer';
-import { ed25519 } from '@noble/curves/ed25519';
-import { sha256 } from '@noble/hashes/sha256';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { ed25519 } from '@noble/curves/ed25519.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { cantonFingerprint, HASHING_SCHEME_V2 } from './legs';
 
 // A key generated for the test only; it never signs anything outside it.
-export const NODE_PRIVATE_KEY = ed25519.utils.randomPrivateKey();
+export const NODE_PRIVATE_KEY = ed25519.utils.randomSecretKey();
 export const NODE_KEY = bytesToHex(ed25519.getPublicKey(NODE_PRIVATE_KEY));
-export const OTHER_KEY = bytesToHex(ed25519.getPublicKey(ed25519.utils.randomPrivateKey()));
+export const OTHER_KEY = bytesToHex(ed25519.getPublicKey(ed25519.utils.randomSecretKey()));
 export const PARTICIPANT = 'PAR::cancore-participant::1220aaaa';
 export const party = (key = NODE_KEY) => `cancore-dev-1::${cantonFingerprint(key)}`;
 export const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64');

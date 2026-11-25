@@ -54,8 +54,9 @@ import type { CantonOperations } from '../canton/operations';
 import type { FillSigner } from '../signer';
 import type { FillRecord, FillerStore, InFlightTransaction, NonceLease, TicketRecord } from '../store';
 import { chainsOf, fillTicketOf, identityFor, orderOf, ticketMismatch } from '../tickets/terms';
-import { CantonDelivery } from './canton';
-import { FeeCeilingError, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
+import { CantonDelivery, isSignedClaim } from './canton';
+import { GasReporter, lateReceipt } from './gas';
+import { FeeCeilingError, inclusionDepth, LeaseLostError, ReplacementCapError, TransactionDriver, TRANSFER_GAS, type TransactionCall, type TransactionReceipt } from './transactions';
 import { reasonOf, retryableEstimateFailure, revertName } from './reverts';
 import type { FillRefusal } from './refusal';
 import { awaitValidFrom } from './validFrom';
@@ -195,8 +196,10 @@ export class Executor {
   private started = false;
   private stopped = false;
   private readonly canton: CantonDelivery | undefined;
+  private readonly gas: GasReporter;
 
   constructor(private readonly options: ExecutorOptions) {
+    this.gas = new GasReporter({ events: options.events, alert: (event) => this.emit(event), logger: options.logger, clock: options.clock });
     const d = options.delivery ?? {};
     this.delivery = {
       pollIntervalMs: d.pollIntervalMs ?? DEFAULT_DELIVERY.pollIntervalMs,
@@ -272,7 +275,11 @@ export class Executor {
 
   // -- lifecycle ----------------------------------------------------------------
 
-  /** Resumes from the store and keeps claiming the expired nonce leases of dead replicas, every lease TTL. */
+  /**
+   * Resumes from the store, then every lease TTL claims the expired nonce leases
+   * of dead replicas and tops up the configured allowances: V-E5 checks the
+   * allowance at `ticket.issued`, before a delivery could approve it.
+   */
   async start(): Promise<void> {
     if (this.started && !this.stopped) return;
     this.started = true;
@@ -280,7 +287,7 @@ export class Executor {
     const sweep = () => {
       this.sweep = this.options.clock.schedule(this.delivery.nonceLeaseTtlMs, () => {
         if (this.stopped) return;
-        void this.claim().finally(sweep);
+        void this.claim().then(() => this.topUpConfigured()).finally(sweep);
       });
     };
     sweep();
@@ -303,16 +310,15 @@ export class Executor {
    */
   async resume(): Promise<void> {
     await this.claim();
-    for (const [chain, tokens] of Object.entries(this.delivery.approvals ?? {}) as Array<[EvmChainId, Record<Hex, bigint>]>) {
-      for (const token of Object.keys(tokens) as Hex[]) void this.topUp(chain, token);
-    }
+    void this.topUpConfigured();
     for (const orderHash of await this.options.store.listOpenOrders()) {
       const work = await this.options.store.withOrder(orderHash, async (tx) => {
         const attempts: number[] = [];
         for (const ticket of await tx.listTickets()) {
-          if (ticket.state !== 'receipted' || ticket.sentAtMs === undefined || ticket.unsent) continue;
           const fill = await tx.getFill(ticket.attempt);
-          if (!fill || fill.state === 'pending') attempts.push(ticket.attempt);
+          const bound = ticket.state === 'receipted' && ticket.sentAtMs !== undefined && !ticket.unsent;
+          // A signed claim may have committed whatever its ticket became since: resumed to be closed, never left pending.
+          if (isSignedClaim(fill) || (bound && (!fill || fill.state === 'pending'))) attempts.push(ticket.attempt);
         }
         return attempts;
       });
@@ -358,14 +364,13 @@ export class Executor {
     const now = await store.now();
     for (const record of open) {
       if (record.nonce >= highest || record.transactions.length > 0 || record.owner !== instanceId || record.expiresAtMs <= now) continue;
-      const lease = await driver.renew(record);
-      if (!lease) continue;
       try {
-        const tx = await driver.send(lease, { to: driver.address, data: '0x', value: 0n }, TRANSFER_GAS, await driver.marketFees(), { kind: 'cancel' }, clock.now());
-        logger.warn('delivery: filled a nonce gap with a transfer to self', { chain: driver.chain, nonce: lease.nonce.toString(), txHash: tx.hash });
-        this.track(driver, lease);
+        const gap = await driver.withEmptyNonce(record, async (lease) => ({ lease, tx: await driver.send(lease, { to: driver.address, data: '0x', value: 0n }, TRANSFER_GAS, await driver.marketFees(), { kind: 'cancel' }, clock.now()) }));
+        if (!gap) continue;
+        logger.warn('delivery: filled a nonce gap with a transfer to self', { chain: driver.chain, nonce: record.nonce.toString(), txHash: gap.tx.hash });
+        this.track(driver, gap.lease);
       } catch (error) {
-        logger.warn('delivery: a nonce gap could not be filled yet', { chain: driver.chain, nonce: lease.nonce.toString(), error: reasonOf(error) });
+        logger.warn('delivery: a nonce gap could not be filled yet', { chain: driver.chain, nonce: record.nonce.toString(), error: reasonOf(error) });
       }
     }
   }
@@ -373,11 +378,12 @@ export class Executor {
   /**
    * A nonce to send on: expired leases are claimed first, so an abandoned empty
    * nonce — a send that failed after its nonce was taken — is reused, never
-   * skipped (the lowest held empty nonce wins).
+   * skipped (the lowest held empty nonce wins). `use` runs in a turn of
+   * `TransactionDriver.withNonce`.
    */
-  async acquire(driver: TransactionDriver): Promise<NonceLease> {
+  async acquire<T>(driver: TransactionDriver, use: (lease: NonceLease) => Promise<T>): Promise<T> {
     await this.claimChain(driver);
-    return driver.acquire();
+    return driver.withNonce(use);
   }
 
   /** Recovers an unlinked settle before a new nonce can be allocated, fenced by the current nonce lease. */
@@ -421,7 +427,7 @@ export class Executor {
   private async run(orderHash: Hex, attempt: number): Promise<DeliveryResult> {
     const { store, clock, instanceId } = this.options;
     const ticket = await this.options.receipted(orderHash, attempt);
-    if (!ticket) return this.refuse(orderHash, attempt, 'no-receipt', 'no ticket.receipt went out for this attempt');
+    if (!ticket) return (await this.canton?.closeSigned(orderHash, attempt, () => void this.deliver(orderHash, attempt))) ?? this.refuse(orderHash, attempt, 'no-receipt', 'no ticket.receipt went out for this attempt');
     if (ticket.issued?.form === 'canton') {
       if (!this.canton) return this.refuse(orderHash, attempt, 'not-deliverable', 'a Canton-form ticket, and no Canton party configured');
       return this.canton.deliver(ticket, () => void this.deliver(orderHash, attempt));
@@ -509,9 +515,7 @@ export class Executor {
     let tx: InFlightTransaction;
     try {
       if (!(await this.holdClaim(orderHash, attempt))) return { status: 'tracking', detail: 'another replica took the attempt over' };
-      lease = await this.acquire(driver);
-      const fees = await driver.marketFees();
-      tx = await this.sendRecorded(driver, lease, call, gasLimit, fees, orderHash, attempt);
+      ({ lease, tx } = await this.acquire(driver, async (taken) => ({ lease: taken, tx: await this.sendRecorded(driver, taken, call, gasLimit, await driver.marketFees(), orderHash, attempt) })));
     } catch (error) {
       if (error instanceof FeeCeilingError) return this.refuse(orderHash, attempt, 'fee-ceiling', error.message, true);
       // Nothing was recorded on a nonce: the attempt is tried again (a held empty nonce is reused).
@@ -611,6 +615,20 @@ export class Executor {
     }
   }
 
+  /**
+   * Tops up every configured allowance that has fallen below half of its
+   * limit, one token at a time so two approvals never race for one empty
+   * nonce of the key. Never rejects.
+   */
+  private async topUpConfigured(): Promise<void> {
+    for (const [chain, tokens] of Object.entries(this.delivery.approvals ?? {}) as Array<[EvmChainId, Record<Hex, bigint>]>) {
+      for (const token of Object.keys(tokens)) {
+        if (this.stopped) return;
+        await this.topUp(chain, token.toLowerCase() as Hex);
+      }
+    }
+  }
+
   /** Tops up the configured allowance of `token` on `chain` when it has fallen below half of its limit. */
   private async topUp(chain: EvmChainId, token: Hex): Promise<void> {
     const driver = this.driver(chain);
@@ -619,7 +637,7 @@ export class Executor {
     if (!driver || !readers || limit === undefined) return;
     try {
       const allowance = await erc20Allowance(readers.client, token, driver.address, readers.router.address);
-      if (allowance * 2n < limit) await this.approve(driver, readers, token, 0n, allowance);
+      if (allowance * 2n < limit && !this.stopped) await this.approve(driver, readers, token, 0n, allowance);
     } catch (error) {
       this.options.logger.warn('delivery: allowance top-up failed', { chain, token, error: reasonOf(error) });
     }
@@ -663,8 +681,7 @@ export class Executor {
   }
 
   private async sendApprove(driver: TransactionDriver, call: TransactionCall, gasLimit: bigint, token: Hex, amount: bigint): Promise<void> {
-    const lease = await this.acquire(driver);
-    const tx = await driver.send(lease, call, gasLimit, await driver.marketFees(), { kind: 'approve' }, this.options.clock.now());
+    const { lease, tx } = await this.acquire(driver, async (taken) => ({ lease: taken, tx: await driver.send(taken, call, gasLimit, await driver.marketFees(), { kind: 'approve' }, this.options.clock.now()) }));
     this.stage('approve.sent', undefined, undefined, { chain: driver.chain, token, amount: amount.toString(), txHash: tx.hash, nonce: lease.nonce.toString() });
     this.track(driver, lease);
   }
@@ -710,7 +727,7 @@ export class Executor {
       const receipt = await t.driver.receipt(tx.hash);
       if (!receipt) continue;
       if (!(await t.driver.isCanonical(receipt))) break; // a reorg is under way: look again next tick
-      const depth = (await t.driver.client.head()) - receipt.blockNumber + 1n;
+      const depth = inclusionDepth(await t.driver.client.head(), receipt);
       return this.included(t, tx, receipt, depth, txs);
     }
     return this.pending(t, txs);
@@ -733,14 +750,11 @@ export class Executor {
   private async included(t: Tracker, tx: InFlightTransaction, receipt: TransactionReceipt, depth: bigint, txs: readonly InFlightTransaction[]): Promise<boolean> {
     const { store } = this.options;
     const chain = t.driver.chain;
-    if (tx.kind === 'settle') {
-      if (!(await this.deepEnough(t, receipt, depth))) return false;
-      await this.settleListener?.(chain, tx, receipt);
-      await store.nonces.complete(t.lease, tx.hash);
-      return true;
-    }
     if (tx.kind !== 'fill' || !tx.orderHash || tx.attempt === undefined) {
-      if (tx.kind === 'cancel') await this.cancelled(chain, tx, txs, receipt);
+      if (!(await this.deepEnough(t, receipt, depth))) return false;
+      await this.gas.report(t, tx, receipt, txs);
+      if (tx.kind === 'settle') await this.settleListener?.(chain, tx, receipt);
+      else if (tx.kind === 'cancel') await this.cancelled(chain, tx, txs, receipt);
       else this.stage(tx.kind === 'approve' ? 'approve.confirmed' : 'tx.confirmed', tx.orderHash, tx.attempt, { chain, kind: tx.kind, txHash: tx.hash, status: receipt.status, gasUsed: receipt.gasUsed.toString() });
       await store.nonces.complete(t.lease, tx.hash);
       return true;
@@ -767,7 +781,7 @@ export class Executor {
       this.stage('fill.included', orderHash, attempt, { chain, txHash: tx.hash, block: receipt.blockNumber.toString(), status: receipt.status });
     }
     if (!(await this.deepEnough(t, receipt, depth))) return false;
-
+    await this.gas.report(t, tx, receipt, txs);
     if (receipt.status === 0) {
       await this.fail(orderHash, attempt, `reverted in block ${receipt.blockNumber}`);
       this.stage('fill.reverted', orderHash, attempt, { chain, txHash: tx.hash, block: receipt.blockNumber.toString(), gasUsed: receipt.gasUsed.toString() });
@@ -856,6 +870,8 @@ export class Executor {
     if ((await driver.transactionCount('latest')) > t.lease.nonce) {
       // Spent, with no receipt of ours: receipts may lag; past that, another transaction took the nonce.
       if (++t.spentTicks < SPENT_TICKS) return false;
+      const late = await lateReceipt(driver, txs);
+      if (late) return this.included(t, late.tx, late.receipt, late.depth, txs);
       if (fill?.orderHash && fill.attempt !== undefined) {
         // Only this delivery key can fill the order: filled(orderHash) means one of its fills executed, whatever an endpoint's receipts say.
         const executed = await this.executedFill(t, fill, txs);
@@ -865,6 +881,7 @@ export class Executor {
       if (fill?.orderHash && fill.attempt !== undefined) await this.fail(fill.orderHash, fill.attempt, 'its nonce was spent by another transaction');
       const settle = txs.find((x) => x.kind === 'settle' && x.orderHash);
       if (settle) await this.settleLostListener?.(driver.chain, settle);
+      this.gas.unpriced(driver.chain, t.lease, txs);
       await store.nonces.complete(t.lease, ZERO_HASH);
       return true;
     }
@@ -916,7 +933,7 @@ export class Executor {
       return false;
     }
     const ours = txs.find((x) => x.hash === hash) ?? { ...fill, hash };
-    return this.included(t, ours, receipt, head - receipt.blockNumber + 1n, txs);
+    return this.included(t, ours, receipt, inclusionDepth(head, receipt), txs);
   }
 
   /**
