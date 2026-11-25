@@ -1605,6 +1605,7 @@ test('a timed-out submit is resubmitted on the code alone, and a code with anoth
 
 test('collect accepts exactly the claim’s own payouts, and nothing else in the inbox', async () => {
   const signer = await providerFromMnemonic(PHRASE);
+  let reads = 0;
   const accepted: string[] = [];
   const me = `party-me::${cantonFingerprint(signer.public_key)}`;
   const ti = (contractId: string) => ({ contractId, templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId: 'CBTC', executeBefore: new Date(Date.now() + 60_000).toISOString() });
@@ -1615,9 +1616,10 @@ test('collect accepts exactly the claim’s own payouts, and nothing else in the
     if (path === '/auth/me') return json({ id: 'me', partyId: me });
     if (path === '/partner/cashback/claim') return json({ id: 'c1', status: 'settling' });
     if (path === '/partner/cashback/claims') {
+      if (++reads === 1) return json([{ id: 'c1', status: 'settling', payouts: [{ id: 'p2', tokenId: 'USDCx', settlementStatus: 'expired_reclaimed', transferInstructionCid: null }] }]);
       return json([{ id: 'c1', status: 'settling', payouts: [
         { id: 'p3', tokenId: 'CC', settlementStatus: 'failed', transferInstructionCid: null },
-        { id: 'p4', tokenId: 'CC', settlementStatus: 'expired_reclaimed', transferInstructionCid: null },
+
         { id: 'p1', tokenId: 'CC', settlementStatus: 'accepted', transferInstructionCid: null },
         { id: 'p2', tokenId: 'USDCx', settlementStatus: 'pending', transferInstructionCid: hexCid('ti-cashback') },
       ] }]);

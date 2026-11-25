@@ -1603,7 +1603,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
           acceptedCids.add(transfer.contractId);
         }
       }
-      const pending = payouts.filter((p) => p.settlementStatus === 'pending' && !acceptedCids.has(p.transferInstructionCid ?? '')).length;
+      const pending = payouts.filter((p) => p.settlementStatus === 'expired_reclaimed' || p.settlementStatus === 'pending' && !acceptedCids.has(p.transferInstructionCid ?? '')).length;
       // Payout legs are written with the claim itself, so an empty list is a claim with nothing in it.
       if (pending === 0 || now() >= until) return { claim, accepted, pending };
       await sleep(pollMs);
