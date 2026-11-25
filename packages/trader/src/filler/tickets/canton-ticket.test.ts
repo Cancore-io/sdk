@@ -35,10 +35,10 @@ const issued: TicketIssuedCanton = {
   deliveryOrderCid: `00${'0d'.repeat(33)}`, validUntil: '1790000120', repayTo: `0x${'00'.repeat(12)}${'7e'.repeat(20)}`,
 } as unknown as TicketIssuedCanton;
 const order: CantonDeliveryOrder = {
-  deliveryOrderCid: issued.deliveryOrderCid, orderHash: issued.orderHash, attempt: 2, asset, amount: '25.0000000000', recipient: RECIPIENT, repayTo: issued.repayTo, validUntil: issued.validUntil,
+  deliveryOrderCid: issued.deliveryOrderCid, orderHash: issued.orderHash, attempt: 2, asset, amount: '25.0000000000', recipient: RECIPIENT, repayTo: issued.repayTo, validFrom: '1790000000', validUntil: issued.validUntil,
 };
 const offered = { recipient: encodeCantonRecipient(RECIPIENT), outputAsset: encodeCantonOutputAsset(asset) };
-const bounds = { minReceived: encodeCantonAmount('25'), amountOut: encodeCantonAmount('25') };
+const bounds = { validFrom: '1790000000', minReceived: encodeCantonAmount('25'), amountOut: encodeCantonAmount('25') };
 
 describe('the order’s Canton destination (CAN-1867)', () => {
   test('TC-SDK-1867-30: keccak256("canton:devnet") is a Canton destination, never an eip155 chain, whatever its top bit', () => {
@@ -55,6 +55,9 @@ describe('the DeliveryOrder of a Canton-form ticket (CAN-1867)', () => {
 
   test.each([
     ['another order', { orderHash: `0x${'5b'.repeat(32)}` }, 'orderHash'],
+    ['BUG-1645 absent opening time', { validFrom: undefined }, 'validFrom'],
+    ['BUG-1645 legacy opening time', { validFrom: null }, 'validFrom'],
+    ['BUG-1645 earlier opening time', { validFrom: '1789999999' }, 'validFrom'],
     ['another attempt', { attempt: 3 }, 'attempt'],
     ['another validUntil', { validUntil: '1790000180' }, 'validUntil'],
     ['T-48: another repayTo than the signed ticket.intent', { repayTo: `0x${'00'.repeat(12)}${'66'.repeat(20)}` }, 'repayTo'],
@@ -108,7 +111,7 @@ describe('CAN-2808: V-E2 of a Canton-form ticket reads at the openConfirmations 
       amountOut: offeredOrder.minReceived, validFrom: String(nowS), validUntil, acceptBy: clock.now() + 5_000,
     } as TicketOffer;
     const cantonIssued = { type: 'ticket.issued', form: 'canton', fillerId: 'cancore-dev-1', orderHash, attempt: 0, deliveryOrderCid, validUntil, repayTo } as unknown as TicketIssuedCanton;
-    const deliveryOrder: CantonDeliveryOrder = { deliveryOrderCid, orderHash, attempt: 0, asset, amount: '25.0000000000', recipient: RECIPIENT, repayTo, validUntil };
+    const deliveryOrder: CantonDeliveryOrder = { deliveryOrderCid, orderHash, attempt: 0, asset, amount: '25.0000000000', recipient: RECIPIENT, repayTo, validFrom: String(nowS), validUntil };
     const escrow = source.router(SOURCE_ROUTER).openIntent(orderHash, { refundAfter: BigInt(offeredOrder.fillDeadline) + 3_600n, openedAt: nowS - 50n }).intents.get(orderHash)!;
 
     const logger = createRecordingLogger();

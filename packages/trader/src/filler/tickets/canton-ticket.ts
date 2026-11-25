@@ -138,7 +138,7 @@ export async function verifyCantonTicket(ctx: Context, input: TicketCheckInput, 
   const orders = await read('V-T2', 'TICKET_MISMATCH', () => ctx.canton.deliveryOrders());
   const order = orders.find((o) => o.deliveryOrderCid === issued.deliveryOrderCid);
   if (!order) throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', 'no live DeliveryOrder deliveryOrderCid for this party');
-  const mismatch = deliveryOrderMismatch(order, issued, offer.order, { amountOut, minReceived });
+  const mismatch = deliveryOrderMismatch(order, issued, offer.order, { amountOut, minReceived, validFrom: offer.validFrom });
   if (mismatch) throw new TicketRefusal('V-T2', 'TICKET_MISMATCH', `DeliveryOrder.${mismatch} differs from the ticket and the order`);
   pass('V-T2');
 
@@ -224,10 +224,13 @@ export function deliveryOrderMismatch(
   order: CantonDeliveryOrder,
   issued: Pick<TicketIssuedCanton, 'orderHash' | 'attempt' | 'validUntil' | 'repayTo'>,
   offered: { recipient: string; outputAsset: string },
-  bounds: { amountOut: bigint; minReceived: bigint },
+  bounds: { amountOut: bigint; minReceived: bigint; validFrom: string },
 ): string | undefined {
   if (!same(order.orderHash, issued.orderHash)) return 'orderHash';
   if (order.attempt !== issued.attempt) return 'attempt';
+  const starts = uint(order.validFrom);
+  const floor = uint(bounds.validFrom);
+  if (starts === undefined || floor === undefined || starts < floor) return 'validFrom';
   if (order.validUntil !== issued.validUntil) return 'validUntil';
   if (!same(order.repayTo, issued.repayTo)) return 'repayTo';
   let recipient: string;

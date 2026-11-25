@@ -187,7 +187,7 @@ live('component: EVM → Canton against the stand router, filler-gateway played 
     const intent = { type: 'ticket.intent', orderHash, attempt: 0, validFrom, validUntil, deliveryKey: ZERO_ADDRESS, repayTo } as unknown as TicketIntentMessage;
     const deliveryOrderCid = `00${bytesToHex(keccak_256(utf8ToBytes(orderHash)))}`;
     const issued = { type: 'ticket.issued', form: 'canton', orderHash, attempt: 0, deliveryOrderCid, validUntil, repayTo } as unknown as TicketIssuedCanton;
-    const deliveryOrder: CantonDeliveryOrder = { deliveryOrderCid, orderHash, attempt: 0, asset: ASSET, amount: '25.0000000000', recipient: RECIPIENT, repayTo, validUntil };
+    const deliveryOrder: CantonDeliveryOrder = { deliveryOrderCid, orderHash, attempt: 0, asset: ASSET, amount: '25.0000000000', recipient: RECIPIENT, repayTo, validFrom, validUntil };
     return { offer, intent, issued, deliveryOrder, repayTo };
   }
 
