@@ -821,6 +821,15 @@ describe('the paths where a mistake costs money', () => {
     expect(api.order.swapId).toBeNull();
   });
 
+  test('BUG-1636 submits a DvP proposal even when the informational DTO rounds the stored order amount', async () => {
+    const api = venue({ feeHoldingRequired: true });
+    const { maker, taker } = await tradingPair(api, [52, 53]);
+    await taker.swap.accept('o1');
+    api.order.sourceAmount = '12345678.0000000001';
+    await expect(maker.make('o1')).rejects.toThrow(/holding of its own/);
+    expect(api.proposals).toEqual([expect.objectContaining({ orderId: 'o1', dvp: true })]);
+  });
+
   test.each([
     ['by the text of the message', false, [52, 53]],
     ['by errorCode alone', true, [54, 55]],
