@@ -338,7 +338,7 @@ export class TransactionDriver {
     // settle is not in RELATIVE_CAP_KINDS. A kind both urgent and capped would be refused here.
     if (options.urgent && ceiling !== undefined && fees.maxFeePerGas < ceiling) fees.maxFeePerGas = ceiling;
     if (options.first && options.kind && RELATIVE_CAP_KINDS.has(options.kind)) {
-      const cap = options.first.maxFeePerGas * REPLACEMENT_FEE_CAP_MULTIPLE;
+      const cap = max(1n, options.first.maxFeePerGas) * REPLACEMENT_FEE_CAP_MULTIPLE;
       if (fees.maxFeePerGas > cap) {
         throw new ReplacementCapError(`${this.chain}: a replacement needs maxFeePerGas ${fees.maxFeePerGas}, above ${REPLACEMENT_FEE_CAP_MULTIPLE}× the first fee ${options.first.maxFeePerGas}`);
       }

@@ -66,7 +66,7 @@ describe('replacementFees: both fees raised enough for a node to take the replac
 
   test('BUG-1627 raises a zero tip even on a quiet network', async () => {
     await expect(driverAt(quiet).replacementFees(fees(100n, 0n))).resolves.toEqual(fees(115n, 1n));
-    await expect(driverAt(quiet).replacementFees(fees(0n, 0n))).resolves.toEqual(fees(1n, 1n));
+    await expect(driverAt(quiet).replacementFees(fees(0n, 0n), { first: fees(0n, 0n), kind: 'fill' })).resolves.toEqual(fees(1n, 1n));
   });
 
   test('the bump is at least MIN_FEE_BUMP_PERCENT even when the policy asks for less, and rounds up', async () => {
