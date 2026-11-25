@@ -443,6 +443,7 @@ describe('the network comes from the API host (CAN-2979)', () => {
     try {
       const fetchImpl = jest.fn();
       const deps = await defaultDeps({ ...DEFAULTS, stateDir, baseUrl, ...(network && { network }) }, { fetchImpl });
+      await expect(defaultDeps({ ...DEFAULTS, stateDir, baseUrl, ...(network && { network }) }, { fetchImpl })).rejects.toThrow(/Cannot lock/);
       await deps.audit.close();
       expect(deps.createEngine).toEqual(expect.any(Function));
       expect(fetchImpl).not.toHaveBeenCalled();
