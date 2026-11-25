@@ -1,7 +1,7 @@
 import type { Http } from './http';
 import { DEFAULT_ESCROWS, DEFAULT_VENUES, type DvpNetwork } from './dvp-admins';
 import { verifyHtlcAcceptCounterPrepared, verifyHtlcFlowBPrepared, type HtlcPins } from './htlc-verify';
-import type { PreparedToSign, TokenOperation } from './dvp-verify';
+import { exactNumericAmount, type PreparedToSign, type TokenOperation } from './dvp-verify';
 import type { Executed, HtlcSwap, SelfCustodyOptions, TokenCallOptions } from './selfcustody';
 
 /** What `openHtlc` opens. */
@@ -68,7 +68,7 @@ export function createHtlcActions<TLeg>(ctx: HtlcContext<TLeg>) {
     const { tokenId, amount, receiver, hashLock, timeoutHours, orderId, description } = input;
     const instrument = ctx.instrumentOf(tokenId);
     const maxFee = ctx.feeCeiling('htlc.flow-b-create', input);
-    const params = { tokenId, amount: Number(amount), receiver, hashLock, timeoutHours, ...(orderId ? { orderId } : {}), ...(description ? { description } : {}) };
+    const params = { tokenId, amount: exactNumericAmount(amount), receiver, hashLock, timeoutHours, ...(orderId ? { orderId } : {}), ...(description ? { description } : {}) };
     const { meta, result } = await ctx.run<{ swapId?: string }>('htlc.flow-b-create', params, false,
       ctx.reading('htlc.flow-b-create', input, (legs, pins, party) => verifyHtlcFlowBPrepared(legs, {
         ...htlcPins(), party, receiver, amount, instrument, admins: ctx.tokenAdmins(instrument), hashLock, timeoutHours,

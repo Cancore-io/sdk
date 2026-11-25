@@ -1660,6 +1660,8 @@ test('grossAmount refuses an amount it cannot hold exactly, instead of truncatin
 });
 
 test('grossAmount covers the net after the fee, in exact 1e-10 units rounded up', () => {
+  expect(() => grossAmount('12345678.0000000001', '0')).toThrow(RangeError);
+  expect(grossAmount('0.0000000001', '0')).toBe(1e-10);
   expect(grossAmount('100', '0.005')).toBe(100.5);
   expect(grossAmount('5000', '0.0050000000')).toBe(5025);
   expect(grossAmount('0.0000000001', '0.01')).toBe(0.0000000002);
