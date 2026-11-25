@@ -1250,7 +1250,8 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         tokenId: order.sourceTokenAddress,
         // A number because the request DTO takes one. Not a precision risk: the backend builds
         // every leg of the trade from the order's own decimal strings, never from this field.
-        amount: exactNumericAmount(order.sourceAmount),
+        // The DvP backend builds the legs from the stored order; this DTO field is informational.
+        amount: Number(order.sourceAmount),
         receiver,
         // Required by the request's validation and unused by DvP: no hash lock exists in a DvP trade.
         hashLock: await sha256Hex(randomHex(32)),
