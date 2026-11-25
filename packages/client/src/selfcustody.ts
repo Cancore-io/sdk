@@ -1,3 +1,4 @@
+import { exactNumericAmount } from './numeric-amount';
 /**
  * `@cancore/client/selfcustody` — a self-custody Canton account, run entirely
  * by a program.
@@ -30,7 +31,7 @@ import { DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_
 import { createHtlcActions, postClaimCounter, randomHex, sha256Hex, type CounterExpectation, type OpenedHtlc, type OpenHtlcInput } from './selfcustody-htlc';
 export { newPreimage, postClaimCounter, sha256Hex, type CounterExpectation, type OpenedHtlc, type OpenHtlcInput } from './selfcustody-htlc';
 import {
-  acceptCost, decimalOf, exactNumericAmount, DEFAULT_TRUSTED_PACKAGES, feeCost, selfSendCost, sendCost, units, UnverifiedTransactionError, verifyConsolidatePrepared, verifyDvpPrepared,
+  acceptCost, decimalOf, DEFAULT_TRUSTED_PACKAGES, feeCost, selfSendCost, sendCost, units, UnverifiedTransactionError, verifyConsolidatePrepared, verifyDvpPrepared,
   verifyPreapprovalSetupPrepared, verifySelfSendPrepared,
   type DvpOperation, type DvpTerms, type Instrument, type PreparedToSign, type TokenOperation, type TrustedPackages,
 } from './dvp-verify';

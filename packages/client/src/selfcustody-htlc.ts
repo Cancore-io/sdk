@@ -1,7 +1,8 @@
+import { exactNumericAmount } from './numeric-amount';
 import type { Http } from './http';
 import { DEFAULT_ESCROWS, DEFAULT_VENUES, type DvpNetwork } from './dvp-admins';
 import { verifyHtlcAcceptCounterPrepared, verifyHtlcFlowBPrepared, type HtlcPins } from './htlc-verify';
-import { exactNumericAmount, type PreparedToSign, type TokenOperation } from './dvp-verify';
+import type { PreparedToSign, TokenOperation } from './dvp-verify';
 import type { Executed, HtlcSwap, SelfCustodyOptions, TokenCallOptions } from './selfcustody';
 
 /** What `openHtlc` opens. */
