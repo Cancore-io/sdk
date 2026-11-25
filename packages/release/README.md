@@ -20,7 +20,10 @@ npx @cancore/release@0.1.0 version --channel prod --cut --cut-branch dev   # a r
   declared is patch. A major resets minor and patch: `1.4.2` + breaking = `2.0.0`.
 - `--cut` runs on the cut branch only and only with `--channel prod`. The cut branch is `main`;
   `--cut-branch <name>` names another (a repo that cuts on `dev` still passes `--channel prod --cut`),
-  and then `main` is refused like any other branch. A commit that already carries a release tag
+  and then `main` is refused like any other branch. A detached HEAD passes only when `GITHUB_REF` is exactly
+  `refs/heads/<cut branch>`; any other `GITHUB_REF` (a tag, a pull ref, another branch) is refused even when HEAD is
+  already on `origin/<cut branch>`, and `origin/<cut branch>` containing HEAD counts only for a run without
+  `GITHUB_REF` (a local detached checkout). A commit that already carries a release tag
   reports it again; a tag is never moved.
 - `dev` and `stage` print `<next>-dev.N` / `<next>-stage.N`, N = commits since the tag.
 - `version=` (and `tag=` when one exists) go to `$GITHUB_OUTPUT`. Bad arguments exit 2.

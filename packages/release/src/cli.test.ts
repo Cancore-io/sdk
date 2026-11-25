@@ -321,6 +321,56 @@ describe('release version --cut --cut-branch dev', () => {
     expect(r.tags()).toEqual(['v1.4.2']);
   });
 
+  // Exact match on every recognition path: a near-miss name or ref never passes for dev (sdk#326 audit RX-1).
+  it.each(['dev-evil', 'develop', 'dev/x'])('checked-out branch %s: refused, nothing tagged', async (branch) => {
+    const r = seeded('v1.4.2', branch);
+    r.commit('feat: x');
+    expect((await run(r, cutOnDev)).code).toBe(1);
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+
+  it.each(['refs/heads/dev-evil', 'refs/heads/develop', 'refs/heads/dev/x', 'refs/tags/dev', 'refs/pull/1/merge', 'refs/remotes/origin/dev', 'dev'])(
+    'detached, a run started for %s: refused, nothing tagged',
+    async (ref) => {
+      const r = seeded('v1.4.2', 'feature');
+      r.commit('feat: x');
+      r.git('checkout', '-q', '--detach', 'HEAD');
+      expect((await run(r, cutOnDev, { GITHUB_REF: ref })).code).toBe(1);
+      expect(r.tags()).toEqual(['v1.4.2']);
+    },
+  );
+
+  it.each(['dev-evil', 'feature-dev'])('detached, HEAD only on origin/%s: refused, nothing tagged', async (branch) => {
+    const r = seeded('v1.4.2', branch);
+    r.commit('feat: x');
+    r.git('push', '-q', '-u', 'origin', branch);
+    r.git('checkout', '-q', '--detach', 'HEAD');
+    expect((await run(r, cutOnDev)).code).toBe(1);
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+
+  // A set GITHUB_REF decides on a detached HEAD: origin/dev containing HEAD does not rescue another ref (audit BG-1).
+  it.each(['refs/tags/x', 'refs/tags/dev', 'refs/pull/1/merge', 'refs/heads/feature', ''])(
+    'detached, HEAD on origin/dev, a run started for %j: refused, nothing tagged',
+    async (ref) => {
+      const r = seeded('v1.4.2', 'dev');
+      r.commit('feat: x');
+      r.git('push', '-q', '-u', 'origin', 'dev');
+      r.git('checkout', '-q', '--detach', 'HEAD');
+      const out = await run(r, cutOnDev, { GITHUB_REF: ref });
+      expect(out.code).toBe(1);
+      expect(out.stderr).toMatch(/cut on dev only/);
+      expect(r.originTags()).toEqual(['v1.4.2']);
+    },
+  );
+
+  it('checked-out dev decides before GITHUB_REF: cuts even when the run names another ref', async () => {
+    const r = seeded('v1.4.2', 'dev');
+    r.commit('feat: x');
+    expect((await run(r, cutOnDev, { GITHUB_REF: 'refs/pull/1/merge' })).code).toBe(0);
+    expect(r.originTags()).toContain('v1.5.0');
+  });
+
   it.each([
     [['version', '--channel', 'prod', '--cut', '--cut-branch'], /needs a branch name/],
     [['version', '--channel', 'prod', '--cut', '--cut-branch', ''], /needs a branch name/],

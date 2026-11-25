@@ -57,12 +57,12 @@ function lastReleaseTag(git: Git): string {
 }
 
 // I1: a release tag is cut on the cut branch only (main unless --cut-branch names another). A CI checkout may be
-// detached, so the cut branch is also recognised by the ref the run was started for, or by origin/<cut branch>
-// already containing HEAD.
+// detached, so the cut branch is also recognised by the ref the run was started for; a set GITHUB_REF decides alone,
+// and origin/<cut branch> already containing HEAD counts only for a run without GITHUB_REF (local, detached).
 function onCutBranch(git: Git, env: CliContext['env'], cutBranch: string): boolean {
   const branch = git('symbolic-ref', '-q', '--short', 'HEAD');
   if (branch.ok) return branch.out === cutBranch;
-  if (env.GITHUB_REF === `refs/heads/${cutBranch}`) return true;
+  if (env.GITHUB_REF !== undefined) return env.GITHUB_REF === `refs/heads/${cutBranch}`;
   return git('branch', '-r', '--contains', 'HEAD', '--format=%(refname:short)').out.split('\n').includes(`origin/${cutBranch}`);
 }
 
