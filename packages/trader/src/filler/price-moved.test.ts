@@ -22,7 +22,7 @@ describe('CAN-3797 price claim', () => {
   });
 
   test('TC-SDK-3797-U-04: a shift beyond int32 is clamped, not dropped; decimals that are no catalog decimals give no shift', () => {
-    expect(priceShiftBps({ ...base, midE18: 1n, amountOut: 10n ** 30n })).toBe(2 ** 31 - 1);
+    expect(priceShiftBps({ ...base, midE18: 10n ** 18n, amountOut: 10n ** 30n })).toBe(2 ** 31 - 1);
     expect(priceShiftBps({ ...base, fromDecimals: -1, amountOut: 1n })).toBeUndefined();
     expect(priceShiftBps({ ...base, toDecimals: 1.5, amountOut: 1n })).toBeUndefined();
   });
