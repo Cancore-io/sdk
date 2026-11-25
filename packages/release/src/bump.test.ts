@@ -6,6 +6,7 @@ import type { BumpLevel } from './bump';
 // name: `Release-Bump:` here, `Ring-Bump:` still accepted (CAN-3594 D5).
 describe('parseBumpLevel: the trailer', () => {
   it.each<[string, string, BumpLevel]>([
+    ['BUG-1641 accepts a compact trailer', 'fix: example\n\nRelease-Bump:minor', 'minor'],
     ['BUG-1641 uses the footer after a body example', 'fix: cleanup\n\nRelease-Bump: major\n\nRelease-Bump: patch', 'patch'],
     ['Release-Bump minor', 'fix(x): y\n\nbody text\n\nRelease-Bump: minor\n', 'minor'],
     ['Release-Bump, any case', 'fix(x): y\n\nRELEASE-BUMP: Major\n', 'major'],

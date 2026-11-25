@@ -5,7 +5,7 @@ export type BumpLevel = 'major' | 'minor' | 'patch';
 export type BumpSignal = { level: BumpLevel; rationale: string; defaulted: boolean };
 
 const TRAILER_RE = /^(?:release|ring)-bump:\s*(major|minor|patch)\s*$/im;
-const TRAILER_LINE_RE = /^[a-z][\w-]*:\s+\S.*$/i;
+const TRAILER_LINE_RE = /^[a-z][\w-]*:\s*\S.*$/i;
 const BREAKING_FOOTER_RE = /^breaking[ -]change:\s+\S/im;
 // One deviation from CAEF: a `!` typed inside the scope (`feat(api!):`) is read as breaking too, not as a scope name.
 const CONVENTIONAL_SUBJECT_RE = /^([a-z]+)(!)?(?:\([^)!\r\n]+(!)?\))?(!)?:\s+\S/i;
