@@ -40,6 +40,8 @@ export type { ReconnectPolicy } from './protocol/session';
 
 export { cantonFillerPayout, evmFillerPayout } from './quotes';
 export type { FillerQuoteRequest, FillerReconfirm, QuoteSkipReason, ReconfirmDeclineReason } from './quotes';
+export { claimOfDecline, isPriceMovedDecline, priceShiftBps, wirePriceClaim } from './price-moved';
+export type { PriceMovedClaim, PriceMovedDecline, PriceShiftInput, ReconfirmDecision, WirePriceClaim } from './price-moved';
 export type { SignatureViolation } from './errors';
 
 export { evmChainNumber, isEvmChainId } from './chains';

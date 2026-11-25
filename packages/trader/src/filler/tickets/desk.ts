@@ -41,6 +41,7 @@
  */
 import type { DeclineReason, Hex, PenaltyApplied, TicketDecline, TicketExpired, TicketIntentMessage, TicketIssued, TicketOffer, TicketReceiptMessage } from '@cancore/contracts';
 import { EXPIRED_RESULTS } from '@cancore/contracts';
+import { claimOfDecline, type PriceMovedClaim, type WirePriceClaim } from '../price-moved';
 import type { FillerChains } from '../chain';
 import type { EvmChainId } from '../chains';
 import type { EventSink, FillerEvent, FillerStage } from '../events';
@@ -57,8 +58,10 @@ import { chainsOf, identityFor, isBoundToDeliver, signCantonTicketReceipt, signT
 export const OFFER_DECLINE_REASONS = ['NO_INVENTORY', 'RISK_LIMIT', 'PRICE_MOVED', 'PAUSED', 'OTHER'] as const;
 export type OfferDeclineReason = (typeof OFFER_DECLINE_REASONS)[number];
 
-/** The hook's answer: take it, or decline — plainly (`OTHER`) or with a reason. */
-export type TicketOfferDecision = 'accept' | 'decline' | { decline: OfferDeclineReason; detail?: string };
+/** The hook's answer: take it, or decline — plainly (`OTHER`) or with a reason; only `PRICE_MOVED` sends its price claim (§3.5). */
+export type TicketOfferDecision = 'accept' | 'decline' | ({ decline: OfferDeclineReason; detail?: string } & Partial<PriceMovedClaim>);
+
+type HookDecline = { reason: OfferDeclineReason; detail: string; claim?: WirePriceClaim };
 export type TicketOfferHook = (offer: TicketOffer) => Promise<TicketOfferDecision>;
 
 /** Default time kept free before `acceptBy` to send the answer after the hook. */
@@ -286,7 +289,7 @@ export class TicketDesk {
   private async decide(orderHash: Hex, offer: TicketOffer): Promise<void> {
     const { clock, logger } = this.options;
     const attempt = offer.attempt;
-    const decline = (reason: OfferDeclineReason, detail: string) => this.decline(orderHash, attempt, ['offered'], reason, detail);
+    const decline = (reason: OfferDeclineReason, detail: string, claim?: WirePriceClaim) => this.decline(orderHash, attempt, ['offered'], reason, detail, undefined, claim);
     if (clock.now() > offer.acceptBy) return this.giveUp(orderHash, attempt, 'acceptBy passed before an answer');
     if ((await this.options.store.getOverrides()).paused) return decline('PAUSED', 'the kill-switch is on');
     const earlier = await this.options.store.withOrder(orderHash, async (tx) => (await tx.listTickets()).some((r) => r.attempt < attempt));
@@ -296,7 +299,7 @@ export class TicketDesk {
 
     const decision = await this.askHook(offer);
     if (clock.now() > offer.acceptBy) return this.giveUp(orderHash, attempt, 'the hook answered after acceptBy');
-    if (decision !== 'accept') return decline(decision.reason, decision.detail);
+    if (decision !== 'accept') return decline(decision.reason, decision.detail, decision.claim);
 
     let intent;
     try {
@@ -311,7 +314,7 @@ export class TicketDesk {
     await this.send(orderHash, attempt, { action: 'intent', message: intent, deadlineMs: offer.acceptBy }, 'ticket.intent.sent');
   }
 
-  private async askHook(offer: TicketOffer): Promise<'accept' | { reason: OfferDeclineReason; detail: string }> {
+  private async askHook(offer: TicketOffer): Promise<'accept' | HookDecline> {
     const hook = this.options.onTicketOffer();
     if (!hook) return { reason: 'OTHER', detail: 'no onTicketOffer hook' };
     const budget = offer.acceptBy - this.options.offerReplyMarginMs - this.options.clock.now();
@@ -325,7 +328,8 @@ export class TicketDesk {
       if (answer === 'accept') return 'accept';
       if (answer === 'decline') return { reason: 'OTHER', detail: 'declined by the hook' };
       if (typeof answer === 'object' && answer !== null && OFFER_DECLINE_REASONS.includes(answer.decline)) {
-        return { reason: answer.decline, detail: typeof answer.detail === 'string' ? answer.detail : 'declined by the hook' };
+        const claim = claimOfDecline(answer, () => this.options.logger.warn('tickets: PRICE_MOVED claim of the hook dropped', { orderHash: offer.orderHash }));
+        return { reason: answer.decline, detail: typeof answer.detail === 'string' ? answer.detail : 'declined by the hook', ...(claim ? { claim } : {}) };
       }
       return { reason: 'OTHER', detail: 'the hook returned no decision' };
     } catch (error) {
@@ -415,8 +419,8 @@ export class TicketDesk {
   // -- moves and sending ----------------------------------------------------------------
 
   /** Moves the attempt to `declined` from one of `from`, then sends the decline. */
-  private async decline(orderHash: Hex, attempt: number, from: readonly TicketState[], reason: DeclineReason, detail: string, when?: (record: TicketRecord) => boolean): Promise<void> {
-    const decline = await this.options.protocol.seal<TicketDecline>({ type: 'ticket.decline', id: this.options.nextId(), orderHash, attempt, reason, detail: detail.slice(0, 256) });
+  private async decline(orderHash: Hex, attempt: number, from: readonly TicketState[], reason: DeclineReason, detail: string, when?: (record: TicketRecord) => boolean, claim?: WirePriceClaim): Promise<void> {
+    const decline = await this.options.protocol.seal<TicketDecline>({ type: 'ticket.decline', id: this.options.nextId(), orderHash, attempt, reason, detail: detail.slice(0, 256), ...claim });
     let deadlineMs = 0;
     const moved = await this.move(
       orderHash,
@@ -429,7 +433,7 @@ export class TicketDesk {
       when,
     );
     if (!moved) return;
-    this.options.logger.info('tickets: declined', { orderHash, attempt, reason, detail });
+    this.options.logger.info('tickets: declined', { orderHash, attempt, reason, detail, ...claim });
     this.emit({ type: 'declined', orderHash, attempt, reason });
     await this.send(orderHash, attempt, { action: 'decline', message: decline, deadlineMs }, 'ticket.declined');
   }

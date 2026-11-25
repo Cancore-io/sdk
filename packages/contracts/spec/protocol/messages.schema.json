@@ -16,6 +16,7 @@
     "repayToEvm": { "type": "string", "pattern": "^0x0{24}(?!0{40})[0-9a-f]{40}$", "description": "repayTo for an EVM source: zero top 12 bytes (the router refuses others, InvalidBytes32Address) and not the zero address (ZeroAddress). A receiver that knows the source chain checks repayTo against this" },
     "deliveryKey": { "$ref": "#/$defs/address", "description": "the address that sends fill on the destination (FillTicket.deliveryKey); the zero address for a Canton destination" },
     "sig65": { "type": "string", "pattern": "^0x[0-9a-f]{64}[0-7][0-9a-f]{63}(1b|1c)$", "description": "65-byte r ‖ s ‖ v of an EOA, low-s, v ∈ {27, 28}; no EIP-1271. The pattern refuses any other length or v and an s with its top bit set; isEoaSignature checks the exact bound s ≤ n/2" },
+    "shiftBps": { "type": "integer", "minimum": -2147483648, "maximum": 2147483647, "description": "PRICE_MOVED claim (protocol §3.5): trunc((amountOut − atMid) × 10 000 / atMid), atMid = floor(payout × midE18 × 10^outDecimals / (10^inDecimals × 10^18)); positive = the delivery costs more than the payout is worth at midE18" },
     "timeMs": { "type": "integer", "minimum": 1000000000000, "maximum": 9007199254740991, "description": "unix milliseconds, gateway clock; the minimum rejects seconds" },
     "durationMs": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
     "timeS": { "$ref": "#/$defs/uintDec64", "description": "unix seconds as a decimal string (on-chain and signed times)" },
@@ -291,7 +292,7 @@
     "quote.reconfirm.reply": {
       "x-direction": "F2S",
       "type": "object",
-      "description": "An accept carries sig = FillerQuote{keccak256(utf8(requestId)), fillerId, amountOut, validUntil, nonce} by the message key; a decline carries only the envelope msgSig",
+      "description": "An accept carries sig = FillerQuote{keccak256(utf8(requestId)), fillerId, amountOut, validUntil, nonce} by the message key; a decline carries only the envelope msgSig, an optional reason (PRICE_MOVED or OTHER; absent reads as OTHER) and, with PRICE_MOVED, the price claim midE18 + shiftBps (protocol §3.5 Price-moved declines)",
       "allOf": [{ "$ref": "#/$defs/f2sBase" }],
       "required": ["type", "orderHash", "accept"],
       "properties": {
@@ -300,7 +301,10 @@
         "accept": { "type": "boolean" },
         "validUntil": { "$ref": "#/$defs/timeS" },
         "nonce": { "$ref": "#/$defs/uintDec64" },
-        "sig": { "$ref": "#/$defs/sig65" }
+        "sig": { "$ref": "#/$defs/sig65" },
+        "reason": { "$ref": "#/$defs/declineReason" },
+        "midE18": { "$ref": "#/$defs/uintDec256", "description": "PRICE_MOVED claim: the filler's mid at the decline, output per input in whole units × 10^18" },
+        "shiftBps": { "$ref": "#/$defs/shiftBps" }
       },
       "if": { "type": "object", "properties": { "accept": { "const": true } }, "required": ["accept"] },
       "then": { "type": "object", "required": ["validUntil", "nonce", "sig"], "properties": { "validUntil": true, "nonce": true, "sig": true } }
@@ -348,7 +352,9 @@
         "orderHash": { "$ref": "#/$defs/bytes32" },
         "attempt": { "$ref": "#/$defs/uint32" },
         "reason": { "$ref": "#/$defs/declineReason" },
-        "detail": { "type": "string" }
+        "detail": { "type": "string" },
+        "midE18": { "$ref": "#/$defs/uintDec256", "description": "PRICE_MOVED claim at stage offer: the filler's mid at the decline, output per input in whole units × 10^18" },
+        "shiftBps": { "$ref": "#/$defs/shiftBps" }
       }
     },
     "ticket.intent.ack": {
