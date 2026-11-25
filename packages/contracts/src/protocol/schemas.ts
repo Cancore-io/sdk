@@ -58,6 +58,10 @@ export const REST_ENDPOINTS: readonly RestEndpoint[] = rest['x-endpoints'] as Re
  * signed (`pingS2F`), from a taker they are not (`pingF2S`); without it, either copy passes.
  */
 export function messageSchemaRef(type: string, direction?: 'S2F' | 'F2S'): string {
-  const def = direction && MESSAGE_DIRECTIONS[type] === 'both' ? `${type}${direction}` : type;
+  const allowed = MESSAGE_DIRECTIONS[type];
+  if (direction && allowed !== 'both' && allowed !== direction) {
+    throw new RangeError(`No ${direction} frame schema for ${type}`);
+  }
+  const def = direction && allowed === 'both' ? `${type}${direction}` : type;
   return `${messages.$id}#/$defs/${def}`;
 }
