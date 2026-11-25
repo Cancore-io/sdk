@@ -358,7 +358,7 @@ test('untake before the accept is sent drops the take; after it has started it c
   void handle.stop();
 });
 
-test('a take whose accept the venue refused is not retried after untake', async () => {
+test('BUG-1637 a definitively refused take stays idle until untake', async () => {
   const theirs = order('flaky', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
   let attempts = 0;
   const events: ServeEvent[] = [];
@@ -372,7 +372,8 @@ test('a take whose accept the venue refused is not retried after untake', async 
   handle.take('flaky');
   await until(() => attempts >= 1);
   await new Promise((r) => setImmediate(r));
-  // Not in flight any more: untake stops the retry the next poll would start.
+  await new Promise((r) => setTimeout(r, 30));
+  expect(attempts).toBe(1);
   expect(handle.untake('flaky')).toBe(true);
   expect(handle.mayBeTrade('flaky')).toBe(false);
   const before = calls.length;

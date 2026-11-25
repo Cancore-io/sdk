@@ -549,6 +549,35 @@ export function createDispatcher(deps: Deps): Dispatcher {
     await mutate((s) => ({ ...s, locked: true }));
   }
 
+  async function cancelBook(book: BotState['openOrders'], e: Engine | undefined, byDaemon: boolean): Promise<string[]> {
+    const cancelled: string[] = [];
+    // Captured once: a lock mid-pause must not turn the rest into a TypeError and skip the book cleanup.
+    const unlocksBefore = unlocks;
+    if (e) {
+      // Only a take this engine booked first: an earlier booking's accept went out through a loop that is gone.
+      for (const o of book.filter((x) => x.taken)) if (e.untake(o.orderId) && takenWith.get(o.orderId) === e) cancelled.push(o.orderId);
+      for (const o of book.filter((x) => !x.taken)) {
+        if ((await cancelResting(e, o.orderId, byDaemon).catch(() => 'failed' as const)) === 'cancelled') cancelled.push(o.orderId);
+      }
+    }
+    let removed: string[] = [];
+    await mutate((s) => {
+      const openOrders = s.openOrders.filter((o) => {
+        if (!cancelled.includes(o.orderId)) return true;
+        if (!o.taken || !e) return false;
+        // An unlock since (while this pause cancelled): the new engine's loop may have taken the order again.
+        if (unlocks !== unlocksBefore) return true;
+        // A take of it queued again since (a resume while this pause cancelled) is called off in the same step;
+        // the order stays booked only if that take's accept is already out.
+        e.untake(o.orderId);
+        return e.mayBeTrade(o.orderId);
+      });
+      removed = cancelled.filter((id) => !openOrders.some((o) => o.orderId === id));
+      return { ...(byDaemon ? s : userCancelled(s, removed)), openOrders };
+    });
+    return removed;
+  }
+
   async function execute(method: Method, p: unknown, taken?: Taken, tag?: { id: string; slot: string }): Promise<Result<Method>> {
     const state = await deps.state.load();
     switch (method) {
@@ -602,16 +631,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
       }
       case 'orders.cancelAll': {
         const e = needEngine();
-        const cancelled: string[] = [];
-        // One that will not cancel stays on the book; the rest still come off it.
-        for (const o of state.openOrders) {
-          // A command from the owner or the agent, like order.cancel: by hand, or a running grid would re-place every slot at once.
-          if ((await cancelResting(e, o.orderId, false)) === 'cancelled') cancelled.push(o.orderId);
-        }
-        await mutate((s) => {
-          const next = userCancelled(s, cancelled);
-          return { ...next, openOrders: next.openOrders.filter((o) => !cancelled.includes(o.orderId)) };
-        });
+        const cancelled = await cancelBook(state.openOrders, e, false);
         return { cancelled };
       }
       case 'pause': {
@@ -628,32 +648,7 @@ export function createDispatcher(deps: Deps): Dispatcher {
             strategies: s.strategies?.map((x) => (active(x) ? { ...x, status: 'stopped' as const, reason: 'paused' } : x)),
           };
         });
-        // Our own resting orders are cancelled. A take whose accept has not been sent is dropped;
-        // one already accepted is a trade and settles.
-        const cancelled: string[] = [];
-        // Captured once: a lock mid-pause must not turn the rest into a TypeError and skip the book cleanup.
-        const e = engine;
-        const unlocksBefore = unlocks;
-        if (e) {
-          // Only a take this engine booked first: an earlier booking's accept went out through a loop that is gone.
-          for (const o of book.filter((x) => x.taken)) if (e.untake(o.orderId) && takenWith.get(o.orderId) === e) cancelled.push(o.orderId);
-          for (const o of book.filter((x) => !x.taken)) {
-            if ((await cancelResting(e, o.orderId, true).catch(() => 'failed' as const)) === 'cancelled') cancelled.push(o.orderId);
-          }
-        }
-        await mutate((s) => ({
-          ...s,
-          openOrders: s.openOrders.filter((o) => {
-            if (!cancelled.includes(o.orderId)) return true;
-            if (!o.taken || !e) return false;
-            // An unlock since (while this pause cancelled): the new engine's loop may have taken the order again.
-            if (unlocks !== unlocksBefore) return true;
-            // A take of it queued again since (a resume while this pause cancelled) is called off in the same step;
-            // the order stays booked only if that take's accept is already out.
-            e.untake(o.orderId);
-            return e.mayBeTrade(o.orderId);
-          }),
-        }));
+        await cancelBook(book, engine, true);
         return { paused: true };
       }
       case 'strategy.stop': {
@@ -702,7 +697,8 @@ export function createDispatcher(deps: Deps): Dispatcher {
         let dropped = false;
         await mutate((s) => {
           if ((s.paused || engine !== e) && e.untake(params.orderId)) return (dropped = true), s;
-          if (!s.openOrders.some((o) => o.orderId === params.orderId)) takenWith.set(params.orderId, e);
+          if (s.openOrders.some((o) => o.orderId === params.orderId)) return s;
+          takenWith.set(params.orderId, e);
           return { ...s, openOrders: [...s.openOrders, { orderId: params.orderId, pair: `${view.base}/${view.quote}`, side: view.side, amount: view.amount, price: view.price, taken: true }] };
         });
         if (dropped) throw engine === e ? new RpcFault(ERROR.PAUSED, 'paused: the take was called off') : new RpcFault(ERROR.LOCKED, 'locked: the take was called off');
