@@ -105,11 +105,11 @@ describe('audit log', () => {
   test('a torn final line is reported, preserved, and the chain continues', async () => {
     await seed(3);
     const before = fs.readFileSync(file, 'utf8');
-    const fragment = '{"seq":3,"at":"2026-';
+    const fragment = Buffer.from('unfinished €').subarray(0, -1);
     fs.appendFileSync(file, fragment);
     const log = await openAuditLog(file);
     expect(log.tornTail).toEqual({ bytes: fragment.length, savedTo: expect.stringContaining('audit.jsonl.torn-') });
-    expect(fs.readFileSync(log.tornTail!.savedTo, 'utf8')).toBe(fragment);
+    expect(fs.readFileSync(log.tornTail!.savedTo)).toEqual(fragment);
     expect(fs.readFileSync(file, 'utf8')).toBe(before);
     expect((await log.append(entry(3))).seq).toBe(3);
     expect(await log.verify()).toEqual({ ok: true, entries: 4 });
