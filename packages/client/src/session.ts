@@ -207,9 +207,9 @@ export function createSession({ baseUrl, signer, fetchImpl, now = Date.now, slee
     return renewing;
   }
 
-  const withBearer = (init: RequestInit): RequestInit => ({
+  const withBearer = (init: RequestInit, bearer: string): RequestInit => ({
     ...init,
-    headers: { ...(init.headers as Record<string, string> | undefined), authorization: `Bearer ${token}` },
+    headers: { ...Object.fromEntries(new Headers(init.headers)), authorization: `Bearer ${bearer}` },
   });
 
   async function fresh(): Promise<string> {
@@ -218,14 +218,14 @@ export function createSession({ baseUrl, signer, fetchImpl, now = Date.now, slee
   }
 
   const request: FetchLike = async (url, init) => {
-    await fresh();
-    const res = await send(url, withBearer(init));
+    const bearer = await fresh();
+    const res = await send(url, withBearer(init, bearer));
     if (res.status !== 401) return res;
     // A 401 means the request was not processed, so sending it again is safe:
     // the token was revoked (a migration cutover revokes sessions) or expired
     // early. The refresh token is suspect too — sign in again.
-    await once(login);
-    return send(url, withBearer(init));
+    if (bearer === token) await once(login);
+    return send(url, withBearer(init, await fresh()));
   };
 
   const authed = createHttp({ baseUrl, request });

@@ -1529,12 +1529,12 @@ test('the session renews an expiring token and signs in again after a 401', asyn
       revoked = false;
       return refuse(401, 'Unauthorized');
     }
-    return json({ ok: auth.startsWith('Bearer h.') });
+    return json({ ok: auth.startsWith('Bearer h.'), marker: new Headers(init.headers).get('x-marker') });
   };
   const session = createSession({ baseUrl, signer, fetchImpl });
   await session.login();
   // The token dies in 30 s — inside the renewal margin, so it is refreshed first.
-  expect(await (await session.request(`${baseUrl}/x`, { method: 'GET', headers: {} })).json()).toEqual({ ok: true });
+  expect(await (await session.request(`${baseUrl}/x`, { method: 'GET', headers: new Headers({ 'X-Marker': 'present' }) })).json()).toEqual({ ok: true, marker: 'present' });
   expect(seen).toEqual(['/auth/challenge', '/auth/login-signature', '/auth/refresh', '/x']);
 
   revoked = true;
@@ -1616,6 +1616,8 @@ test('collect accepts exactly the claim’s own payouts, and nothing else in the
     if (path === '/partner/cashback/claim') return json({ id: 'c1', status: 'settling' });
     if (path === '/partner/cashback/claims') {
       return json([{ id: 'c1', status: 'settling', payouts: [
+        { id: 'p3', tokenId: 'CC', settlementStatus: 'failed', transferInstructionCid: null },
+        { id: 'p4', tokenId: 'CC', settlementStatus: 'expired_reclaimed', transferInstructionCid: null },
         { id: 'p1', tokenId: 'CC', settlementStatus: 'accepted', transferInstructionCid: null },
         { id: 'p2', tokenId: 'USDCx', settlementStatus: 'pending', transferInstructionCid: hexCid('ti-cashback') },
       ] }]);
