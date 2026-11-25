@@ -6,7 +6,7 @@ import {
   type OrderProposal,
   type TransferProposal,
 } from './client';
-import { AGENT_SCOPES, awaitGrant, startAuthorization, type DeviceStart } from './device';
+import { AGENT_SCOPES, awaitGrant, startAuthorization, type DeviceStart, type PollOutcome } from './device';
 import { defaultGrantPath, forgetGrant, loadGrant, saveGrant } from './grant';
 
 export interface SessionConfig {
@@ -113,24 +113,7 @@ export class CancoreSession {
     }
     if (outcome.status === 'granted' && outcome.token) {
       this.#pending = undefined;
-      // The grant this one replaces (a forced reconnect). Ended only after the
-      // new one is stored: until then the old one is the only access there is.
-      const replaced = loadGrant(this.#grantPath, this.#config.apiBaseUrl);
-      const expiresMs = outcome.expiresAt ? Date.parse(outcome.expiresAt) : Number.NaN;
-      saveGrant(this.#grantPath, this.#config.apiBaseUrl, {
-        token: outcome.token,
-        scopes: [...AGENT_SCOPES],
-        appName,
-        ...(outcome.sessionId ? { sessionId: outcome.sessionId } : {}),
-        ...(Number.isFinite(expiresMs) ? { expiresAt: Math.floor(expiresMs / 1000) } : {}),
-      });
-      const warning = replaced && replaced.token !== outcome.token ? await this.#revoke(replaced.token) : undefined;
-      return {
-        status: 'granted',
-        scopes: [...AGENT_SCOPES],
-        note: 'access is stored for this stand; the owner can revoke it in the wallet at any time',
-        ...(warning ? { warning } : {}),
-      };
+      return this.#storeGrant(outcome, outcome.token, appName);
     }
     if (outcome.status === 'denied') {
       this.#pending = undefined;
@@ -144,6 +127,27 @@ export class CancoreSession {
       resumed,
       next: 'ask the owner to open the page and approve it, then call cancore_connect_wallet again to keep waiting',
       expectCode: 'the page must show this same code — if it does not, the request is not ours',
+    };
+  }
+
+  async #storeGrant(outcome: PollOutcome, token: string, appName: string): Promise<ToolResult> {
+    // The grant this one replaces (a forced reconnect). Ended only after the
+    // new one is stored: until then the old one is the only access there is.
+    const replaced = loadGrant(this.#grantPath, this.#config.apiBaseUrl);
+    const expiresMs = outcome.expiresAt ? Date.parse(outcome.expiresAt) : Number.NaN;
+    saveGrant(this.#grantPath, this.#config.apiBaseUrl, {
+      token: token,
+      scopes: [...AGENT_SCOPES],
+      appName,
+      ...(outcome.sessionId ? { sessionId: outcome.sessionId } : {}),
+      ...(Number.isFinite(expiresMs) ? { expiresAt: Math.floor(expiresMs / 1000) } : {}),
+    });
+    const warning = replaced && replaced.token !== token ? await this.#revoke(replaced.token) : undefined;
+    return {
+      status: 'granted',
+      scopes: [...AGENT_SCOPES],
+      note: 'access is stored for this stand; the owner can revoke it in the wallet at any time',
+      ...(warning ? { warning } : {}),
     };
   }
 
