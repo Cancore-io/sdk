@@ -325,6 +325,14 @@ describe('the consent link (BUG-1618)', () => {
     return { started, result: started.connectWallet({ waitSeconds: 5 }), opened, calls };
   }
 
+  test('BUG-1634 resumes without reopening and force starts a new request', async () => {
+    const { started, result, opened } = connect('/wallet/authorize');
+    await result;
+    expect(await started.connectWallet({ waitSeconds: 1 })).toMatchObject({ resumed: true, opened: false });
+    expect(await started.connectWallet({ waitSeconds: 1, force: true })).toMatchObject({ resumed: false, opened: true });
+    expect(opened).toHaveLength(2);
+  });
+
   test('the path the gateway sends opens on the wallet origin', async () => {
     const { result, opened } = connect('/wallet/authorize?code=ABCD-EFGH');
 

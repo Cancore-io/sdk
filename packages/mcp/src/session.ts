@@ -82,7 +82,7 @@ export class CancoreSession {
     const appName = args.appName || this.#config.appName;
     const now = this.#deps.now ?? Date.now;
     let resumed = false;
-    if (this.#pending && now() < this.#pending.expiresAt) {
+    if (!args.force && this.#pending && now() < this.#pending.expiresAt) {
       resumed = true;
     } else {
       const start = await startAuthorization(this.#deps.fetchImpl, this.#config.apiBaseUrl, appName);
@@ -97,7 +97,7 @@ export class CancoreSession {
         error: `the consent link from ${this.#config.apiBaseUrl} is not on ${this.#config.appBaseUrl} — not opening or showing it; check that CANCORE_API_URL and CANCORE_APP_URL name the same Cancore stand`,
       };
     }
-    const opened = this.#deps.openBrowser ? await this.#deps.openBrowser(page) : false;
+    const opened = !resumed && this.#deps.openBrowser ? await this.#deps.openBrowser(page) : false;
 
     const budgetMs = clampWait(args.waitSeconds) * 1000;
     const outcome = await awaitGrant(this.#deps.fetchImpl, this.#config.apiBaseUrl, start, {
@@ -106,6 +106,11 @@ export class CancoreSession {
       ...(this.#deps.now ? { now: this.#deps.now } : {}),
     });
 
+    if (this.#pending?.start !== start) return { status: 'superseded', note: 'another authorization request replaced this one' };
+    if (outcome.status === 'expired') {
+      this.#pending = undefined;
+      return { status: 'expired', note: 'call cancore_connect_wallet again to start a new request' };
+    }
     if (outcome.status === 'granted' && outcome.token) {
       this.#pending = undefined;
       // The grant this one replaces (a forced reconnect). Ended only after the
