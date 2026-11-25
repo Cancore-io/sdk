@@ -148,6 +148,7 @@ function desk(over: Partial<QuoteDeskOptions> & { hook?: (r: FillerQuoteRequest)
   const seenReconfirms: FillerReconfirm[] = [];
   let id = 0;
   const options: QuoteDeskOptions = {
+    cantonEnabled: true,
     fillerId: FILLER,
     quoteSigner,
     fillSigners: { 'eip155:1': fill1, 'eip155:56': fill56 },
@@ -455,6 +456,15 @@ describe('quote.reconfirm → onReconfirm → quote.reconfirm.reply (T-20)', () 
     expect(firm.quote).not.toHaveProperty('id');
     expect(firm.via).toEqual(reply);
     expect(recoverAddress(hashFillerMessage(firm.via!), firm.via!.msgSig)).toBe(h.quoteSigner.address);
+  });
+
+  test('BUG-1625 refuses an unconfigured Canton quote and an empty reconfirm fee', async () => {
+    const h = desk({ cantonEnabled: false });
+    const route = { src: 'eip155:56', dst: 'canton:devnet' };
+    await expect(h.desk.onRequest(delivery(request(h.clock, { route })))).resolves.toEqual({ skipped: 'no-fill-key' });
+    await h.desk.onReconfirm(delivery(reconfirm(h.clock, { order: order({ feeBps: '' }) })));
+    expect(h.seenReconfirms).toHaveLength(0);
+    expect(h.protocol.sent[0]).toMatchObject({ accept: false });
   });
 
   test('a changed price is not signed: amountOut ≠ order.minReceived is declined without asking the hook', async () => {

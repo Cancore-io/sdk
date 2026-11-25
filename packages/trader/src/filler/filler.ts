@@ -571,8 +571,8 @@ export function createFiller(config: FillerConfig): Filler {
   let reconfirmHook: ReconfirmHook | undefined;
   let ticketHook: TicketOfferHook | undefined;
   let starting: Promise<void> | undefined;
-
   new QuoteDesk({
+    cantonEnabled: Boolean(config.canton),
     fillerId: config.fillerId,
     quoteSigner: config.quoteSigner,
     fillSigners: config.fillSigners,
@@ -588,7 +588,6 @@ export function createFiller(config: FillerConfig): Filler {
     reconfirmMarginS: DEFAULT_RECONFIRM_MARGIN_S,
     reconcileLookbackMs: DEFAULT_RECONCILE_LOOKBACK_MS,
   }).register();
-
   let executor: Executor | undefined;
   const tickets = new TicketDesk({
     store: config.store,
@@ -598,6 +597,7 @@ export function createFiller(config: FillerConfig): Filler {
     fillSigners: config.fillSigners,
     fillerId: config.fillerId,
     ...(cantonParty ? { cantonParty } : {}),
+    cantonEnabled: Boolean(config.canton),
     ...(config.canton ? { cantonSendGuardSec: config.canton.destination.sendGuardSec } : {}),
     messageSigner: config.quoteSigner,
     clock,

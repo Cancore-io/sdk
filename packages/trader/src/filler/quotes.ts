@@ -29,6 +29,7 @@ import {
   FILLER_PROTOCOL_DOMAIN,
   FILLER_QUOTE_TYPES,
   hashTypedData,
+  cantonNetworkOfDestination,
   fillerIdHash,
   requestIdHash,
   type DecString,
@@ -162,6 +163,7 @@ export interface QuoteDecisionInput {
 export type MinInputSource = (chain: string, token: unknown) => Promise<bigint | undefined>;
 
 export interface QuoteDeskOptions {
+  cantonEnabled: boolean;
   /** The filler's id: the `fillerId` every `FillerQuote` names. */
   fillerId: string;
   quoteSigner: QuoteSigner;
@@ -343,9 +345,9 @@ export class QuoteDesk {
     const minReceived = decimal(order?.minReceived);
     const amountOut = decimal(reconfirm.amountOut);
     const total = decimal(order?.inputAmount);
-    const feeBps = Number(order?.feeBps);
+    const feeBps = uintOf(order?.feeBps, 65536n);
     const origin = decimal(order?.originChainId);
-    if (!order || minReceived === undefined || amountOut === undefined || total === undefined || origin === undefined || !Number.isSafeInteger(feeBps)) {
+    if (!order || minReceived === undefined || amountOut === undefined || total === undefined || origin === undefined || feeBps === undefined) {
       return decline('malformed');
     }
     // FS-14: only the filler the user picked is asked; another filler's order gets no answer at all.
@@ -363,7 +365,7 @@ export class QuoteDesk {
     if (!hook) return decline('hook-failed');
     let accept: boolean;
     try {
-      const payout = payoutOf(total, feeBps);
+      const payout = payoutOf(total, Number(feeBps));
       accept = (await hook({ ...reconfirm, payout, fee: total - payout })) === true;
     } catch (error) {
       this.options.logger.error('quotes: onReconfirm threw', { orderHash, error: String(error) });
@@ -445,6 +447,7 @@ export class QuoteDesk {
     // No quote without a key to act on the order: the fill key of an EVM
     // destination; for a Canton destination, the one of the (EVM) source, which settles.
     const chain = isEvmChainId(route.dst) ? route.dst : isEvmChainId(route.src) ? route.src : undefined;
+    if (!this.options.cantonEnabled && (cantonSource || route.dst.startsWith('canton:'))) return 'no-fill-key';
     if (!chain || !this.options.fillSigners[chain]) return 'no-fill-key';
     // T-12: a Canton source pays by the ledger formula, never the EVM one.
     const payoutOf = cantonSource ? cantonFillerPayout : evmFillerPayout;
@@ -453,8 +456,10 @@ export class QuoteDesk {
 
   /** The fill key's address for an opened EVM-source order: by `destination` (`bytes32(chainId)` for EVM, §3.7). */
   private fillerForOrder(origin: bigint, destination: unknown): Hex | undefined {
+    const canton = typeof destination === 'string' && cantonNetworkOfDestination(destination as Hex);
+    if (!this.options.cantonEnabled && (origin >= CANTON_ORIGIN_FLOOR || canton)) return undefined;
     const dst = typeof destination === 'string' && /^0x[0-9a-fA-F]{64}$/.test(destination) ? BigInt(destination) : undefined;
-    const chain: EvmChainId = dst !== undefined && dst > 0n && dst < CANTON_ORIGIN_FLOOR ? `eip155:${dst}` : `eip155:${origin}`;
+    const chain: EvmChainId = !canton && dst !== undefined && dst > 0n && dst < CANTON_ORIGIN_FLOOR ? `eip155:${dst}` : `eip155:${origin}`;
     return this.options.fillSigners[chain]?.address.toLowerCase() as Hex | undefined;
   }
 

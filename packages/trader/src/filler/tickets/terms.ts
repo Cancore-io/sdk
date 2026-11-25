@@ -81,6 +81,7 @@ export const orderOf = (order: OrderJson): Order => ({ ...order });
 
 /** What the SDK derives a ticket identity from. */
 export interface TicketKeys {
+  cantonEnabled?: boolean;
   fillerId: string;
   fillSigners: { readonly [chain: EvmChainId]: FillSigner };
   /** The filler's Canton party (`CantonLedger.party`): the payee on a Canton source. */
@@ -107,9 +108,13 @@ const ZERO_ADDRESS: Hex = `0x${'00'.repeat(20)}`;
  * holds no fill key for the destination (or, for a Canton destination, the
  * source), or, on a Canton source, no party to be paid.
  */
+function configured(chains: OrderChains | undefined, keys: TicketKeys): chains is OrderChains {
+  return !!chains && (keys.cantonEnabled !== false || (!chains.canton && chains.origin < CANTON_ORIGIN_FLOOR));
+}
+
 export function identityFor(order: OrderJson, keys: TicketKeys): TicketIdentity | undefined {
   const chains = chainsOf(order);
-  if (!chains) return undefined;
+  if (!configured(chains, keys)) return undefined;
   const chain = chains.destination ?? chains.source;
   const signer = chain ? keys.fillSigners[chain] : undefined;
   if (!chain || !signer) return undefined;
