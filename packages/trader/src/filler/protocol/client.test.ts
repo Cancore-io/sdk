@@ -11,7 +11,7 @@ import {
   type Hex,
   type QuoteMessage,
   type TicketDecline,
-  type TicketIntentMessage,
+  hashTicketIntent, type TicketIntentMessage,
   type TicketReceiptEvm,
 } from '@cancore/contracts';
 import { FillerStoppedError, GatewayError, UnsupportedVersionError } from '../errors';
@@ -940,9 +940,9 @@ describe('REST fallback (protocol §3.6)', () => {
     expect(h.http.requests.filter((r) => new URL(r.url).pathname === '/v1/filler/auth')).toHaveLength(2);
   });
 
-  test.each([{ attempt: 2 }, { re: 'another-request' }, { sentAt: 0 }])('BUG-1628 refuses an unrelated or stale ticket intent acknowledgement %j', async (override) => {
+  test.each([{ intentHash: ORDER_HASH }, { attempt: 2 }, { re: 'another-request' }, { sentAt: 0 }])('BUG-1628 refuses an unrelated or stale ticket intent acknowledgement %j', async (override) => {
     const h = harness();
-    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1, intentHash: `0x${'ef'.repeat(32)}`, receivedAt: h.clock.now(), ...override });
+    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1, intentHash: hashTicketIntent(intent()), receivedAt: h.clock.now(), ...override });
     h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/intent`] = () => ({ status: 200, body: ack });
     await expect(h.rest.postTicket({ action: 'intent', message: intent() })).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE' });
   });
@@ -972,7 +972,7 @@ describe('REST fallback (protocol §3.6)', () => {
     void h.client.start();
     const socket = await h.login();
     await h.store.withOrder(ORDER_HASH, (tx) => tx.putTicket({ orderHash: ORDER_HASH, attempt: 1, state: 'intent-sent', updatedAtMs: h.clock.now() }));
-    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1, intentHash: `0x${'ef'.repeat(32)}`, receivedAt: h.clock.now() });
+    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1, intentHash: hashTicketIntent(intent()), receivedAt: h.clock.now() });
     h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/intent`] = () => ({ status: 200, body: ack });
     await expect(h.client.submitTicket({ action: 'intent', message: intent() })).resolves.toBeUndefined();
     await expect(h.client.submitTicket({ action: 'intent', message: intent() })).resolves.toBeUndefined();
@@ -999,7 +999,7 @@ describe('REST fallback (protocol §3.6)', () => {
     const outsideAnOrder = jest.spyOn(h.store, 'appendEvidence');
     const upper = `0x${'AB'.repeat(32)}` as Hex;
     for (const action of ['receipt', 'decline'] as const) h.http.routes[`POST /v1/filler/tickets/${upper}/1/${action}`] = () => ({ status: 200, body: {} });
-    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: upper, attempt: 1, intentHash: `0x${'ef'.repeat(32)}`, receivedAt: h.clock.now() });
+    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: upper, attempt: 1, intentHash: hashTicketIntent(intent()), receivedAt: h.clock.now() });
     h.http.routes[`POST /v1/filler/tickets/${upper}/1/intent`] = () => ({ status: 200, body: ack });
     await h.client.submitTicket({ action: 'intent', message: { ...intent(), orderHash: upper } });
     await h.client.submitTicket({ action: 'decline', message: { type: 'ticket.decline', id: 'd-1', fillerId: FILLER, sentAt: 1790000000000, msgSig: `0x${'00'.repeat(65)}`, orderHash: upper, attempt: 1, reason: 'OTHER' } });

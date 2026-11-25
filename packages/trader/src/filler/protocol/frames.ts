@@ -19,7 +19,7 @@ import {
   ERROR_CODES,
   FILLER_PROTOCOL_DOMAIN,
   GATEWAY_MESSAGE_TYPES,
-  gatewayBodyHash,
+  gatewayBodyHash, hashTicketIntent, type TicketIntentMessage,
   hashTypedData,
   type Hex,
   type S2FBase,
@@ -148,7 +148,7 @@ export function gatewayErrorOf(body: Readonly<Record<string, unknown>>, httpStat
 export const DEFAULT_MAX_MESSAGE_AGE_MS = 30_000;
 
 /** A signed acknowledgement of this intent, inside the configured arrival window. */
-export function isCurrentIntentAck(ack: GatewayFrame, intent: { orderHash: string; attempt: number; id: string }, now: number, maxAge: number): boolean {
+export function isCurrentIntentAck(ack: GatewayFrame, intent: TicketIntentMessage, now: number, maxAge: number): boolean {
   return ack.type === 'ticket.intent.ack' && typeof ack.orderHash === 'string' && ack.orderHash.toLowerCase() === intent.orderHash.toLowerCase() &&
-    ack.attempt === intent.attempt && (ack.re === undefined || ack.re === intent.id) && Math.abs(now - ack.sentAt) <= maxAge;
+    ack.attempt === intent.attempt && (ack.re === undefined ? ack.intentHash === hashTicketIntent(intent) : ack.re === intent.id) && Math.abs(now - ack.sentAt) <= maxAge;
 }
