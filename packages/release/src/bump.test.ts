@@ -6,6 +6,7 @@ import type { BumpLevel } from './bump';
 // name: `Release-Bump:` here, `Ring-Bump:` still accepted (CAN-3594 D5).
 describe('parseBumpLevel: the trailer', () => {
   it.each<[string, string, BumpLevel]>([
+    ['BUG-1641 uses the footer after a body example', 'fix: cleanup\n\nRelease-Bump: major\n\nRelease-Bump: patch', 'patch'],
     ['Release-Bump minor', 'fix(x): y\n\nbody text\n\nRelease-Bump: minor\n', 'minor'],
     ['Release-Bump, any case', 'fix(x): y\n\nRELEASE-BUMP: Major\n', 'major'],
     ['Release-Bump patch', 'fix(x): y\n\nrelease-bump: patch\n', 'patch'],
@@ -15,6 +16,7 @@ describe('parseBumpLevel: the trailer', () => {
   });
 
   it.each([
+    ['BUG-1641 ignores an example in the commit body', 'fix: cleanup\n\nRelease-Bump: major\n\nExample above.\n'],
     ['no trailer', 'fix(x): y\n\nno trailer here\n'],
     ['an invalid level is rejected, not guessed', 'fix(x): y\n\nRelease-Bump: huge\n'],
     ['a look-alike key does not match', 'fix(x): y\n\nRelease-Bumpy: minor\n'],

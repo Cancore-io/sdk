@@ -19,7 +19,12 @@ const normalize = (text: string) => text.replace(/\r\n/g, '\n');
 const subjectOf = (message: string) => (normalize(message).split('\n')[0] ?? '').trim();
 
 export function parseBumpLevel(text: string): BumpLevel | null {
-  const m = TRAILER_RE.exec(text);
+  const paragraphs = normalize(text).trimEnd().split(/\n[ \t]*\n/);
+  const trailer = paragraphs.at(-1);
+  if (paragraphs.length < 2 || !trailer) return null;
+  const lines = trailer.split('\n');
+  if (!lines.every((line) => TRAILER_LINE_RE.test(line) || /^[ \t]/.test(line))) return null;
+  const m = lines.reverse().map((line) => TRAILER_RE.exec(line)).find(Boolean);
   return m?.[1] ? (m[1].toLowerCase() as BumpLevel) : null;
 }
 
