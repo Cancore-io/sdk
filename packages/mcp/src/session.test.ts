@@ -327,7 +327,11 @@ describe('the consent link (BUG-1618)', () => {
 
   test('BUG-1634 resumes without reopening and force starts a new request', async () => {
     const { started, result, opened } = connect('/wallet/authorize');
+    expect(started.connectWallet({ waitSeconds: 1 })).toBe(result);
     await result;
+    const first = started.connectWallet({ waitSeconds: 1 });
+    expect(started.connectWallet({ waitSeconds: 1 })).toBe(first);
+    await first;
     expect(await started.connectWallet({ waitSeconds: 1 })).toMatchObject({ resumed: true, opened: false });
     expect(await started.connectWallet({ waitSeconds: 1, force: true })).toMatchObject({ resumed: false, opened: true });
     expect(opened).toHaveLength(2);

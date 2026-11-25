@@ -46,6 +46,8 @@ export class CancoreSession {
   readonly #config: SessionConfig;
   readonly #deps: Required<Pick<SessionDeps, 'fetchImpl'>> & SessionDeps;
   readonly #grantPath: string;
+  #connecting: Promise<ToolResult> | undefined;
+  #generation = 0;
   #pending: { start: DeviceStart; expiresAt: number } | undefined;
 
   constructor(config: SessionConfig, deps: SessionDeps = {}) {
@@ -64,7 +66,17 @@ export class CancoreSession {
    * working. Minting a second one would teach them that a mismatched code is
    * normal, which is the one thing the consent page relies on them noticing.
    */
-  async connectWallet(args: { waitSeconds?: number; appName?: string; force?: boolean } = {}): Promise<ToolResult> {
+  connectWallet(args: { waitSeconds?: number; appName?: string; force?: boolean } = {}): Promise<ToolResult> {
+    if (!args.force && this.#connecting) return this.#connecting;
+    const generation = ++this.#generation;
+    const pending = this.#connect(args, generation).finally(() => {
+      if (generation === this.#generation) this.#connecting = undefined;
+    });
+    this.#connecting = pending;
+    return pending;
+  }
+
+  async #connect(args: { waitSeconds?: number; appName?: string; force?: boolean }, generation: number): Promise<ToolResult> {
     if (!this.#config.apiBaseUrl) {
       return { error: 'CANCORE_API_URL is not set — point it at the Cancore gateway (e.g. https://api-dev.cancore.app)' };
     }
@@ -86,6 +98,7 @@ export class CancoreSession {
       resumed = true;
     } else {
       const start = await startAuthorization(this.#deps.fetchImpl, this.#config.apiBaseUrl, appName);
+      if (generation !== this.#generation) return { status: 'superseded' };
       this.#pending = { start, expiresAt: now() + start.expiresIn * 1000 };
     }
     const start = this.#pending.start;
@@ -106,7 +119,7 @@ export class CancoreSession {
       ...(this.#deps.now ? { now: this.#deps.now } : {}),
     });
 
-    if (this.#pending?.start !== start) return { status: 'superseded', note: 'another authorization request replaced this one' };
+    if (generation !== this.#generation || this.#pending?.start !== start) return { status: 'superseded', note: 'another authorization request replaced this one' };
     if (outcome.status === 'expired') {
       this.#pending = undefined;
       return { status: 'expired', note: 'call cancore_connect_wallet again to start a new request' };
