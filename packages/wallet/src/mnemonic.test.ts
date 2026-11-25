@@ -69,6 +69,13 @@ describe('mnemonic (BIP39 self-custody recovery phrase)', () => {
   });
 
   describe('describeMnemonicError (import-your-own-phrase validation)', () => {
+    it('BUG-1640 accepts a valid French checksum when every word is also English', () => {
+      const phrase = [...Array(11).fill('abandon'), 'brave'].join(' ');
+      expect(isValidMnemonic(phrase, 'en')).toBe(false);
+      expect(isValidMnemonic(phrase, 'fr')).toBe(true);
+      expect(describeMnemonicError(phrase)).toBeNull();
+    });
+
     it('BUG-1640 reports a checksum failure in a non-English dictionary', () => {
       expect(describeMnemonicError(Array(12).fill(wordlistFor('es')[0]).join(' '))?.code).toMatch(/checksum$/);
     });
