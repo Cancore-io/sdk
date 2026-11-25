@@ -143,3 +143,16 @@ describe('group 4: every job has a timeout', () => {
     expect(untimed).toEqual([]);
   });
 });
+
+test('BUG-1639 publishes workspace dependencies first and requires a registry match', () => {
+  const { releaseOrder, checkDependencies } = require('../scripts/publish-plan.cjs');
+  const manifests = new Map([
+    ['@cancore/wallet', { version: '1.2.0' }],
+    ['@cancore/client', { version: '1.0.0', peerDependencies: { '@cancore/wallet': 'workspace:^' } }],
+  ]);
+  const plan = [{ name: '@cancore/client' }, { name: '@cancore/wallet' }];
+  expect(releaseOrder(plan, manifests)).toEqual([plan[1], plan[0]]);
+  const registry = jest.fn(() => []);
+  expect(() => checkDependencies(manifests.get('@cancore/client'), manifests, registry)).toThrow(/No published version/);
+  expect(registry).toHaveBeenCalledWith('@cancore/wallet@^1.2.0');
+});
