@@ -1,9 +1,10 @@
 import { join } from 'node:path';
 import { openAuditLog } from './audit';
-import { DatabaseSync } from 'node:sqlite';
+import type * as SQLite from 'node:sqlite';
 
 /** SQLite's OS lock dies with its process. Keep the lock file across restarts. */
 function lockStateDirectory(dir: string): () => void {
+  const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof SQLite;
   const database = new DatabaseSync(join(dir, 'daemon.lock.sqlite'));
   try {
     database.exec('BEGIN EXCLUSIVE');
