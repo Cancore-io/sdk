@@ -64,6 +64,11 @@ describe('estimateGas: the estimate plus the margin, rounded up', () => {
 describe('replacementFees: both fees raised enough for a node to take the replacement', () => {
   const quiet = { baseFee: 0n, tip: 0n };
 
+  test('BUG-1627 raises a zero tip even on a quiet network', async () => {
+    await expect(driverAt(quiet).replacementFees(fees(100n, 0n))).resolves.toEqual(fees(115n, 1n));
+    await expect(driverAt(quiet).replacementFees(fees(0n, 0n))).resolves.toEqual(fees(1n, 1n));
+  });
+
   test('the bump is at least MIN_FEE_BUMP_PERCENT even when the policy asks for less, and rounds up', async () => {
     expect(MIN_FEE_BUMP_PERCENT).toBe(10);
     await expect(driverAt(quiet, { feeBumpPercent: 5 }).replacementFees(fees(101n, 11n))).resolves.toEqual(fees(112n, 13n));

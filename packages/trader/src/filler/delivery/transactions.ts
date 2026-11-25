@@ -327,9 +327,10 @@ export class TransactionDriver {
       if (!(error instanceof FeeCeilingError)) throw error;
       market = { maxFeePerGas: 0n, maxPriorityFeePerGas: 0n };
     }
+    const raised = (previous: bigint) => previous === 0n ? 1n : ceilPercent(previous, bump);
     const fees = {
-      maxFeePerGas: max(market.maxFeePerGas, ceilPercent(last.maxFeePerGas, bump)),
-      maxPriorityFeePerGas: max(market.maxPriorityFeePerGas, ceilPercent(last.maxPriorityFeePerGas, bump)),
+      maxFeePerGas: max(market.maxFeePerGas, raised(last.maxFeePerGas)),
+      maxPriorityFeePerGas: max(market.maxPriorityFeePerGas, raised(last.maxPriorityFeePerGas)),
     };
     if (fees.maxPriorityFeePerGas > fees.maxFeePerGas) fees.maxFeePerGas = fees.maxPriorityFeePerGas;
     const ceiling = this.options.fees.maxFeePerGasWei;
