@@ -331,12 +331,39 @@ describe('release version --cut --cut-branch dev', () => {
   // Exact match on every recognition path: a near-miss name or ref never passes for dev (sdk#326 audit RX-1). Per path:
   // prefix, suffix, substring, case variant, another remote, a tag and a pull ref (sdk#327 audit RX-1..RX-3).
   // Fullwidth letters and a zero-width space stay distinct: no Unicode folding or stripping (sdk#328 r4 RX-5, RX-6).
-  it.each(['dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev', 'feature/dev/x', 'Dev', 'DEV', 'origin/dev', 'upstream/dev', 'heads/dev', 'tags/dev', 'pull/1/merge', 'd', 'de', 'ev', 'dev\u00a0', '\u00a0dev', 'dev\ufeff', 'dev\u3000', '\uff44\uff45\uff56', 'dev\u200b'])('checked-out branch %j: refused, nothing tagged', async (branch) => {
+  // So do diacritics, canonically equivalent forms and percent-encoding: nothing is normalised or decoded on either side
+  // (sdk#328 r5 RX-7, RX-8, BG-2). One corpus of [branch, --cut-branch] rows feeds all three path tables, so a class
+  // added here pins every path at once.
+  const devNearMisses = [
+    'dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev', 'feature/dev/x', 'd', 'de', 'ev',
+    'Dev', 'DEV', 'origin/dev', 'upstream/dev', 'heads/dev', 'tags/dev', 'pull/1/merge',
+    'dev\u00a0', '\u00a0dev', 'dev\ufeff', 'dev\u3000', '\uff44\uff45\uff56', 'dev\u200b',
+    'd\u00e9v', 'de\u0301v', 'd%65v',
+  ];
+  // Pairs only NFC/NFD/NFKC make equal; U+212A, U+037E and U+1FEF are the only code points NFD maps into ASCII.
+  const canonicalPairs: [string, string][] = [
+    ['d\u00e9v', 'de\u0301v'], ['de\u0301v', 'd\u00e9v'],
+    ['\u212a', 'K'], ['K', '\u212a'], ['\u037e', ';'], [';', '\u037e'], ['\u1fef', '`'], ['`', '\u1fef'],
+  ];
+  // Titles spell non-ASCII as \uXXXX: a precomposed and a combining accent would otherwise print the same.
+  const shown = (s: string) => JSON.stringify(s).replace(/[^ -~]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  const nearMisses = [...devNearMisses.map((name): [string, string] => [name, 'dev']), ...canonicalPairs]
+    .map(([branch, cutBranch]): [string, string, string, string] => [shown(branch), shown(cutBranch), branch, cutBranch]);
+  const cutOn = (cutBranch: string) => ['version', '--channel', 'prod', '--cut', '--cut-branch', cutBranch];
+
+  it.each(nearMisses)('checked-out branch %s, --cut-branch %s: refused, nothing tagged', async (_b, _c, branch, cutBranch) => {
     const r = seeded('v1.4.2', branch);
     r.commit('feat: x');
     expect(r.git('symbolic-ref', '--short', 'HEAD').replace(/\n$/, '')).toBe(branch);
-    expect((await run(r, cutOnDev)).code).toBe(1);
+    expect((await run(r, cutOn(cutBranch))).code).toBe(1);
     expect(r.tags()).toEqual(['v1.4.2']);
+  });
+
+  it.each(canonicalPairs.map(([, name]): [string, string] => [shown(name), name]))('checked-out branch %s, --cut-branch the same: cuts (control for the pairs)', async (_n, name) => {
+    const r = seeded('v1.4.2', name);
+    r.commit('feat: x');
+    expect((await run(r, cutOn(name))).code).toBe(0);
+    expect(r.originTags()).toContain('v1.5.0');
   });
 
   // A checked-out branch decides alone: no env var naming dev rescues another branch (sdk#327 r3 audit RX-3).
@@ -348,10 +375,18 @@ describe('release version --cut --cut-branch dev', () => {
     expect(r.tags()).toEqual(['v1.4.2']);
   });
 
+  it.each(nearMisses)('detached, a run started for refs/heads/%s, --cut-branch %s: refused, nothing tagged', async (_b, _c, branch, cutBranch) => {
+    const r = seeded('v1.4.2', 'feature');
+    r.commit('feat: x');
+    r.git('checkout', '-q', '--detach', 'HEAD');
+    expect((await run(r, cutOn(cutBranch), { GITHUB_REF: `refs/heads/${branch}` })).code).toBe(1);
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+
+  // Refs that are not refs/heads/<name>: another namespace, a bare or mangled prefix.
   it.each([
-    'refs/heads/dev-evil', 'refs/heads/develop', 'refs/heads/dev/x', 'refs/tags/dev', 'refs/pull/1/merge', 'refs/remotes/origin/dev', 'dev', 'refs/heads/feature/dev',
-    'refs/heads/feature-dev', 'refs/heads/feature/dev/x', 'refs/heads/Dev', 'refs/heads/DEV', 'REFS/HEADS/dev', 'refs/remotes/upstream/dev', ' refs/heads/dev', 'refs/heads/dev\n',
-    'refs/heads/de', 'refs/heads/d', 'refs/heads/', 'heads/dev', 'refs/heads/\uff44\uff45\uff56', 'refs/heads/dev\u200b',
+    'refs/tags/dev', 'refs/pull/1/merge', 'refs/remotes/origin/dev', 'refs/remotes/upstream/dev', 'dev', 'heads/dev', 'REFS/HEADS/dev',
+    ' refs/heads/dev', 'refs/heads/dev\n', 'refs/heads/',
   ])(
     'detached, a run started for %j: refused, nothing tagged',
     async (ref) => {
@@ -376,13 +411,13 @@ describe('release version --cut --cut-branch dev', () => {
     expect(r.tags()).toEqual(['v1.4.2']);
   });
 
-  it.each(['dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev', 'feature/dev/x', 'Dev', 'DEV', 'pull/1/merge', 'd', 'de', 'dev\u00a0', '\u00a0dev', '\uff44\uff45\uff56', 'dev\u200b'])('detached, HEAD only on origin/%j: refused, nothing tagged', async (branch) => {
+  it.each(nearMisses)('detached, HEAD only on origin/%s, --cut-branch %s: refused, nothing tagged', async (_b, _c, branch, cutBranch) => {
     const r = seeded('v1.4.2', branch);
     r.commit('feat: x');
     r.git('push', '-q', '-u', 'origin', branch);
     r.git('checkout', '-q', '--detach', 'HEAD');
     expect(r.git('branch', '-r', '--contains', 'HEAD', '--format=%(refname:short)').split('\n')).toContain(`origin/${branch}`);
-    expect((await run(r, cutOnDev)).code).toBe(1);
+    expect((await run(r, cutOn(cutBranch))).code).toBe(1);
     expect(r.originTags()).toEqual(['v1.4.2']);
   });
 
