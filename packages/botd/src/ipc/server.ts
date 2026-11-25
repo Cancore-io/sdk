@@ -132,19 +132,21 @@ export async function listen(socketPath: string, handler: Handler, options: List
   } finally {
     process.umask(previous);
   }
-  if (options.group) chownSync(socketPath, -1, gid(options.group));
-  chmodSync(socketPath, mode);
-  const actual = statSync(socketPath).mode & 0o777;
-  if (actual !== mode) {
-    server.close();
-    throw new Error(`socket ${socketPath} has mode ${actual.toString(8)}, expected ${mode.toString(8)}`);
-  }
-
-  return {
-    close: () =>
+  const close = () =>
       new Promise<void>((resolve) => {
         for (const s of sockets) s.destroy();
         server.close(() => resolve());
-      }),
-  };
+      });
+  try {
+    if (options.group) chownSync(socketPath, -1, gid(options.group));
+    chmodSync(socketPath, mode);
+    const actual = statSync(socketPath).mode & 0o777;
+    if (actual !== mode) {
+      throw new Error(`socket ${socketPath} has mode ${actual.toString(8)}, expected ${mode.toString(8)}`);
+    }
+  } catch (error) {
+    await close();
+    throw error;
+  }
+  return { close };
 }

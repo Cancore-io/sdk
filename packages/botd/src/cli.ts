@@ -6,7 +6,7 @@ import { createInterface } from 'readline';
 import { hexToBytes } from '@cancore/wallet';
 import { connect, RpcCallError } from './ipc/client';
 import { createKeystore, generateMnemonic } from './keystore';
-import { openAuditLog } from './audit';
+import { verifyAuditFile } from './audit';
 import { flag, loadConfig, paths, type BotConfig } from './config';
 import { install } from './service/index';
 import type { Method, Params, Result } from './protocol/index';
@@ -161,8 +161,7 @@ export async function main(argv: string[]): Promise<number> {
       }
       case 'audit':
         if (sub === 'verify') {
-          const log = await openAuditLog(paths(config).audit);
-          const result = await log.verify().finally(() => log.close());
+          const result = await verifyAuditFile(paths(config).audit);
           print(result);
           return result.ok ? 0 : 3;
         }
