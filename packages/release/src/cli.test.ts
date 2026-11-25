@@ -332,18 +332,19 @@ describe('release version --cut --cut-branch dev', () => {
   // prefix, suffix, substring, case variant, another remote, a tag and a pull ref (sdk#327 audit RX-1..RX-3).
   // Fullwidth letters and a zero-width space stay distinct: no Unicode folding or stripping (sdk#328 r4 RX-5, RX-6).
   // So do diacritics, canonically equivalent forms and percent-encoding: nothing is normalised or decoded on either side
-  // (sdk#328 r5 RX-7, RX-8, BG-2). One corpus of [branch, --cut-branch] rows feeds all three path tables, so a class
+  // (sdk#328 r5 RX-7, RX-8, BG-2); C1 control characters are not stripped either (r6 RX-9). One corpus of [branch, --cut-branch] rows feeds all three path tables, so a class
   // added here pins every path at once.
   const devNearMisses = [
     'dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev', 'feature/dev/x', 'd', 'de', 'ev',
     'Dev', 'DEV', 'origin/dev', 'upstream/dev', 'heads/dev', 'tags/dev', 'pull/1/merge',
     'dev\u00a0', '\u00a0dev', 'dev\ufeff', 'dev\u3000', '\uff44\uff45\uff56', 'dev\u200b',
-    'd\u00e9v', 'de\u0301v', 'd%65v',
+    'd\u00e9v', 'de\u0301v', 'd%65v', 'dev\u0085', '\u0085dev',
   ];
   // Pairs only NFC/NFD/NFKC make equal; U+212A, U+037E and U+1FEF are the only code points NFD maps into ASCII.
   const canonicalPairs: [string, string][] = [
     ['d\u00e9v', 'de\u0301v'], ['de\u0301v', 'd\u00e9v'],
     ['\u212a', 'K'], ['K', '\u212a'], ['\u037e', ';'], [';', '\u037e'], ['\u1fef', '`'], ['`', '\u1fef'],
+    ['dev', 'dev\u200b'], ['dev', 'dev\u0085'], ['dev', 'd%65v'],
   ];
   // Titles spell non-ASCII as \uXXXX: a precomposed and a combining accent would otherwise print the same.
   const shown = (s: string) => JSON.stringify(s).replace(/[^ -~]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
