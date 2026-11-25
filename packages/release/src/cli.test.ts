@@ -276,6 +276,13 @@ describe('release version --cut --cut-branch dev', () => {
     expect(r.originTags()).toContain('v1.5.0');
   });
 
+  it('--cut-branch " dev" while on dev: refused, the name is taken as given (sdk#328 r4 BG-1)', async () => {
+    const r = seeded('v1.4.2', 'dev');
+    r.commit('feat: x');
+    expect((await run(r, ['version', '--channel', 'prod', '--cut', '--cut-branch', ' dev'])).code).toBe(1);
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+
   it('on main: refused naming dev, nothing tagged', async () => {
     const r = seeded('v1.4.2');
     r.commit('feat: x');
@@ -323,7 +330,8 @@ describe('release version --cut --cut-branch dev', () => {
 
   // Exact match on every recognition path: a near-miss name or ref never passes for dev (sdk#326 audit RX-1). Per path:
   // prefix, suffix, substring, case variant, another remote, a tag and a pull ref (sdk#327 audit RX-1..RX-3).
-  it.each(['dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev', 'feature/dev/x', 'Dev', 'DEV', 'origin/dev', 'upstream/dev', 'heads/dev', 'tags/dev', 'pull/1/merge', 'd', 'de', 'ev', 'dev\u00a0', '\u00a0dev', 'dev\ufeff', 'dev\u3000'])('checked-out branch %j: refused, nothing tagged', async (branch) => {
+  // Fullwidth letters and a zero-width space stay distinct: no Unicode folding or stripping (sdk#328 r4 RX-5, RX-6).
+  it.each(['dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev', 'feature/dev/x', 'Dev', 'DEV', 'origin/dev', 'upstream/dev', 'heads/dev', 'tags/dev', 'pull/1/merge', 'd', 'de', 'ev', 'dev\u00a0', '\u00a0dev', 'dev\ufeff', 'dev\u3000', '\uff44\uff45\uff56', 'dev\u200b'])('checked-out branch %j: refused, nothing tagged', async (branch) => {
     const r = seeded('v1.4.2', branch);
     r.commit('feat: x');
     expect(r.git('symbolic-ref', '--short', 'HEAD').replace(/\n$/, '')).toBe(branch);
@@ -343,7 +351,7 @@ describe('release version --cut --cut-branch dev', () => {
   it.each([
     'refs/heads/dev-evil', 'refs/heads/develop', 'refs/heads/dev/x', 'refs/tags/dev', 'refs/pull/1/merge', 'refs/remotes/origin/dev', 'dev', 'refs/heads/feature/dev',
     'refs/heads/feature-dev', 'refs/heads/feature/dev/x', 'refs/heads/Dev', 'refs/heads/DEV', 'REFS/HEADS/dev', 'refs/remotes/upstream/dev', ' refs/heads/dev', 'refs/heads/dev\n',
-    'refs/heads/de', 'refs/heads/d', 'refs/heads/', 'heads/dev',
+    'refs/heads/de', 'refs/heads/d', 'refs/heads/', 'heads/dev', 'refs/heads/\uff44\uff45\uff56', 'refs/heads/dev\u200b',
   ])(
     'detached, a run started for %j: refused, nothing tagged',
     async (ref) => {
@@ -368,7 +376,7 @@ describe('release version --cut --cut-branch dev', () => {
     expect(r.tags()).toEqual(['v1.4.2']);
   });
 
-  it.each(['dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev', 'feature/dev/x', 'Dev', 'DEV', 'pull/1/merge', 'd', 'de', 'dev\u00a0', '\u00a0dev'])('detached, HEAD only on origin/%j: refused, nothing tagged', async (branch) => {
+  it.each(['dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev', 'feature/dev/x', 'Dev', 'DEV', 'pull/1/merge', 'd', 'de', 'dev\u00a0', '\u00a0dev', '\uff44\uff45\uff56', 'dev\u200b'])('detached, HEAD only on origin/%j: refused, nothing tagged', async (branch) => {
     const r = seeded('v1.4.2', branch);
     r.commit('feat: x');
     r.git('push', '-q', '-u', 'origin', branch);
