@@ -207,10 +207,12 @@ export function createSession({ baseUrl, signer, fetchImpl, now = Date.now, slee
     return renewing;
   }
 
-  const withBearer = (init: RequestInit, bearer: string): RequestInit => ({
-    ...init,
-    headers: { ...Object.fromEntries(new Headers(init.headers)), authorization: `Bearer ${bearer}` },
-  });
+  const withBearer = (init: RequestInit, bearer: string): RequestInit => {
+    const headers: Record<string, string> = Object.create(null);
+    new Headers(init.headers).forEach((value, name) => { headers[name] = value; });
+    headers.authorization = `Bearer ${bearer}`;
+    return { ...init, headers };
+  };
 
   async function fresh(): Promise<string> {
     if (!token || expiresWithin(token, RENEW_AHEAD_MS, now())) await once(renew);
