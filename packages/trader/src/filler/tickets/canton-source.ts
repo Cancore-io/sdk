@@ -50,7 +50,7 @@ import {
   type TicketJson,
 } from '@cancore/contracts';
 import { canonicalDecimal, scaled } from '../canton/checks';
-import { allocationTemplateOf, CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../canton/factories';
+import { allocationTemplateOf, isCnrxRegistry, CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../canton/factories';
 import { GatewayError } from '../errors';
 import { cantonClosure } from '../settlement/refusals';
 import { TicketRefusal, type TicketCheckId } from './refusal';
@@ -199,6 +199,12 @@ function checkSettlementFactory(intent: CantonIntent): void {
   }
 }
 
+function checkAllocationGuardian(registry: CantonTransferFactory, allocation: CantonAllocation): void {
+  if (isCnrxRegistry(registry) && (!registry.guardian || allocation.lockedHoldingGuardian !== registry.guardian)) {
+    throw new TicketRefusal('V-C4', 'ESCROW_MISMATCH', 'the locked holdings lack evidence of the pinned guardian');
+  }
+}
+
 /** V-C4: the allocation is exactly the commitment `IntentFactory_Open` makes (`SwapIntent.daml` legsOf, allocationSpec). */
 function checkAllocation(
   intent: CantonIntent,
@@ -214,6 +220,7 @@ function checkAllocation(
   if (a.contractId !== intent.allocationCid) mismatch('the allocation read is not the intent’s allocationCid');
   const registry = (registries[intent.asset.admin] ?? []).find((f) => allocationTemplateOf(f) === a.templateId);
   if (!registry) return mismatch(`the allocation ${a.templateId} is not a pinned allocation of the admin ${intent.asset.admin}`);
+  checkAllocationGuardian(registry, a);
   if (a.admin !== intent.asset.admin) mismatch('the allocation is of another instrument admin');
   if (a.committed !== true) mismatch('the allocation is not committed: the owner could withdraw it before refundAfter');
   if (a.authorizer !== intent.owner) mismatch('the allocation is not the owner’s');

@@ -42,7 +42,7 @@ const ALLOCATION_TEMPLATE = `${'ab'.repeat(32)}:Cnrx.Allocation:CnrxAllocationV2
 /** A registry pinned like cnrx-registry: its V2 allocation, a receipt allocation open to any party. */
 const registryOf = (openReceipt: boolean): CantonTransferFactory => ({
   packageId: 'ab'.repeat(32), factory: 'Cnrx.Rules:CnrxRules', holding: 'Cnrx.Holding:CnrxHolding', holdingView: 'holding', offer: 'Cnrx.Transfer:CnrxTransferOffer',
-  serviceChoices: [], allocation: 'Cnrx.Allocation:CnrxAllocationV2', ...(openReceipt ? { openReceipt } : {}),
+  guardian: OPERATOR, serviceChoices: [], allocation: 'Cnrx.Allocation:CnrxAllocationV2', ...(openReceipt ? { openReceipt } : {}),
 });
 
 const VECTORS = join(__dirname, '..', '..', '..', '..', 'contracts', 'spec', 'vectors');
@@ -82,7 +82,7 @@ function intentOf(input: CantonSourceIntent, orderHash: Hex, legs: { payout: str
       templateId: ALLOCATION_TEMPLATE,
       admin: input.instrumentAdmin,
       authorizer: input.ownerPartyId,
-      committed: true,
+      committed: true, lockedHoldingGuardian: OPERATOR,
       settlementId: `cancore-intent/${orderHash.slice(2)}`,
       executors: [OPERATOR, input.ownerPartyId],
       settlementDeadline: refundAfter,
@@ -204,6 +204,8 @@ describe('V-C1…V-C7 on the golden Canton-source order (CAN-1863, CAN-3408)', (
     ['V-C4: the allocation is not live', (i) => void (i.allocation = null), 'V-C4', 'ESCROW_NOT_OPEN'],
     ['V-C4: the allocation read is not allocationCid', (i) => void (i.allocation!.contractId = '00xx'), 'V-C4', 'ESCROW_MISMATCH'],
     ['V-C4: an allocation template that is not pinned', (i) => void (i.allocation!.templateId = `${'99'.repeat(32)}:Cnrx.Allocation:CnrxAllocationV2`), 'V-C4', 'ESCROW_MISMATCH'],
+    ['BUG-1613 V-C4: missing locked holding evidence', (i) => { delete i.allocation!.lockedHoldingGuardian; }, 'V-C4', 'ESCROW_MISMATCH'],
+    ['BUG-1613 V-C4: another guardian', (i) => void (i.allocation!.lockedHoldingGuardian = 'another'), 'V-C4', 'ESCROW_MISMATCH'],
     ['V-C4: not committed (the owner could withdraw before refundAfter)', (i) => void (i.allocation!.committed = false), 'V-C4', 'ESCROW_MISMATCH'],
     ['V-C4: authorized by another party than the owner', (i) => void (i.allocation!.authorizer = 'mallory::1220ab'), 'V-C4', 'ESCROW_MISMATCH'],
     ['V-C4: another set of executors (the owner alone)', (i) => void (i.allocation!.executors = [i.owner]), 'V-C4', 'ESCROW_MISMATCH'],
@@ -450,6 +452,7 @@ async function verifierSetup(canton: { reader?: CantonSourceReader; party?: stri
   const intent = intentOf(input, orderHash, GOLDEN_LEGS, String(nowS + 600 + 3_600));
   intent.minReceived = { units: '99', decimals: 0 };
   intent.allocation!.templateId = template!;
+  intent.allocation!.lockedHoldingGuardian = CANTON_TRANSFER_FACTORIES[admin]![0]!.guardian!;
   const dst = new FakeChain(1n, 'eth');
   dst.router(DST_ROUTER).ticketSigners.add(ticketSigner.address);
   dst.token(TOKEN).setBalance(fill.address, 1_000n).approve(fill.address, DST_ROUTER, 1_000n);

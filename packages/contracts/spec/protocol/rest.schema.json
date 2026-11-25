@@ -281,6 +281,7 @@
         "templateId": { "type": "string", "pattern": "^[0-9a-f]{64}:[A-Za-z0-9_.]+:[A-Za-z0-9_]+$" },
         "admin": { "type": "string", "minLength": 1 },
         "authorizer": { "type": ["string", "null"], "minLength": 1, "description": "the owner of the authorizer account; null for an account without one" },
+        "lockedHoldingGuardian": { "type": "string", "minLength": 1, "description": "Common guardian of all locked holdings. Omit unless the complete, nonempty set was resolved and every holding carries this guardian mark and signature." },
         "committed": { "type": "boolean" },
         "settlementId": { "type": "string" },
         "executors": { "type": "array", "items": { "type": "string", "minLength": 1 } },

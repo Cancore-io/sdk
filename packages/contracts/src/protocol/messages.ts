@@ -391,6 +391,8 @@ export type CantonDeliveryOrderList = Page<CantonDeliveryOrder>;
 export interface CantonAllocationLeg { legId: string; side: 'SENDER' | 'RECEIVER'; otherside: string | null; amount: string; instrumentId: string }
 /** A Token Standard V2 allocation by its view, as the operator (an executor) reads it. */
 export interface CantonAllocation {
+  /** Present only after the gateway verifies the same guardian mark and signature on every locked input. */
+  lockedHoldingGuardian?: string;
   contractId: string;
   /** `<package id>:<module>:<entity>`. */
   templateId: string;

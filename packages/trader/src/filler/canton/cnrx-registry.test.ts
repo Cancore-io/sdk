@@ -15,8 +15,8 @@ import type { CantonTransaction, DamlValue, TransactionNode } from './transactio
 const KEY = `0x${NODE_KEY}` as Hex;
 const ME = party();
 const RECEIVER = 'treasury::1220cd';
-const GUARDIAN = 'cnrx-guardian::1220ef';
 const ADMIN = 'cancore::12204f383aca6af056f6d83c9b5758fbc53c27a743e2f9d591e61bc657202172524b';
+const GUARDIAN = CANTON_TRANSFER_FACTORIES[ADMIN]![0]!.guardian!;
 const CNRX_0_2_7 = '0cc44c28f323b455c1875e85fd7a1ad7732ad2a34ed8dd1550cb79dead750bba';
 const CNRX_0_2_6 = '643a728658256e42fe69f8bb5202a4466da5d8564e628af5d5534d8b416c9dc8';
 const CNRX_0_2_3 = 'd495b7d2e9376e42bb58845c47e165492bba917216352636b6c357c76d3bb736';
@@ -38,7 +38,7 @@ const opt = (p?: string): DamlValue => (p ? { t: 'optional', v: v.party(p) } : {
 const account = (owner: string) => v.record({ owner: opt(owner), provider: opt(), id: v.text('') });
 const instrument = () => v.record({ admin: v.party(ADMIN), id: v.text('CNRX') });
 const view = (owner: string, amount: string) =>
-  v.record({ account: account(owner), instrumentId: instrument(), amount: v.numeric(amount), lock: opt(), meta: v.record({ values: v.record({}) }) });
+  v.record({ account: account(owner), instrumentId: instrument(), amount: v.numeric(amount), lock: opt(), meta: v.record({ values: { t: 'textMap', v: { 'cnrx/guardian': v.text(GUARDIAN) } } }) });
 const holdingTemplate = (pkg: string) => `${pkg}:Cnrx.Holding:CnrxHolding`;
 const signed = (owner: string) => [ADMIN, owner, GUARDIAN];
 
@@ -102,6 +102,7 @@ describe('holdings.transfer of CNRX under cnrx-registry 0.2.6: the first input s
   });
 
   test.each([
+    ['BUG-1613: input lacks its pinned guardian signature', () => check()(prepared, [transfer({ inputs: [{ ...input('h1', '20'), signatories: [ADMIN, ME] }, input('h2', '10')] })]), /guardian/],
     ['TC-SDK-3304-02: the 0.2.6 transfer with 0.2.3 pinned alone', () => check(only(CNRX_0_2_3))(prepared, [transfer()]), /not a pinned factory/],
     ['TC-SDK-3304-03: a 0.2.6 transfer spending holdings of 0.2.3', () => check()(prepared, [transfer({ inputs: [input('h1', '20', CNRX_0_2_3), input('h2', '10', CNRX_0_2_3)] })]), /not a holding of the pinned registry/],
     ['TC-SDK-3304-04: CnrxHolding_Move under the 0.2.3 pin, which never spends through it', () => check()(prepared, [transfer({ pkg: CNRX_0_2_3 })]), /exercises Cnrx.Holding:CnrxHolding.CnrxHolding_Move/],
