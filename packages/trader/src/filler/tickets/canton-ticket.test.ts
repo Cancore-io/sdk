@@ -134,7 +134,7 @@ describe('CAN-2808: V-E2 of a Canton-form ticket reads at the openConfirmations 
       source.calls
         .filter((c) => c.method === 'eth_call' && (c.params![0] as { to: string }).to === SOURCE_ROUTER)
         .map((c) => source.numberOfHash((c.params![1] as { blockHash: string }).blockHash));
-    return { source, escrow, verify: () => verifier.verify({ offer, issued: cantonIssued, issuedAtMs: clock.now() }), escrowReadBlocks };
+    return { source, escrow, deliveryOrder, verify: () => verifier.verify({ offer, issued: cantonIssued, issuedAtMs: clock.now() }), escrowReadBlocks };
   }
 
   test.each(['safe', 'finalized'] as const)('CAN-2808: an escrow opened at the %s block is open; the read is pinned to that block', async (tag) => {
@@ -160,6 +160,14 @@ describe('CAN-2808: V-E2 of a Canton-form ticket reads at the openConfirmations 
     t.escrow.atBlock = 98n;
     await expect(t.verify()).resolves.toMatchObject({ ok: true });
     expect(t.escrowReadBlocks()).toEqual([98n]);
+  });
+
+  test('BUG-1645: a ledger window opening one second before expiry is refused before receipt', async () => {
+    const t = cantonFormTicket(3);
+    t.deliveryOrder.validFrom = String(BigInt(t.deliveryOrder.validUntil) - 1n);
+    const result = await t.verify();
+    expect(result).toMatchObject({ ok: false, reason: 'TICKET_MISMATCH', detail: expect.stringContaining('DeliveryOrder.validFrom') });
+    expect(result.checks.at(-1)).toMatchObject({ check: 'V-T2', status: 'failed' });
   });
 
   test('BUG-1609: V-E2 refuses a ticket whose validFrom is one second before the escrow openedAt (ESCROW_MISMATCH); exactly at it passes', async () => {

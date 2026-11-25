@@ -228,9 +228,7 @@ export function deliveryOrderMismatch(
 ): string | undefined {
   if (!same(order.orderHash, issued.orderHash)) return 'orderHash';
   if (order.attempt !== issued.attempt) return 'attempt';
-  const starts = uint(order.validFrom);
-  const floor = uint(bounds.validFrom);
-  if (starts === undefined || floor === undefined || starts < floor) return 'validFrom';
+  if (uint(order.validFrom) === undefined || order.validFrom !== bounds.validFrom) return 'validFrom';
   if (order.validUntil !== issued.validUntil) return 'validUntil';
   if (!same(order.repayTo, issued.repayTo)) return 'repayTo';
   let recipient: string;
