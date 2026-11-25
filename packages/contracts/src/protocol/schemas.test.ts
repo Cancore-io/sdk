@@ -555,6 +555,9 @@ describe('Canton operations of the filler party (§3.19)', () => {
       allocationCid: '00cc', allocation,
     };
     expect(rest('cantonIntent', intent)).toBe(true);
+    const withGuardian = (lockedHoldingGuardian: unknown) => ({ ...intent, allocation: { ...allocation, lockedHoldingGuardian } });
+    expect(rest('cantonIntent', withGuardian('guardian::1220aa'))).toBe(true);
+    for (const invalid of ['', null, 1]) expect(rest('cantonIntent', withGuardian(invalid))).toBe(false);
     expect(rest('cantonIntent', { ...intent, allocation: null })).toBe(true);
     const { allocation: _a, ...noAllocation } = intent;
     expect(rest('cantonIntent', noAllocation)).toBe(false);
