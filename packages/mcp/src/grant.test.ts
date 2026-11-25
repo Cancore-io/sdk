@@ -1,4 +1,4 @@
-import { mkdtempSync, statSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { forgetGrant, loadGrant, saveGrant } from './grant';
@@ -31,6 +31,15 @@ test('one stand does not overwrite another', () => {
   forgetGrant(path, DEV);
   expect(loadGrant(path, DEV)).toBeUndefined();
   expect(loadGrant(path, MAINNET)?.token).toBe('main');
+});
+
+test('BUG-1635 replaces the file without writing new tokens into the old inode', () => {
+  const path = tempPath();
+  writeFileSync(path, '{}', { mode: 0o644 });
+  linkSync(path, path + '.old');
+  saveGrant(path, DEV, { token: 'tok', scopes: [], appName: 'Claude' });
+  expect(readFileSync(path + '.old', 'utf8')).toBe('{}');
+  expect(statSync(path).mode & 0o777).toBe(0o600);
 });
 
 test('the file is 0600 even when it already existed with looser permissions', () => {
