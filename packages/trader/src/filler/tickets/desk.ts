@@ -41,7 +41,7 @@
  */
 import type { DeclineReason, Hex, PenaltyApplied, TicketDecline, TicketExpired, TicketIntentMessage, TicketIssued, TicketOffer, TicketReceiptMessage } from '@cancore/contracts';
 import { EXPIRED_RESULTS } from '@cancore/contracts';
-import { claimOfDecline, type PriceMovedClaim, type WirePriceClaim } from '../price-moved';
+import { claimOfDecline, type PriceMovedHookClaim, type WirePriceClaim } from '../price-moved';
 import type { FillerChains } from '../chain';
 import type { EvmChainId } from '../chains';
 import type { EventSink, FillerEvent, FillerStage } from '../events';
@@ -59,7 +59,7 @@ export const OFFER_DECLINE_REASONS = ['NO_INVENTORY', 'RISK_LIMIT', 'PRICE_MOVED
 export type OfferDeclineReason = (typeof OFFER_DECLINE_REASONS)[number];
 
 /** The hook's answer: take it, or decline — plainly (`OTHER`) or with a reason; only `PRICE_MOVED` sends its price claim (§3.5). */
-export type TicketOfferDecision = 'accept' | 'decline' | ({ decline: OfferDeclineReason; detail?: string } & Partial<PriceMovedClaim>);
+export type TicketOfferDecision = 'accept' | 'decline' | { decline: Exclude<OfferDeclineReason, 'PRICE_MOVED'>; detail?: string } | ({ decline: 'PRICE_MOVED'; detail?: string } & Partial<PriceMovedHookClaim>);
 
 type HookDecline = { reason: OfferDeclineReason; detail: string; claim?: WirePriceClaim };
 export type TicketOfferHook = (offer: TicketOffer) => Promise<TicketOfferDecision>;

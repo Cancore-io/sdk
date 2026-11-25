@@ -338,7 +338,7 @@ export class QuoteDesk {
     if (this.options.clock.now() >= replyBy) return { skipped: 'late' };
 
     const decline = (reason: ReconfirmDeclineReason, priceMoved?: PriceMovedFields) => {
-      this.options.logger.info('quotes: reconfirm declined', { orderHash, reason, ...priceMoved });
+      this.options.logger.info('quotes: reconfirm declined', { orderHash, reason, midE18: priceMoved?.midE18, shiftBps: priceMoved?.shiftBps });
       return this.reply({ type: 'quote.reconfirm.reply', id: this.options.nextId(), orderHash, accept: false, ...priceMoved }, replyBy, reason);
     };
 

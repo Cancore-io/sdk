@@ -253,7 +253,7 @@ describe('the skeleton of sdk.md §3.6', () => {
     assert<Equal<Omit<FillerQuoteRequest, 'payout' | 'fee' | 'shownToUser'>, QuoteRequest>>();
     assert<Equal<FillerQuoteRequest['shownToUser'], true>>();
     assert<Equal<Omit<FillerReconfirm, 'payout' | 'fee'>, QuoteReconfirm>>();
-    assert<Equal<Parameters<Filler['onTicketOffer']>[0], (offer: TicketOffer) => Promise<'accept' | 'decline' | ({ decline: 'NO_INVENTORY' | 'RISK_LIMIT' | 'PRICE_MOVED' | 'PAUSED' | 'OTHER'; detail?: string } & { midE18?: bigint; shiftBps?: number })>>>();
+    assert<Equal<Parameters<Filler['onTicketOffer']>[0], (offer: TicketOffer) => Promise<'accept' | 'decline' | { decline: 'NO_INVENTORY' | 'RISK_LIMIT' | 'PAUSED' | 'OTHER'; detail?: string } | ({ decline: 'PRICE_MOVED'; detail?: string } & { midE18?: bigint; shiftBps?: number })>>>();
     assert<Equal<ReturnType<Filler['start']>, Promise<void>>>();
     assert<Equal<ReturnType<Filler['selfSettle']>, Promise<SelfSettleResult>>>();
     assert<Equal<SelfSettleResult, { txHash: Hex }>>();

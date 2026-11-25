@@ -189,7 +189,7 @@ export interface PriceMovedClaim {
 export interface QuoteReconfirmReply extends F2SBase, Partial<PriceMovedClaim> {
   type: 'quote.reconfirm.reply'; orderHash: Hex; accept: boolean; validUntil?: DecString; nonce?: DecString; sig?: Hex;
   /** A decline only: `PRICE_MOVED` with the claim, or `OTHER`; absent reads as `OTHER`. */
-  reason?: DeclineReason;
+  reason?: 'PRICE_MOVED' | 'OTHER';
 }
 
 export interface TicketOffer extends S2FBase {

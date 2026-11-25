@@ -11,8 +11,9 @@ import { encodeCantonAmount, type Hex, type QuoteReconfirmReply, type TicketDecl
 import type { ReconfirmDecision } from '../src/filler/price-moved';
 import type { TicketOfferDecision } from '../src/filler/tickets/desk';
 import { InMemoryFillerStore } from '../src/filler/testing';
+import type { WebSocketFactory } from '../src/filler/runtime';
 import { env } from './stand/canton-ledger';
-import { command, cursor, eventsAfter, GATEWAY_KEYS, offerCommand, ofOrder, standChain, standFiller, standOrder, standSuite, STREAMS, until, type StandFiller } from './stand/filler-gateway';
+import { command, cursor, eventsAfter, GATEWAY_KEYS, nativeWebSocket, offerCommand, ofOrder, standChain, standFiller, standOrder, standSuite, STREAMS, until, type StandFiller } from './stand/filler-gateway';
 
 const AMOUNT_OUT = encodeCantonAmount('5');
 const MID_E18 = 998_500_000_000_000_000n;
@@ -23,6 +24,18 @@ standSuite('CAN-3797: price-moved declines against the real filler-gateway', GAT
   const store = new InMemoryFillerStore();
   let stand: StandFiller;
   let requestId: string | undefined;
+  /** Every frame the SDK put on the socket to filler-gateway: what is asserted is what went on the wire. */
+  const wire: Record<string, unknown>[] = [];
+  const recording: WebSocketFactory = (url, handlers, protocols) => {
+    const socket = nativeWebSocket(url, handlers, protocols);
+    return {
+      send: (text: string) => {
+        wire.push(JSON.parse(text) as Record<string, unknown>);
+        socket.send(text);
+      },
+      close: (code?: number, reason?: string) => socket.close(code, reason),
+    };
+  };
 
   beforeAll(async () => {
     stand = standFiller({
@@ -30,6 +43,7 @@ standSuite('CAN-3797: price-moved declines against the real filler-gateway', GAT
       quote: async (r) => ({ amountOut: AMOUNT_OUT, validUntil: BigInt(Math.ceil((r.windowCloseAt + r.quoteTtlMs) / 1000) + 60) }),
       reconfirm: async (r) => reconfirmAnswers.get(r.orderHash.toLowerCase() as Hex) ?? true,
       offer: async (o) => offerAnswers.get(o.orderHash.toLowerCase() as Hex) ?? 'accept',
+      webSocket: recording,
     });
     await stand.filler.start();
     requestId = await quoted();
@@ -58,7 +72,7 @@ standSuite('CAN-3797: price-moved declines against the real filler-gateway', GAT
     return id;
   }
 
-  /** What the SDK put on the declining reply it signed: the fields of its decline log line. */
+  /** The declining reply the SDK signed and sent, and filler-gateway's event for it. */
   async function reconfirmReply(seed: number, answer: ReconfirmDecision): Promise<{ event: Record<string, unknown>; sent: Partial<QuoteReconfirmReply> }> {
     if (!requestId) throw new Error('no counted quote to reconfirm');
     const o = standOrder(seed);
@@ -66,10 +80,9 @@ standSuite('CAN-3797: price-moved declines against the real filler-gateway', GAT
     const from = await cursor(STREAMS.quotes);
     await command(STREAMS.quoteRequests, 'quote.reconfirm', { fillerId: env('STAND_FILLER_ID'), orderHash: o.orderHash, requestId, order: { ...o.order, minReceived: AMOUNT_OUT.toString() }, replyBy: Date.now() + 15_000 });
     const event = await until('quote.reconfirm.reply', async () => (await eventsAfter(STREAMS.quotes, from, (e) => e.kind === 'quote.reconfirm.reply' && e.data.orderHash === o.orderHash))[0], 30_000, stand.diagnostics);
-    const line = stand.logger.entries.find((e) => e.message === 'quotes: reconfirm declined' && e.fields?.orderHash === o.orderHash);
-    if (!line?.fields) throw new Error('the decline was not logged');
-    const { reason, midE18, shiftBps } = line.fields as { reason?: string; midE18?: string; shiftBps?: number };
-    return { event: event.data, sent: { accept: false, ...(reason === 'PRICE_MOVED' ? { reason } : {}), ...(midE18 === undefined ? {} : { midE18 }), ...(shiftBps === undefined ? {} : { shiftBps }) } };
+    const sent = wire.find((f) => f.type === 'quote.reconfirm.reply' && String(f.orderHash).toLowerCase() === o.orderHash);
+    if (!sent) throw new Error('no quote.reconfirm.reply went on the wire');
+    return { event: event.data, sent: sent as Partial<QuoteReconfirmReply> };
   }
 
   test('TC-SDK-3797-INT-01: the reconfirm hook answers PRICE_MOVED — the signed decline carries reason, midE18 and shiftBps, and filler-gateway takes it', async () => {
@@ -111,7 +124,8 @@ standSuite('CAN-3797: price-moved declines against the real filler-gateway', GAT
   }, 120_000);
 
   test('TC-SDK-3797-INT-05: a claim on another reason is not sent — NO_INVENTORY goes without midE18 and shiftBps', async () => {
-    const { event, sent } = await offerDecline(3797_05, { decline: 'NO_INVENTORY', midE18: MID_E18, shiftBps: 40 });
+    // A hook outside the type (plain JS) may still put a claim on another reason.
+    const { event, sent } = await offerDecline(3797_05, { decline: 'NO_INVENTORY', midE18: MID_E18, shiftBps: 40 } as unknown as TicketOfferDecision);
     expect(event).toMatchObject({ reason: 'NO_INVENTORY' });
     expect(sent.midE18).toBeUndefined();
     expect(sent.shiftBps).toBeUndefined();

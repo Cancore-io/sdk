@@ -302,10 +302,11 @@
         "validUntil": { "$ref": "#/$defs/timeS" },
         "nonce": { "$ref": "#/$defs/uintDec64" },
         "sig": { "$ref": "#/$defs/sig65" },
-        "reason": { "$ref": "#/$defs/declineReason" },
+        "reason": { "anyOf": [{ "enum": ["PRICE_MOVED", "OTHER"] }, { "$ref": "#/$defs/futureEnumValue" }] },
         "midE18": { "$ref": "#/$defs/uintDec256", "description": "PRICE_MOVED claim: the filler's mid at the decline, output per input in whole units × 10^18" },
         "shiftBps": { "$ref": "#/$defs/shiftBps" }
       },
+      "dependentRequired": { "midE18": ["shiftBps"], "shiftBps": ["midE18"] },
       "if": { "type": "object", "properties": { "accept": { "const": true } }, "required": ["accept"] },
       "then": { "type": "object", "required": ["validUntil", "nonce", "sig"], "properties": { "validUntil": true, "nonce": true, "sig": true } }
     },
@@ -355,7 +356,8 @@
         "detail": { "type": "string" },
         "midE18": { "$ref": "#/$defs/uintDec256", "description": "PRICE_MOVED claim at stage offer: the filler's mid at the decline, output per input in whole units × 10^18" },
         "shiftBps": { "$ref": "#/$defs/shiftBps" }
-      }
+      },
+      "dependentRequired": { "midE18": ["shiftBps"], "shiftBps": ["midE18"] }
     },
     "ticket.intent.ack": {
       "x-direction": "S2F",
