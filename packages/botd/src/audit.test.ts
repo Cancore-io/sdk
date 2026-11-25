@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { hashEntry, openAuditLog as openUntracked } from './audit';
+import { verifyAuditFile, hashEntry, openAuditLog as openUntracked } from './audit';
 import type { AuditEntry, AuditLog } from './types';
 
 type Input = Parameters<AuditLog['append']>[0];
@@ -34,6 +34,14 @@ const lines = (): string[] => fs.readFileSync(file, 'utf8').trimEnd().split('\n'
 const writeLines = (ls: string[]): void => fs.writeFileSync(file, `${ls.join('\n')}\n`);
 
 describe('audit log', () => {
+  test('BUG-1623 verifies a torn file without recovering or changing its contents', async () => {
+    await seed(1);
+    fs.appendFileSync(file, '{');
+    const before = fs.readFileSync(file);
+    expect(await verifyAuditFile(file)).toEqual({ ok: false, brokenAt: 1 });
+    expect(fs.readFileSync(file)).toEqual(before);
+    expect(fs.readdirSync(dir)).toEqual(['audit.jsonl']);
+  });
   test('creates the file 0600 and chains from genesis', async () => {
     const log = await openAuditLog(file);
     const a = await log.append(entry(0));

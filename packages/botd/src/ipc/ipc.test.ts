@@ -55,6 +55,11 @@ describe('ipc server', () => {
     client.close();
   });
 
+  it('BUG-1623 releases the bound socket if its group cannot be configured', async () => {
+    const path = join(dir, 's.sock');
+    await expect(listen(path, jest.fn(), { group: 'missing-bug-1623-test-group' })).rejects.toThrow();
+    expect(() => statSync(path)).toThrow(/ENOENT/);
+  });
   it('applies the requested socket mode and replaces a stale socket file', async () => {
     const path = join(dir, 's.sock');
     writeFileSync(path, 'stale');

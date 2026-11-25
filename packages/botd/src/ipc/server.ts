@@ -133,10 +133,10 @@ export async function listen(socketPath: string, handler: Handler, options: List
     process.umask(previous);
   }
   const close = () =>
-      new Promise<void>((resolve) => {
-        for (const s of sockets) s.destroy();
-        server.close(() => resolve());
-      });
+    new Promise<void>((resolve) => {
+      for (const s of sockets) s.destroy();
+      server.close(() => resolve());
+    });
   try {
     if (options.group) chownSync(socketPath, -1, gid(options.group));
     chmodSync(socketPath, mode);
