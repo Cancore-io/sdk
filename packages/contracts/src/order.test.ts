@@ -30,6 +30,7 @@ describe('buildCantonSourceOrder', () => {
   test('reproduces canton-order.json: the order, the source domain and the orderHash the router pins', () => {
     const built = buildCantonSourceOrder(input);
     expect(built.order).toEqual(canton.order);
+    for (const address of [built.order.user, built.order.inputToken]) expect(address).toMatch(/^0x[0-9a-f]{40}$/);
     expect(built.domain).toEqual(canton.domain);
     expect(built.orderHash).toBe(canton.orderHash);
     expect(built.orderHash).toBe('0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a');

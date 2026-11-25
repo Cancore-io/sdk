@@ -46,9 +46,9 @@
       "fillerId": "acme"
     },
     "order": {
-      "user": "0x47f0d84377B46651f7936AE656DCEceFDc1A2A86",
+      "user": "0x47f0d84377b46651f7936ae656dcecefdc1a2a86",
       "originChainId": "9223372036854775809",
-      "inputToken": "0x795ae88257786ea0e2CFe2c43B88B420993dC98f",
+      "inputToken": "0x795ae88257786ea0e2cfe2c43b88b420993dc98f",
       "inputAmount": "12505000000000",
       "destination": "0x0000000000000000000000000000000000000000000000000000000000000001",
       "outputAsset": "0x000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
