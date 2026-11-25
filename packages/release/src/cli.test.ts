@@ -323,17 +323,27 @@ describe('release version --cut --cut-branch dev', () => {
 
   // Exact match on every recognition path: a near-miss name or ref never passes for dev (sdk#326 audit RX-1). Per path:
   // prefix, suffix, substring, case variant, another remote, a tag and a pull ref (sdk#327 audit RX-1..RX-3).
-  it.each(['dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev', 'feature/dev/x', 'Dev', 'DEV', 'origin/dev', 'upstream/dev', 'heads/dev', 'tags/dev', 'pull/1/merge'])('checked-out branch %s: refused, nothing tagged', async (branch) => {
+  it.each(['dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev', 'feature/dev/x', 'Dev', 'DEV', 'origin/dev', 'upstream/dev', 'heads/dev', 'tags/dev', 'pull/1/merge', 'd', 'de', 'ev', 'dev\u00a0', '\u00a0dev', 'dev\ufeff', 'dev\u3000'])('checked-out branch %j: refused, nothing tagged', async (branch) => {
     const r = seeded('v1.4.2', branch);
     r.commit('feat: x');
-    expect(r.git('symbolic-ref', '--short', 'HEAD').trim()).toBe(branch);
+    expect(r.git('symbolic-ref', '--short', 'HEAD').replace(/\n$/, '')).toBe(branch);
     expect((await run(r, cutOnDev)).code).toBe(1);
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+
+  // A checked-out branch decides alone: no env var naming dev rescues another branch (sdk#327 r3 audit RX-3).
+  const envNamingDev: Record<string, string>[] = [{ GITHUB_HEAD_REF: 'dev' }, { GITHUB_BASE_REF: 'dev' }, { GITHUB_REF_NAME: 'dev' }];
+  it.each(envNamingDev)('checked-out feature, a run with %j: refused, nothing tagged', async (env) => {
+    const r = seeded('v1.4.2', 'feature');
+    r.commit('feat: x');
+    expect((await run(r, cutOnDev, env)).code).toBe(1);
     expect(r.tags()).toEqual(['v1.4.2']);
   });
 
   it.each([
     'refs/heads/dev-evil', 'refs/heads/develop', 'refs/heads/dev/x', 'refs/tags/dev', 'refs/pull/1/merge', 'refs/remotes/origin/dev', 'dev', 'refs/heads/feature/dev',
     'refs/heads/feature-dev', 'refs/heads/feature/dev/x', 'refs/heads/Dev', 'refs/heads/DEV', 'REFS/HEADS/dev', 'refs/remotes/upstream/dev', ' refs/heads/dev', 'refs/heads/dev\n',
+    'refs/heads/de', 'refs/heads/d', 'refs/heads/', 'heads/dev',
   ])(
     'detached, a run started for %j: refused, nothing tagged',
     async (ref) => {
@@ -358,13 +368,23 @@ describe('release version --cut --cut-branch dev', () => {
     expect(r.tags()).toEqual(['v1.4.2']);
   });
 
-  it.each(['dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev', 'feature/dev/x', 'Dev', 'DEV', 'pull/1/merge'])('detached, HEAD only on origin/%s: refused, nothing tagged', async (branch) => {
+  it.each(['dev-evil', 'develop', 'dev/x', 'feature-dev', 'feature/dev', 'feature/dev/x', 'Dev', 'DEV', 'pull/1/merge', 'd', 'de', 'dev\u00a0', '\u00a0dev'])('detached, HEAD only on origin/%j: refused, nothing tagged', async (branch) => {
     const r = seeded('v1.4.2', branch);
     r.commit('feat: x');
     r.git('push', '-q', '-u', 'origin', branch);
     r.git('checkout', '-q', '--detach', 'HEAD');
     expect(r.git('branch', '-r', '--contains', 'HEAD', '--format=%(refname:short)').split('\n')).toContain(`origin/${branch}`);
     expect((await run(r, cutOnDev)).code).toBe(1);
+    expect(r.originTags()).toEqual(['v1.4.2']);
+  });
+
+  // Without GITHUB_REF only origin/dev decides: no other env var naming dev rescues a HEAD off it (sdk#327 r3 audit RX-4).
+  it.each(envNamingDev)('detached, no GITHUB_REF, HEAD only on origin/feature, a run with %j: refused, origin gets no tag', async (env) => {
+    const r = seeded('v1.4.2', 'feature');
+    r.commit('feat: x');
+    r.git('push', '-q', '-u', 'origin', 'feature');
+    r.git('checkout', '-q', '--detach', 'HEAD');
+    expect((await run(r, cutOnDev, env)).code).toBe(1);
     expect(r.originTags()).toEqual(['v1.4.2']);
   });
 
