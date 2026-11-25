@@ -9,6 +9,7 @@ import {
 } from './idb';
 
 interface MockOptions {
+  abortOnly?: boolean;
   /** Force this store/op combo to fail with the given error instead of succeeding. */
   failOn?: Partial<Record<'wrapped-wallet' | 'wallet-accounts', Partial<Record<'put' | 'get' | 'getAll' | 'delete', Error>>>>;
   /** Seed the legacy 'wrapped-wallet' RECORD_KEY entry, present before the v1->v2 upgrade runs. */
@@ -120,7 +121,7 @@ function setupMockIndexedDB(options: MockOptions = {}) {
     transaction: () => {
       // tx-level errors (put/delete's tx.oncomplete/tx.onerror) share the same
       // failure map as their triggering request — a failed request's tx also fails.
-      const tx: { oncomplete?: () => void; onerror?: () => void; error?: Error; objectStore: (n: string) => ReturnType<typeof makeObjectStore> } = {
+      const tx: { onabort?: () => void; oncomplete?: () => void; onerror?: () => void; error?: Error; objectStore: (n: string) => ReturnType<typeof makeObjectStore> } = {
         objectStore: (name: string) => {
           const store = makeObjectStore(name);
           const wrap = (fn: (...a: unknown[]) => { onsuccess?: () => void; onerror?: () => void; error?: Error }) =>
@@ -130,7 +131,8 @@ function setupMockIndexedDB(options: MockOptions = {}) {
               const origError = req.onerror;
               req.onsuccess = () => {
                 origSuccess?.();
-                tx.oncomplete?.();
+                if (options.abortOnly) tx.onabort?.();
+                else tx.oncomplete?.();
               };
               req.onerror = () => {
                 origError?.();
@@ -187,6 +189,11 @@ function setupMockIndexedDB(options: MockOptions = {}) {
 describe('idb keystore', () => {
   beforeEach(() => {
     setupMockIndexedDB();
+  });
+
+  it('BUG-1640 rejects a write transaction that only raises abort', async () => {
+    setupMockIndexedDB({ abortOnly: true });
+    await expect(putPersistedWallet({})).rejects.toThrow();
   });
 
   it('persists, reads and clears a single wallet record', async () => {

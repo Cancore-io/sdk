@@ -1,5 +1,6 @@
 import {
   newMnemonic,
+  wordlistFor,
   isValidMnemonic,
   normalizeMnemonic,
   mnemonicToEd25519Seed,
@@ -68,6 +69,9 @@ describe('mnemonic (BIP39 self-custody recovery phrase)', () => {
   });
 
   describe('describeMnemonicError (import-your-own-phrase validation)', () => {
+    it('BUG-1640 reports a checksum failure in a non-English dictionary', () => {
+      expect(describeMnemonicError(Array(12).fill(wordlistFor('es')[0]).join(' '))?.code).toMatch(/checksum$/);
+    });
     it('returns null for a valid generated phrase (12 and 24 words)', () => {
       expect(describeMnemonicError(newMnemonic())).toBeNull();
       expect(describeMnemonicError(newMnemonic(256))).toBeNull();
