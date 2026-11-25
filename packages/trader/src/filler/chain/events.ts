@@ -107,18 +107,11 @@ export class RouterEventWatcher {
       // when its block is the canonical one of this round; otherwise the round stops
       // and the next poll reads the range again.
       if (!(await this.canonical(logs))) {
-        // One stalled round is a race between endpoints; several in a row are an endpoint serving another fork.
-        if (++this.stalled >= MAX_STALLED_ROUNDS) {
-          this.stalled = 0;
-          throw new ChainReadError(client.chain, 'malformed', `router logs from non-canonical blocks ${MAX_STALLED_ROUNDS} rounds in a row at block ${this.next}`);
-        }
+        this.stalledRange();
         return;
       }
       // The range may be on a new fork since the previous chunk was reported.
-      if (this.lastScanned) {
-        await this.detectReorg();
-        if (!this.lastScanned) return;
-      }
+      if (await this.detectReorg()) return;
       this.stalled = 0;
       for (const log of logs) await this.add(log);
       this.lastScanned = { number: header.number, hash: header.hash };
@@ -127,14 +120,22 @@ export class RouterEventWatcher {
     this.prune();
   }
 
+  private stalledRange(): void {
+    // One stalled round is a race between endpoints; several in a row are an endpoint serving another fork.
+    if (++this.stalled >= MAX_STALLED_ROUNDS) {
+      this.stalled = 0;
+      throw new ChainReadError(this.options.client.chain, 'malformed', `router logs from non-canonical blocks ${MAX_STALLED_ROUNDS} rounds in a row at block ${this.next}`);
+    }
+  }
+
   /**
    * The last scanned block and every block that holds a reported log, re-read:
    * a replaced block removes its logs and rewinds the scan to it.
    */
-  private async detectReorg(): Promise<void> {
+  private async detectReorg(): Promise<boolean> {
     const { client } = this.options;
-    if (!this.lastScanned) return;
-    if ((await client.block(this.lastScanned.number)).hash === this.lastScanned.hash) return;
+    if (!this.lastScanned) return false;
+    if ((await client.block(this.lastScanned.number)).hash === this.lastScanned.hash) return false;
 
     // The floor matches prune(): a log below it is no longer remembered, so it is not rescanned either.
     let rewindTo = this.lastScanned.number + 1n - (this.options.retentionBlocks ?? 1_024n);
@@ -158,6 +159,7 @@ export class RouterEventWatcher {
     if (rewindTo < this.options.fromBlock) rewindTo = this.options.fromBlock;
     this.next = rewindTo;
     this.lastScanned = undefined;
+    return true;
   }
 
   /** Whether every log's block hash is the hash of that block as the chain reads now. */
