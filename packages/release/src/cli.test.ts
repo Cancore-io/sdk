@@ -261,3 +261,78 @@ describe('release CLI: an unknown flag', () => {
     expect(out.stderr).toMatch(/--force/);
   });
 });
+
+// I1 with a configured cut branch (BUG-1726): the cut moves to the named branch, and main stops passing for it on
+// every one of the three recognition paths.
+describe('release version --cut --cut-branch dev', () => {
+  const cutOnDev = ['version', '--channel', 'prod', '--cut', '--cut-branch', 'dev'];
+
+  it('on dev: cuts and pushes the tag', async () => {
+    const r = seeded('v1.4.2', 'dev');
+    r.commit('feat: x');
+    const out = await run(r, cutOnDev);
+    expect(out.code).toBe(0);
+    expect(out.stdout.trim()).toBe('1.5.0');
+    expect(r.originTags()).toContain('v1.5.0');
+  });
+
+  it('on main: refused naming dev, nothing tagged', async () => {
+    const r = seeded('v1.4.2');
+    r.commit('feat: x');
+    const out = await run(r, cutOnDev);
+    expect(out.code).toBe(1);
+    expect(out.stderr).toMatch(/cut on dev only/);
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+
+  it('detached, a run started for refs/heads/dev: cuts', async () => {
+    const r = seeded('v1.4.2', 'dev');
+    r.commit('fix: x');
+    r.git('checkout', '-q', '--detach', 'HEAD');
+    const out = await run(r, cutOnDev, { GITHUB_REF: 'refs/heads/dev' });
+    expect(out.code).toBe(0);
+    expect(r.originTags()).toContain('v1.4.3');
+  });
+
+  it('detached, a run started for refs/heads/main: refused, nothing tagged', async () => {
+    const r = seeded('v1.4.2');
+    r.commit('fix: x');
+    r.git('checkout', '-q', '--detach', 'HEAD');
+    expect((await run(r, cutOnDev, { GITHUB_REF: 'refs/heads/main' })).code).toBe(1);
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+
+  it('detached, HEAD already on origin/dev: cuts', async () => {
+    const r = seeded('v1.4.2', 'dev');
+    r.commit('feat: x');
+    r.git('push', '-q', '-u', 'origin', 'dev');
+    r.git('checkout', '-q', '--detach', 'HEAD');
+    const out = await run(r, cutOnDev);
+    expect(out.code).toBe(0);
+    expect(r.originTags()).toContain('v1.5.0');
+  });
+
+  it('detached, HEAD only on origin/main: refused, nothing tagged', async () => {
+    const r = seeded('v1.4.2');
+    r.commit('feat: x');
+    r.git('push', '-q', '-u', 'origin', 'main');
+    r.git('checkout', '-q', '--detach', 'HEAD');
+    expect((await run(r, cutOnDev)).code).toBe(1);
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+
+  it.each([
+    [['version', '--channel', 'prod', '--cut', '--cut-branch'], /needs a branch name/],
+    [['version', '--channel', 'prod', '--cut', '--cut-branch', ''], /needs a branch name/],
+    [['version', '--channel', 'prod', '--cut-branch', '--cut'], /needs a branch name/],
+    [['version', '--channel', 'prod', '--cut-branch', 'dev'], /only goes with --cut/],
+    [['version', '--channel', 'dev', '--cut-branch', 'dev'], /only goes with --cut/],
+  ])('%j -> exit 2 (%s), nothing tagged', async (argv, reason) => {
+    const r = seeded('v1.4.2', 'dev');
+    r.commit('feat: x');
+    const out = await run(r, argv);
+    expect(out.code).toBe(2);
+    expect(out.stderr).toMatch(reason);
+    expect(r.tags()).toEqual(['v1.4.2']);
+  });
+});
