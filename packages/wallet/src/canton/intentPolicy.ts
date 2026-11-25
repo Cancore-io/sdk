@@ -18,11 +18,12 @@ export const INTENT_PACKAGE_NAME = 'cancore-intent';
  * The 0.6.2 id is the main package of `deploy-contracts/dars/cancore-intent-0.6.2.dar` at canton-contracts dev 55438e36
  * (#319 merged), the DAR the dev participant vets. The 0.6.3 id is the main package of the staged
  * `deploy-contracts/dars/cancore-intent-0.6.3.dar` (canton-contracts#371): pinned before its upload, since the participant
- * then prefers it and the backend prepares owner-signed steps against it. Drop 0.6.2 once dev un-vets it.
+ * then prefers it and the backend prepares owner-signed steps against it. The first 0.6.3 build (`535cb88a…`), without
+ * the uint32 set-id bound, is not pinned: a root under it is refused. Drop 0.6.2 once dev un-vets it.
  */
 export const INTENT_PACKAGE_IDS: readonly string[] = [
   '16883f74059616eda07b70764b1160196a5123c5691adccf11062f90176d9d5d',
-  '535cb88a2faec69ec361089d1d5ecbbe150cd50a00b736b2941b52c6b820b6fa',
+  '58e6e78939044edae7fc85c50800dd054d481c0fd8f057f3755b6d621313f305',
 ];
 
 /** The roots an owner signs, by `<module>:<entity>` of the template and the choice. */
