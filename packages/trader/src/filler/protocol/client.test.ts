@@ -940,6 +940,13 @@ describe('REST fallback (protocol §3.6)', () => {
     expect(h.http.requests.filter((r) => new URL(r.url).pathname === '/v1/filler/auth')).toHaveLength(2);
   });
 
+  test.each([{ attempt: 2 }, { re: 'another-request' }, { sentAt: 0 }])('BUG-1628 refuses an unrelated or stale ticket intent acknowledgement %j', async (override) => {
+    const h = harness();
+    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1, intentHash: `0x${'ef'.repeat(32)}`, receivedAt: h.clock.now(), ...override });
+    h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/intent`] = () => ({ status: 200, body: ack });
+    await expect(h.rest.postTicket({ action: 'intent', message: intent() })).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE' });
+  });
+
   test('an error body becomes the typed error with its HTTP status', async () => {
     const h = harness();
     h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/intent`] = () => ({
