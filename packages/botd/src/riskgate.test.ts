@@ -94,6 +94,10 @@ describe('check: order.make', () => {
 
 describe('checkTake', () => {
   const o = { base: 'CC', quote: 'USDCx', side: 'buy' as const, price: '0.15' };
+  it('BUG-1620 enforces the exact quote total even when the displayed unit price fits', () => {
+    const cap = { ...limits, maxOrderNotional: { USDCx: '15' } };
+    expect(checkTake({ orderId: 'x', amount: '100' }, { ...o, quoteAmount: '15.0000000001' }, state(), cap, NOW)).toEqual({ allow: false, reason: 'notional_exceeded' });
+  });
   it('prices at the maker price, held to reference', () => expect(checkTake({ orderId: 'x', amount: '100' }, o, state(), limits, NOW)).toEqual({ allow: true }));
   it('notional cap + 1 unit', () =>
     expect(checkTake({ orderId: 'x', amount: '100.0000000001' }, o, state(), { ...limits, maxOrderAmount: { CC: '200' } }, NOW)).toEqual({ allow: false, reason: 'notional_exceeded' }));
