@@ -54,10 +54,8 @@ export const REST_ENDPOINTS: readonly RestEndpoint[] = rest['x-endpoints'] as Re
 
 /**
  * The absolute `$ref` of a frame type's schema (or any other `$def` of messages.schema.json).
- * `direction` picks the copy of a type that goes both ways: `ping`/`pong` from the gateway are
- * Throws RangeError if the requested direction does not admit the type.
- * Gateway ping and pong are
- * signed (`pingS2F`), from a taker they are not (`pingF2S`); without it, either copy passes.
+ * For bidirectional frames, direction selects the gateway or taker schema.
+ * Without a direction, either copy passes. An unsupported direction throws RangeError.
  */
 export function messageSchemaRef(type: string, direction?: 'S2F' | 'F2S'): string {
   const allowed = MESSAGE_DIRECTIONS[type];
