@@ -36,6 +36,11 @@ on:
         required: false
         default: main
         type: string
+      ticket:
+        description: 'Ticket the run proves in ReportPortal (CAN-123 or BUG-123); empty = the ticket grep starts with'
+        required: false
+        default: ''
+        type: string
   pull_request:
     paths: ['.github/workflows/test-dispatch.yml']
 
@@ -54,6 +59,10 @@ jobs:
     runs-on: ubuntu-latest
     # publish.yml runs install, build and the unit suite in under 2 minutes; 30 covers a cold cache with room.
     timeout-minutes: 30
+    outputs:
+      ticket: ${{ steps.target.outputs.ticket }}
+      sha: ${{ steps.target.outputs.sha }}
+      suite: ${{ steps.target.outputs.suite }}
     env:
       # ubuntu-latest has 16 GB; two jest workers and the parent stay well inside 6 GB each.
       NODE_OPTIONS: --max-old-space-size=6144
@@ -70,16 +79,26 @@ jobs:
           REF: ${{ inputs.ref }}
           GREP: ${{ inputs.grep }}
           SUITE: ${{ inputs.suite }}
+          TICKET: ${{ inputs.ticket }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [[ "$EVENT" == pull_request ]]; then
             # A pull_request run has no inputs: it proves the filter on unit tests that exist on every branch.
-            { echo "sha="; echo "grep=TC-SDK-2352"; echo "suite=unit"; } >> "$GITHUB_OUTPUT"
+            # Its ReportPortal ticket comes from the PR branch, then its title (rp-publish).
+            { echo "sha="; echo "grep=TC-SDK-2352"; echo "suite=unit"; echo "ticket="; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           [[ -n "${GREP// /}" ]] || { echo "::error::grep is required: a full-suite run is never the default"; exit 1; }
           [[ "$GREP" != *$'\n'* && "$GREP" != *$'\r'* ]] || { echo "::error::grep must be a single line"; exit 1; }
+          ticket=${TICKET^^}
+          if [[ -n "$ticket" ]]; then
+            [[ "$ticket" =~ ^(CAN|BUG)-[0-9]+$ ]] || { echo "::error::ticket must be CAN-123 or BUG-123, got '$TICKET'"; exit 1; }
+          elif [[ "${GREP^^}" =~ ^((CAN|BUG)-[0-9]+)([^0-9]|$) ]]; then
+            ticket=${BASH_REMATCH[1]}
+          else
+            echo "::warning::no ticket: grep does not start with CAN-123 or BUG-123 and the ticket input is empty, so the ReportPortal launch proves no ticket"
+          fi
           if [[ -n "$PR" ]]; then
             [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::pr must be a PR number, got '$PR'"; exit 1; }
             head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '"\(.head.repo.full_name // "")|\(.head.sha)"')
@@ -93,7 +112,7 @@ jobs:
           fi
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve a commit, got '$sha'"; exit 1; }
           echo "Testing $sha"
-          { echo "sha=$sha"; echo "grep=$GREP"; echo "suite=$SUITE"; } >> "$GITHUB_OUTPUT"
+          { echo "sha=$sha"; echo "grep=$GREP"; echo "suite=$SUITE"; echo "ticket=$ticket"; } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -160,6 +179,34 @@ jobs:
           done
           [[ ${#empty[@]} -eq 0 ]] || { echo "::error::no test matching '$GREP' ran in: ${empty[*]}"; exit 1; }
 
+      # jest -t reports every test it filtered out as skipped: thousands of them would bury the ticket's tests in the
+      # ReportPortal launch, so its copy keeps only the tests that ran.
+      - name: ReportPortal copy of the reports
+        if: ${{ !cancelled() }}
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const dst = process.argv.at(-1);
+            fs.mkdirSync(dst, { recursive: true });
+            for (const src of process.argv.slice(1, -1).filter((d) => fs.existsSync(d))) {
+              for (const name of fs.readdirSync(src).filter((n) => n.endsWith(".xml"))) {
+                const xml = fs.readFileSync(`${src}/${name}`, "utf8")
+                  .replace(/<testcase\b(?:[^>"]|"[^"]*")*?(?:\/>|>[\s\S]*?<\/testcase>)/g, (c) => (/<skipped\b/.test(c) ? "" : c));
+                fs.writeFileSync(`${dst}/${name}`, xml);
+              }
+            }
+          ' rp-reports rp-reports-int rp-publish
+      - name: Upload the ReportPortal copy
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rp-publish-${{ github.run_id }}
+          path: rp-publish/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Upload test reports for rp-collect
         if: always()
         continue-on-error: true
@@ -180,3 +227,36 @@ jobs:
           path: rp-reports-int/
           if-no-files-found: ignore
           retention-days: 7
+
+  # CAN-3669: from 2026-11-26 a ticket leaves In Testing only on a green ReportPortal launch with its ticket attribute.
+  # The tests job stays on ubuntu-latest, which cannot reach Vault; the publish runs on cancore-runners from the
+  # uploaded reports only, with no checkout and no code of the tested ref, so a Vault OIDC token is never reachable
+  # from that code. Never fails the run; rp-publish prints reportportal_run=<url> or why not.
+  publish-reportportal:
+    name: publish-reportportal
+    needs: tests
+    if: ${{ always() && needs.tests.result != 'skipped' }}
+    runs-on: cancore-runners
+    continue-on-error: true
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # Vault OIDC in rp-publish
+    steps:
+      - name: Download the ReportPortal copy
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rp-publish-${{ github.run_id }}
+          path: ${{ runner.temp }}/rp-publish
+      - name: Publish to ReportPortal
+        if: steps.download.outcome == 'success'
+        uses: Cancore-io/CAEF/.github/actions/rp-publish@4bd1d5dc7cfdbbb6b3e00cdf364a4688d64db4fd # CAEF main 2026-11-26
+        with:
+          # rp-upload refuses a second launch for the same ticket, sha, suite and stand: the run id keeps a rerun apart.
+          suite: tests-on-demand-${{ needs.tests.outputs.suite || 'unit' }}-${{ github.run_id }}
+          junit: ${{ runner.temp }}/rp-publish/*.xml
+          ticket: ${{ needs.tests.outputs.ticket }}
+          stand: ci
+          sha: ${{ needs.tests.outputs.sha || github.event.pull_request.head.sha || github.sha }}
