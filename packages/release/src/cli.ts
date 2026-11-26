@@ -43,9 +43,10 @@ function resolveCutBranch(cut: boolean, cutBranch: string | undefined): string {
   return cutBranch;
 }
 
+// Only the trailing newline is cut: String.prototype.trim would also strip Unicode spaces git allows in ref names (sdk#327 r3 RX-1).
 const gitAt = (cwd: string): Git => (...args) => {
   const r = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
-  return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
+  return { ok: r.status === 0, out: (r.stdout ?? '').replace(/\r?\n$/, ''), err: (r.stderr ?? '').trim() };
 };
 
 const releaseTags = (listing: string) => listing.split('\n').map((t) => t.trim()).filter((t) => RELEASE_TAG_RE.test(t));
