@@ -178,6 +178,18 @@ describe('variant A fields', () => {
 });
 
 describe('conditional shapes', () => {
+  test.each(['quote.reconfirm.reply', 'ticket.decline'])('CAN-3797 %s validates the price claim pair and wire boundaries', (type) => {
+    const frame = { ...example(type), accept: false, reason: 'PRICE_MOVED', midE18: '1', shiftBps: 0 };
+    expect(errorsOf(type, frame)).toEqual([]);
+    const { midE18: _mid, shiftBps: _shift, ...plain } = frame;
+    expect(errorsOf(type, plain)).toEqual([]);
+    expect(errorsOf(type, { ...plain, midE18: '1' }).length).toBeGreaterThan(0);
+    expect(errorsOf(type, { ...plain, shiftBps: 0 }).length).toBeGreaterThan(0);
+    for (const shiftBps of [-2147483648, 2147483647]) expect(errorsOf(type, { ...frame, shiftBps })).toEqual([]);
+    for (const shiftBps of [-2147483649, 2147483648, 1.5, '1']) expect(errorsOf(type, { ...frame, shiftBps }).length).toBeGreaterThan(0);
+    for (const midE18 of [1, '01', '-1', '1'.repeat(79)]) expect(errorsOf(type, { ...frame, midE18 }).length).toBeGreaterThan(0);
+  });
+
   test('ticket.issued: form discriminates; extra fields of the other shape are ignored (V-2)', () => {
     const evm = example('ticket.issued', 0);
     const canton = example('ticket.issued', 1);

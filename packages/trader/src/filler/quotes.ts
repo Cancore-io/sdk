@@ -395,14 +395,13 @@ export class QuoteDesk {
   private async askHook(reconfirm: QuoteReconfirm, orderHash: Hex, payout: bigint, total: bigint): Promise<true | { reason: ReconfirmDeclineReason; priceMoved?: PriceMovedFields }> {
     const hook = this.options.onReconfirm();
     if (!hook) return { reason: 'hook-failed' };
-    let decision: ReconfirmDecision;
     try {
-      decision = await hook({ ...reconfirm, payout, fee: total - payout });
+      const decision = await hook({ ...reconfirm, payout, fee: total - payout });
+      return reconfirmOutcome(decision, () => this.options.logger.warn('quotes: PRICE_MOVED claim of the hook dropped', { orderHash }));
     } catch (error) {
       this.options.logger.error('quotes: onReconfirm threw', { orderHash, error: String(error) });
       return { reason: 'hook-failed' };
     }
-    return reconfirmOutcome(decision, () => this.options.logger.warn('quotes: PRICE_MOVED claim of the hook dropped', { orderHash }));
   }
 
   // -- reconciliation ---------------------------------------------------------
