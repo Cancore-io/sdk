@@ -15,6 +15,11 @@
 
 The versioned topology envelope rejects overlong and out-of-range length and version fields before decoding the transaction.
 
+### Fixed — topology hashes are ordered by bytes (BUG-1629)
+
+- `multiHashInput` sorts the hashes of a topology multihash by unsigned byte value, not by `localeCompare` on hex,
+  so the multihash `verifyPartyTopology` recomputes no longer depends on the host's collation (sdk#310).
+
 ### Fixed — `fromBase64` trims padding in linear time
 
 - At most two `=` of padding are accepted, trimmed without a regex: `/=+$/` took seconds on a long run of `=`, and the
