@@ -12,13 +12,16 @@ import {
   type QuoteMessage,
   type QuoteReconfirmReply,
 } from '@cancore/contracts';
-import { createFiller } from './filler';
+import { createFiller, type CantonConfig, type FillerConfig } from './filler';
+import { cantonFingerprint } from './canton/legs';
+import type { CantonLedger } from './ledger';
 import type { Delivery, FillerProtocolClient } from './protocol/client';
 import { createSealer, type Sealer } from './protocol/envelope';
 import type { ReconfirmDecision } from './price-moved';
 import type { QuoteListItem } from './protocol/rest';
 import { cantonFillerPayout, evmFillerPayout, QuoteDesk, type FillerQuoteRequest, type FillerReconfirm, type QuoteDeskOptions, type QuoteDecisionInput } from './quotes';
 import { recoverAddress, recoverTypedDataSigner, type FillSigner } from './signer';
+import { CANTON_ORIGIN_FLOOR } from './tickets/terms';
 import {
   createFakeFetch,
   createFakeGatewayLogin,
@@ -485,11 +488,32 @@ describe('quote.reconfirm → onReconfirm → quote.reconfirm.reply (T-20)', () 
     expect(enabled.protocol.sent[0]).toMatchObject({ accept: true });
   });
 
-  test('BUG-1625 an empty reconfirm fee is malformed', async () => {
+  const answered = (h: ReturnType<typeof desk>) => h.events.events.flatMap((e) => (e.type === 'stage' && e.stage === 'reconfirm.answered' ? [e.detail] : []));
+
+  test.each(['', '01', ' 500 ', '-1', '65536', '1e2'])('BUG-1625 a reconfirm feeBps %j is malformed before the hook, with no error', async (feeBps) => {
     const h = desk();
-    await h.desk.onReconfirm(delivery(reconfirm(h.clock, { order: order({ feeBps: '' }) })));
+    await h.desk.onReconfirm(delivery(reconfirm(h.clock, { order: order({ feeBps }) })));
     expect(h.seenReconfirms).toHaveLength(0);
-    expect(h.protocol.sent[0]).toMatchObject({ accept: false });
+    expect(answered(h)).toEqual([expect.objectContaining({ accept: false, outcome: 'malformed' })]);
+    expect(h.logger.entries.filter((e) => e.level === 'error')).toEqual([]);
+  });
+
+  test.each(['0', '1000', '65535'])('BUG-1625 a reconfirm feeBps %s, a uint16, reaches the hook', async (feeBps) => {
+    const h = desk();
+    await h.desk.onReconfirm(delivery(reconfirm(h.clock, { order: order({ feeBps }) })));
+    expect(h.seenReconfirms).toHaveLength(1);
+    expect(h.protocol.sent[0]).toMatchObject({ accept: true });
+  });
+
+  test('BUG-1625 a reconfirm from origin 2^63, the first Canton origin, is gated like any Canton source', async () => {
+    const wireOrder = order({ originChainId: String(CANTON_ORIGIN_FLOOR) });
+    const disabled = desk({ cantonEnabled: false });
+    const enabled = desk({ cantonEnabled: true });
+    await disabled.desk.onReconfirm(delivery(reconfirm(disabled.clock, { order: wireOrder })));
+    await enabled.desk.onReconfirm(delivery(reconfirm(enabled.clock, { order: wireOrder })));
+    expect(disabled.seenReconfirms).toHaveLength(0);
+    expect(disabled.protocol.sent[0]).toMatchObject({ accept: false });
+    expect(enabled.protocol.sent[0]).toMatchObject({ accept: true });
   });
 
   test('a changed price is not signed: amountOut ≠ order.minReceived is declined without asking the hook', async () => {
@@ -610,7 +634,17 @@ describe('reconciliation — GET /v1/filler/quotes?since=', () => {
 // ---------------------------------------------------------------------------
 
 describe('through createFiller and a crafted filler-gateway', () => {
-  test('BUG-1625 quotes the configured EVM route and skips a Canton route without operations', async () => {
+  const KEY = `0x${'11'.repeat(32)}` as Hex;
+  const CANTON: CantonConfig = {
+    party: `acme-1::${cantonFingerprint(KEY)}`,
+    partySigner: { publicKey: KEY, signHash: async () => `0x${'00'.repeat(64)}` as Hex },
+    participantUid: 'PAR::cancore::1220aa',
+    destination: { minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 20 },
+  };
+  const LEDGER = { party: 'ledger-party::1220aa', activeContracts: async () => [], exercise: async () => Promise.reject(new Error('unused')) } as unknown as CantonLedger;
+
+  /** A started createFiller on a crafted filler-gateway, with `extra` config. */
+  async function quotingFiller(extra: Partial<FillerConfig> = {}) {
     const clock = new FakeClock();
     const gateway = createTestGatewaySigner(GATEWAY_KEY, clock);
     const ws = createFakeWebSocketFactory();
@@ -640,6 +674,7 @@ describe('through createFiller and a crafted filler-gateway', () => {
       fetch: createFakeFetch(login.routes).fetch,
       clock,
       instanceId: 'replica-1',
+      ...extra,
     });
     const payouts: bigint[] = [];
     filler.onQuoteRequest(async (r) => {
@@ -653,6 +688,11 @@ describe('through createFiller and a crafted filler-gateway', () => {
     const socket = ws.sockets[0]!;
     login.accept(socket);
     await started;
+    return { clock, gateway, socket, store, payouts, filler, settle };
+  }
+
+  test('BUG-1625 quotes the configured EVM route and skips a Canton route without operations', async () => {
+    const { clock, gateway, socket, store, payouts, filler, settle } = await quotingFiller();
 
     socket.receive(gateway.frame({ ...request(clock), fillerId: FILLER }));
     await settle();
@@ -677,6 +717,20 @@ describe('through createFiller and a crafted filler-gateway', () => {
     socket.receive(gateway.frame({ ...request(clock, { requestId: 'rq-137', route: { src: 'eip155:137', dst: 'eip155:1' } }), fillerId: FILLER }));
     await settle();
     expect(socket.sentFrames().filter((f) => f.type === 'quote')).toHaveLength(1);
+    await filler.stop();
+  });
+
+  test.each([
+    ['Canton operations', true, { canton: CANTON }],
+    ['a ledger party alone', false, { ledger: LEDGER }],
+  ] as const)('BUG-1625 createFiller with %s: a Canton quote and reconfirm are served = %s', async (_name, served, extra) => {
+    const { clock, gateway, socket, store, filler, settle } = await quotingFiller(extra);
+    socket.receive(gateway.frame({ ...request(clock, { requestId: 'rq-canton', route: { src: 'eip155:56', dst: 'canton:devnet' } }), fillerId: FILLER }));
+    await settle();
+    expect((await store.quotes.listQuotes('rq-canton')).length > 0).toBe(served);
+    socket.receive(gateway.frame({ ...reconfirm(clock, { requestId: 'rq-canton', order: order({ destination: encodeCantonDestination('devnet') }) }), fillerId: FILLER }));
+    await settle();
+    expect(socket.sentFrames().find((f) => f.type === 'quote.reconfirm.reply')).toMatchObject({ accept: served });
     await filler.stop();
   });
 });

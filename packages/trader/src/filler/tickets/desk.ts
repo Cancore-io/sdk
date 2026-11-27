@@ -77,6 +77,7 @@ export interface TicketDeskOptions {
   chains: FillerChains;
   fillSigners: { readonly [chain: EvmChainId]: FillSigner };
   fillerId: string;
+  /** The filler's Canton party, the payee of a Canton source. */
   cantonParty?: string;
   cantonEnabled?: boolean;
   /** `sendGuardSec` of a Canton destination (`FillerConfig.canton.destination`); without it a Canton-form ticket gets no receipt. */

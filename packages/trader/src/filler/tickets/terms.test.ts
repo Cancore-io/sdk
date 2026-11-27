@@ -77,6 +77,12 @@ describe('identityFor: who the filler is in a ticket', () => {
     expect(identityFor(candidate, { ...KEYS, cantonEnabled: false })).toBeUndefined();
   });
 
+  test('BUG-1625 origin 2^63 is the first Canton origin: no consent without Canton operations', () => {
+    const candidate = order(CANTON_ORIGIN_FLOOR, word(10n));
+    expect(identityFor(candidate, { ...KEYS, cantonEnabled: true })).toBeDefined();
+    expect(identityFor(candidate, { ...KEYS, cantonEnabled: false })).toBeUndefined();
+  });
+
   test.each([
     ['no fill key for the destination', order(1n, word(56n)), KEYS],
     ['no party on a Canton source', order(CANTON_ORIGIN_ID.devnet, word(10n)), { ...KEYS, cantonParty: undefined }],
