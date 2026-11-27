@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 
 /**
  * The CI definition is the artifact this repository ships to itself.
@@ -312,6 +313,27 @@ describe('BUG-1639 npm publication plan', () => {
       } finally {
         report.mockRestore();
       }
+    });
+  });
+  // The CLI entry is what publish.yml runs: a failed package must turn the job red, not only the return value.
+  test('the publish job exits 1 when npm fails for a package', () => {
+    withSummary((env, summary) => {
+      const temp = path.dirname(summary);
+      fs.mkdirSync(path.join(temp, 'packages', wallet.dir), { recursive: true });
+      fs.writeFileSync(path.join(temp, 'packages', wallet.dir, 'package.json'), JSON.stringify(wallet));
+      const bin = path.join(temp, 'bin');
+      fs.mkdirSync(bin);
+      for (const tool of ['npm', 'pnpm']) {
+        fs.writeFileSync(path.join(bin, tool), '#!/bin/sh\necho "npm error code ETIMEDOUT" >&2\nexit 1\n', { mode: 0o755 });
+      }
+      const job = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'publish-plan.cjs')], {
+        cwd: temp,
+        encoding: 'utf8',
+        env: { ...process.env, ...env, PATH: bin + path.delimiter + process.env.PATH, PUBLISH_PLAN: JSON.stringify([wallet]) },
+      });
+      expect(job.stderr).toContain('@cancore/wallet: Command failed: npm view @cancore/wallet@1.2.0 version --json');
+      expect(job.status).toBe(1);
+      expect(fs.existsSync(summary)).toBe(false);
     });
   });
 });
