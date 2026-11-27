@@ -9,7 +9,8 @@ import {
 } from './idb';
 
 interface MockOptions {
-  abortOnly?: Error;
+  /** Abort every read/write transaction with this tx.error; null is an abort the engine gives no error for. */
+  abortOnly?: Error | null;
   /** Force this store/op combo to fail with the given error instead of succeeding. */
   failOn?: Partial<Record<'wrapped-wallet' | 'wallet-accounts', Partial<Record<'put' | 'get' | 'getAll' | 'delete', Error>>>>;
   /** Seed the legacy 'wrapped-wallet' RECORD_KEY entry, present before the v1->v2 upgrade runs. */
@@ -38,6 +39,8 @@ function setupMockIndexedDB(options: MockOptions = {}) {
     stores.set('wrapped-wallet', new Map([['primary', options.legacyRecord]]));
   }
 
+  let requestRanAfterClose = false;
+
   function makeObjectStore(storeName: string, abort?: () => void) {
     const storeMap = stores.get(storeName)!;
     const failFor = (op: 'put' | 'get' | 'getAll' | 'delete') =>
@@ -48,7 +51,10 @@ function setupMockIndexedDB(options: MockOptions = {}) {
     // indexedDB.open() request defers its own `onsuccess` by one extra macrotask tick
     // (below) specifically so all such microtask chains drain first, mirroring real
     // IDB's guarantee that the versionchange transaction completes before `success`.
-    const schedule = (fn: () => void) => Promise.resolve().then(abort ?? fn);
+    const schedule = (fn: () => void) => Promise.resolve().then(() => {
+      if (mockDb.close.mock.calls.length > 0) requestRanAfterClose = true;
+      (abort ?? fn)();
+    });
 
     return {
       put: (value: unknown, key: string) => {
@@ -111,19 +117,20 @@ function setupMockIndexedDB(options: MockOptions = {}) {
   }
 
   const mockDb = {
+    get requestRanAfterClose() { return requestRanAfterClose; },
     objectStoreNames: { contains: (name: string) => stores.has(name) },
     close: jest.fn(),
     createObjectStore: (name: string) => {
       stores.set(name, new Map());
     },
     transaction: (_storeName?: string, mode?: IDBTransactionMode) => {
-      const abortError = mode ? options.abortOnly : undefined;
+      const aborts = mode !== undefined && options.abortOnly !== undefined;
       // tx-level errors (put/delete's tx.oncomplete/tx.onerror) share the same
       // failure map as their triggering request — a failed request's tx also fails.
-      const tx: { onabort?: () => void; oncomplete?: () => void; onerror?: () => void; error?: Error; objectStore: (n: string) => ReturnType<typeof makeObjectStore> } = {
+      const tx: { onabort?: () => void; oncomplete?: () => void; onerror?: () => void; error?: Error | null; objectStore: (n: string) => ReturnType<typeof makeObjectStore> } = {
         objectStore: (name: string) => {
-          const store = makeObjectStore(name, abortError ? () => {
-            tx.error = abortError;
+          const store = makeObjectStore(name, aborts ? () => {
+            tx.error = options.abortOnly;
             tx.onabort?.();
           } : undefined);
           const wrap = (fn: (...a: unknown[]) => { onsuccess?: () => void; onerror?: () => void; error?: Error }) =>
@@ -193,24 +200,34 @@ describe('idb keystore', () => {
     setupMockIndexedDB();
   });
 
-  it.each<[string, () => Promise<unknown>]>([
-    ['putPersistedWallet', () => putPersistedWallet({})],
-    ['getPersistedWallet', () => getPersistedWallet()],
-    ['clearPersistedWallet', () => clearPersistedWallet()],
-    ['listWalletAccounts', () => listWalletAccounts()],
-    ['putWalletAccount', () => putWalletAccount('key', { record: {}, email: null, lastUsedAt: '2026-11-25T00:00:00Z' })],
-    ['deleteWalletAccount', () => deleteWalletAccount('key')],
-  ])('BUG-1640 %s rejects an abort-only transaction and closes its connection', async (_name, run) => {
+  const operations: Array<[string, () => Promise<unknown>, string]> = [
+    ['putPersistedWallet', () => putPersistedWallet({}), 'Failed to persist wallet record'],
+    ['getPersistedWallet', () => getPersistedWallet(), 'Wallet read transaction aborted'],
+    ['clearPersistedWallet', () => clearPersistedWallet(), 'Failed to clear wallet record'],
+    ['listWalletAccounts', () => listWalletAccounts(), 'Wallet read transaction aborted'],
+    ['putWalletAccount', () => putWalletAccount('key', { record: {}, email: null, lastUsedAt: '2026-11-25T00:00:00Z' }), 'Failed to persist wallet account'],
+    ['deleteWalletAccount', () => deleteWalletAccount('key'), 'Failed to delete wallet account'],
+  ];
+
+  it.each(operations)('BUG-1640 %s rejects an abort-only transaction and closes its connection', async (_name, run) => {
     const abort = new Error('transaction aborted');
     const db = setupMockIndexedDB({ abortOnly: abort });
     await expect(run()).rejects.toBe(abort);
     expect(db.close).toHaveBeenCalledTimes(1);
+    expect(db.requestRanAfterClose).toBe(false);
   });
 
-  it('BUG-1640 closes the connection after a successful operation', async () => {
+  it.each(operations)('BUG-1640 %s rejects an abort without tx.error with its own Error', async (_name, run, message) => {
+    const db = setupMockIndexedDB({ abortOnly: null });
+    await expect(run()).rejects.toEqual(new Error(message));
+    expect(db.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('BUG-1640 closes the connection only after the operation settles', async () => {
     const db = setupMockIndexedDB();
     await expect(getPersistedWallet()).resolves.toBeNull();
     expect(db.close).toHaveBeenCalledTimes(1);
+    expect(db.requestRanAfterClose).toBe(false);
   });
 
   it('persists, reads and clears a single wallet record', async () => {

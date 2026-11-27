@@ -79,6 +79,17 @@ describe('mnemonic (BIP39 self-custody recovery phrase)', () => {
     it('BUG-1640 reports a checksum failure in a non-English dictionary', () => {
       expect(describeMnemonicError(Array(12).fill(wordlistFor('es')[0]).join(' '))?.code).toMatch(/checksum$/);
     });
+
+    it('BUG-1640 judges a Spanish phrase with one English typo against the Spanish list', () => {
+      const err = describeMnemonicError(['abandon', ...Array(11).fill(wordlistFor('es')[0])].join(' '));
+      expect(err).toEqual({ code: 'wallet.recoveryPhrase.errors.unknownWords', params: { words: 'abandon', count: 1 } });
+    });
+
+    it('BUG-1640 reports a checksum failure for a French phrase that starts with a word English shares', () => {
+      const phrase = ['abandon', ...Array(11).fill('abaisser')].join(' ');
+      expect(isValidMnemonic(phrase, 'fr')).toBe(false);
+      expect(describeMnemonicError(phrase)?.code).toBe('wallet.recoveryPhrase.errors.checksum');
+    });
     it('returns null for a valid generated phrase (12 and 24 words)', () => {
       expect(describeMnemonicError(newMnemonic())).toBeNull();
       expect(describeMnemonicError(newMnemonic(256))).toBeNull();
