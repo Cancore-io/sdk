@@ -617,6 +617,28 @@ describe('cancore-botd end to end: an ambiguous take stays booked until the venu
   };
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
+  it('BUG-1637 an explicit retry keeps one reservation and still blocks another order at the limit', async () => {
+    await setup('botd-e2e-repeat-', { maxOpenOrders: 1, perOrderUsd: '100', perDayUsd: '100' });
+    api.orders.set('x11', order('x11'));
+    api.orders.set('x12', order('x12'));
+    api.acceptScript = () => 'refused';
+    const stop = await boot();
+    try {
+      await owner('unlock', { passphrase: 'bot-pass-2026' });
+      const before = api.accepts;
+      await expect(agent('order.take', { orderId: 'x11', amount: '1' })).resolves.toMatchObject({ orderId: 'x11' });
+      await until(() => event('x11', 'take_failed'));
+      await expect(agent('order.take', { orderId: 'x11', amount: '1' })).resolves.toMatchObject({ orderId: 'x11' });
+      await until(() => api.accepts === before + 2);
+      expect(state().openOrders.map((item) => item.orderId)).toEqual(['x11']);
+      expect(await refusal(agent('order.take', { orderId: 'x12', amount: '1' })))
+        .toMatchObject({ code: ERROR.DENIED, data: { reason: 'open_orders_exceeded' } });
+    } finally {
+      api.acceptScript = undefined;
+      await stop();
+    }
+  });
+
   it('stays booked while the order reads open with no taker, and comes off with no fill once another account took it', async () => {
     await setup('botd-e2e-open-', { maxOpenOrders: 1, perOrderUsd: '100', perDayUsd: '100' });
     api.orders.set('x4', order('x4'));

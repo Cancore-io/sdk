@@ -343,6 +343,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   void tick();
   return {
     take(orderId) {
+      refused.delete(orderId);
       toTake.add(orderId);
       kick(orderId);
     },

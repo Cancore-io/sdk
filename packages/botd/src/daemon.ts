@@ -877,7 +877,9 @@ export function createDispatcher(deps: Deps): Dispatcher {
       } catch {
         taken = undefined;
       }
-      decision = whole ? checkTake(params, taken!, state, limits, now) : { allow: false, reason: 'no_rule' };
+      // The candidate replaces its own reservation for the limit check.
+      const openOrders = state.openOrders.filter((order) => !order.taken || order.orderId !== params.orderId);
+      decision = whole ? checkTake(params, taken!, { ...state, openOrders }, limits, now) : { allow: false, reason: 'no_rule' };
     } else {
       decision = deps.riskgate({ method: request.method, params: request.params as never }, state, limits, now);
     }
