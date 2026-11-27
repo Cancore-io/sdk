@@ -31,7 +31,7 @@ export interface SettleRun extends SettleOptions {
   /** `take` only: the order is accepted by this account (this run or an earlier one); it is a trade from here. */
   onAccepted?: () => void;
   /** `take` only: the venue refused this accept (4xx), so it did not happen. Not called for a lost or unclear answer. */
-  onAcceptRefused?: () => void;
+  onAcceptRefused?: (retryable?: boolean) => void;
 }
 
 export interface ServeOptions extends Omit<SettleOptions, 'signal'> {
@@ -145,11 +145,15 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
    * one costs a re-read that finds it finished again. An LRU if a history that long re-reads too often.
    */
   const done = new Set<string>();
-  const finish = (orderId: string) => {
+  const finish = (orderId: string, swapId?: string | null) => {
+    for (const set of [toTake, accepting, accepted, ambiguous, refused]) set.delete(orderId);
+    // shortcut: a swap forgotten here can get a second `expired` once its order leaves `done` (DONE_LIMIT) while still locked; keep unfinished expired swaps in `reported` if that duplicate matters.
+    if (swapId) reported.delete(swapId);
     done.add(orderId);
     if (done.size > DONE_LIMIT) done.delete(done.values().next().value!);
   };
   const toTake = new Set<string>();
+  const refused = new Set<string>();
   // Takes whose accept request is in flight: untake cannot stop them.
   const accepting = new Set<string>();
   // Takes accepted by this account: trades, whatever later steps or retries do.
@@ -196,11 +200,11 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
     }
     if (TERMINAL_ORDER_STATUSES.has(order.status)) {
       if (order.swapId) await expiredLocked(orderId, order.swapId);
-      finish(orderId);
+      finish(orderId, order.swapId);
       return undefined;
     }
     // An open order is the maker's to wait on — the next event or poll brings it back once taken.
-    if (order.status === 'open' && (maker || !toTake.has(orderId))) return undefined;
+    if (order.status === 'open' && (maker || !toTake.has(orderId) || refused.has(orderId))) return undefined;
     if (!maker && order.status !== 'open' && order.opponentUserId !== selfId) {
       finish(orderId); // taken by somebody else
       return undefined;
@@ -227,12 +231,13 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
         beforeAccept,
         onAccepted: () => void accepted.add(orderId),
         // Only a proven refusal leaves the in-flight state; a lost answer stays in flight until the venue shows the order.
-        onAcceptRefused: () => {
+        onAcceptRefused: (retryable) => {
+          if (!retryable && !ambiguous.has(orderId) && !accepted.has(orderId)) refused.add(orderId);
           if (!ambiguous.has(orderId)) accepting.delete(orderId);
         },
       };
       const settled = await (maker ? acct.make(orderId, settle) : acct.take(orderId, takeRun));
-      finish(orderId);
+      finish(orderId, settled.swap.id);
       emit({ type: 'settled', orderId, swapId: settled.swap.id, settled });
     } catch (error) {
       // Still in flight after the failure: no refusal proved this accept did not happen.
@@ -245,7 +250,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
         emit({ type: 'expired', orderId, swapId, error: error as Error, ...(withdrawal ? { withdrawal } : {}) });
         if (swapId && withdrawal && withdrawal.withdrawn.length > 0) emit({ type: 'withdrawn', orderId, swapId, withdrawal });
         // Still locked (a leg failed, or autoWithdraw is off): the next poll lists the swap and tries again.
-        if (!withdrawable) finish(orderId);
+        if (!withdrawable) finish(orderId, swapId);
         return;
       }
       throw error;
@@ -288,7 +293,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
       olderPage = older.length < PAGE ? 2 : olderPage + 1;
     }
     for (const swap of [...newest, ...older]) if (swap.orderId) kick(swap.orderId, true);
-    for (const orderId of toTake) kick(orderId);
+    for (const orderId of toTake) if (!refused.has(orderId)) kick(orderId);
     if (acceptIncoming) {
       const { accepted, failed } = await acct.acceptIncoming(typeof acceptIncoming === 'function' ? acceptIncoming : undefined);
       for (const transfer of accepted) emit({ type: 'accepted', transfer });
@@ -339,12 +344,14 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   void tick();
   return {
     take(orderId) {
+      refused.delete(orderId);
       toTake.add(orderId);
       kick(orderId);
     },
     untake(orderId) {
       // Always dequeued, so no retry starts later; false only while an accept is actually in flight.
       // Not queued here (a restart, or an accept that failed on our side but landed): it may be a trade already, keep it.
+      refused.delete(orderId);
       if (!toTake.delete(orderId)) return false;
       return !accepting.has(orderId) && !accepted.has(orderId);
     },

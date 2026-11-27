@@ -1346,7 +1346,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         const definite = err instanceof CancoreApiError && err.status >= 400 && err.status < 500 && err.status !== 408
           && (err.status !== 409 || refusalOf(err) === 'feeHoldingRequired');
         const fail = (e: unknown): never => {
-          if (definite) opts.onAcceptRefused?.();
+          if (definite) opts.onAcceptRefused?.(err.status === 429 || err.status === 401);
           throw e;
         };
         const refused = dvpRefusal(err, what, order, self);

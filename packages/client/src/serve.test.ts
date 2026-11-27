@@ -358,27 +358,73 @@ test('untake before the accept is sent drops the take; after it has started it c
   void handle.stop();
 });
 
-test('a take whose accept the venue refused is not retried after untake', async () => {
+test('BUG-1637 a definitively refused take stays idle until an explicit retry', async () => {
   const theirs = order('flaky', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
   let attempts = 0;
   const events: ServeEvent[] = [];
   const { acct, calls } = account([theirs], async (_id, opts) => {
     attempts++;
     // A 4xx: the venue's word that the accept did not happen.
-    (opts as SettleRun).onAcceptRefused?.();
-    throw new Error('409');
+    (opts as SettleRun).onAcceptRefused?.(false);
+    throw new Error('400');
   });
   const handle = serve(acct, { concurrency: 1, reconcileMs: 5, onEvent: (e) => events.push(e) }, noneLocked);
   handle.take('flaky');
   await until(() => attempts >= 1);
   await new Promise((r) => setImmediate(r));
-  // Not in flight any more: untake stops the retry the next poll would start.
+  await new Promise((r) => setTimeout(r, 30));
+  expect(attempts).toBe(1);
+  handle.take('flaky');
+  await until(() => attempts === 2);
   expect(handle.untake('flaky')).toBe(true);
   expect(handle.mayBeTrade('flaky')).toBe(false);
   const before = calls.length;
   await new Promise((r) => setTimeout(r, 30));
   expect(calls.length).toBe(before);
   await handle.stop();
+});
+
+test('BUG-1637 a take accepted here that another account ends up with is forgotten: not queued, never a trade', async () => {
+  const theirs = order('lost', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  const { acct } = account([theirs], async () => {
+    throw new Error('unused');
+  });
+  (acct as unknown as { take: (id: string, o: SettleRun) => Promise<Settled> }).take = async (_id, o) => {
+    if (o.beforeAccept && !o.beforeAccept()) throw Object.assign(new Error('called off'), { name: 'TakeCancelledError' });
+    o.onAccepted?.();
+    throw new Error('allocate failed');
+  };
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 5 }, noneLocked);
+  try {
+    handle.take('lost');
+    await until(() => handle.mayBeTrade('lost'));
+    Object.assign(theirs, { status: 'accepted', opponentUserId: 'other' });
+    await until(() => !handle.mayBeTrade('lost'));
+    expect(handle.untake('lost')).toBe(false);
+  } finally {
+    await handle.stop();
+  }
+});
+
+test('BUG-1637 retries a retryable take on the next reconcile without an explicit take', async () => {
+  const theirs = order('temporary', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  let attempts = 0;
+  const { acct } = account([theirs], async (id, opts) => {
+    if (++attempts === 1) {
+      (opts as SettleRun).onAcceptRefused?.(true);
+      throw new Error('429');
+    }
+    return settledOf(id);
+  });
+  const events: ServeEvent[] = [];
+  const handle = serve(acct, { reconcileMs: 5, onEvent: (event) => events.push(event) }, noneLocked);
+  try {
+    handle.take(theirs.id);
+    await until(() => events.some((event) => event.type === 'settled'));
+    expect(attempts).toBe(2);
+  } finally {
+    await handle.stop();
+  }
 });
 
 test('a take accepted on an earlier run stays a trade: a failed later step does not make it untakeable', async () => {

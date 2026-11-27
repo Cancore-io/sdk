@@ -806,6 +806,20 @@ async function tradingPair(api: ReturnType<typeof venue>, accounts: [number, num
   return { maker, taker };
 }
 
+test.each([401, 429])('BUG-1637 a final HTTP %i accept refusal is retryable', async (status) => {
+  const api = venue();
+  const fetchImpl: FetchLike = async (url, init) =>
+    init.method === 'POST' && new URL(url).pathname === '/orders/o1/accept'
+      ? refuse(status, 'Temporary accept refusal')
+      : api.fetchImpl(url, init);
+  const { taker } = await tradingPair(api, [2, 3], {}, { fetchImpl });
+  const onAcceptRefused = jest.fn();
+  const opts = { onAcceptRefused };
+  await expect(taker.take('o1', opts as import('./serve').SettleRun)).rejects.toThrow();
+  expect(onAcceptRefused).toHaveBeenCalledTimes(1);
+  expect(onAcceptRefused).toHaveBeenCalledWith(true);
+});
+
 const dvpSteps = (api: ReturnType<typeof venue>) => api.log.filter((e) => e.type.startsWith('dvp:')).map((e) => `${e.type}:${e.params.by}`);
 
 describe('the paths where a mistake costs money', () => {

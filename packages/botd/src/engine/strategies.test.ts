@@ -1280,21 +1280,65 @@ describe('owner release of a booked take (CAN-2836)', () => {
     expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
   });
 
+  it('BUG-1637 cancelAll dequeues a local take without cancelling the maker order', async () => {
+    const w = await tookA();
+    await w.call('orders.cancelAll', {}, false);
+    expect(w.untaken).toContain('A');
+    expect(w.cancelled).toEqual([]);
+    expect(w.state().openOrders).toEqual([]);
+  });
+
+  it('BUG-1637 a repeat take on the same terms written another way keeps its one reservation', async () => {
+    const w = await tookA();
+    w.infos.A = { ...someoneElses, sourceAmount: '1.0000000000', targetAmount: '0.1500' };
+    await expect(w.call('order.take', { orderId: 'A', amount: '1' }, false)).resolves.toMatchObject({ result: { orderId: 'A' } });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+  });
+
+  it.each([
+    ['another amount', { sourceAmount: '2', targetAmount: '0.3' }, '2'],
+    ['another price', { targetAmount: '0.16' }, '1'],
+    ['the other side', { source: 'USDCx', sourceAmount: '0.15', target: 'CC', targetAmount: '1' }, '1'],
+  ])('BUG-1637 a repeat take on %s than its booking is refused, the booking left as it was', async (_name, terms, amount) => {
+    const w = await tookA();
+    w.infos.A = { ...someoneElses, ...terms };
+    await expect(w.call('order.take', { orderId: 'A', amount }, false)).rejects.toMatchObject({ data: { reason: 'no_rule' } });
+    expect(w.state().openOrders).toEqual([expect.objectContaining({ orderId: 'A', amount: '1', taken: true })]);
+  });
+
+  it.each([
+    ['pause', { code: ERROR.PAUSED }],
+    ['orders.cancelAll', { code: ERROR.INVALID_PARAMS, data: { reason: 'cancelled' } }],
+  ] as const)('BUG-1637 a repeat take whose booking %s drops before the take is booked is called off, not booked again', async (method, fault) => {
+    const w = await tookA();
+    let book!: () => void;
+    w.crash.takeHold = new Promise<void>((r) => (book = r));
+    const atTake = new Promise<void>((r) => (w.crash.atTake = r));
+    const outcome = w.call('order.take', { orderId: 'A', amount: '1' }, false).then(() => 'booked', (err: unknown) => err);
+    await atTake;
+    await w.call(method, method === 'pause' ? { reason: 'owner stop' } : {}, false);
+    expect(w.state().openOrders).toEqual([]);
+    book();
+    expect(await outcome).toMatchObject(fault);
+    expect(w.state().openOrders).toEqual([]);
+    expect(w.crash.queued?.has('A')).toBe(false);
+  });
+
   it('taking the order again after an unlock does not vouch for the earlier booking: pause and release keep both', async () => {
     const w = await tookA();
     await w.call('lock', {}, true);
     await w.unlock();
     await w.call('order.take', { orderId: 'A', amount: '1' }, false);
-    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
     const before = w.untaken.length;
     // The take queued again calls off cleanly, yet the earlier booking's accept went out through a loop that is gone.
     await w.call('pause', { reason: 'owner stop' }, false);
-    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
     // Kept on the book, yet called off: no accept retries while paused.
-    expect(w.untaken.slice(before)).toEqual(['A', 'A']);
+    expect(w.untaken.slice(before)).toEqual(['A']);
     expect(w.crash.queued?.has('A')).toBe(false);
     await expect(release(w)).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
-    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
   });
 
   it('calls a take of the same order queued during its venue read off too, before it decides', async () => {
@@ -1344,7 +1388,7 @@ describe('owner release of a booked take (CAN-2836)', () => {
     read();
     await expect(releasing).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
     expect(w.untaken.length).toBe(before);
-    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
   });
 
   it('a release whose engine a lock replaced during its read is refused, though that engine booked the take', async () => {
@@ -1375,7 +1419,7 @@ describe('owner release of a booked take (CAN-2836)', () => {
     await w.call('order.take', { orderId: 'A', amount: '1' }, false);
     read();
     await expect(first).rejects.toMatchObject({ data: { reason: 'may_be_trade' } });
-    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
   });
 
   it('a take queued again after a resume while pause cancels is called off with the rest, and kept booked once its accept is out', async () => {
@@ -1389,13 +1433,13 @@ describe('owner release of a booked take (CAN-2836)', () => {
       await atCancel;
       await w.call('resume', {}, true);
       await w.call('order.take', { orderId: 'A', amount: '1' }, false);
-      expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'o1', 'A']);
+      expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'o1']);
       if (out) w.crash.sent = ['A'];
       const before = w.untaken.length;
       cancel();
       await pausing;
       expect(w.untaken.slice(before)).toContain('A');
-      expect(w.state().openOrders.map((o) => o.orderId)).toEqual(out ? ['A', 'A'] : []);
+      expect(w.state().openOrders.map((o) => o.orderId)).toEqual(out ? ['A'] : []);
     }
   });
 
@@ -1427,7 +1471,7 @@ describe('owner release of a booked take (CAN-2836)', () => {
     await w.call('order.take', { orderId: 'A', amount: '1' }, false);
     cancel();
     await pausing;
-    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A', 'A']);
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
   });
 });
 
