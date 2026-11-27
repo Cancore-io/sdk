@@ -198,7 +198,20 @@ describe('topology multihash and base64', () => {
       expect(fromBase64(b64)).toEqual(bytes);
       expect(fromBase64(b64.replace(/=+$/, ''))).toEqual(bytes);
     }
-    for (const bad of ['a', 'ab$c', 'a-b_']) expect(() => fromBase64(bad)).toThrow(/not base64/);
+    for (const bad of ['a', 'ab$c', 'a-b_', 'AAAA===', 'AA=A', 'AA=', 'AAA==', 'AAAA=', 'AAAA==', 'AAAA====', 'AAA=====', '========']) expect(() => fromBase64(bad)).toThrow(/not base64/);
+  });
+
+  // CodeQL on sdk#276: `/=+$/` backtracks quadratically on a run of `=` that does not end the string, and the
+  // topology check decodes what the server sends.
+  // A regex replace is where the backtracking lives; the decoder trims padding by index (RX-4, sdk#276 audit r3).
+  test('a long run of padding is refused without a regex replace', () => {
+    const replace = jest.spyOn(String.prototype, 'replace');
+    try {
+      expect(() => fromBase64(`${'='.repeat(100_000)}A`)).toThrow(/not base64/);
+      expect(replace).not.toHaveBeenCalled();
+    } finally {
+      replace.mockRestore();
+    }
   });
 });
 

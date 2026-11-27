@@ -39,6 +39,12 @@ export interface OperationLeg {
    * things to authorise.
    */
   kind: 'transfer' | 'fee' | 'escrow' | 'setup' | 'topology';
+  /**
+   * Base64 topology transactions a `topology` leg's multihash covers (CAN-2414),
+   * for `verifyPartyTopology` (`@cancore/wallet/canton/proto`) to check before
+   * the key signs the leg.
+   */
+  topologyTransactions?: string[];
 }
 
 export interface PreparedOperation<TMeta = Record<string, unknown>> {
