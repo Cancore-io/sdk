@@ -6,6 +6,7 @@ import { FillerChains, hashFillProof, hashOrder, type ChainConfig, type OpenDept
 import { decodeParams, encodeFunctionCall, entryOf, type AbiEntry } from '../chain/abi';
 import { ChainReadError } from '../chain/client';
 import { Executor } from '../delivery/executor';
+import { LeaseLostError } from '../delivery/transactions';
 import type { StageEvent } from '../events';
 import type { Delivery, FillerProtocolClient, FrameHandler } from '../protocol/client';
 import type { EvmRpcRequest } from '../rpc';
@@ -13,7 +14,7 @@ import type { FillRecord, SettlementRecord, TicketRecord } from '../store';
 import { addressOfPublicKey } from '../signer';
 import { createRecordingEventSink, createRecordingLogger, createTestFillSigner, FakeChain, FakeClock, InMemoryFillerStore } from '../testing';
 import { fillProofOf } from './attestations';
-import { recoverSettleCall } from './send-settle';
+import { recoverRecordedSettle, recoverSettleCall } from './send-settle';
 import { Settler, SettleError } from './settler';
 import { signRsv } from '../testing/fakes';
 
@@ -666,6 +667,59 @@ describe('write-ahead settlement recovery (CAN-1856 R2)', () => {
       simulated.mockRestore();
       w.executor.stop();
     }
+  });
+
+  /** A world whose settle is recorded, its tracker stopped; the recorded bid reverts on simulation and `call` carries new signatures. */
+  async function recordedBid() {
+    const w = await world();
+    await w.push(w.delivery());
+    w.executor.stop();
+    const [record] = await w.store.nonces.listOpen(SRC, fillSigner.address);
+    const tx = record!.transactions[0]!;
+    const driver = w.executor.driver(SRC)!;
+    const settle = entryOf(CANCORE_ROUTER_ABI as unknown as readonly AbiEntry[], 'function', 'settle');
+    const [order, proof] = decodeParams(settle.inputs!, `0x${tx.data.slice(10)}`);
+    const call = { to: tx.to, value: tx.value, data: encodeFunctionCall(settle, [order, proof, []]) };
+    jest.spyOn(driver.client, 'call').mockRejectedValue(new ChainReadError(SRC, 'reverted', 'signer revoked'));
+    jest.spyOn(driver, 'estimateGas').mockResolvedValue(tx.gasLimit);
+    return { w, record: record!, tx, driver, call, context: { instanceId: 'r1', clock: w.clock, logger: w.logger } };
+  }
+
+  test('BUG-1616 recovery queued behind a tracker turn re-reads the journal and replaces above the tracker’s bump', async () => {
+    const { w, record, tx, driver, call, context } = await recordedBid();
+    const bump = { maxFeePerGas: tx.maxFeePerGas * 3n, maxPriorityFeePerGas: tx.maxPriorityFeePerGas * 3n };
+    let releaseTracker!: () => void;
+    const trackerHeld = new Promise<void>((resolve) => { releaseTracker = resolve; });
+    const trackerTurn = driver.withNonceWork(record, async () => {
+      await trackerHeld;
+      const raw = await fillSigner.signTransaction({ chainId: 56n, nonce: record.nonce, to: tx.to, data: tx.data, value: tx.value, gasLimit: tx.gasLimit, ...bump });
+      await w.store.nonces.recordTransaction(record, { ...tx, ...bump, raw, hash: `0x${bytesToHex(keccak_256(hexToBytes(raw.slice(2))))}` });
+    });
+    const recovering = driver.withNonceWork(record, () => recoverRecordedSettle(context, driver, record, w.orderHash, 0, call));
+    releaseTracker();
+    await trackerTurn;
+    const { tx: replacement } = await recovering;
+    expect(replacement.data).toBe(call.data);
+    expect(replacement.maxFeePerGas).toBeGreaterThan(bump.maxFeePerGas);
+    const [open] = await w.store.nonces.listOpen(SRC, fillSigner.address);
+    expect(open!.transactions.map((t) => t.hash)).toEqual([tx.hash, expect.any(String), replacement.hash]);
+  });
+
+  test('BUG-1616 recovery queued behind a tracker that completed the nonce is LeaseLost', async () => {
+    const { w, record, driver, call, context } = await recordedBid();
+    const trackerTurn = driver.withNonceWork(record, () => w.store.nonces.complete(record, record.transactions[0]!.hash));
+    const recovering = driver.withNonceWork(record, () => recoverRecordedSettle(context, driver, record, w.orderHash, 0, call));
+    await trackerTurn;
+    await expect(recovering).rejects.toBeInstanceOf(LeaseLostError);
+  });
+
+  test('BUG-1616 a replacement that fails before its journal write is an error, never the reverting bid', async () => {
+    const { w, record, tx, driver, call, context } = await recordedBid();
+    const signerDown = new Error('signer unavailable');
+    w.signer.signTransaction.mockRejectedValueOnce(signerDown);
+    await expect(recoverSettleCall(context, driver, record, tx, call)).rejects.toBe(signerDown);
+    const [open] = await w.store.nonces.listOpen(SRC, fillSigner.address);
+    expect(open!.transactions).toEqual([tx]);
   });
 
   test('an active foreign journal lease cannot be adopted or bypassed with a new nonce', async () => {
