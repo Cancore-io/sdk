@@ -24,6 +24,7 @@ import {
   type FillerQuoteRequest,
   type FillerReconfirm,
 } from './quotes';
+import type { ReconfirmDecision } from './price-moved';
 import {
   DEFAULT_HEARTBEAT_MISSES,
   DEFAULT_LOGIN_TIMEOUT_MS,
@@ -180,8 +181,10 @@ export type QuoteRequestHook = (request: FillerQuoteRequest) => Promise<QuoteDec
 /**
  * Whether the filler stands behind `order.minReceived` for the opened order
  * (T-20; the price does not change). `reconfirm.payout` is the order's payout.
+ * A refusal only because the price moved answers `{ decline: 'PRICE_MOVED',
+ * midE18, shiftBps }` (protocol §3.5, T-19).
  */
-export type ReconfirmHook = (reconfirm: FillerReconfirm) => Promise<boolean>;
+export type ReconfirmHook = (reconfirm: FillerReconfirm) => Promise<ReconfirmDecision>;
 
 export type { OfferDeclineReason, TicketOfferDecision, TicketOfferHook } from './tickets/desk';
 
