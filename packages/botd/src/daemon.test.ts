@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createDispatcher, defaultDeps, start, type Deps } from './daemon';
+import { createDispatcher, defaultDeps, start, takeView, type Deps } from './daemon';
 import { connect } from './ipc/client';
 import { DEFAULTS, loadConfig } from './config';
 import { ERROR, JSONRPC_VERSION, type Method, type RpcRequest } from './protocol/index';
@@ -69,6 +69,20 @@ function fakeDeps(log: string[]) {
 
 const req = <M extends Method>(method: M, params: unknown = {}): RpcRequest => ({ jsonrpc: JSONRPC_VERSION, id: 1, method, params: params as never });
 const order = (amount: string) => req('order.make', { base: 'CC', quote: 'USDCx', side: 'buy', amount, price: '0.15' });
+
+it('BUG-1620 a sell take receives the source quote amount and gives the target base amount', () => {
+  expect(takeView({
+    orderId: 'sell',
+    status: 'open',
+    dvp: true,
+    source: 'USDCx',
+    sourceAmount: '15',
+    target: 'CC',
+    targetAmount: '100',
+  }, ['CC/USDCx'])).toEqual({
+    base: 'CC', quote: 'USDCx', side: 'sell', amount: '100', quoteAmount: '15', price: '0.15',
+  });
+});
 
 describe('dispatcher', () => {
   it('audits, then gates, then calls the engine', async () => {

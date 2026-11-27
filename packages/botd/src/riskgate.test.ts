@@ -98,6 +98,20 @@ describe('checkTake', () => {
     const cap = { ...limits, maxOrderNotional: { USDCx: '15' } };
     expect(checkTake({ orderId: 'x', amount: '100' }, { ...o, quoteAmount: '15.0000000001' }, state(), cap, NOW)).toEqual({ allow: false, reason: 'notional_exceeded' });
   });
+  it('BUG-1620 rejects exact price deviation hidden by rounded unit price', () => {
+    const cap = { ...limits, maxOrderNotional: { USDCx: '100' }, maxPriceDeviationBps: 0 };
+    const take = { orderId: 'x', amount: '100' };
+    expect(checkTake(take, { ...o, quoteAmount: '15' }, state(), cap, NOW)).toEqual({ allow: true });
+    expect(checkTake(take, { ...o, quoteAmount: '15.0000000001' }, state(), cap, NOW))
+      .toEqual({ allow: false, reason: 'price_deviation_exceeded' });
+  });
+
+  it('BUG-1620 refuses zero quote even at the maximum permitted price deviation', () => {
+    const cap = { ...limits, maxPriceDeviationBps: 10_000 };
+    expect(checkTake({ orderId: 'x', amount: '100' }, { ...o, side: 'sell', quoteAmount: '0' }, state(), cap, NOW))
+      .toEqual({ allow: false, reason: 'no_rule' });
+  });
+
   it('prices at the maker price, held to reference', () => expect(checkTake({ orderId: 'x', amount: '100' }, o, state(), limits, NOW)).toEqual({ allow: true }));
   it('notional cap + 1 unit', () =>
     expect(checkTake({ orderId: 'x', amount: '100.0000000001' }, o, state(), { ...limits, maxOrderAmount: { CC: '200' } }, NOW)).toEqual({ allow: false, reason: 'notional_exceeded' }));
