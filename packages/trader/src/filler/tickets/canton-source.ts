@@ -11,14 +11,18 @@
  * intent as the filler's party sees it, the allocation as the operator reads
  * it. What they say is checked here, never taken on trust: the order hash is
  * recomputed from the intent's own fields, the allocation's legs are
- * recomputed from its amount and fee rate with the ledger's rounding.
+ * recomputed from its amount and fee rate with the ledger's rounding. One
+ * field is the gateway's attestation alone: `lockedHoldingGuardian`, the
+ * guardian every locked holding of a CNRX allocation carries (BUG-1613). The
+ * node cannot read those holdings, so V-C4 requires it to equal the pinned
+ * guardian and refuses it absent.
  *
  * | Check | What | Refusal |
  * |---|---|---|
  * | V-C1 | a live `SwapIntent` with `ticket.orderHash` names this filler: `filler` is the node's party, `fillerId` its own | `ESCROW_NOT_OPEN` (none), `ESCROW_MISMATCH` |
  * | V-C2 | the intent's terms are the offered order: the EVM-form order built from them (protocol §3.7) equals `offer.order` field by field | `ESCROW_MISMATCH` |
  * | V-C3 | the label binds the terms: that order's hash in the Canton source domain is `ticket.orderHash` and the intent's `orderHash` | `ESCROW_MISMATCH` |
- * | V-C4 | the give is committed to this filler: the allocation `allocationCid` is live, of a pinned registry template, `committed`, authorized by the owner, executors exactly operator and owner, `settlementDeadline == refundAfter`, legs exactly `payout` to the node's party and `fee` to the operator | `ESCROW_NOT_OPEN` (not live), `ESCROW_MISMATCH` |
+ * | V-C4 | the give is committed to this filler: the allocation `allocationCid` is live, of a pinned registry template, `committed`, authorized by the owner, executors exactly operator and owner, `settlementDeadline == refundAfter`, legs exactly `payout` to the node's party and `fee` to the operator; of a CNRX registry, `lockedHoldingGuardian` is the pinned guardian | `ESCROW_NOT_OPEN` (not live), `ESCROW_MISMATCH` |
  * | V-C5 | the filler can be paid: `ticket.repayTo == keccak256(utf8(party))` (T-45), its `FillerRegistryEntry` is ACTIVE, and the instrument's pinned registry pays any party through a receipt-only allocation (`openReceipt`, T-9) | `TICKET_MISMATCH`, `OTHER` (detail `payout-not-ready`) |
  * | V-C6 | `refundAfter − fillDeadline ≥` the filler's own proof window for the destination, as V-E3 | `PROOF_WINDOW_TOO_SHORT` |
  * | V-C7 | the settlement factory the owner approved into the intent is still the registry's (`settlementFactory.live`); absent on an older filler-gateway is a refusal too | `OTHER` (detail `payout-not-ready`), logged as a warning |
@@ -50,7 +54,7 @@ import {
   type TicketJson,
 } from '@cancore/contracts';
 import { canonicalDecimal, scaled } from '../canton/checks';
-import { allocationTemplateOf, CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../canton/factories';
+import { allocationTemplateOf, isCnrxRegistry, CANTON_TRANSFER_FACTORIES, type CantonTransferFactory } from '../canton/factories';
 import { GatewayError } from '../errors';
 import { cantonClosure } from '../settlement/refusals';
 import { TicketRefusal, type TicketCheckId } from './refusal';
@@ -199,6 +203,12 @@ function checkSettlementFactory(intent: CantonIntent): void {
   }
 }
 
+function checkAllocationGuardian(registry: CantonTransferFactory, allocation: CantonAllocation): void {
+  if (isCnrxRegistry(registry) && (!registry.guardian || allocation.lockedHoldingGuardian !== registry.guardian)) {
+    throw new TicketRefusal('V-C4', 'ESCROW_MISMATCH', 'the locked holdings lack evidence of the pinned guardian');
+  }
+}
+
 /** V-C4: the allocation is exactly the commitment `IntentFactory_Open` makes (`SwapIntent.daml` legsOf, allocationSpec). */
 function checkAllocation(
   intent: CantonIntent,
@@ -214,6 +224,7 @@ function checkAllocation(
   if (a.contractId !== intent.allocationCid) mismatch('the allocation read is not the intent’s allocationCid');
   const registry = (registries[intent.asset.admin] ?? []).find((f) => allocationTemplateOf(f) === a.templateId);
   if (!registry) return mismatch(`the allocation ${a.templateId} is not a pinned allocation of the admin ${intent.asset.admin}`);
+  checkAllocationGuardian(registry, a);
   if (a.admin !== intent.asset.admin) mismatch('the allocation is of another instrument admin');
   if (a.committed !== true) mismatch('the allocation is not committed: the owner could withdraw it before refundAfter');
   if (a.authorizer !== intent.owner) mismatch('the allocation is not the owner’s');

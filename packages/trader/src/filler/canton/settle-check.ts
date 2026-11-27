@@ -12,7 +12,8 @@
  *   `fillerEntryCid` is the party's own ACTIVE registry entry;
  * - nothing the party already signed is consumed: the settlement spends none
  *   of its holdings;
- * - one `SettlementFactory_SettleBatch` of a pinned registry, on the
+ * - one `SettlementFactory_SettleBatch` of a pinned registry (of a CNRX
+ *   registry, signed by its admin and guardian G: BUG-1613), on the
  *   settlement factory the operator's factory pin the choice names holds
  *   (CAN-3172: the registry's current one, not the one stored at Open; a 0.4.2
  *   settle names no pin and runs the factory stored at Open), whose transfer
@@ -141,6 +142,10 @@ export function checkIntentSettle(expect: IntentSettleExpectation): CantonOpChec
     // What the party ends up with: unlocked holdings of the instrument, exactly the payout.
     const guardian = registryGuardiansOf(pinned)[intent.asset.admin];
     if (guardian === undefined && isCnrxRegistry(registry)) refuse(`the pin names no guardian for the CNRX registry of ${intent.asset.admin}: nothing tells its holdings from a G' supply's`);
+    // BUG-1613: a batch the admin or G does not sign is a G' supply's factory of the same package.
+    if (isCnrxRegistry(registry) && !isRegistryFactory(batch, intent.asset.admin, registryPackagesOf(pinned), registryGuardiansOf(pinned))) {
+      refuse(`the settlement factory ${batch.templateId} lacks the signature of its admin or guardian`);
+    }
     const credited = creditedTo(nodes, payee, intent, registry, guardian);
     if (credited !== payout) refuse(`the party is credited ${decimal(credited)}, not ${decimal(payout)}`);
   };
@@ -157,7 +162,7 @@ function creditedTo(nodes: readonly TransactionNode[], payee: string, intent: Ca
     const h = holdingOf(n.argument, registry);
     if (h.owner !== payee) continue;
     if (h.admin !== intent.asset.admin || h.id !== intent.asset.id || h.locked) refuse('the party is credited a locked holding or another instrument');
-    if (guardian !== undefined && h.guardian !== guardian) refuse(`the party is credited ${n.contractId}, which the registry’s guardian ${guardian} does not account for`);
+    if (guardian !== undefined && (h.guardian !== guardian || !n.signatories.includes(guardian))) refuse(`the party is credited ${n.contractId}, which the registry’s guardian ${guardian} does not account for`);
     credited += h.amount;
   }
   return credited;

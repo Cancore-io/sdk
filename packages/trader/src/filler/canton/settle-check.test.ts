@@ -65,7 +65,7 @@ const holding = (nodeId: string, owner: string, amount: string, locked = false, 
   argument: v.record({
     holding: v.record({ account: account(owner), instrumentId: v.record({ admin: v.party(ADMIN), id: v.text('CNRX') }), amount: v.numeric(amount), lock: locked ? v.some(v.record({})) : v.none(), ...(meta === null ? {} : { meta }) }),
   }),
-  signatories: [ADMIN, owner], stakeholders: [ADMIN, owner],
+  signatories: [ADMIN, owner, G], stakeholders: [ADMIN, owner, G],
 });
 
 interface Over {
@@ -105,7 +105,7 @@ function honest(o: Over = {}): CantonTransaction {
     nodeId: '3', kind: 'exercise', contractId: '00sf', packageName: 'cnrx-registry', templateId: o.batchTemplate ?? `${REG_PKG}:Cnrx.Allocation:CnrxAllocationRules`,
     interfaceId: `${'99'.repeat(32)}:Splice.Api.Token.AllocationV2:SettlementFactory`, choice: 'SettlementFactory_SettleBatch',
     chosenValue: v.record({ transferLegs: v.list(o.legs ?? [leg('payout', ME, PAYOUT), leg('fee', OPERATOR, FEE)]) }),
-    actingParties: [OPERATOR, OWNER], signatories: [ADMIN], stakeholders: [ADMIN], consuming: false, children: ['4', ...credit.map((n) => n.nodeId)],
+    actingParties: [OPERATOR, OWNER], signatories: [ADMIN, G], stakeholders: [ADMIN, G], consuming: false, children: ['4', ...credit.map((n) => n.nodeId)],
   };
   // The owner's locked give is archived: the owner signs it, the party does not.
   const give: TransactionNode = {
@@ -237,6 +237,25 @@ describe('intent.settle of a CNRX registry with a guardian G: G accounts for eve
       () => check(prepared(), [honest({ extra: [allocate(`${REG_PKG}:Cnrx.Allocation:CnrxAllocationRules`, [ADMIN, G_PRIME])] })]),
       /allocation factory .* is not of a pinned registry/,
     );
+  });
+
+  test.each([
+    ['without G', [ADMIN]],
+    ['without the admin', [G]],
+  ])('BUG-1613: a settlement factory signed %s is refused', (_name, signatories) => {
+    const tx = honest();
+    const batch = tx.nodes['3'];
+    if (batch?.kind !== 'exercise') throw new Error('fixture has no settlement batch');
+    batch.signatories = signatories;
+    refused(() => check(prepared(), [tx]), /settlement factory .* lacks the signature of its admin or guardian/);
+  });
+
+  test('BUG-1613: a payout marked with G that G does not sign is refused', () => {
+    const tx = honest();
+    const payout = tx.nodes['10'];
+    if (payout?.kind !== 'create') throw new Error('fixture has no payout holding');
+    payout.signatories = [ADMIN, ME];
+    refused(() => check(prepared(), [tx]), /credited h-10, which the registry’s guardian cnrx-guardian::1220c7 does not account for/);
   });
 
   test('TC-SDK-3132-07: a CNRX pin that names no guardian refuses the settle — fail-closed, even for G-marked holdings', () => {

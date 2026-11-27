@@ -23,7 +23,7 @@
  * `delivery-check.ts`); `intent.settle` against the intent (CAN-2321).
  */
 import type { CantonOpParams, Hex } from '@cancore/contracts';
-import { CANTON_TRANSFER_FACTORIES, holdingTemplatesOf, type CantonTransferFactory } from './factories';
+import { CANTON_TRANSFER_FACTORIES, isCnrxRegistry, holdingTemplatesOf, type CantonTransferFactory } from './factories';
 import { CantonRefusal, cantonFingerprint, registryTransferChecked, StatedInputRefusal } from './legs';
 import type { CantonOpCheck } from './operations';
 import type { CantonTransaction, CreateNode, DamlValue, ExerciseNode, TransactionNode } from './transaction';
@@ -355,10 +355,24 @@ function isPinnedServiceExercise(node: ExerciseNode, f: CantonTransferFactory): 
   return !node.consuming && registryTemplates.includes(node.templateId) && f.serviceChoices.includes(`${name}.${node.choice}`);
 }
 
+// Transfers under the original 0.2.3 DAR predate guardian accounting.
+const LEGACY_CNRX_PACKAGE = 'd495b7d2e9376e42bb58845c47e165492bba917216352636b6c357c76d3bb736';
+function transferGuardian(f: CantonTransferFactory, root: ExerciseNode, o: TransferExpectation): string | undefined {
+  if (!isCnrxRegistry(f) || f.packageId === LEGACY_CNRX_PACKAGE) return undefined;
+  if (!f.guardian || !root.signatories.includes(f.guardian) || !root.signatories.includes(o.asked.asset.admin)) {
+    return refuse('the transfer factory lacks its pinned admin or guardian signature');
+  }
+  return f.guardian;
+}
+function checkHoldingGuardian(h: HoldingSeen, signatories: readonly string[], guardian: string | undefined, fail: (detail: string) => never): void {
+  if (guardian && (h.guardian !== guardian || !signatories.includes(guardian))) fail('the holding lacks its pinned guardian mark or signature');
+}
+
 function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: TransferExpectation): void {
   const { sender, asked } = o;
   const f = pinnedFactoryOf(o.factories, asked.asset.admin, root.templateId);
   if (!f) return refuse(`the transfer factory ${root.templateId} is not a pinned factory of the admin ${asked.asset.admin}`);
+  const guardian = transferGuardian(f, root, o);
   const pinned = (t: string, entity: string) => t === `${f.packageId}:${entity}`;
   const isHolding = (t: string) => holdingTemplatesOf(f).includes(t);
   const spendsStated = (node: ExerciseNode) =>
@@ -373,6 +387,7 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
     if (!disclosed) return refuseStatedInput(`the stated input ${cid} is not disclosed with the transaction`);
     if (!isHolding(disclosed.templateId)) refuseStatedInput(`the stated input ${cid} is not a holding of the pinned registry`);
     const h = holdingOf(disclosed.argument, f);
+    checkHoldingGuardian(h, disclosed.signatories, guardian, refuseStatedInput);
     if (h.owner !== sender || !sameInstrument(h) || h.locked) refuseStatedInput(`the stated input ${cid} is not an unlocked holding of the sender in the instrument`);
     inputs += h.amount;
   }
@@ -399,6 +414,7 @@ function checkTransferSubtree(tx: CantonTransaction, root: ExerciseNode, o: Tran
     if (node.kind !== 'create') continue;
     if (isHolding(node.templateId)) {
       const h = holdingOf(node.argument, f);
+      checkHoldingGuardian(h, node.signatories, guardian, refuse);
       if (!sameInstrument(h)) refuse(`the transfer creates a holding of another instrument (${h.admin} ${h.id})`);
       if (h.owner === asked.toParty && !h.locked) receiver += h.amount;
       else if (h.owner === sender && h.locked) locked += h.amount;
