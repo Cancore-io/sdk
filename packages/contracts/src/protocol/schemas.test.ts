@@ -449,6 +449,12 @@ describe('Canton operations of the filler party (§3.19)', () => {
       repayTo: `0x${'cd'.repeat(32)}`, validUntil: '1790000400',
     };
     expect(rest('cantonDeliveryOrderList', { items: [order], nextCursor: 'c-2' })).toBe(true);
+    for (const validFrom of [null, '1790000000']) {
+      expect(rest('cantonDeliveryOrderList', { items: [{ ...order, validFrom }], nextCursor: null })).toBe(true);
+    }
+    for (const validFrom of [1790000000, '-1', '1.5']) {
+      expect(rest('cantonDeliveryOrderList', { items: [{ ...order, validFrom }], nextCursor: null })).toBe(false);
+    }
     expect(rest('cantonDeliveryOrderList', { items: [{ ...order, validUntil: 1790000400 }], nextCursor: null })).toBe(false);
   });
 
@@ -580,4 +586,11 @@ describe('Canton operations of the filler party (§3.19)', () => {
     expect(rest('cantonRecipientReadiness', { ...readiness, ready: 'yes' })).toBe(false);
     expect(rest('cantonRecipientReadiness', { ...readiness, deliveryOrderCid: '' })).toBe(false);
   });
+});
+
+test('BUG-1632 restricts directional lookups to frames in that direction', () => {
+  expect(() => messageSchemaRef('ticket.receipt', 'S2F')).toThrow(RangeError);
+  expect(() => messageSchemaRef('order', 'F2S')).toThrow(RangeError);
+  expect(messageSchemaRef('order')).toMatch(/\/order$/);
+  expect(messageSchemaRef('ticket.receipt', 'F2S')).toMatch(/\/ticket\.receipt$/);
 });

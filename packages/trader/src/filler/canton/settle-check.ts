@@ -171,7 +171,11 @@ function checkAllocationFactories(nodes: readonly TransactionNode[], admin: stri
   const registries = registryPackagesOf(pinned);
   const guardians = registryGuardiansOf(pinned);
   for (const n of nodes) {
-    if (n.kind === 'exercise' && n.choice === ALLOCATE && !isRegistryFactory(n, admin, registries, guardians)) {
+    if (n.kind !== 'exercise' || n.choice !== ALLOCATE) continue;
+    if (qualified(n.interfaceId) !== 'Splice.Api.Token.AllocationInstructionV2:AllocationFactory') {
+      refuse('the receipt allocation does not exercise the AllocationFactory interface');
+    }
+    if (!isRegistryFactory(n, admin, registries, guardians)) {
       refuse(`the allocation factory ${n.templateId} is not of a pinned registry of ${admin}`);
     }
   }
