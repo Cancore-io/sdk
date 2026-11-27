@@ -15,6 +15,7 @@ import { assertNever, makeFailure, tradingNetwork } from './network';
 import { dec, fmt, SCALE } from './decimal';
 import { listen, RpcFault, type IpcServer } from './ipc/server';
 import { flag, loadConfig, paths, type BotConfig } from './config';
+import { booked, bookedOnOtherTerms, takeCalledOff, type Taken } from './booking';
 import { ERROR, INTENT_ORDER_PREFIX, JSONRPC_VERSION, RISK_CLASS, type Method, type RiskClass, type Params, type Result, type RpcRequest, type RpcResponse } from './protocol/index';
 import type { AuditEntry, AuditLog, BotSigner, BotState, Decision, Engine, EngineHooks, Keystore, Limits, OrderInfo, OrderIntent, RiskGate, StrategyOrder, StrategyRecord } from './types';
 
@@ -136,8 +137,6 @@ type Entry = { method: Method; riskClass: RiskClass; params: unknown };
 
 type Tag = { id: string; slot: string };
 const strategyStopped = (s: BotState, tag?: Tag) => tag !== undefined && s.strategies?.find((r) => r.strategyId === tag.id)?.status === 'stopped';
-
-type Taken = { base: string; quote: string; side: 'buy' | 'sell'; amount: string; price: string };
 
 /**
  * Someone else's order as a trade of ours on an allowed pair: the taker receives the order's source
@@ -689,19 +688,23 @@ export function createDispatcher(deps: Deps): Dispatcher {
       case 'order.take': {
         const params = p as Params<'order.take'>;
         const e = needEngine();
+        const wasBooked = booked(state, params.orderId);
         const result = await e.take(params);
         // On the book until it settles: it counts against open orders and the worst-case position.
         // Booked in the same write that re-checks pause: a pause that landed since the gate drops the
         // queued take (as make's adoptOrCancel does); one already in flight is a trade and is booked.
         const view = taken!;
-        let dropped = false;
+        let dropped: { paused: boolean } | undefined;
         await mutate((s) => {
-          if ((s.paused || engine !== e) && e.untake(params.orderId)) return (dropped = true), s;
-          if (s.openOrders.some((o) => o.orderId === params.orderId)) return s;
+          if ((s.paused || engine !== e) && e.untake(params.orderId)) return (dropped = { paused: s.paused }), s;
+          if (booked(s, params.orderId)) return s;
+          // BUG-1637: booked before this take and unbooked since (pause, cancelAll, release): booking it again would hold
+          // a slot no queued take fills, unless its accept is already out.
+          if (wasBooked && (e.untake(params.orderId) || !e.mayBeTrade(params.orderId))) return (dropped = { paused: s.paused }), s;
           takenWith.set(params.orderId, e);
           return { ...s, openOrders: [...s.openOrders, { orderId: params.orderId, pair: `${view.base}/${view.quote}`, side: view.side, amount: view.amount, price: view.price, taken: true }] };
         });
-        if (dropped) throw engine === e ? new RpcFault(ERROR.PAUSED, 'paused: the take was called off') : new RpcFault(ERROR.LOCKED, 'locked: the take was called off');
+        if (dropped) throw takeCalledOff(engine !== e, dropped.paused);
         return result;
       }
       case 'strategy.start': {
@@ -873,11 +876,11 @@ export function createDispatcher(deps: Deps): Dispatcher {
       try {
         taken = info?.status === 'open' ? takeView(info, limits.allowedPairs) : undefined;
         // Partial takes do not exist: the amount asked must be the whole order, or the agent would get more than it asked for.
-        whole = !!taken && dec(taken.amount) === dec(params.amount);
+        whole = !!taken && dec(taken.amount) === dec(params.amount) && !bookedOnOtherTerms(state.openOrders, params.orderId, taken);
       } catch {
         taken = undefined;
       }
-      // The candidate replaces its own reservation for the limit check.
+      // The candidate replaces its own reservation for the limit check (only one booked on the same terms: whole above).
       const openOrders = state.openOrders.filter((order) => !order.taken || order.orderId !== params.orderId);
       decision = whole ? checkTake(params, taken!, { ...state, openOrders }, limits, now) : { allow: false, reason: 'no_rule' };
     } else {

@@ -384,6 +384,28 @@ test('BUG-1637 a definitively refused take stays idle until an explicit retry', 
   await handle.stop();
 });
 
+test('BUG-1637 a take accepted here that another account ends up with is forgotten: not queued, never a trade', async () => {
+  const theirs = order('lost', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
+  const { acct } = account([theirs], async () => {
+    throw new Error('unused');
+  });
+  (acct as unknown as { take: (id: string, o: SettleRun) => Promise<Settled> }).take = async (_id, o) => {
+    if (o.beforeAccept && !o.beforeAccept()) throw Object.assign(new Error('called off'), { name: 'TakeCancelledError' });
+    o.onAccepted?.();
+    throw new Error('allocate failed');
+  };
+  const handle = serve(acct, { concurrency: 1, reconcileMs: 5 }, noneLocked);
+  try {
+    handle.take('lost');
+    await until(() => handle.mayBeTrade('lost'));
+    Object.assign(theirs, { status: 'accepted', opponentUserId: 'other' });
+    await until(() => !handle.mayBeTrade('lost'));
+    expect(handle.untake('lost')).toBe(false);
+  } finally {
+    await handle.stop();
+  }
+});
+
 test('BUG-1637 retries a retryable take on the next reconcile without an explicit take', async () => {
   const theirs = order('temporary', { status: 'open', initiatorUserId: 'them', opponentUserId: null as never });
   let attempts = 0;

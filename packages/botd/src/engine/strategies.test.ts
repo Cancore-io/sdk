@@ -1284,7 +1284,44 @@ describe('owner release of a booked take (CAN-2836)', () => {
     const w = await tookA();
     await w.call('orders.cancelAll', {}, false);
     expect(w.untaken).toContain('A');
+    expect(w.cancelled).toEqual([]);
     expect(w.state().openOrders).toEqual([]);
+  });
+
+  it('BUG-1637 a repeat take on the same terms written another way keeps its one reservation', async () => {
+    const w = await tookA();
+    w.infos.A = { ...someoneElses, sourceAmount: '1.0000000000', targetAmount: '0.1500' };
+    await expect(w.call('order.take', { orderId: 'A', amount: '1' }, false)).resolves.toMatchObject({ result: { orderId: 'A' } });
+    expect(w.state().openOrders.map((o) => o.orderId)).toEqual(['A']);
+  });
+
+  it.each([
+    ['another amount', { sourceAmount: '2', targetAmount: '0.3' }, '2'],
+    ['another price', { targetAmount: '0.16' }, '1'],
+    ['the other side', { source: 'USDCx', sourceAmount: '0.15', target: 'CC', targetAmount: '1' }, '1'],
+  ])('BUG-1637 a repeat take on %s than its booking is refused, the booking left as it was', async (_name, terms, amount) => {
+    const w = await tookA();
+    w.infos.A = { ...someoneElses, ...terms };
+    await expect(w.call('order.take', { orderId: 'A', amount }, false)).rejects.toMatchObject({ data: { reason: 'no_rule' } });
+    expect(w.state().openOrders).toEqual([expect.objectContaining({ orderId: 'A', amount: '1', taken: true })]);
+  });
+
+  it.each([
+    ['pause', { code: ERROR.PAUSED }],
+    ['orders.cancelAll', { code: ERROR.INVALID_PARAMS, data: { reason: 'cancelled' } }],
+  ] as const)('BUG-1637 a repeat take whose booking %s drops before the take is booked is called off, not booked again', async (method, fault) => {
+    const w = await tookA();
+    let book!: () => void;
+    w.crash.takeHold = new Promise<void>((r) => (book = r));
+    const atTake = new Promise<void>((r) => (w.crash.atTake = r));
+    const outcome = w.call('order.take', { orderId: 'A', amount: '1' }, false).then(() => 'booked', (err: unknown) => err);
+    await atTake;
+    await w.call(method, method === 'pause' ? { reason: 'owner stop' } : {}, false);
+    expect(w.state().openOrders).toEqual([]);
+    book();
+    expect(await outcome).toMatchObject(fault);
+    expect(w.state().openOrders).toEqual([]);
+    expect(w.crash.queued?.has('A')).toBe(false);
   });
 
   it('taking the order again after an unlock does not vouch for the earlier booking: pause and release keep both', async () => {

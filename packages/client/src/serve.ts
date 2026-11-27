@@ -147,6 +147,7 @@ export function serve(acct: SelfCustodyAccount, options: ServeOptions = {}, lock
   const done = new Set<string>();
   const finish = (orderId: string, swapId?: string | null) => {
     for (const set of [toTake, accepting, accepted, ambiguous, refused]) set.delete(orderId);
+    // shortcut: a swap forgotten here can get a second `expired` once its order leaves `done` (DONE_LIMIT) while still locked; keep unfinished expired swaps in `reported` if that duplicate matters.
     if (swapId) reported.delete(swapId);
     done.add(orderId);
     if (done.size > DONE_LIMIT) done.delete(done.values().next().value!);
