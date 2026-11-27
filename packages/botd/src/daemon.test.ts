@@ -1,8 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createDispatcher, defaultDeps, start, type Deps } from './daemon';
 import { connect } from './ipc/client';
+import { main as runCli } from './cli';
+import { openLockedAudit } from './state-lock';
 import { DEFAULTS, loadConfig } from './config';
 import { ERROR, JSONRPC_VERSION, type Method, type RpcRequest } from './protocol/index';
 import type { BotState, Limits } from './types';
@@ -205,6 +207,51 @@ describe('start', () => {
   let dir: string;
   beforeEach(() => (dir = mkdtempSync(join(tmpdir(), 'botd-d-'))));
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('BUG-1623 closes the owner socket and audit if the agent socket cannot start', async () => {
+    const { deps } = fakeDeps([]);
+    const config = {
+      ...DEFAULTS, clientsGroup: undefined as never, agentSocket: join(dir, 'occupied'), ownerSocket: join(dir, 'owner.sock'),
+    };
+    writeFileSync(config.agentSocket, 'fixture');
+    await expect(start(config, deps)).rejects.toThrow(/not a socket/);
+    expect(() => statSync(config.ownerSocket)).toThrow(/ENOENT/);
+    expect(deps.audit.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('BUG-1623 locks before touching audit and releases after an audit open fails', async () => {
+    const path = join(dir, 'audit.jsonl');
+    const otherAudit = join(dir, 'other-audit.jsonl');
+    const audit = await openLockedAudit(dir, path);
+    try {
+      expect(statSync(join(dir, 'daemon.lock.sqlite')).mode & 0o777).toBe(0o600);
+      await expect(openLockedAudit(dir, otherAudit)).rejects.toThrow(/Cannot lock/);
+      expect(() => statSync(otherAudit)).toThrow(/ENOENT/);
+    } finally {
+      await audit.close();
+    }
+
+    mkdirSync(otherAudit);
+    await expect(openLockedAudit(dir, otherAudit)).rejects.toThrow();
+    const reopened = await openLockedAudit(dir, path);
+    await reopened.close();
+  });
+
+  it('BUG-1623 audit verify reports a torn file without recovery through the CLI', async () => {
+    const config = join(dir, 'config.json');
+    const journal = join(dir, 'audit.jsonl');
+    const torn = Buffer.from('{"seq":');
+    writeFileSync(config, JSON.stringify({ stateDir: dir }), { mode: 0o600 });
+    writeFileSync(journal, torn, { mode: 0o600 });
+    const output = jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await expect(runCli(['--config', config, 'audit', 'verify'])).resolves.toBe(3);
+    } finally {
+      output.mockRestore();
+    }
+    expect(readFileSync(journal)).toEqual(torn);
+    expect(readdirSync(dir).sort()).toEqual(['audit.jsonl', 'config.json']);
+  });
 
   it('serves owner methods only on the owner socket', async () => {
     const { deps } = fakeDeps([]);

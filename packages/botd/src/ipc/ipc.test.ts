@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'fs';
+import { mkdtempSync, renameSync, rmSync, statSync } from 'fs';
 import { createConnection, createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -60,12 +60,30 @@ describe('ipc server', () => {
     await expect(listen(path, jest.fn(), { group: 'missing-bug-1623-test-group' })).rejects.toThrow();
     expect(() => statSync(path)).toThrow(/ENOENT/);
   });
-  it('applies the requested socket mode and replaces a stale socket file', async () => {
+  it('BUG-1623 replaces a stale socket and applies the requested mode', async () => {
     const path = join(dir, 's.sock');
-    writeFileSync(path, 'stale');
+    const previousPath = join(dir, 'previous.sock');
+    const previous = await listen(previousPath, jest.fn());
+    try {
+      renameSync(previousPath, path);
+    } finally {
+      await previous.close();
+    }
     server = await listen(path, async () => ({ jsonrpc: JSONRPC_VERSION, id: 1, result: status as never }), { mode: 0o660 });
     expect(statSync(path).mode & 0o777).toBe(0o660);
     expect(statSync(path).isSocket()).toBe(true);
+  });
+
+  it('BUG-1623 preserves a live socket and its listener', async () => {
+    const path = join(dir, 's.sock');
+    server = await listen(path, async (r) => ({ jsonrpc: JSONRPC_VERSION, id: r.id, result: status as never }));
+    await expect(listen(path, jest.fn())).rejects.toThrow(/already in use/);
+    const client = await connect(path);
+    try {
+      await expect(client.call('status', {})).resolves.toEqual(status);
+    } finally {
+      client.close();
+    }
   });
 
   it('defaults to 0600', async () => {
