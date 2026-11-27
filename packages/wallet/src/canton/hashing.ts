@@ -34,7 +34,7 @@ import {
   type Value,
 } from '@canton-network/core-ledger-proto';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
+import { utf8ToBytes } from '@noble/hashes/utils.js';
 
 /** `HashPurpose.PreparedSubmission` = 48, as int32BE. */
 const PREPARED_TRANSACTION_PURPOSE = Uint8Array.of(0, 0, 0, 48);
@@ -240,7 +240,12 @@ export const cantonHash = (purpose: number, data: Uint8Array): Uint8Array => con
 
 /** The input of the topology multihash: int32(n) ‖ (int32(len) ‖ hash) for the hashes in hex order. */
 export function multiHashInput(hashes: readonly Uint8Array[]): Uint8Array {
-  const sorted = [...hashes].sort((a, b) => bytesToHex(a).localeCompare(bytesToHex(b)));
+  const sorted = [...hashes].sort((a, b) => {
+    for (let i = 0; i < Math.min(a.length, b.length); i++) {
+      if (a[i] !== b[i]) return a[i]! - b[i]!;
+    }
+    return a.length - b.length;
+  });
   return concat(int32(sorted.length), ...sorted.flatMap((h) => [int32(h.length), h]));
 }
 

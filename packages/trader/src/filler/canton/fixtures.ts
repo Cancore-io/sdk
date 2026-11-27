@@ -42,7 +42,7 @@ export const cat = (...parts: Uint8Array[]) => {
 export const cantonHash = (purpose: number, bytes: Uint8Array) => cat(new Uint8Array([0x12, 0x20]), sha256(cat(int32(purpose), bytes)));
 /** MultiTopologyTransaction: purpose 55 over int32(n) ‖ (int32(len) ‖ hash) for the hashes sorted. */
 export const multiHash = (txs: Uint8Array[]) => {
-  const hashes = txs.map((t) => cantonHash(11, t)).sort((a, b) => bytesToHex(a).localeCompare(bytesToHex(b)));
+  const hashes = txs.map((t) => cantonHash(11, t)).sort(Buffer.compare);
   return cantonHash(55, cat(int32(hashes.length), ...hashes.flatMap((h) => [int32(h.length), h])));
 };
 
