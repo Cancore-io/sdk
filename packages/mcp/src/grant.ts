@@ -1,5 +1,6 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 /**
@@ -33,7 +34,7 @@ type GrantFile = Record<string, Grant>;
 
 export function defaultGrantPath(): string {
   const home = homedir();
-  if (!home) return join(tmpdir(), 'cancore-mcp-grants.json');
+  if (!home) throw new Error('No home directory for the MCP grant file');
   return join(home, '.config', 'cancore-mcp', 'grants.json');
 }
 
@@ -54,21 +55,32 @@ export function loadGrant(path: string, baseUrl: string, nowSeconds = Math.floor
   return grant;
 }
 
+function writeGrants(path: string, file: GrantFile): void {
+  const temp = `${path}.${randomUUID()}.tmp`;
+  const fd = openSync(temp, 'wx', 0o600);
+  try {
+    try {
+      writeFileSync(fd, `${JSON.stringify(file, null, 2)}\n`);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temp, path);
+  } finally {
+    rmSync(temp, { force: true });
+  }
+}
+
 /** Record the grant for one stand, leaving the other stands' grants alone. */
 export function saveGrant(path: string, baseUrl: string, grant: Omit<Grant, 'obtainedAt'>): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const file = readFile(path);
   file[baseUrl] = { ...grant, obtainedAt: Math.floor(Date.now() / 1000) };
-  writeFileSync(path, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
-  // writeFileSync only applies `mode` when it creates the file; an existing
-  // file keeps whatever it had, which may be 0644 from an older writer.
-  chmodSync(path, 0o600);
+  writeGrants(path, file);
 }
 
 export function forgetGrant(path: string, baseUrl: string): void {
   const file = readFile(path);
   if (!(baseUrl in file)) return;
   delete file[baseUrl];
-  writeFileSync(path, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
-  chmodSync(path, 0o600);
+  writeGrants(path, file);
 }

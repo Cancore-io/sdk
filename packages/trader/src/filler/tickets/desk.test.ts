@@ -454,6 +454,20 @@ describe('the offer stage: the hook decides, before acceptBy', () => {
     await h.filler.stop();
   });
 
+  test('CAN-3797 TC-SDK-3797-U-09: PRICE_MOVED with its claim — ticket.decline carries midE18 and shiftBps; a malformed claim is dropped, the decline still goes', async () => {
+    const h = await harness({ hook: async () => ({ decline: 'PRICE_MOVED', midE18: 998_500_000_000_000_000n, shiftBps: 40 }) });
+    await consent(h);
+    expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ reason: 'PRICE_MOVED', midE18: '998500000000000000', shiftBps: 40 })]);
+    await h.filler.stop();
+    const bad = await harness({ hook: async () => ({ decline: 'PRICE_MOVED', midE18: 0n, shiftBps: 40 }) });
+    await consent(bad);
+    const [decline] = bad.sent('ticket.decline');
+    expect(decline).toMatchObject({ reason: 'PRICE_MOVED' });
+    expect(decline).not.toHaveProperty('midE18');
+    expect(decline).not.toHaveProperty('shiftBps');
+    await bad.filler.stop();
+  });
+
   test('a plain "decline" is OTHER', async () => {
     const h = await harness({ hook: async () => 'decline' });
     await consent(h);

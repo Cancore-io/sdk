@@ -43,6 +43,7 @@ import {
 } from '@cancore/contracts';
 import { isEvmChainId, type EvmChainId } from './chains';
 import type { EventSink, FillerStage } from './events';
+import { reconfirmOutcome, type ReconfirmDecision } from './price-moved';
 import type { Delivery, FillerProtocolClient } from './protocol/client';
 import type { Unsealed } from './protocol/envelope';
 import { QuoteTimings } from './quote-timings';
@@ -148,7 +149,9 @@ export type QuoteSkipReason =
   | 'disconnected';
 
 /** The decline reasons of a `quote.reconfirm`. */
-export type ReconfirmDeclineReason = 'paused' | 'malformed' | 'no-fill-key' | 'price-changed' | 'declined' | 'hook-failed';
+export type ReconfirmDeclineReason = 'paused' | 'malformed' | 'no-fill-key' | 'price-changed' | 'price-moved' | 'declined' | 'hook-failed';
+
+type PriceMovedFields = Pick<QuoteReconfirmReply, 'reason' | 'midE18' | 'shiftBps'>;
 
 // ---------------------------------------------------------------------------
 // The desk
@@ -175,7 +178,7 @@ export interface QuoteDeskOptions {
   events: EventSink;
   nextId: () => string;
   onQuoteRequest: () => ((request: FillerQuoteRequest) => Promise<QuoteDecisionInput | null>) | undefined;
-  onReconfirm: () => ((reconfirm: FillerReconfirm) => Promise<boolean>) | undefined;
+  onReconfirm: () => ((reconfirm: FillerReconfirm) => Promise<ReconfirmDecision>) | undefined;
   minInput: MinInputSource;
   /** Seconds a reconfirmed price stays firm beyond `replyBy + ticketTtl`. */
   reconfirmMarginS: number;
@@ -336,9 +339,9 @@ export class QuoteDesk {
     }
     if (this.options.clock.now() >= replyBy) return { skipped: 'late' };
 
-    const decline = (reason: ReconfirmDeclineReason) => {
-      this.options.logger.info('quotes: reconfirm declined', { orderHash, reason });
-      return this.reply({ type: 'quote.reconfirm.reply', id: this.options.nextId(), orderHash, accept: false }, replyBy, reason);
+    const decline = (reason: ReconfirmDeclineReason, priceMoved?: PriceMovedFields) => {
+      this.options.logger.info('quotes: reconfirm declined', { orderHash, reason, midE18: priceMoved?.midE18, shiftBps: priceMoved?.shiftBps });
+      return this.reply({ type: 'quote.reconfirm.reply', id: this.options.nextId(), orderHash, accept: false, ...priceMoved }, replyBy, reason);
     };
 
     const order = reconfirm.order as OrderJson | undefined;
@@ -361,17 +364,8 @@ export class QuoteDesk {
     if (!this.fillerForOrder(origin, order.destination)) return decline('no-fill-key');
     if ((await this.options.store.getOverrides()).paused) return decline('paused');
 
-    const hook = this.options.onReconfirm();
-    if (!hook) return decline('hook-failed');
-    let accept: boolean;
-    try {
-      const payout = payoutOf(total, Number(feeBps));
-      accept = (await hook({ ...reconfirm, payout, fee: total - payout })) === true;
-    } catch (error) {
-      this.options.logger.error('quotes: onReconfirm threw', { orderHash, error: String(error) });
-      return decline('hook-failed');
-    }
-    if (!accept) return decline('declined');
+    const answer = await this.askHook(reconfirm, orderHash, payoutOf(total, Number(feeBps)), total);
+    if (answer !== true) return decline(answer.reason, answer.priceMoved);
     if (this.options.clock.now() >= replyBy) return { skipped: 'late' };
 
     const validUntil = BigInt(Math.ceil(replyBy / 1000) + ticketTtl + this.options.reconfirmMarginS);
@@ -397,6 +391,19 @@ export class QuoteDesk {
       sentAtMs: this.options.clock.now(),
     });
     return this.send(sealed, replyBy, 'accepted');
+  }
+
+  /** The hook's answer: accept, or why not — a `PRICE_MOVED` refusal with the claim it carries (§3.5). */
+  private async askHook(reconfirm: QuoteReconfirm, orderHash: Hex, payout: bigint, total: bigint): Promise<true | { reason: ReconfirmDeclineReason; priceMoved?: PriceMovedFields }> {
+    const hook = this.options.onReconfirm();
+    if (!hook) return { reason: 'hook-failed' };
+    try {
+      const decision = await hook({ ...reconfirm, payout, fee: total - payout });
+      return reconfirmOutcome(decision, () => this.options.logger.warn('quotes: PRICE_MOVED claim of the hook dropped', { orderHash }));
+    } catch (error) {
+      this.options.logger.error('quotes: onReconfirm threw', { orderHash, error: String(error) });
+      return { reason: 'hook-failed' };
+    }
   }
 
   // -- reconciliation ---------------------------------------------------------

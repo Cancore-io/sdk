@@ -15,6 +15,7 @@ import {
 import { createFiller } from './filler';
 import type { Delivery, FillerProtocolClient } from './protocol/client';
 import { createSealer, type Sealer } from './protocol/envelope';
+import type { ReconfirmDecision } from './price-moved';
 import type { QuoteListItem } from './protocol/rest';
 import { cantonFillerPayout, evmFillerPayout, QuoteDesk, type FillerQuoteRequest, type FillerReconfirm, type QuoteDeskOptions, type QuoteDecisionInput } from './quotes';
 import { recoverAddress, recoverTypedDataSigner, type FillSigner } from './signer';
@@ -137,7 +138,7 @@ function fakeProtocol(store: InMemoryFillerStore, seal: Sealer) {
   return protocol;
 }
 
-function desk(over: Partial<QuoteDeskOptions> & { hook?: (r: FillerQuoteRequest) => Promise<QuoteDecisionInput | null>; reconfirm?: (r: FillerReconfirm) => Promise<boolean> } = {}) {
+function desk(over: Partial<QuoteDeskOptions> & { hook?: (r: FillerQuoteRequest) => Promise<QuoteDecisionInput | null>; reconfirm?: (r: FillerReconfirm) => Promise<ReconfirmDecision> } = {}) {
   const clock = new FakeClock();
   const store = new InMemoryFillerStore(clock);
   const logger = createRecordingLogger();
@@ -521,6 +522,37 @@ describe('quote.reconfirm → onReconfirm → quote.reconfirm.reply (T-20)', () 
     const reply = h.protocol.sent[0] as QuoteReconfirmReply;
     expect(reply).toMatchObject({ accept: false });
     expect(reply.sig).toBeUndefined();
+    expect(reply).not.toHaveProperty('reason');
+    expect(reply).not.toHaveProperty('midE18');
+  });
+
+  test('CAN-3797 TC-SDK-3797-U-07: the hook answers PRICE_MOVED — the sealed decline carries reason, midE18 and shiftBps, and no FillerQuote', async () => {
+    const h = desk({ reconfirm: async () => ({ decline: 'PRICE_MOVED', midE18: 998_500_000_000_000_000n, shiftBps: 12 }) });
+    await h.desk.onReconfirm(delivery(reconfirm(h.clock)));
+    const reply = h.protocol.sent[0] as QuoteReconfirmReply;
+    expect(reply).toEqual({
+      type: 'quote.reconfirm.reply', id: expect.any(String), orderHash: ORDER_HASH, accept: false, reason: 'PRICE_MOVED', midE18: '998500000000000000', shiftBps: 12,
+      fillerId: FILLER, sentAt: h.clock.now(), msgSig: expect.any(String),
+    });
+    // the claim is inside the envelope the message key signs
+    expect(recoverAddress(hashFillerMessage(reply), reply.msgSig)).toBe(h.quoteSigner.address);
+  });
+
+  test('CAN-3797 a throwing decision getter produces a hook-failed decline', async () => {
+    const h = desk({ reconfirm: async () => ({ get decline(): 'PRICE_MOVED' { throw new Error('broken decision'); }, midE18: 1n, shiftBps: 1 }) });
+    await expect(h.desk.onReconfirm(delivery(reconfirm(h.clock)))).resolves.toMatchObject({ reply: { accept: false } });
+    expect(h.protocol.sent).toHaveLength(1);
+    expect(h.protocol.sent[0]).not.toHaveProperty('reason');
+    expect(h.logger.entries).toContainEqual(expect.objectContaining({ level: 'error', message: 'quotes: onReconfirm threw' }));
+  });
+
+  test('CAN-3797 TC-SDK-3797-U-08: a malformed claim is dropped — the decline still says PRICE_MOVED, without the claim', async () => {
+    const h = desk({ reconfirm: async () => ({ decline: 'PRICE_MOVED', midE18: 0n, shiftBps: 12 }) });
+    await h.desk.onReconfirm(delivery(reconfirm(h.clock)));
+    const reply = h.protocol.sent[0] as QuoteReconfirmReply;
+    expect(reply).toMatchObject({ accept: false, reason: 'PRICE_MOVED' });
+    expect(reply).not.toHaveProperty('midE18');
+    expect(reply).not.toHaveProperty('shiftBps');
   });
 
   test('after replyBy nothing is sent; also when the hook answers too late', async () => {
