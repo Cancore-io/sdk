@@ -17,6 +17,11 @@ const LEVEL_WEIGHT: Record<BumpLevel, number> = { major: 3, minor: 2, patch: 1 }
 type Candidate = { level: BumpLevel; rationale: string };
 
 const normalize = (text: string) => text.replace(/\r\n/g, '\n');
+// Each message GitHub lists in a squash commit starts `* <release type>: …`; a plain Markdown bullet, even `* Note: …`, does not.
+const isSquashedMessage = (paragraph: string) => {
+  const kind = paragraph.startsWith('* ') ? CONVENTIONAL_SUBJECT_RE.exec(paragraph.slice(2))?.[1]?.toLowerCase() : undefined;
+  return kind === 'feat' || PATCH_TYPES.has(kind ?? '');
+};
 const subjectOf = (message: string) => (normalize(message).split('\n')[0] ?? '').trim();
 
 function trailingOverride(paragraphs: string[]): BumpLevel | null {
@@ -32,20 +37,26 @@ function trailingOverride(paragraphs: string[]): BumpLevel | null {
   return null;
 }
 
+function squashedMessages(paragraphs: string[]): string[][] {
+  const footer = paragraphs.at(-1);
+  const generatedFooter = paragraphs.at(-2) === '---------' && footer?.split('\n').every((line) => AUTHOR_TRAILER_RE.test(line));
+  const messages: string[][] = [];
+  for (const paragraph of paragraphs.slice(1, generatedFooter ? -2 : undefined)) {
+    if (isSquashedMessage(paragraph)) messages.push([paragraph]);
+    else messages.at(-1)?.push(paragraph);
+  }
+  return messages;
+}
+
 export function parseBumpLevel(text: string): BumpLevel | null {
-  const paragraphs = normalize(text).trimEnd().split(/\n[ \t]*\n/);
+  const paragraphs = normalize(text).trimEnd().split(/\n(?:[ \t]*\n)+/);
   // GitHub squash commits can carry several commit messages and a generated co-author footer.
-  if (!/ \(#\d+\)$/.test(paragraphs[0] ?? '') || !paragraphs[1]?.startsWith('* ')) {
+  if (!/ \(#\d+\)$/.test(paragraphs[0] ?? '') || !isSquashedMessage(paragraphs[1] ?? '')) {
     return trailingOverride(paragraphs);
   }
-  const footer = paragraphs.at(-1);
-  if (paragraphs.at(-2) === '---------' && footer?.split('\n').every((line) => AUTHOR_TRAILER_RE.test(line))) {
-    paragraphs.splice(-2);
-  }
-  const commits = paragraphs.slice(1).join('\n\n').split(/\n\n(?=\* )/);
   let best: BumpLevel | null = null;
-  for (const commit of commits) {
-    const level = trailingOverride(commit.split('\n\n'));
+  for (const message of squashedMessages(paragraphs)) {
+    const level = trailingOverride(message);
     if (level && (!best || LEVEL_WEIGHT[level] > LEVEL_WEIGHT[best])) best = level;
   }
   return best;

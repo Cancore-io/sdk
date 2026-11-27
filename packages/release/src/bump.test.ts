@@ -12,6 +12,17 @@ describe('parseBumpLevel: the trailer', () => {
       'fix: handle token (#267)\n\n* fix: earlier change\n\nRelease-Bump: major\nCo-Authored-By: Dev <dev@example.test>\n\n* fix: later change\n\nRelease-Bump: patch\n\n---------\n\nCo-authored-by: Dev <dev@example.test>', 'major'],
     ['BUG-1641 accepts a compact trailer', 'fix: example\n\nRelease-Bump:minor', 'minor'],
     ['BUG-1641 uses the footer after a body example', 'fix: cleanup\n\nRelease-Bump: major\n\nRelease-Bump: patch', 'patch'],
+    ['BUG-1641 keeps a later higher squash override above the generated footer',
+      'fix: x (#5)\n\n* fix: earlier\n\nRelease-Bump: patch\n\n* fix: later\n\nRelease-Bump: major\n\n---------\n\nCo-authored-by: Dev <dev@example.test>', 'major'],
+    ['BUG-1641 keeps a later higher squash override with no generated footer',
+      'fix: x (#5)\n\n* fix: earlier\n\nRelease-Bump: patch\n\n* fix: later\n\nRelease-Bump: major', 'major'],
+    ['BUG-1641 starts a squashed message at a feat bullet too',
+      'feat: x (#5)\n\n* fix: earlier\n\nRelease-Bump: major\n\n* feat: later\n\nBody.', 'major'],
+    ['BUG-1641 keeps a squashed message\'s own co-author paragraph apart from the generated footer',
+      'fix: x (#5)\n\n* fix: earlier\n\nRelease-Bump: patch\n\n* fix: later\n\nRelease-Bump: major\n\nCo-authored-by: Dev <dev@example.test>', 'major'],
+    ['BUG-1641 accepts folded trailer metadata', 'fix: x\n\nWhy.\n\nReviewed-by: Dev <dev@example.test>\n  on behalf of the team\nRelease-Bump: minor', 'minor'],
+    ['BUG-1641 reads a whitespace-only line as a blank line', 'fix: x\n\nWhy.\n \t\nRelease-Bump: minor', 'minor'],
+    ['BUG-1641 reads the trailer after two blank lines', 'fix: x\n\nBody.\n\n\nRelease-Bump: major\n', 'major'],
     ['Release-Bump minor', 'fix(x): y\n\nbody text\n\nRelease-Bump: minor\n', 'minor'],
     ['Release-Bump, any case', 'fix(x): y\n\nRELEASE-BUMP: Major\n', 'major'],
     ['Release-Bump patch', 'fix(x): y\n\nrelease-bump: patch\n', 'patch'],
@@ -25,6 +36,16 @@ describe('parseBumpLevel: the trailer', () => {
     ['BUG-1641 ignores an indented example block', 'fix: example\n\n  example block:\nRelease-Bump: major'],
     ['BUG-1641 ignores a body example before prose and a separate co-author',
       'fix: example\n\nRelease-Bump: major\n\nExample above.\n\nCo-authored-by: Dev <dev@example.test>'],
+    ['BUG-1641 reads a bullet body without a PR suffix as one message',
+      'fix: x\n\n* fix: bullet one\n\nRelease-Bump: major\n\n* fix: bullet two'],
+    ['BUG-1641 reads a PR subject followed by prose as one message',
+      'fix: x (#5)\n\nProse first.\n\n* fix: bullet\n\nRelease-Bump: major\n\n* fix: other'],
+    ['BUG-1641 does not split a squashed message at a plain Markdown bullet',
+      'fix: parser (#12)\n\n* fix: parser\n\nTrailer example:\n\nRelease-Bump: major\n\n* another list item\n\nExplanation.'],
+    ['BUG-1641 does not split a squashed message at a bullet that only looks like a subject',
+      'fix: x (#5)\n\n* fix: a\n\nRelease-Bump: major\n\n* Note: the example above\n\nMore.'],
+    ['BUG-1641 does not read a single squashed bullet list as several messages',
+      'fix: x (#311)\n\n* item one\n\nRelease-Bump: major\n\n* item two'],
     ['no trailer', 'fix(x): y\n\nno trailer here\n'],
     ['an invalid level is rejected, not guessed', 'fix(x): y\n\nRelease-Bump: huge\n'],
     ['a look-alike key does not match', 'fix(x): y\n\nRelease-Bumpy: minor\n'],
@@ -34,6 +55,10 @@ describe('parseBumpLevel: the trailer', () => {
 });
 
 describe('extractRationale', () => {
+  it('BUG-1641 drops a compact bump trailer from the explanation', () => {
+    expect(extractRationale('fix: x\n\nWhy.\n\nRelease-Bump:minor')).toBe('Why.');
+  });
+
   it('keeps a bare URL at the end of the explanation', () => {
     expect(extractRationale('fix: cleanup\n\nSee the failing run:\nhttps://example.test/runs/1'))
       .toBe('See the failing run:\nhttps://example.test/runs/1');
