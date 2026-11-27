@@ -18,6 +18,7 @@ type Candidate = { level: BumpLevel; rationale: string };
 
 const normalize = (text: string) => text.replace(/\r\n/g, '\n');
 // Each message GitHub lists in a squash commit starts `* <release type>: …`; a plain Markdown bullet, even `* Note: …`, does not.
+// shortcut: a squashed commit whose subject has no release type folds into the previous message and hides its trailer (RX-4), redo once sdk lints commit subjects.
 const isSquashedMessage = (paragraph: string) => {
   const kind = paragraph.startsWith('* ') ? CONVENTIONAL_SUBJECT_RE.exec(paragraph.slice(2))?.[1]?.toLowerCase() : undefined;
   return kind === 'feat' || PATCH_TYPES.has(kind ?? '');

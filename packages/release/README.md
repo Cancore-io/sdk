@@ -18,6 +18,11 @@ npx @cancore/release@0.1.0 version --channel prod --cut --cut-branch dev   # a r
   trailer (`Ring-Bump:` is read too) beats conventional commits (`feat!:`, `fix(x)!:` or a
   `BREAKING CHANGE:` footer is major, `feat` minor, `fix`/`chore`/`docs`/... patch); nothing
   declared is patch. A major resets minor and patch: `1.4.2` + breaking = `2.0.0`.
+- In a GitHub squash commit each listed message is read with its own trailer block, and a message starts
+  only at a `* <release type>: …` bullet. A squashed commit whose subject has no release type (`* Accept
+  compact trailers`) is folded into the previous message, and its body hides that message's
+  `Release-Bump:`. Put `Release-Bump:` in the final trailer block of the squash commit message (edit it
+  at merge) or use conventional subjects on every commit.
 - `--cut` runs on the cut branch only and only with `--channel prod`. The cut branch is `main`;
   `--cut-branch <name>` names another (a repo that cuts on `dev` still passes `--channel prod --cut`),
   and then `main` is refused like any other branch. A detached HEAD passes only when `GITHUB_REF` is exactly
