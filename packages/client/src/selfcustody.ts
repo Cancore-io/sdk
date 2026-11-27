@@ -1583,9 +1583,14 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   }
 
   const cashbackClaims = () => http.get<CashbackClaim[]>('/partner/cashback/claims');
+  async function postClaim(): Promise<CashbackClaim> {
+    const { claimId, status, requestedAt } = await http.post<{ claimId?: unknown } & Pick<CashbackClaim, 'status' | 'requestedAt'>>('/partner/cashback/claim');
+    if (typeof claimId !== 'string' || !claimId) throw new Error("the venue's cashback claim reply names no claimId (it answers { claimId, status, requestedAt })");
+    return { id: claimId, status, requestedAt, executedAt: null, failureReason: null };
+  }
 
   async function collect({ waitMs = DEFAULT_DELIVERY_WAIT_MS }: { waitMs?: number } = {}) {
-    let claim = await http.post<CashbackClaim>('/partner/cashback/claim');
+    let claim = await postClaim();
     const until = now() + waitMs;
     const accepted: IncomingTransfer[] = [];
     const acceptedCids = new Set<string>();
@@ -1608,9 +1613,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       }
       const pending = payouts.filter((p) => p.settlementStatus === 'expired_reclaimed' || isOpen(p)).length;
       // Payout legs are written with the claim itself, so an empty list is a claim with nothing in it.
-      if (pending === 0 || now() >= until) {
-        return { claim, accepted, failed: payouts.filter((p) => p.settlementStatus === 'failed'), pending };
-      }
+      if (pending === 0 || now() >= until) return { claim, accepted, failed: payouts.filter((p) => p.settlementStatus === 'failed'), pending };
       await sleep(pollMs);
     }
   }
@@ -1625,7 +1628,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     cashback: {
       summary: () => http.get<CashbackSummary>('/partner/cashback/me'),
       claims: cashbackClaims,
-      claim: () => http.post<CashbackClaim>('/partner/cashback/claim'),
+      claim: postClaim,
       collect,
     },
     serve: (serveOptions) =>

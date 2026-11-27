@@ -1690,10 +1690,11 @@ test('BUG-1638 collect accepts the claim’s own payouts and reports failed legs
     if (path === '/auth/challenge') return json({ challenge: 'Welcome to Cancore 2026-09-28 sig:1' });
     if (path === '/auth/login-signature') return json({ token: jwt('a'), user: {} });
     if (path === '/auth/me') return json({ id: 'me', partyId: me });
-    if (path === '/partner/cashback/claim') return json({ id: 'c1', status: 'settling' });
+    // partner-cashback.controller.ts answers the POST with { claimId, status, requestedAt }.
+    if (path === '/partner/cashback/claim') return json({ claimId: 'c1', status: 'settling', requestedAt: '2026-11-27T00:00:00Z' });
     if (path === '/partner/cashback/claims') {
-      if (++reads === 1) return json([{ id: 'c1', status: 'settling', payouts: [{ id: 'p2', tokenId: 'USDCx', settlementStatus: 'expired_reclaimed', transferInstructionCid: null }] }]);
-      return json([{ id: 'c1', status: 'settling', payouts: [
+      if (++reads === 1) return json([{ id: 'c0', status: 'executed', payouts: [{ id: 'p0', tokenId: 'CC', settlementStatus: 'accepted', transferInstructionCid: null }] }, { id: 'c1', status: 'settling', payouts: [{ id: 'p2', tokenId: 'USDCx', settlementStatus: 'expired_reclaimed', transferInstructionCid: null }] }]);
+      return json([{ id: 'c0', status: 'executed', payouts: [{ id: 'p0', tokenId: 'CC', settlementStatus: 'accepted', transferInstructionCid: null }] }, { id: 'c1', status: 'settling', payouts: [
         { id: 'p3', tokenId: 'CC', settlementStatus: 'failed', transferInstructionCid: null },
         { id: 'p1', tokenId: 'CC', settlementStatus: 'accepted', transferInstructionCid: null },
         { id: 'p2', tokenId: 'USDCx', settlementStatus: 'pending', transferInstructionCid: hexCid('ti-cashback') },
@@ -1730,7 +1731,8 @@ test('BUG-1638 collect waits for an open leg, accepts each pending instruction o
     if (path === '/auth/challenge') return json({ challenge: 'Welcome to Cancore 2026-09-28 sig:1' });
     if (path === '/auth/login-signature') return json({ token: jwt('a'), user: {} });
     if (path === '/auth/me') return json({ id: 'me', partyId: me });
-    if (path === '/partner/cashback/claim') return json({ id: 'c1', status: 'settling' });
+    // partner-cashback.controller.ts answers the POST with { claimId, status, requestedAt }.
+    if (path === '/partner/cashback/claim') return json({ claimId: 'c1', status: 'settling', requestedAt: '2026-11-27T00:00:00Z' });
     if (path === '/partner/cashback/claims') {
       const cc = leg('p4', ++reads < 3 ? 'pending' : 'accepted', null);
       return json([{ id: 'c1', status: 'settling', payouts: [...instructionLegs, cc] }]);
@@ -1763,7 +1765,8 @@ test('BUG-1638 collect that runs out of time counts a reclaimed leg as pending, 
     if (path === '/auth/challenge') return json({ challenge: 'Welcome to Cancore 2026-09-28 sig:1' });
     if (path === '/auth/login-signature') return json({ token: jwt('a'), user: {} });
     if (path === '/auth/me') return json({ id: 'me', partyId: me });
-    if (path === '/partner/cashback/claim') return json({ id: 'c1', status: 'settling' });
+    // partner-cashback.controller.ts answers the POST with { claimId, status, requestedAt }.
+    if (path === '/partner/cashback/claim') return json({ claimId: 'c1', status: 'settling', requestedAt: '2026-11-27T00:00:00Z' });
     if (path === '/partner/cashback/claims') return json([{ id: 'c1', status: 'settling', payouts: [
       { id: 'p2', tokenId: 'USDCx', settlementStatus: 'expired_reclaimed', transferInstructionCid: null },
       { id: 'p3', tokenId: 'CC', settlementStatus: 'failed', transferInstructionCid: null },
@@ -1775,6 +1778,76 @@ test('BUG-1638 collect that runs out of time counts a reclaimed leg as pending, 
   expect(result.pending).toBe(1);
   expect(result.accepted).toEqual([]);
   expect(result.failed.map((payout) => payout.id)).toEqual(['p3']);
+});
+
+test('BUG-1638 collect follows the claim the venue POST names by claimId (phd-auditor r3 RX-6 witness)', async () => {
+  const signer = await providerFromMnemonic(PHRASE);
+  const accepted: string[] = [];
+  let reads = 0;
+  const me = `party-me::${cantonFingerprint(signer.public_key)}`;
+  const ti = (contractId: string) => ({ contractId, templateId: 't', instrumentAdmin: DEV.cbtcRegistrar, instrumentId: 'CBTC', executeBefore: new Date(Date.now() + 60_000).toISOString() });
+  const fetchImpl: FetchLike = async (url, init) => {
+    const path = new URL(url).pathname;
+    if (path === '/auth/challenge') return json({ challenge: 'Welcome to Cancore 2026-09-28 sig:1' });
+    if (path === '/auth/login-signature') return json({ token: jwt('a'), user: {} });
+    if (path === '/auth/me') return json({ id: 'me', partyId: me });
+    if (path === '/partner/cashback/claim') return json({ claimId: 'c1', status: 'settling', requestedAt: '2026-11-27T00:00:00Z' });
+    if (path === '/partner/cashback/claims') {
+      reads++;
+      return json([{ id: 'c1', status: 'settling', requestedAt: '2026-11-27T00:00:00Z', executedAt: null, failureReason: null,
+        payouts: [{ id: 'p2', tokenId: 'USDCx', settlementStatus: 'pending', transferInstructionCid: hexCid('ti-pending') }] }]);
+    }
+    if (path === '/tokens/transfer-requests/incoming') return json([ti(hexCid('ti-pending'))]);
+    const body = JSON.parse(String(init.body));
+    if (path === '/wallet/operations/prepare') {
+      accepted.push(body.params.instructionCid);
+      return json({ operationId: 'op', legs: await acceptLegs(me, body.params.instructionCid), meta: null });
+    }
+    return json({ ok: true });
+  };
+  const acct = createSelfCustody({ baseUrl, signer, fetchImpl, ...fast });
+  const result = await acct.cashback.collect({ waitMs: 2_000 });
+  expect(accepted).toEqual([hexCid('ti-pending')]);
+  expect(reads).toBe(1);
+  expect(result.claim.id).toBe('c1');
+  expect(result.pending).toBe(0);
+});
+
+test('BUG-1638 cashback.claim returns the created claim under its venue id', async () => {
+  const signer = await providerFromMnemonic(PHRASE);
+  const fetchImpl: FetchLike = async (url) => {
+    const path = new URL(url).pathname;
+    if (path === '/auth/challenge') return json({ challenge: 'Welcome to Cancore 2026-09-28 sig:1' });
+    if (path === '/auth/login-signature') return json({ token: jwt('a'), user: {} });
+    if (path === '/partner/cashback/claim') return json({ claimId: 'c1', status: 'settling', requestedAt: '2026-11-27T00:00:00Z' });
+    throw new Error('unexpected ' + path);
+  };
+  const acct = createSelfCustody({ baseUrl, signer, fetchImpl, ...fast });
+  expect(await acct.cashback.claim()).toEqual({ id: 'c1', status: 'settling', requestedAt: '2026-11-27T00:00:00Z', executedAt: null, failureReason: null });
+});
+
+test.each([
+  ['the claim under id', { id: 'c1', status: 'settling' }],
+  ['an empty claimId', { claimId: '', status: 'settling' }],
+  ['a numeric claimId', { claimId: 7, status: 'settling' }],
+])('BUG-1638 a claim reply with %s is refused, never collected as an empty claim', async (_, reply) => {
+  const signer = await providerFromMnemonic(PHRASE);
+  let listReads = 0;
+  const fetchImpl: FetchLike = async (url) => {
+    const path = new URL(url).pathname;
+    if (path === '/auth/challenge') return json({ challenge: 'Welcome to Cancore 2026-09-28 sig:1' });
+    if (path === '/auth/login-signature') return json({ token: jwt('a'), user: {} });
+    if (path === '/partner/cashback/claim') return json(reply);
+    if (path === '/partner/cashback/claims') {
+      listReads++;
+      return json([{ id: 7, status: 'settling', payouts: [] }, { id: '', status: 'settling', payouts: [] }]);
+    }
+    throw new Error('unexpected ' + path);
+  };
+  const acct = createSelfCustody({ baseUrl, signer, fetchImpl, ...fast });
+  await expect(acct.cashback.claim()).rejects.toThrow(/claimId/);
+  await expect(acct.cashback.collect({ waitMs: 0 })).rejects.toThrow(/claimId/);
+  expect(listReads).toBe(0);
 });
 
 test('acceptTerms signs the exact text the API verifies', async () => {
