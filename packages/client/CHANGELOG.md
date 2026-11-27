@@ -1,5 +1,16 @@
 # Changelog — `@cancore/client`
 
+## Unreleased
+
+### Fixed
+
+- `openHtlc` and `grossAmount` throw a `RangeError` before anything is prepared on an amount the Numeric 10
+  DTO number cannot carry exactly (`'Numeric 10 amount loses precision on the wire'`, e.g.
+  `'10000000.0000000001'`) or that is not a Numeric 10 decimal at all (`'Invalid Numeric 10 amount'`:
+  negative, exponent notation, more than ten places); they used to send the rounded number (BUG-1636).
+  `proposeDvp` is unchanged: its amount field is informational, the backend builds the legs from the
+  stored order.
+
 ## 0.13.3
 
 ### Fixed
