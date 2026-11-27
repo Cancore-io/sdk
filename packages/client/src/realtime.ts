@@ -122,7 +122,14 @@ export function waitForOrder(
     const unsubscribe = orderUpdates(socket, (order) => {
       if (order.id !== id) return;
       last = order;
-      if (isTerminal(order)) settle(() => resolve(order));
+      let terminal: boolean;
+      try {
+        terminal = isTerminal(order);
+      } catch (error) {
+        settle(() => reject(error));
+        return;
+      }
+      if (terminal) settle(() => resolve(order));
     });
 
     const timer = setTimeout(() => settle(() => reject(new OrderWaitTimeoutError(id, last))), timeoutMs);
