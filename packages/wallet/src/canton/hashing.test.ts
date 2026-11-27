@@ -178,6 +178,11 @@ describe('topology multihash and base64', () => {
     expect(bytesToHex(actual)).toBe('0000000200000001aa00000001ab');
   });
 
+  test('BUG-1629 orders a shorter byte prefix before its extension', () => {
+    const actual = multiHashInput([Uint8Array.of(1, 2), Uint8Array.of(1)]);
+    expect(bytesToHex(actual)).toBe('000000020000000101000000020102');
+  });
+
   test('the purpose hash and the multihash input match the library', async () => {
     const hashes = [new Uint8Array([9, 9]), new Uint8Array([1, 2, 3])].map((b) => cantonHash(11, b));
     for (const [i, b] of [new Uint8Array([9, 9]), new Uint8Array([1, 2, 3])].entries()) {
