@@ -1,7 +1,16 @@
-import { mkdtempSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { forgetGrant, loadGrant, saveGrant } from './grant';
+import { linkSync, mkdtempSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { defaultGrantPath, forgetGrant, loadGrant, saveGrant } from './grant';
+
+jest.mock('node:fs', () => {
+  const actual = jest.requireActual<typeof import('node:fs')>('node:fs');
+  return { ...actual, openSync: jest.fn(actual.openSync), renameSync: jest.fn(actual.renameSync) };
+});
+jest.mock('node:os', () => {
+  const actual = jest.requireActual<typeof import('node:os')>('node:os');
+  return { ...actual, homedir: jest.fn(actual.homedir) };
+});
 
 const DEV = 'https://api-dev.cancore.app';
 const MAINNET = 'https://api.cancore.io';
@@ -31,6 +40,45 @@ test('one stand does not overwrite another', () => {
   forgetGrant(path, DEV);
   expect(loadGrant(path, DEV)).toBeUndefined();
   expect(loadGrant(path, MAINNET)?.token).toBe('main');
+});
+
+test('BUG-1635 replaces the file without writing new tokens into the old inode', () => {
+  const path = tempPath();
+  writeFileSync(path, '{}', { mode: 0o644 });
+  linkSync(path, path + '.old');
+  saveGrant(path, DEV, { token: 'tok', scopes: [], appName: 'Claude' });
+  expect(readFileSync(path + '.old', 'utf8')).toBe('{}');
+  expect(statSync(path).mode & 0o777).toBe(0o600);
+});
+
+test('BUG-1635 refuses the default path when there is no home directory', () => {
+  jest.mocked(homedir).mockReturnValueOnce('');
+  expect(() => defaultGrantPath()).toThrow(/No home directory/);
+});
+
+test('BUG-1635 forgets a grant by replacing the file with mode 0600', () => {
+  const path = tempPath();
+  saveGrant(path, DEV, { token: 'dev', scopes: [], appName: 'test' });
+  saveGrant(path, MAINNET, { token: 'main', scopes: [], appName: 'test' });
+  const before = readFileSync(path);
+  linkSync(path, path + '.old');
+
+  forgetGrant(path, DEV);
+
+  expect(readFileSync(path + '.old')).toEqual(before);
+  expect(statSync(path).mode & 0o777).toBe(0o600);
+  expect(loadGrant(path, DEV)).toBeUndefined();
+  expect(loadGrant(path, MAINNET)?.token).toBe('main');
+});
+
+test('BUG-1635 creates a private exclusive temporary file and removes it when rename fails', () => {
+  const path = tempPath();
+  const renameError = new Error('rename failed');
+  jest.mocked(renameSync).mockImplementationOnce(() => { throw renameError; });
+
+  expect(() => saveGrant(path, DEV, { token: 'test', scopes: [], appName: 'test' })).toThrow(renameError);
+  expect(openSync).toHaveBeenLastCalledWith(expect.stringMatching(/grants\.json\..+\.tmp$/), 'wx', 0o600);
+  expect(readdirSync(dirname(path))).toEqual([]);
 });
 
 test('the file is 0600 even when it already existed with looser permissions', () => {
