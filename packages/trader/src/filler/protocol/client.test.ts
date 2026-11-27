@@ -940,11 +940,71 @@ describe('REST fallback (protocol §3.6)', () => {
     expect(h.http.requests.filter((r) => new URL(r.url).pathname === '/v1/filler/auth')).toHaveLength(2);
   });
 
-  test.each([{ intentHash: ORDER_HASH }, { attempt: 2 }, { re: 'another-request' }, { sentAt: 0 }])('BUG-1628 refuses an unrelated or stale ticket intent acknowledgement %j', async (override) => {
+  test.each([
+    { intentHash: ORDER_HASH },
+    { attempt: 2 },
+    { re: 'another-request' },
+    { orderHash: `0x${'22'.repeat(32)}`, re: 'i-1' },
+    { type: 'quote.ack', re: 'i-1' },
+  ])('BUG-1628 refuses an unrelated ticket intent acknowledgement %j', async (override) => {
     const h = harness();
     const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1, intentHash: hashTicketIntent(intent()), receivedAt: h.clock.now(), ...override });
     h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/intent`] = () => ({ status: 200, body: ack });
     await expect(h.rest.postTicket({ action: 'intent', message: intent() })).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE' });
+  });
+
+  test.each([-30_001, -30_000, 30_000, 30_001])('BUG-1628 applies the symmetric REST acknowledgement window at offset %i', async (offset) => {
+    const h = harness();
+    const ack = h.gateway.frame({
+      type: 'ticket.intent.ack', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1,
+      re: intent().id, sentAt: h.clock.now() + offset,
+    });
+    h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/intent`] = () => ({ status: 200, body: ack });
+
+    const result = h.rest.postTicket({ action: 'intent', message: intent() });
+    if (Math.abs(offset) === 30_000) await expect(result).resolves.toMatchObject({ frame: { sig: ack.sig } });
+    else await expect(result).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE' });
+  });
+
+  test('BUG-1628 createFiller forwards its transport age to REST acknowledgements', async () => {
+    const h = harness();
+    const validToken = jest.spyOn(GatewayRest.prototype, 'validToken');
+    try {
+      const filler = createFiller({
+        gatewayUrl: URL_,
+        fillerId: FILLER,
+        gatewaySigner: h.gateway.address,
+        ticketSigners: [h.gateway.address],
+        quoteSigner: h.quoteSigner,
+        fillSigners: { 'eip155:1': { ...createTestTypedDataSigner(FILL_KEY), signTransaction: async () => '0x02' } },
+        rpc: { 'eip155:1': [new FakeEvmRpc()] },
+        chains: { 'eip155:1': { router: '0x3333333333333333333333333333333333333333', openConfirmations: 3, maxHeadLagBlocks: 5, minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 30, minGasWei: 10n ** 15n } },
+        tickets: { deltaIssueMs: 3_000 },
+        store: h.store,
+        webSocket: h.ws.factory,
+        fetch: h.http.fetch,
+        clock: h.clock,
+        instanceId: 'replica-1',
+        transport: { maxMessageAgeMs: 60_000 },
+      });
+      await filler.restToken();
+      const rest = validToken.mock.contexts[0] as GatewayRest;
+
+      const path = `POST /v1/filler/tickets/${ORDER_HASH}/1/intent`;
+      const replyAt = (age: number) => ({
+        status: 200,
+        body: h.gateway.frame({
+          type: 'ticket.intent.ack', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1,
+          re: intent().id, sentAt: h.clock.now() - age,
+        }),
+      });
+      h.http.routes[path] = () => replyAt(45_000);
+      await expect(rest.postTicket({ action: 'intent', message: intent() })).resolves.toMatchObject({ frame: { re: intent().id } });
+      h.http.routes[path] = () => replyAt(60_001);
+      await expect(rest.postTicket({ action: 'intent', message: intent() })).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE' });
+    } finally {
+      validToken.mockRestore();
+    }
   });
 
   test('an error body becomes the typed error with its HTTP status', async () => {
@@ -999,7 +1059,7 @@ describe('REST fallback (protocol §3.6)', () => {
     const outsideAnOrder = jest.spyOn(h.store, 'appendEvidence');
     const upper = `0x${'AB'.repeat(32)}` as Hex;
     for (const action of ['receipt', 'decline'] as const) h.http.routes[`POST /v1/filler/tickets/${upper}/1/${action}`] = () => ({ status: 200, body: {} });
-    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: upper, attempt: 1, intentHash: hashTicketIntent({ ...intent(), orderHash: upper }), receivedAt: h.clock.now() });
+    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: upper.toLowerCase(), attempt: 1, intentHash: hashTicketIntent({ ...intent(), orderHash: upper }), receivedAt: h.clock.now() });
     h.http.routes[`POST /v1/filler/tickets/${upper}/1/intent`] = () => ({ status: 200, body: ack });
     await h.client.submitTicket({ action: 'intent', message: { ...intent(), orderHash: upper } });
     await h.client.submitTicket({ action: 'decline', message: { type: 'ticket.decline', id: 'd-1', fillerId: FILLER, sentAt: 1790000000000, msgSig: `0x${'00'.repeat(65)}`, orderHash: upper, attempt: 1, reason: 'OTHER' } });
