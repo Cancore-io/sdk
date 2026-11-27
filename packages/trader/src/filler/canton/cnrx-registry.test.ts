@@ -37,8 +37,8 @@ const v = {
 const opt = (p?: string): DamlValue => (p ? { t: 'optional', v: v.party(p) } : { t: 'optional' });
 const account = (owner: string) => v.record({ owner: opt(owner), provider: opt(), id: v.text('') });
 const instrument = () => v.record({ admin: v.party(ADMIN), id: v.text('CNRX') });
-const view = (owner: string, amount: string) =>
-  v.record({ account: account(owner), instrumentId: instrument(), amount: v.numeric(amount), lock: opt(), meta: v.record({ values: { t: 'textMap', v: { 'cnrx/guardian': v.text(GUARDIAN) } } }) });
+const view = (owner: string, amount: string, guardian = GUARDIAN) =>
+  v.record({ account: account(owner), instrumentId: instrument(), amount: v.numeric(amount), lock: opt(), meta: v.record({ values: { t: 'textMap', v: { 'cnrx/guardian': v.text(guardian) } } }) });
 const holdingTemplate = (pkg: string) => `${pkg}:Cnrx.Holding:CnrxHolding`;
 const signed = (owner: string) => [ADMIN, owner, GUARDIAN];
 
@@ -99,6 +99,27 @@ describe('holdings.transfer of CNRX under cnrx-registry 0.2.6: the first input s
   test('TC-SDK-3304-01: dev pins 0.2.6 next to 0.2.3, behind 0.2.7; the honest direct transfer passes', () => {
     expect(pinned.map((f) => f.packageId)).toEqual([CNRX_0_2_7, CNRX_0_2_6, CNRX_0_2_3]);
     expect(() => check()(prepared, [transfer()])).not.toThrow();
+  });
+
+  test.each([ADMIN, GUARDIAN])('BUG-1613 refuses a transfer factory missing a required signer %s', (signer) => {
+    const tx = transfer();
+    const factory = tx.nodes['0'];
+    if (factory?.kind !== 'exercise') throw new Error('fixture has no factory exercise');
+    factory.signatories = factory.signatories.filter((party) => party !== signer);
+    refused(() => check()(prepared, [tx]), /factory lacks its pinned admin or guardian signature/);
+  });
+
+  test('BUG-1613 refuses a signed input with a different guardian mark', () => {
+    const holding = { ...input('h1', '20'), argument: v.record({ holding: view(ME, '20', RECEIVER) }) };
+    refused(() => check()(prepared, [transfer({ inputs: [holding, input('h2', '10')] })]), /pinned guardian mark or signature/);
+  });
+
+  test.each(['4', '5'])('BUG-1613 refuses a created holding without its guardian signature (node %s)', (id) => {
+    const tx = transfer();
+    const created = tx.nodes[id];
+    if (created?.kind !== 'create') throw new Error('fixture has no created holding');
+    created.signatories = created.signatories.filter((party) => party !== GUARDIAN);
+    refused(() => check()(prepared, [tx]), /pinned guardian mark or signature/);
   });
 
   test.each([

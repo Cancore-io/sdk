@@ -497,7 +497,10 @@ others — only for a network with its own registrar, such as a test stand; `reg
 checks such a pin before it is used. filler-gateway never supplies it. A cnrx-registry entry (its
 holding is `Cnrx.Holding:CnrxHolding`) must name `guardian`, the guardian G of the registrar's
 `CnrxSupply` (CAN-3132): `intent.settle` credits only holdings marked `cnrx/guardian = G` and runs
-receipt allocations only on factories G co-signs; a pin without it is refused.
+receipt allocations only on factories G co-signs. V-C4 requires the gateway's `lockedHoldingGuardian`
+to identify G on every input holding locked by the allocation. Guardian-aware transfers require the
+pinned guardian on the factory and on every spent and created holding. An existing transfer through
+the original 0.2.3 factory follows its legacy rules.
 
 `allocateParty()`, `acceptRegistry(fillerId)`, `transfer(params)` and `createPreapproval(admin)` carry their checks built in.
 The party is recognised by its namespace, the fingerprint of the node key (its hint, the part before

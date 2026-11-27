@@ -584,3 +584,10 @@ describe('Canton operations of the filler party (§3.19)', () => {
     expect(rest('cantonRecipientReadiness', { ...readiness, deliveryOrderCid: '' })).toBe(false);
   });
 });
+
+test('BUG-1632 restricts directional lookups to frames in that direction', () => {
+  expect(() => messageSchemaRef('ticket.receipt', 'S2F')).toThrow(RangeError);
+  expect(() => messageSchemaRef('order', 'F2S')).toThrow(RangeError);
+  expect(messageSchemaRef('order')).toMatch(/\/order$/);
+  expect(messageSchemaRef('ticket.receipt', 'F2S')).toMatch(/\/ticket\.receipt$/);
+});
