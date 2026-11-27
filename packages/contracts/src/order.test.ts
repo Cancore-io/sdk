@@ -160,7 +160,7 @@ describe('twelve-field public acceptance', () => {
     expect(ORDER_TYPES.Order).toEqual(types.Order);
     expect(id(TypedDataEncoder.from(types).encodeType('Order'))).toBe('0xf68105debdb242de0650ab79cad1d11e4ed4f4e986e191ff672a79737f4c9d22');
     expect(hashOrder(order, canton.domain)).toBe('0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a');
-    expect(buildCantonSourceOrder(input).order).toEqual(order);
+    expect(buildCantonSourceOrder(input).order).toEqual({ ...order, user: order.user.toLowerCase(), inputToken: order.inputToken.toLowerCase() });
     expect(sourceOrderHash(order)).toBe(TypedDataEncoder.hash(canton.domain, types, order));
   });
 
