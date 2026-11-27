@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { tmpdir } from 'node:os';
 
 /**
  * The CI definition is the artifact this repository ships to itself.
@@ -144,15 +145,90 @@ describe('group 4: every job has a timeout', () => {
   });
 });
 
-test('BUG-1639 publishes workspace dependencies first and requires a registry match', () => {
-  const { releaseOrder, checkDependencies } = require('../scripts/publish-plan.cjs');
-  const manifests = new Map([
-    ['@cancore/wallet', { version: '1.2.0' }],
-    ['@cancore/client', { version: '1.0.0', peerDependencies: { '@cancore/wallet': 'workspace:^' } }],
-  ]);
-  const plan = [{ name: '@cancore/client' }, { name: '@cancore/wallet' }];
-  expect(releaseOrder(plan, manifests)).toEqual([plan[1], plan[0]]);
-  const registry = jest.fn(() => []);
-  expect(() => checkDependencies(manifests.get('@cancore/client'), manifests, registry)).toThrow(/No published version/);
-  expect(registry).toHaveBeenCalledWith('@cancore/wallet@^1.2.0');
+describe('BUG-1639 npm publication plan', () => {
+  const { releaseOrder, checkDependencies, publishPackages } = require('../scripts/publish-plan.cjs');
+  const wallet = { name: '@cancore/wallet', dir: 'wallet', version: '1.2.0', distTag: 'latest' };
+  const client = { name: '@cancore/client', dir: 'client', version: '1.0.0-rc.1', distTag: 'rc' };
+
+  test.each([
+    ['dependencies', 'workspace:*', '1.2.0'],
+    ['optionalDependencies', 'workspace:~', '~1.2.0'],
+    ['peerDependencies', 'workspace:^', '^1.2.0'],
+    ['dependencies', 'workspace:>=1.1.0 <2', '>=1.1.0 <2'],
+    ['dependencies', '^1.2.0', '^1.2.0'],
+  ])('orders an internal dependency in %s with %s', (field, spec, range) => {
+    const consumer = { [field]: { [wallet.name]: spec, 'external-library': '^2' } };
+    const manifests = new Map<string, object>([[wallet.name, wallet], [client.name, consumer]]);
+    expect(releaseOrder([client, wallet], manifests)).toEqual([wallet, client]);
+    const registry = jest.fn(() => wallet.version);
+    expect(() => checkDependencies(consumer, manifests, registry)).not.toThrow();
+    expect(registry.mock.calls).toEqual([[wallet.name + '@' + range]]);
+  });
+
+  test('accepts a registry version array and rejects missing results and E404', () => {
+    const consumer = { dependencies: { [wallet.name]: '^1.2.0' } };
+    const manifests = new Map([[wallet.name, wallet]]);
+    expect(() => checkDependencies(consumer, manifests, () => ['1.2.0', '1.3.0'])).not.toThrow();
+    expect(() => checkDependencies(consumer, manifests, () => [])).toThrow(/No published version/);
+    const missing = new Error('npm E404');
+    expect(() => checkDependencies(consumer, manifests, () => { throw missing; })).toThrow(missing);
+  });
+
+  test('refuses a cycle in the selected publish plan', () => {
+    const manifests = new Map<string, object>([
+      [wallet.name, { ...wallet, dependencies: { [client.name]: 'workspace:*' } }],
+      [client.name, { ...client, peerDependencies: { [wallet.name]: 'workspace:^' } }],
+    ]);
+    expect(() => releaseOrder([client, wallet], manifests)).toThrow(/Circular workspace release dependencies/);
+  });
+
+  test.each(['branch', 'tag', 'existing tag'])('publishes with the requested dist-tag and handles %s refs', (mode) => {
+    const temp = fs.mkdtempSync(path.join(tmpdir(), 'sdk-publish-'));
+    const summary = path.join(temp, 'summary');
+    const refType = mode === 'tag' ? 'tag' : 'branch';
+    const env = { GITHUB_STEP_SUMMARY: summary, GITHUB_SHA: 'head', GITHUB_REF_TYPE: refType };
+    const manifests = new Map<string, object>([
+      [wallet.name, wallet],
+      [client.name, { ...client, dependencies: { [wallet.name]: 'workspace:*' } }],
+    ]);
+    const run = jest.fn((command: string, _args: string[]) => {
+      if (command === 'npm') return JSON.stringify(wallet.version);
+      return mode === 'existing tag' ? 'head refs/tags/wallet-v1.2.0' : '';
+    });
+    try {
+      expect(publishPackages([client, wallet], manifests, env, run)).toBe(0);
+      const commands = run.mock.calls;
+      expect(commands.filter(([bin]) => bin !== 'git').map(([bin, args]) => [bin, ...args])).toEqual([
+        ['pnpm', 'publish', '--access', 'public', '--tag', 'latest', '--no-git-checks'],
+        ['npm', 'view', wallet.name + '@' + wallet.version, 'version', '--json'],
+        ['pnpm', 'publish', '--access', 'public', '--tag', 'rc', '--no-git-checks'],
+      ]);
+      const git = commands.filter(([bin]) => bin === 'git').map(([, args]) => args);
+      const refs = ['wallet-v1.2.0', 'client-v1.0.0-rc.1'];
+      expect(git).toEqual(refType === 'tag' ? [] : refs.flatMap((tag) => [
+        ['ls-remote', '--tags', 'origin', 'refs/tags/' + tag],
+        ...(mode === 'existing tag' ? [] : [['tag', tag, 'head'], ['push', 'origin', 'refs/tags/' + tag]]),
+      ]));
+      expect(fs.readFileSync(summary, 'utf8')).toBe('- Published @cancore/wallet@1.2.0\n- Published @cancore/client@1.0.0-rc.1\n');
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  test('reports publication failure and skips tagging and the success summary', () => {
+    const temp = fs.mkdtempSync(path.join(tmpdir(), 'sdk-publish-'));
+    const summary = path.join(temp, 'summary');
+    const report = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const run = jest.fn(() => { throw new Error('registry unavailable'); });
+    try {
+      const env = { GITHUB_STEP_SUMMARY: summary, GITHUB_SHA: 'head', GITHUB_REF_TYPE: 'branch' };
+      expect(publishPackages([wallet], new Map([[wallet.name, wallet]]), env, run)).toBe(1);
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(report).toHaveBeenCalledWith('@cancore/wallet: registry unavailable');
+      expect(fs.existsSync(summary)).toBe(false);
+    } finally {
+      report.mockRestore();
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  });
 });

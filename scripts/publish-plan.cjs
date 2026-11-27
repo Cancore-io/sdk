@@ -1,5 +1,5 @@
 const { execFileSync } = require('node:child_process');
-const { readFileSync, appendFileSync } = require('node:fs');
+const { readFileSync, appendFileSync, readdirSync, existsSync } = require('node:fs');
 const { join } = require('node:path');
 
 function workspaceRanges(manifest, manifests) {
@@ -36,10 +36,7 @@ function checkDependencies(pkg, manifests, view) {
   }
 }
 
-module.exports = { releaseOrder, checkDependencies };
-
-if (require.main === module) {
-  const { readdirSync, existsSync } = require('node:fs');
+function readManifests() {
   const manifests = new Map();
   for (const dir of readdirSync('packages')) {
     const path = join('packages', dir, 'package.json');
@@ -47,24 +44,36 @@ if (require.main === module) {
     const pkg = JSON.parse(readFileSync(path, 'utf8'));
     manifests.set(pkg.name, pkg);
   }
-  for (const item of releaseOrder(JSON.parse(process.env.PUBLISH_PLAN), manifests)) {
+  return manifests;
+}
+
+function publishPackages(plan, manifests, env, exec = execFileSync) {
+  let exitCode = 0;
+  for (const item of releaseOrder(plan, manifests)) {
     try {
       checkDependencies(manifests.get(item.name), manifests, (spec) =>
-        JSON.parse(execFileSync('npm', ['view', spec, 'version', '--json'], { encoding: 'utf8' })));
-      execFileSync('pnpm', ['publish', '--access', 'public', '--tag', item.distTag, '--no-git-checks'],
+        JSON.parse(exec('npm', ['view', spec, 'version', '--json'], { encoding: 'utf8' })));
+      exec('pnpm', ['publish', '--access', 'public', '--tag', item.distTag, '--no-git-checks'],
         { cwd: join('packages', item.dir), stdio: 'inherit' });
-      if (process.env.GITHUB_REF_TYPE === 'branch') {
+      if (env.GITHUB_REF_TYPE === 'branch') {
         const tag = item.dir + '-v' + item.version;
-        const existing = execFileSync('git', ['ls-remote', '--tags', 'origin', 'refs/tags/' + tag], { encoding: 'utf8' });
+        const existing = exec('git', ['ls-remote', '--tags', 'origin', 'refs/tags/' + tag], { encoding: 'utf8' });
         if (!existing.trim()) {
-          execFileSync('git', ['tag', tag, process.env.GITHUB_SHA]);
-          execFileSync('git', ['push', 'origin', 'refs/tags/' + tag], { stdio: 'inherit' });
+          exec('git', ['tag', tag, env.GITHUB_SHA]);
+          exec('git', ['push', 'origin', 'refs/tags/' + tag], { stdio: 'inherit' });
         }
       }
-      appendFileSync(process.env.GITHUB_STEP_SUMMARY, '- Published ' + item.name + '@' + item.version + '\n');
+      appendFileSync(env.GITHUB_STEP_SUMMARY, '- Published ' + item.name + '@' + item.version + '\n');
     } catch (error) {
       console.error(item.name + ': ' + error.message);
-      process.exitCode = 1;
+      exitCode = 1;
     }
   }
+  return exitCode;
+}
+
+module.exports = { releaseOrder, checkDependencies, publishPackages };
+
+if (require.main === module) {
+  process.exitCode = publishPackages(JSON.parse(process.env.PUBLISH_PLAN), readManifests(), process.env);
 }
