@@ -204,6 +204,73 @@ function forcedSession(path: string, fetchImpl: typeof globalThis.fetch): Cancor
   );
 }
 
+test('BUG-1634 clears server-expired consent and opens a fresh request on retry', async () => {
+  const { fetchImpl, calls } = routingFetch({
+    'POST /auth/device/authorize': DEVICE_START,
+    'POST /auth/device/token': { status: 404, body: {} },
+  });
+  const openBrowser = jest.fn(async () => true);
+  const started = new CancoreSession(
+    { apiBaseUrl: API, appBaseUrl: APP, appName: 'Claude', grantPath: tempPath() },
+    { fetchImpl, openBrowser, now: () => 0 },
+  );
+
+  await expect(started.connectWallet()).resolves.toMatchObject({ status: 'expired' });
+  await expect(started.connectWallet()).resolves.toMatchObject({ status: 'expired' });
+
+  expect(calls.filter((call) => call.url.endsWith('/authorize'))).toHaveLength(2);
+  expect(openBrowser).toHaveBeenCalledTimes(2);
+});
+
+test.each(['authorization', 'poll'] as const)('BUG-1634 force supersedes an in-flight %s', async (phase) => {
+  const path = tempPath();
+  let releaseOld!: () => void;
+  let releaseNew!: () => void;
+  let markOldWaiting!: () => void;
+  let markNewWaiting!: () => void;
+  const oldWaiting = new Promise<void>((resolve) => { markOldWaiting = resolve; });
+  const newWaiting = new Promise<void>((resolve) => { markNewWaiting = resolve; });
+  const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+  const newGate = new Promise<void>((resolve) => { releaseNew = resolve; });
+  let authorizations = 0;
+  const polls: string[] = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    if (String(url).endsWith('/authorize')) {
+      const deviceCode = ++authorizations === 1 ? 'old' : 'new';
+      if (deviceCode === 'old' && phase === 'authorization') {
+        markOldWaiting();
+        await oldGate;
+      }
+      return Response.json({ ...DEVICE_START.body, deviceCode });
+    }
+
+    const { deviceCode } = JSON.parse(String(init?.body));
+    polls.push(deviceCode);
+    if (deviceCode === 'old') {
+      markOldWaiting();
+      await oldGate;
+      return Response.json(GRANTED.body);
+    }
+    markNewWaiting();
+    await newGate;
+    return Response.json(GRANTED.body);
+  };
+  const started = forcedSession(path, fetchImpl);
+  const oldRequest = started.connectWallet();
+  await oldWaiting;
+  const newRequest = started.connectWallet({ force: true });
+  await newWaiting;
+  releaseOld();
+
+  await expect(oldRequest).resolves.toMatchObject({ status: 'superseded' });
+  expect(loadGrant(path, API)).toBeUndefined();
+  expect(started.connectWallet()).toBe(newRequest);
+
+  releaseNew();
+  await expect(newRequest).resolves.toMatchObject({ status: 'granted' });
+  expect(polls).toEqual(phase === 'authorization' ? ['new'] : ['old', 'new']);
+});
+
 // CAN-2087: reconnecting with force used to overwrite the file and leave the
 // old grant alive on the server for up to 30 days.
 test('a forced reconnect revokes the grant it replaces, with that grant, once the new one is stored', async () => {
