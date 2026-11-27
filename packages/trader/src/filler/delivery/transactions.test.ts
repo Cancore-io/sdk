@@ -64,6 +64,21 @@ describe('estimateGas: the estimate plus the margin, rounded up', () => {
 describe('replacementFees: both fees raised enough for a node to take the replacement', () => {
   const quiet = { baseFee: 0n, tip: 0n };
 
+  test('BUG-1627 raises a zero tip even on a quiet network', async () => {
+    await expect(driverAt(quiet).replacementFees(fees(100n, 0n))).resolves.toEqual(fees(115n, 1n));
+    await expect(driverAt(quiet).replacementFees(fees(0n, 0n), { first: fees(0n, 0n), kind: 'fill' })).resolves.toEqual(fees(1n, 1n));
+  });
+
+  test('BUG-1627 raises a one-wei bid by rounding up the percentage bump', async () => {
+    await expect(driverAt(quiet).replacementFees(fees(1n, 1n))).resolves.toEqual(fees(2n, 2n));
+  });
+
+  test('BUG-1627 allows the cap exactly and refuses one wei above it when the first bid was zero', async () => {
+    const options = { first: fees(0n, 0n), kind: 'fill' } as const;
+    await expect(driverAt(quiet).replacementFees(fees(2n, 2n), options)).resolves.toEqual(fees(3n, 3n));
+    await expect(driverAt(quiet).replacementFees(fees(3n, 3n), options)).rejects.toBeInstanceOf(ReplacementCapError);
+  });
+
   test('the bump is at least MIN_FEE_BUMP_PERCENT even when the policy asks for less, and rounds up', async () => {
     expect(MIN_FEE_BUMP_PERCENT).toBe(10);
     await expect(driverAt(quiet, { feeBumpPercent: 5 }).replacementFees(fees(101n, 11n))).resolves.toEqual(fees(112n, 13n));
