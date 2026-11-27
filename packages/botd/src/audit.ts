@@ -123,7 +123,11 @@ export async function openAuditLog(path: string): Promise<OpenedAuditLog> {
 
 /** Verify without opening a writer or recovering a torn tail. */
 export async function verifyAuditFile(path: string) {
-  if ((await stat(path)).size === 0) return { ok: true as const, entries: 0 };
+  const info = await stat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (!info?.size) return { ok: true as const, entries: 0 };
   let expectSeq = 0;
   let expectPrev = GENESIS;
   const rl = createInterface({ input: createReadStream(path), crlfDelay: Infinity });

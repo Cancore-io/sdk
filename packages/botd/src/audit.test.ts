@@ -34,6 +34,13 @@ const lines = (): string[] => fs.readFileSync(file, 'utf8').trimEnd().split('\n'
 const writeLines = (ls: string[]): void => fs.writeFileSync(file, `${ls.join('\n')}\n`);
 
 describe('audit log', () => {
+  test('BUG-1623 verifies a missing journal as empty without creating it and reports other stat errors', async () => {
+    const missing = path.join(dir, 'missing.jsonl');
+    expect(await verifyAuditFile(missing)).toEqual({ ok: true, entries: 0 });
+    expect(fs.existsSync(missing)).toBe(false);
+    fs.writeFileSync(missing, '');
+    await expect(verifyAuditFile(path.join(missing, 'journal.jsonl'))).rejects.toThrow(/ENOTDIR/);
+  });
   test('BUG-1623 verifies a torn file without recovering or changing its contents', async () => {
     await seed(1);
     fs.appendFileSync(file, '{');
