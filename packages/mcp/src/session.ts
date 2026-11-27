@@ -85,23 +85,26 @@ export class CancoreSession {
         error: 'CANCORE_APP_URL is not set — point it at the Cancore wallet (e.g. https://app-dev.cancore.app); the consent link is checked against it',
       };
     }
-    if (!args.force && loadGrant(this.#grantPath, this.#config.apiBaseUrl)) {
+    const now = this.#deps.now ?? Date.now;
+    const live = !args.force && this.#pending && now() < this.#pending.expiresAt ? this.#pending : undefined;
+    const resumed = live !== undefined;
+    // A live request outranks the stored grant: after a forced reconnect answered
+    // pending, the old grant is still on disk until the new one replaces it.
+    if (!args.force && !resumed && loadGrant(this.#grantPath, this.#config.apiBaseUrl)) {
       // Divergence from the Go server, deliberate: re-running the whole consent
       // dance for an owner who already approved is a worse answer than saying so.
       return { status: 'granted', scopes: [...AGENT_SCOPES], note: 'already authorized for this stand; pass force to ask again' };
     }
 
     const appName = args.appName || this.#config.appName;
-    const now = this.#deps.now ?? Date.now;
-    let resumed = false;
-    if (!args.force && this.#pending && now() < this.#pending.expiresAt) {
-      resumed = true;
-    } else {
-      const start = await startAuthorization(this.#deps.fetchImpl, this.#config.apiBaseUrl, appName);
+    let start = live?.start;
+    if (!start) {
+      // Dropped before asking: a failed request must not leave the code it replaces resumable.
+      this.#pending = undefined;
+      start = await startAuthorization(this.#deps.fetchImpl, this.#config.apiBaseUrl, appName);
       if (generation !== this.#generation) return { status: 'superseded' };
       this.#pending = { start, expiresAt: now() + start.expiresIn * 1000 };
     }
-    const start = this.#pending.start;
 
     const page = this.#consentPage(start.verificationUri);
     if (page === undefined) {
@@ -111,6 +114,7 @@ export class CancoreSession {
       };
     }
     const opened = !resumed && this.#deps.openBrowser ? await this.#deps.openBrowser(page) : false;
+    if (generation !== this.#generation) return this.#superseded({ status: 'pending' });
 
     const budgetMs = clampWait(args.waitSeconds) * 1000;
     const outcome = await awaitGrant(this.#deps.fetchImpl, this.#config.apiBaseUrl, start, {
@@ -119,7 +123,7 @@ export class CancoreSession {
       ...(this.#deps.now ? { now: this.#deps.now } : {}),
     });
 
-    if (generation !== this.#generation || this.#pending?.start !== start) return { status: 'superseded', note: 'another authorization request replaced this one' };
+    if (generation !== this.#generation || this.#pending?.start !== start) return this.#superseded(outcome);
     if (outcome.status === 'expired') {
       this.#pending = undefined;
       return { status: 'expired', note: 'call cancore_connect_wallet again to start a new request' };
@@ -141,6 +145,12 @@ export class CancoreSession {
       next: 'ask the owner to open the page and approve it, then call cancore_connect_wallet again to keep waiting',
       expectCode: 'the page must show this same code — if it does not, the request is not ours',
     };
+  }
+
+  // The replaced request's poll may still collect a token; nothing stores it, so it is ended here.
+  async #superseded(outcome: PollOutcome): Promise<ToolResult> {
+    const warning = outcome.status === 'granted' && outcome.token ? await this.#revoke(outcome.token) : undefined;
+    return { status: 'superseded', note: 'another authorization request replaced this one', ...(warning ? { warning } : {}) };
   }
 
   async #storeGrant(outcome: PollOutcome, token: string, appName: string): Promise<ToolResult> {

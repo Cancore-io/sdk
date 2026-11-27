@@ -234,7 +234,12 @@ test.each(['authorization', 'poll'] as const)('BUG-1634 force supersedes an in-f
   const newGate = new Promise<void>((resolve) => { releaseNew = resolve; });
   let authorizations = 0;
   const polls: string[] = [];
+  const revoked: string[] = [];
   const fetchImpl: typeof fetch = async (url, init) => {
+    if (init?.method === 'DELETE') {
+      revoked.push(new Headers(init.headers).get('authorization') ?? '');
+      return Response.json({ revoked: true });
+    }
     if (String(url).endsWith('/authorize')) {
       const deviceCode = ++authorizations === 1 ? 'old' : 'new';
       if (deviceCode === 'old' && phase === 'authorization') {
@@ -249,7 +254,7 @@ test.each(['authorization', 'poll'] as const)('BUG-1634 force supersedes an in-f
     if (deviceCode === 'old') {
       markOldWaiting();
       await oldGate;
-      return Response.json(GRANTED.body);
+      return Response.json({ ...GRANTED.body, token: 'superseded-token' });
     }
     markNewWaiting();
     await newGate;
@@ -264,11 +269,100 @@ test.each(['authorization', 'poll'] as const)('BUG-1634 force supersedes an in-f
 
   await expect(oldRequest).resolves.toMatchObject({ status: 'superseded' });
   expect(loadGrant(path, API)).toBeUndefined();
+  expect(revoked).toEqual(phase === 'poll' ? ['Bearer superseded-token'] : []);
   expect(started.connectWallet()).toBe(newRequest);
 
   releaseNew();
   await expect(newRequest).resolves.toMatchObject({ status: 'granted' });
   expect(polls).toEqual(phase === 'authorization' ? ['new'] : ['old', 'new']);
+  expect(revoked).toHaveLength(phase === 'poll' ? 1 : 0);
+});
+
+function clockedSession(path: string, fetchImpl: typeof globalThis.fetch, openBrowser = jest.fn(async () => true)): CancoreSession {
+  let clock = 0;
+  return new CancoreSession(
+    { apiBaseUrl: API, appBaseUrl: APP, appName: 'Claude', grantPath: path },
+    { fetchImpl, openBrowser, now: () => clock, sleep: async (ms: number) => { clock += ms; } },
+  );
+}
+
+test('BUG-1634 an ordinary call resumes a forced reconnect that answered pending while the old grant is stored', async () => {
+  const path = tempPath();
+  saveGrant(path, API, { token: 'old', scopes: ['agent:read'], appName: 'Claude' });
+  let approved = false;
+  const { fetchImpl, calls } = routingFetch({
+    'POST /auth/device/authorize': DEVICE_START,
+    'DELETE /auth/sessions/current': { status: 200, body: { revoked: true } },
+  });
+  const routed: typeof fetch = async (url, init) => String(url).endsWith('/auth/device/token')
+    ? Response.json(approved ? GRANTED.body : { status: 'pending' })
+    : fetchImpl(url, init);
+  const openBrowser = jest.fn(async () => true);
+  const started = clockedSession(path, routed, openBrowser);
+
+  await expect(started.connectWallet({ force: true, waitSeconds: 5 })).resolves.toMatchObject({ status: 'pending', opened: true });
+  approved = true;
+  await expect(started.connectWallet({ waitSeconds: 5 })).resolves.toMatchObject({ status: 'granted' });
+
+  expect(calls.filter((call) => call.url.endsWith('/authorize'))).toHaveLength(1);
+  expect(openBrowser).toHaveBeenCalledTimes(1);
+  expect(loadGrant(path, API)?.token).toBe('new');
+  expect(calls.filter((call) => call.method === 'DELETE').map((call) => call.headers.authorization)).toEqual(['Bearer old']);
+});
+
+test('BUG-1634 a forced reconnect that fails to authorize drops the old pending code', async () => {
+  let authorizations = 0;
+  const fetchImpl: typeof fetch = async (url) => {
+    if (String(url).endsWith('/authorize')) {
+      return ++authorizations === 2 ? new Response('busy', { status: 503 }) : Response.json(DEVICE_START.body);
+    }
+    return Response.json({ status: 'pending' });
+  };
+  const openBrowser = jest.fn(async () => true);
+  const started = clockedSession(tempPath(), fetchImpl, openBrowser);
+
+  await expect(started.connectWallet({ waitSeconds: 5 })).resolves.toMatchObject({ status: 'pending' });
+  await expect(started.connectWallet({ waitSeconds: 5, force: true })).rejects.toThrow(/503/);
+  await expect(started.connectWallet({ waitSeconds: 5 })).resolves.toMatchObject({ status: 'pending', resumed: false, opened: true });
+
+  expect(authorizations).toBe(3);
+  expect(openBrowser).toHaveBeenCalledTimes(2);
+});
+
+test('BUG-1634 a call superseded while the browser opens never polls its code', async () => {
+  const path = tempPath();
+  let releaseBrowser!: () => void;
+  let markOpening!: () => void;
+  const browserGate = new Promise<void>((resolve) => { releaseBrowser = resolve; });
+  const opening = new Promise<void>((resolve) => { markOpening = resolve; });
+  let authorizations = 0;
+  const polls: string[] = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    if (String(url).endsWith('/authorize')) return Response.json({ ...DEVICE_START.body, deviceCode: ++authorizations === 1 ? 'old' : 'new' });
+    const { deviceCode } = JSON.parse(String(init?.body));
+    polls.push(deviceCode);
+    return Response.json({ ...GRANTED.body, token: deviceCode + '-token' });
+  };
+  const openBrowser = jest.fn(async () => {
+    if (openBrowser.mock.calls.length === 1) {
+      markOpening();
+      await browserGate;
+    }
+    return true;
+  });
+  const started = new CancoreSession(
+    { apiBaseUrl: API, appBaseUrl: APP, appName: 'Claude', grantPath: path },
+    { fetchImpl, openBrowser, sleep: async () => {} },
+  );
+
+  const oldRequest = started.connectWallet();
+  await opening;
+  await expect(started.connectWallet({ force: true })).resolves.toMatchObject({ status: 'granted' });
+  releaseBrowser();
+
+  await expect(oldRequest).resolves.toMatchObject({ status: 'superseded' });
+  expect(polls).toEqual(['new']);
+  expect(loadGrant(path, API)?.token).toBe('new-token');
 });
 
 // CAN-2087: reconnecting with force used to overwrite the file and leave the
