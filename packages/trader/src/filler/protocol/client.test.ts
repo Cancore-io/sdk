@@ -8,10 +8,11 @@ import {
   FILLER_CLOSE_CODES,
   FILLER_PROTOCOL_DOMAIN,
   hashFillerMessage,
+  hashTicketIntent,
   type Hex,
   type QuoteMessage,
   type TicketDecline,
-  hashTicketIntent, type TicketIntentMessage,
+  type TicketIntentMessage,
   type TicketReceiptEvm,
 } from '@cancore/contracts';
 import { FillerStoppedError, GatewayError, UnsupportedVersionError } from '../errors';
@@ -946,11 +947,29 @@ describe('REST fallback (protocol §3.6)', () => {
     { re: 'another-request' },
     { orderHash: `0x${'22'.repeat(32)}`, re: 'i-1' },
     { type: 'quote.ack', re: 'i-1' },
+    { orderHash: 7, re: 'i-1' },
+    { re: null },
+    { re: '' },
   ])('BUG-1628 refuses an unrelated ticket intent acknowledgement %j', async (override) => {
     const h = harness();
     const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1, intentHash: hashTicketIntent(intent()), receivedAt: h.clock.now(), ...override });
     h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/intent`] = () => ({ status: 200, body: ack });
     await expect(h.rest.postTicket({ action: 'intent', message: intent() })).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE' });
+  });
+
+  test('BUG-1628 accepts an acknowledgement whose orderHash differs from the intent only in case', async () => {
+    const h = harness();
+    const lower = `0x${'ab'.repeat(32)}` as Hex;
+    const ack = h.gateway.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: `0x${'AB'.repeat(32)}`, attempt: 1, re: intent().id });
+    h.http.routes[`POST /v1/filler/tickets/${lower}/1/intent`] = () => ({ status: 200, body: ack });
+    await expect(h.rest.postTicket({ action: 'intent', message: { ...intent(), orderHash: lower } })).resolves.toMatchObject({ frame: { sig: ack.sig } });
+  });
+
+  test('BUG-1628 refuses an intent acknowledgement without a valid filler-gateway signature and says why', async () => {
+    const h = harness();
+    const ack = h.impostor.frame({ type: 'ticket.intent.ack', fillerId: FILLER, orderHash: ORDER_HASH, attempt: 1, re: intent().id });
+    h.http.routes[`POST /v1/filler/tickets/${ORDER_HASH}/1/intent`] = () => ({ status: 200, body: ack });
+    await expect(h.rest.postTicket({ action: 'intent', message: intent() })).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE', message: expect.stringMatching(/failed verification/) });
   });
 
   test.each([-30_001, -30_000, 30_000, 30_001])('BUG-1628 applies the symmetric REST acknowledgement window at offset %i', async (offset) => {
@@ -963,10 +982,13 @@ describe('REST fallback (protocol §3.6)', () => {
 
     const result = h.rest.postTicket({ action: 'intent', message: intent() });
     if (Math.abs(offset) === 30_000) await expect(result).resolves.toMatchObject({ frame: { sig: ack.sig } });
-    else await expect(result).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE' });
+    else await expect(result).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE', message: expect.stringContaining(`skewMs=${-offset}`) });
   });
 
-  test('BUG-1628 createFiller forwards its transport age to REST acknowledgements', async () => {
+  test.each<[FillerConfig['transport'], number, number]>([
+    [{ maxMessageAgeMs: 60_000 }, 45_000, 60_001],
+    [undefined, 30_000, 30_001],
+  ])('BUG-1628 createFiller with transport %j holds REST acknowledgements to its window', async (transport, acceptedAge, refusedAge) => {
     const h = harness();
     const validToken = jest.spyOn(GatewayRest.prototype, 'validToken');
     try {
@@ -985,7 +1007,7 @@ describe('REST fallback (protocol §3.6)', () => {
         fetch: h.http.fetch,
         clock: h.clock,
         instanceId: 'replica-1',
-        transport: { maxMessageAgeMs: 60_000 },
+        ...(transport && { transport }),
       });
       await filler.restToken();
       const rest = validToken.mock.contexts[0] as GatewayRest;
@@ -998,9 +1020,9 @@ describe('REST fallback (protocol §3.6)', () => {
           re: intent().id, sentAt: h.clock.now() - age,
         }),
       });
-      h.http.routes[path] = () => replyAt(45_000);
+      h.http.routes[path] = () => replyAt(acceptedAge);
       await expect(rest.postTicket({ action: 'intent', message: intent() })).resolves.toMatchObject({ frame: { re: intent().id } });
-      h.http.routes[path] = () => replyAt(60_001);
+      h.http.routes[path] = () => replyAt(refusedAge);
       await expect(rest.postTicket({ action: 'intent', message: intent() })).rejects.toMatchObject({ code: 'UNVERIFIED_RESPONSE' });
     } finally {
       validToken.mockRestore();

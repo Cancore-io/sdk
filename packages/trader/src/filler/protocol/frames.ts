@@ -19,10 +19,12 @@ import {
   ERROR_CODES,
   FILLER_PROTOCOL_DOMAIN,
   GATEWAY_MESSAGE_TYPES,
-  gatewayBodyHash, hashTicketIntent, type TicketIntentMessage,
+  gatewayBodyHash,
+  hashTicketIntent,
   hashTypedData,
   type Hex,
   type S2FBase,
+  type TicketIntentMessage,
 } from '@cancore/contracts';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { bytesToHex } from '@noble/hashes/utils.js';

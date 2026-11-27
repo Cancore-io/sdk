@@ -147,8 +147,9 @@ export class GatewayRest {
     const { text } = await this.authed('POST', path, 'ticket', JSON.stringify(request.message), TICKET_POST_TIMEOUT_MS);
     if (request.action !== 'intent') return undefined;
     const check = verifyGatewayObject(parseJson(text, path), utf8(text), this.expect);
-    if (!check.ok || !isCurrentIntentAck(check.verified.frame, request.message, this.options.clock.now(), this.options.maxMessageAgeMs ?? DEFAULT_MAX_MESSAGE_AGE_MS)) {
-      throw new GatewayError('UNVERIFIED_RESPONSE', false, `${path}: stale or unrelated ticket intent acknowledgement`);
+    const now = this.options.clock.now();
+    if (!check.ok || !isCurrentIntentAck(check.verified.frame, request.message, now, this.options.maxMessageAgeMs ?? DEFAULT_MAX_MESSAGE_AGE_MS)) {
+      throw new GatewayError('UNVERIFIED_RESPONSE', false, `${path}: ${check.ok ? `stale or unrelated ticket intent acknowledgement (skewMs=${now - check.verified.frame.sentAt}, type=${check.verified.frame.type})` : `the ack failed verification (${check.reason})`}`);
     }
     return check.verified;
   }
