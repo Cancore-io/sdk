@@ -469,6 +469,10 @@ Full documentation: <https://docs.cancore.io/sdk/contracts>
 
 ## Changes
 
+- `0.2.0-rc.30` — the price claim of a `PRICE_MOVED` decline (CAN-3797, protocol §3.5 «Price-moved
+  declines»): a declining `quote.reconfirm.reply` carries `reason`, `midE18` and `shiftBps`, a
+  `ticket.decline` carries `midE18` and `shiftBps`. Cancore checks the claim against its own price
+  and does not count a confirmed decline toward the ban. Additive.
 - `0.2.0-rc.29` — error codes `INTENT_SETTLED` and `INTENT_REFUNDED` (410, CAN-3131): `GET
   /v1/filler/canton/intents/{orderHash}` tells the filler why the Canton-source intent that named
   its party is gone — settled, or refunded by `SwapIntent_Cancel`, `_Withdraw`, `_Expire` or
