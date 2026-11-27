@@ -189,6 +189,7 @@ export class Executor {
   private readonly delivery: Required<Omit<DeliveryOptions, 'approvals' | 'fillAmount'>> & Pick<DeliveryOptions, 'approvals' | 'fillAmount'>;
   private readonly drivers = new Map<EvmChainId, TransactionDriver>();
   private readonly trackers = new Map<string, Tracker>();
+  private readonly nonceWork = new Map<string, Promise<void>>();
   private readonly busy = new Map<string, Promise<DeliveryResult>>();
   private readonly approving = new Map<string, Promise<void>>();
   private sweep: Cancel | undefined;
@@ -393,14 +394,17 @@ export class Executor {
     await this.claimChain(driver);
     for (const record of await store.nonces.listOpen(driver.chain, driver.address)) {
       if (!record.transactions.some((tx) => tx.kind === 'settle' && tx.orderHash === orderHash && tx.attempt === attempt)) continue;
-      if (record.owner !== instanceId) throw new LeaseLostError(record);
-      const lease = await driver.renew(record);
-      if (!lease) throw new LeaseLostError(record);
-      const tx = record.transactions.at(-1)!;
-      if (tx.kind !== 'settle' || tx.orderHash !== orderHash || tx.attempt !== attempt || tx.to !== call.to.toLowerCase() || tx.value !== call.value) {
-        throw new Error('settle: the recorded transaction belongs to another operation');
-      }
-      return { lease, tx: await recoverSettleCall(this.options, driver, lease, tx, call) };
+      return this.withNonceWork(record, async () => {
+        const current = await driver.record(record);
+        if (!current || current.owner !== instanceId) throw new LeaseLostError(record);
+        const lease = await driver.renew(current);
+        if (!lease) throw new LeaseLostError(current);
+        const tx = current.transactions.at(-1);
+        if (tx?.kind !== 'settle' || tx.orderHash !== orderHash || tx.attempt !== attempt || tx.to !== call.to.toLowerCase() || tx.value !== call.value) {
+          throw new Error('settle: the recorded transaction belongs to another operation');
+        }
+        return { lease, tx: await recoverSettleCall(this.options, driver, lease, tx, call) };
+      });
     }
     return undefined;
   }
@@ -687,6 +691,19 @@ export class Executor {
     this.track(driver, lease);
   }
 
+  /** Read and update an open nonce in order with its background tracker. The lease still fences other replicas. */
+  private async withNonceWork<T>(lease: NonceLease, work: () => Promise<T>): Promise<T> {
+    const key = `${lease.chain}:${lease.nonce}`;
+    const result = (this.nonceWork.get(key) ?? Promise.resolve()).then(work);
+    const barrier = result.then(() => undefined, () => undefined);
+    this.nonceWork.set(key, barrier);
+    try {
+      return await result;
+    } finally {
+      if (this.nonceWork.get(key) === barrier) this.nonceWork.delete(key);
+    }
+  }
+
   // -- tracking -----------------------------------------------------------------------
 
   /** Drives the nonce of `lease` until it is done: confirmed, reverted, cancelled — or the lease is lost. */
@@ -702,7 +719,7 @@ export class Executor {
     const next = () => {
       if (this.stopped || this.trackers.get(k) !== tracker) return;
       tracker.cancel = this.options.clock.schedule(this.delivery.pollIntervalMs, () => {
-        void this.tick(tracker)
+        void this.withNonceWork(tracker.lease, async () => this.stopped || this.tick(tracker))
           .catch((error: unknown) => {
             this.options.logger.warn('delivery: tick failed, retrying', { chain: driver.chain, nonce: tracker.lease.nonce.toString(), error: reasonOf(error) });
             return false;

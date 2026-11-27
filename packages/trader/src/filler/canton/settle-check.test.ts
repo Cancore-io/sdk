@@ -128,8 +128,8 @@ function honest(o: Over = {}): CantonTransaction {
 const OTHER_REG_PKG = 'bc'.repeat(32);
 const OTHER_ADMIN = 'other-admin::1220bb';
 /** A receipt allocation the settle runs on `templateId` with the party's authority (CAN-3352). */
-const allocate = (templateId: string, signatories: string[]): TransactionNode => ({
-  nodeId: '30', kind: 'exercise', contractId: '00af', packageName: 'registry', templateId, interfaceId: `${'99'.repeat(32)}:Splice.Api.Token.AllocationInstructionV2:AllocationFactory`,
+const allocate = (templateId: string, signatories: string[], interfaceId = `${'99'.repeat(32)}:Splice.Api.Token.AllocationInstructionV2:AllocationFactory`): TransactionNode => ({
+  nodeId: '30', kind: 'exercise', contractId: '00af', packageName: 'registry', templateId, interfaceId,
   choice: 'AllocationFactory_Allocate', chosenValue: v.record({}), actingParties: [ME, OPERATOR], signatories, stakeholders: signatories, consuming: false, children: [],
 });
 
@@ -148,6 +148,11 @@ const refused = (run: () => unknown, detail: RegExp) => {
 describe('intent.settle: SwapIntent_SettleWithProof of the node’s own delivery (CAN-2321)', () => {
   test('the honest settle passes', () => {
     expect(() => check(prepared(), [honest()])).not.toThrow();
+  });
+
+  test('BUG-1644 requires the allocation interface as well as the pinned registry', () => {
+    const node = allocate(`${REG_PKG}:Cnrx.Allocation:CnrxAllocationRules`, [ADMIN, G], '');
+    expect(() => check(prepared(), [honest({ extra: [node] })])).toThrow(/AllocationFactory interface/);
   });
 
   test('TC-SDK-3352-03: a receipt allocation through the pinned registry’s factory passes', () => {
