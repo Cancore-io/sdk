@@ -176,8 +176,20 @@ export interface QuoteAck extends S2FBase { type: 'quote.ack'; requestId: string
 export interface QuoteReconfirm extends S2FBase {
   type: 'quote.reconfirm'; orderHash: Hex; requestId: string; order: OrderJson; amountOut: DecString; ticketTtl: number; replyBy: TimeMs;
 }
-export interface QuoteReconfirmReply extends F2SBase {
+/**
+ * The price claim of a `PRICE_MOVED` decline (§3.5 Price-moved declines): the filler's mid and how far
+ * `amountOut` lies above the payout's value at it. Cancore checks it against its own price (S-28).
+ */
+export interface PriceMovedClaim {
+  /** Output per input in whole units × 10¹⁸. */
+  midE18: DecString;
+  /** `trunc((amountOut − atMid) × 10 000 / atMid)`; positive: the delivery costs more than the payout is worth at `midE18`. */
+  shiftBps: number;
+}
+export interface QuoteReconfirmReply extends F2SBase, Partial<PriceMovedClaim> {
   type: 'quote.reconfirm.reply'; orderHash: Hex; accept: boolean; validUntil?: DecString; nonce?: DecString; sig?: Hex;
+  /** A decline only: `PRICE_MOVED` with the claim, or `OTHER`; absent reads as `OTHER`. */
+  reason?: 'PRICE_MOVED' | 'OTHER';
 }
 
 export interface TicketOffer extends S2FBase {
@@ -192,7 +204,8 @@ export interface TicketIntentMessage extends F2SBase {
   repayTo: Hex;
   sig: Hex;
 }
-export interface TicketDecline extends F2SBase { type: 'ticket.decline'; orderHash: Hex; attempt: number; reason: DeclineReason; detail?: string }
+/** With `PRICE_MOVED` at stage «offer» it carries the price claim. */
+export interface TicketDecline extends F2SBase, Partial<PriceMovedClaim> { type: 'ticket.decline'; orderHash: Hex; attempt: number; reason: DeclineReason; detail?: string }
 export interface TicketIntentAck extends S2FBase { type: 'ticket.intent.ack'; orderHash: Hex; attempt: number; intentHash: Hex; receivedAt: TimeMs }
 /** `FillTicket` on the wire; `fillerId` is the on-chain form, `fillerIdHash(fillerId)`. */
 export interface TicketJson { orderHash: Hex; fillerId: Hex; deliveryKey: Hex; repayTo: Hex; attempt: number; validFrom: DecString; validUntil: DecString }
