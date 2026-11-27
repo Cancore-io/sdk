@@ -53,9 +53,12 @@ describe('the DeliveryOrder of a Canton-form ticket (CAN-1867)', () => {
     expect(deliveryOrderMismatch(order, issued, offered, bounds)).toBeUndefined();
   });
 
+  test('BUG-1645: a DeliveryOrder from a gateway that predates validFrom (no field) is checked as before', () => {
+    expect(deliveryOrderMismatch({ ...order, validFrom: undefined }, issued, offered, bounds)).toBeUndefined();
+  });
+
   test.each([
     ['another order', { orderHash: `0x${'5b'.repeat(32)}` }, 'orderHash'],
-    ['BUG-1645 absent opening time', { validFrom: undefined }, 'validFrom'],
     ['BUG-1645 legacy opening time', { validFrom: null }, 'validFrom'],
     ['BUG-1645 earlier opening time', { validFrom: '1789999999' }, 'validFrom'],
     ['another attempt', { attempt: 3 }, 'attempt'],

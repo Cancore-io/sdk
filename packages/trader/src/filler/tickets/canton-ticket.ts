@@ -12,7 +12,7 @@
  * |---|---|---|
  * | form | an EVM source with a router, a Canton destination | `OTHER` |
  * | V-T4 | `ticket.issued` arrived by `acceptBy + δ_issue` | `TICKET_ISSUED_LATE` |
- * | V-T2 | the frame repeats the offer and the signed `ticket.intent` (window, `repayTo`, zero `deliveryKey`); the party's live `DeliveryOrder` `deliveryOrderCid` has this order, attempt, `validUntil` and `repayTo`, the order's `recipient` and `outputAsset`, an amount in `[minReceived, amountOut]` | `TICKET_MISMATCH` |
+ * | V-T2 | the frame repeats the offer and the signed `ticket.intent` (window, `repayTo`, zero `deliveryKey`); the party's live `DeliveryOrder` `deliveryOrderCid` has this order, attempt, the offered `validFrom` (null refused; absent from an older gateway), `validUntil` and `repayTo`, the order's `recipient` and `outputAsset`, an amount in `[minReceived, amountOut]` | `TICKET_MISMATCH` |
  * | V-T3 | `validUntil < fillDeadline`; `validUntil − validFrom ≥ MIN_TICKET_TTL[canton]`; `sendGuard` left | `TICKET_BEYOND_DEADLINE`, `TICKET_TTL_TOO_SHORT` |
  * | V-E1 | `orderHash` = the order's digest in the source router's domain | `ESCROW_MISMATCH` |
  * | V-E2 | `intents(orderHash).status == Opened` at `openConfirmations` depth: N confirmations, or the `safe` / `finalized` block; `validFrom ≥ openedAt` | `ESCROW_NOT_OPEN`; `ESCROW_MISMATCH` |
@@ -228,7 +228,8 @@ export function deliveryOrderMismatch(
 ): string | undefined {
   if (!same(order.orderHash, issued.orderHash)) return 'orderHash';
   if (order.attempt !== issued.attempt) return 'attempt';
-  if (uint(order.validFrom) === undefined || order.validFrom !== bounds.validFrom) return 'validFrom';
+  // shortcut: a gateway that predates the field omits validFrom (CantonDeliveryOrder) and V-T2 checks the order as before BUG-1645; refuse absence once backend deliveryOrderWire serializes it.
+  if (order.validFrom !== undefined && (uint(order.validFrom) === undefined || order.validFrom !== bounds.validFrom)) return 'validFrom';
   if (order.validUntil !== issued.validUntil) return 'validUntil';
   if (!same(order.repayTo, issued.repayTo)) return 'repayTo';
   let recipient: string;
