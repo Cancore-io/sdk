@@ -1,4 +1,5 @@
 import {
+  encodeCantonDestination,
   FILL_TICKET_DOMAIN,
   FILL_TICKET_TYPES,
   FILLER_PROTOCOL_DOMAIN,
@@ -205,6 +206,19 @@ async function consent(h: Harness, over: Record<string, unknown> = {}) {
   await settle();
   return { offer, intent: h.sent('ticket.intent').at(-1) };
 }
+
+test('BUG-1625 createFiller declines Canton consent without Canton operations', async () => {
+  const h = await harness();
+  try {
+    const order = { ...h.w.order, originChainId: '1', destination: encodeCantonDestination('devnet') };
+    await consent(h, { order });
+    expect(h.hookCalls).toEqual([]);
+    expect(h.sent('ticket.intent')).toEqual([]);
+    expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ detail: 'no fill key or payee of this filler for the order' })]);
+  } finally {
+    await h.filler.stop();
+  }
+});
 
 describe('the full path: offer → intent → ack → issued → checks → receipt', () => {
   test('the intent repeats the offer, names the delivery key and repayTo and is signed by the message key; the receipt signs hashTicket and keccak256(ticketSig)', async () => {

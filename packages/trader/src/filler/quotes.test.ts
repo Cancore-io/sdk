@@ -1,4 +1,6 @@
 import {
+  CANTON_ORIGIN_ID,
+  encodeCantonDestination,
   FILLER_PROTOCOL_DOMAIN,
   FILLER_QUOTE_TYPES,
   fillerIdHash,
@@ -458,10 +460,32 @@ describe('quote.reconfirm → onReconfirm → quote.reconfirm.reply (T-20)', () 
     expect(recoverAddress(hashFillerMessage(firm.via!), firm.via!.msgSig)).toBe(h.quoteSigner.address);
   });
 
-  test('BUG-1625 refuses an unconfigured Canton quote and an empty reconfirm fee', async () => {
+  test.each([
+    { src: 'eip155:56', dst: 'canton:devnet' },
+    { src: 'canton:devnet', dst: 'eip155:1' },
+  ])('BUG-1625 refuses an unconfigured Canton quote %j', async (route) => {
     const h = desk({ cantonEnabled: false });
-    const route = { src: 'eip155:56', dst: 'canton:devnet' };
     await expect(h.desk.onRequest(delivery(request(h.clock, { route })))).resolves.toEqual({ skipped: 'no-fill-key' });
+    expect(h.seenRequests).toHaveLength(0);
+  });
+
+  test.each([
+    ['Canton source', order({ originChainId: String(CANTON_ORIGIN_ID.devnet) })],
+    ['Canton destination', order({ destination: encodeCantonDestination('devnet') })],
+  ])('BUG-1625 gates reconfirm of a valid %s order on Canton operations', async (_route, wireOrder) => {
+    const disabled = desk({ cantonEnabled: false });
+    const enabled = desk({ cantonEnabled: true });
+    await disabled.desk.onReconfirm(delivery(reconfirm(disabled.clock, { order: wireOrder })));
+    await enabled.desk.onReconfirm(delivery(reconfirm(enabled.clock, { order: wireOrder })));
+
+    expect(disabled.seenReconfirms).toHaveLength(0);
+    expect(disabled.protocol.sent[0]).toMatchObject({ accept: false });
+    expect(enabled.seenReconfirms).toHaveLength(1);
+    expect(enabled.protocol.sent[0]).toMatchObject({ accept: true });
+  });
+
+  test('BUG-1625 an empty reconfirm fee is malformed', async () => {
+    const h = desk();
     await h.desk.onReconfirm(delivery(reconfirm(h.clock, { order: order({ feeBps: '' }) })));
     expect(h.seenReconfirms).toHaveLength(0);
     expect(h.protocol.sent[0]).toMatchObject({ accept: false });
@@ -554,7 +578,7 @@ describe('reconciliation — GET /v1/filler/quotes?since=', () => {
 // ---------------------------------------------------------------------------
 
 describe('through createFiller and a crafted filler-gateway', () => {
-  test('a signed quote.request on the session is priced, quoted and its quote.ack kept', async () => {
+  test('BUG-1625 quotes the configured EVM route and skips a Canton route without operations', async () => {
     const clock = new FakeClock();
     const gateway = createTestGatewaySigner(GATEWAY_KEY, clock);
     const ws = createFakeWebSocketFactory();
@@ -609,6 +633,13 @@ describe('through createFiller and a crafted filler-gateway', () => {
     await settle();
     const [acked] = await store.quotes.listQuotes('rq-1');
     expect(acked!.ack).toMatchObject({ status: 'COUNTED' });
+
+    // createFiller has no Canton operations, even though the EVM source has a key and router.
+    const cantonRoute = { src: 'eip155:56', dst: 'canton:devnet' };
+    socket.receive(gateway.frame({ ...request(clock, { requestId: 'rq-canton', route: cantonRoute }), fillerId: FILLER }));
+    await settle();
+    expect(payouts).toEqual([100n]);
+    expect(await store.quotes.listQuotes('rq-canton')).toEqual([]);
 
     // N-12: an EVM source with no router in the config is one the filler cannot verify or settle on — no quote.
     socket.receive(gateway.frame({ ...request(clock, { requestId: 'rq-137', route: { src: 'eip155:137', dst: 'eip155:1' } }), fillerId: FILLER }));
