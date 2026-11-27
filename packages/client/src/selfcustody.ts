@@ -1589,13 +1589,14 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
     const until = now() + waitMs;
     const accepted: IncomingTransfer[] = [];
     const acceptedCids = new Set<string>();
+    const isOpen = (p: CashbackPayout) => p.settlementStatus === 'pending' && !acceptedCids.has(p.transferInstructionCid ?? '');
     for (;;) {
       claim = (await cashbackClaims()).find((c) => c.id === claim.id) ?? claim;
       const payouts = claim.payouts ?? [];
       // A payout is in when the venue says so (a CC payout lands directly) or
       // when this account has accepted its transfer — the venue's own view of a
       // self-custody accept can lag, so ours counts.
-      const open = payouts.filter((p) => p.settlementStatus === 'pending' && !acceptedCids.has(p.transferInstructionCid ?? ''));
+      const open = payouts.filter(isOpen);
       const waiting = new Set(open.map((p) => p.transferInstructionCid).filter((cid): cid is string => Boolean(cid)));
       if (waiting.size > 0) {
         for (const transfer of await incoming()) {
@@ -1605,7 +1606,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
           acceptedCids.add(transfer.contractId);
         }
       }
-      const pending = payouts.filter((p) => p.settlementStatus === 'expired_reclaimed' || p.settlementStatus === 'pending' && !acceptedCids.has(p.transferInstructionCid ?? '')).length;
+      const pending = payouts.filter((p) => p.settlementStatus === 'expired_reclaimed' || isOpen(p)).length;
       // Payout legs are written with the claim itself, so an empty list is a claim with nothing in it.
       if (pending === 0 || now() >= until) {
         return { claim, accepted, failed: payouts.filter((p) => p.settlementStatus === 'failed'), pending };
