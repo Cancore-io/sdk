@@ -278,6 +278,44 @@ test.each(['authorization', 'poll'] as const)('BUG-1634 force supersedes an in-f
   expect(revoked).toHaveLength(phase === 'poll' ? 1 : 0);
 });
 
+// RX-1 (sdk#313 audit r2): a superseded poll that collected a token must say so when ending it fails.
+test('BUG-1634 a superseded poll whose token cannot be revoked says the session may be alive', async () => {
+  const path = tempPath();
+  let releaseOld!: () => void;
+  let markOldWaiting!: () => void;
+  let markNewWaiting!: () => void;
+  const oldWaiting = new Promise<void>((resolve) => { markOldWaiting = resolve; });
+  const newWaiting = new Promise<void>((resolve) => { markNewWaiting = resolve; });
+  const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+  let authorizations = 0;
+  const fetchImpl: typeof fetch = async (url, init) => {
+    if (init?.method === 'DELETE') return Response.json({ message: 'boom' }, { status: 500 });
+    if (String(url).endsWith('/authorize')) {
+      return Response.json({ ...DEVICE_START.body, deviceCode: ++authorizations === 1 ? 'old' : 'new' });
+    }
+    const { deviceCode } = JSON.parse(String(init?.body));
+    if (deviceCode === 'old') {
+      markOldWaiting();
+      await oldGate;
+      return Response.json({ ...GRANTED.body, token: 'superseded-token' });
+    }
+    markNewWaiting();
+    return new Promise<Response>(() => {});
+  };
+  const started = forcedSession(path, fetchImpl);
+  const oldRequest = started.connectWallet();
+  await oldWaiting;
+  void started.connectWallet({ force: true });
+  await newWaiting;
+  releaseOld();
+
+  const result = await oldRequest;
+  expect(result.status).toBe('superseded');
+  expect(String(result.warning)).toMatch(/revoke it in the wallet/);
+  expect(loadGrant(path, API)).toBeUndefined();
+});
+
+
 function clockedSession(path: string, fetchImpl: typeof globalThis.fetch, openBrowser = jest.fn(async () => true)): CancoreSession {
   let clock = 0;
   return new CancoreSession(
