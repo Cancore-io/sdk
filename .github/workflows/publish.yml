@@ -139,7 +139,11 @@ jobs:
       - run: npm run build
       - run: npm test
 
+      # Dependencies before their consumers, one package failing does not stop the
+      # independent ones; the flags of `pnpm publish` are explained in the script.
       - name: Publish in workspace dependency order
         env:
           PUBLISH_PLAN: ${{ needs.plan.outputs.packages }}
-        run: node scripts/publish-plan.cjs
+        run: |
+          echo "pnpm $(pnpm --version), npm $(npm --version), node $(node --version)"
+          node scripts/publish-plan.cjs

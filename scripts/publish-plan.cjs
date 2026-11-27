@@ -47,14 +47,36 @@ function readManifests() {
   return manifests;
 }
 
+// Only E404 means "not on npm": any other failure leaves it unknown, and publishing blind
+// over an existing version fails anyway, so the package is reported instead.
+function isPublished(spec, exec) {
+  try {
+    return Boolean(exec('npm', ['view', spec, 'version', '--json'], { encoding: 'utf8' }).trim());
+  } catch (error) {
+    if (/E404/.test(String(error.stderr))) return false;
+    throw error;
+  }
+}
+
 function publishPackages(plan, manifests, env, exec = execFileSync) {
   let exitCode = 0;
   for (const item of releaseOrder(plan, manifests)) {
     try {
-      checkDependencies(manifests.get(item.name), manifests, (spec) =>
-        JSON.parse(exec('npm', ['view', spec, 'version', '--json'], { encoding: 'utf8' })));
-      exec('pnpm', ['publish', '--access', 'public', '--tag', item.distTag, '--no-git-checks'],
-        { cwd: join('packages', item.dir), stdio: 'inherit' });
+      // "Re-run failed jobs" replays the plan of the first attempt: a version that attempt
+      // already shipped is skipped, and its tag below is still checked and restored.
+      const alreadyPublished = isPublished(item.name + '@' + item.version, exec);
+      if (!alreadyPublished) {
+        checkDependencies(manifests.get(item.name), manifests, (spec) =>
+          JSON.parse(exec('npm', ['view', spec, 'version', '--json'], { encoding: 'utf8' })));
+        // No token and no `--provenance`: with trusted publishing npm mints the
+        // credential from the OIDC token and attaches provenance by itself.
+        // pnpm, not npm: only `pnpm publish` turns the `workspace:` ranges of
+        // sibling packages into the plain ranges consumers install.
+        // `--no-git-checks`: a tag run checks out a detached HEAD, which pnpm's
+        // branch check refuses.
+        exec('pnpm', ['publish', '--access', 'public', '--tag', item.distTag, '--no-git-checks'],
+          { cwd: join('packages', item.dir), stdio: 'inherit' });
+      }
       if (env.GITHUB_REF_TYPE === 'branch') {
         const tag = item.dir + '-v' + item.version;
         const existing = exec('git', ['ls-remote', '--tags', 'origin', 'refs/tags/' + tag], { encoding: 'utf8' });
@@ -63,7 +85,7 @@ function publishPackages(plan, manifests, env, exec = execFileSync) {
           exec('git', ['push', 'origin', 'refs/tags/' + tag], { stdio: 'inherit' });
         }
       }
-      appendFileSync(env.GITHUB_STEP_SUMMARY, '- Published ' + item.name + '@' + item.version + '\n');
+      appendFileSync(env.GITHUB_STEP_SUMMARY, (alreadyPublished ? '- Already on npm ' : '- Published ') + item.name + '@' + item.version + '\n');
     } catch (error) {
       console.error(item.name + ': ' + error.message);
       exitCode = 1;
