@@ -235,6 +235,18 @@
         "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
         "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
         "accept": false
+      },
+      {
+        "type": "quote.reconfirm.reply",
+        "id": "r-3",
+        "fillerId": "acme-markets",
+        "sentAt": 1790000014000,
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
+        "accept": false,
+        "reason": "PRICE_MOVED",
+        "midE18": "998500000000000000",
+        "shiftBps": 12
       }
     ],
     "ticket.offer": [
@@ -307,6 +319,19 @@
         "attempt": 0,
         "reason": "TICKET_ISSUED_LATE",
         "detail": "ticket.issued 3001 ms after acceptBy"
+      },
+      {
+        "type": "ticket.decline",
+        "id": "d-2",
+        "fillerId": "acme-markets",
+        "sentAt": 1790000020500,
+        "msgSig": "0x000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001b",
+        "orderHash": "0x65f9010d612499d381eefba1a2385b76982c9bdaf9ed15bedbafd7b09fb3b73b",
+        "attempt": 0,
+        "reason": "PRICE_MOVED",
+        "detail": "amountOut above the order payout at the current mid",
+        "midE18": "998500000000000000",
+        "shiftBps": 12
       }
     ],
     "ticket.intent.ack": [

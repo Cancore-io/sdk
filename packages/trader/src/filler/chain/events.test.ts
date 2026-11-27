@@ -32,7 +32,7 @@ const filled = (orderHash: Hex) => ({
   orderHash, fillerId: FILLER_ID, deliveryKey: FILLER, repayTo: REPAY_TO, received: 99n, recipient: RECIPIENT, filledAt: 1_790_000_100n, attempt: 0n,
 });
 
-function setup(confirmations = 3, retentionBlocks?: bigint) {
+function setup(confirmations = 3, retentionBlocks?: bigint, maxRange?: bigint) {
   const chain = new FakeChain(1n);
   chain.head = 100n;
   const updates: RouterEventUpdate[] = [];
@@ -41,6 +41,7 @@ function setup(confirmations = 3, retentionBlocks?: bigint) {
     router: ROUTER,
     confirmations,
     fromBlock: 90n,
+    ...(maxRange !== undefined ? { maxRange } : {}),
     onUpdate: (u) => void updates.push(u),
     logger: createRecordingLogger(),
     ...(retentionBlocks !== undefined ? { retentionBlocks } : {}),
@@ -91,6 +92,33 @@ describe('reorgs never produce a false or a duplicate event', () => {
     chain.reorg(99n).mine(5n);
     await watcher.poll();
     expect(seen()).toEqual([]);
+  });
+
+  test('BUG-1626 rewinds across chunks before reporting logs on the replacement fork', async () => {
+    const { chain, watcher, seen } = setup(0, 100n, 5n);
+    chain.emit(ROUTER, 'Filled', filled(A), 92n);
+    const original = chain.request.bind(chain);
+    let reads = 0;
+    chain.request = (async (request) => {
+      if (request.method === 'eth_getLogs' && ++reads === 2) {
+        chain.reorg(92n);
+        chain.emit(ROUTER, 'Filled', filled(A), 93n);
+        chain.emit(ROUTER, 'Filled', filled(B), 96n);
+      }
+      return original(request);
+    }) as typeof chain.request;
+
+    await watcher.poll();
+    expect(seen()).toEqual(['added Filled 0xaa @92', 'removed Filled 0xaa @92']);
+
+    await watcher.poll();
+    await watcher.poll();
+    expect(seen()).toEqual([
+      'added Filled 0xaa @92',
+      'removed Filled 0xaa @92',
+      'added Filled 0xaa @93',
+      'added Filled 0xbb @96',
+    ]);
   });
 
   test('a deeper reorg: the reported Filled is removed, its re-inclusion reported once', async () => {
