@@ -28,6 +28,8 @@ for (const subpath of ['', '/abi']) {
   }
 }
 const built = sdk.buildCantonSourceOrder({ ...canton.vector.input, fillerId: 'acme' });
+strictEqual(built.order.user, canton.vector.order.user.toLowerCase());
+strictEqual(built.order.inputToken, canton.vector.order.inputToken.toLowerCase());
 strictEqual(built.orderHash, '0x22e3a53ab72c6990b1971fd50b9ec6c527a003d987cd58d26058b380dd7ae79a');
 const witness = {
   permitted: { token: built.order.inputToken, amount: built.order.inputAmount }, spender: built.domain.verifyingContract,

@@ -16,6 +16,7 @@ import { PROTOCOL_SCHEMAS, SCHEMA_VOCABULARY, messageSchemaRef } from './protoco
 // (protocol.md §3.7-3.9): a port of evm-contracts test/helpers/cantonOrder.ts,
 // held to the vector the router test pins with sourceOrderHash and the Daml
 // intent-test golden (canton-contracts intent-test/tools/canton-order.golden.json).
+// The golden stores EIP-55 labels; the SDK serializes those address bytes in lowercase.
 
 const spec = join(__dirname, '..', 'spec');
 const load = <T>(...p: string[]): T => JSON.parse(readFileSync(join(spec, ...p), 'utf8')) as T;
@@ -29,7 +30,11 @@ const orderTypes = JSON.parse(JSON.stringify(ORDER_TYPES)) as Record<string, { n
 describe('buildCantonSourceOrder', () => {
   test('reproduces canton-order.json: the order, the source domain and the orderHash the router pins', () => {
     const built = buildCantonSourceOrder(input);
-    expect(built.order).toEqual(canton.order);
+    expect(built.order).toEqual({
+      ...canton.order,
+      user: canton.order.user.toLowerCase(),
+      inputToken: canton.order.inputToken.toLowerCase(),
+    });
     for (const address of [built.order.user, built.order.inputToken]) expect(address).toMatch(/^0x[0-9a-f]{40}$/);
     expect(built.domain).toEqual(canton.domain);
     expect(built.orderHash).toBe(canton.orderHash);
