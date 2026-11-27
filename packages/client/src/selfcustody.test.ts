@@ -1543,6 +1543,51 @@ test('the session renews an expiring token and signs in again after a 401', asyn
   expect(seen).toEqual(['/y', '/auth/challenge', '/auth/login-signature', '/y']);
 });
 
+test('BUG-1638 retries a delayed 401 with a token another request already refreshed', async () => {
+  const signer = await providerFromMnemonic(PHRASE);
+  let clock = 1_000_000;
+  const old = jwt('old', 1120);
+  const refreshed = jwt('refreshed', 5000);
+  const headers: Array<string | null> = [];
+  let logins = 0;
+  let release!: () => void;
+  let reached!: () => void;
+  const hold = new Promise<void>((resolve) => { release = resolve; });
+  const atOldRequest = new Promise<void>((resolve) => { reached = resolve; });
+  const fetchImpl: FetchLike = async (url, init) => {
+    switch (new URL(url).pathname) {
+      case '/auth/challenge': return json({ challenge: 'Welcome to Cancore 2026-09-28 sig:1' });
+      case '/auth/login-signature':
+        logins++;
+        return json({ token: old, refreshToken: 'r1', user: {} });
+      case '/auth/refresh': return json({ token: refreshed, refreshToken: 'r2' });
+      case '/held': {
+        const bearer = new Headers(init.headers).get('authorization');
+        headers.push(bearer);
+        if (headers.length === 1) {
+          reached();
+          await hold;
+          return refuse(401, 'Unauthorized');
+        }
+        return json({ ok: bearer === `Bearer ${refreshed}` });
+      }
+      default: return json({ ok: true });
+    }
+  };
+  const session = createSession({ baseUrl, signer, fetchImpl, now: () => clock });
+  await session.login();
+
+  const first = session.request(`${baseUrl}/held`, { method: 'GET' });
+  await atOldRequest;
+  clock += 90_000;
+  await session.request(`${baseUrl}/refresh-first`, { method: 'GET' });
+  release();
+
+  expect(await (await first).json()).toEqual({ ok: true });
+  expect(logins).toBe(1);
+  expect(headers).toEqual([`Bearer ${old}`, `Bearer ${refreshed}`]);
+});
+
 test('a submit that timed out is resubmitted with the same signatures; a plain execute never re-prepares', async () => {
   const signer = await providerFromMnemonic(PHRASE);
   const submits: string[] = [];
@@ -1603,7 +1648,7 @@ test('a timed-out submit is resubmitted on the code alone, and a code with anoth
   expect(other.submits).toHaveLength(1);
 });
 
-test('collect accepts exactly the claim’s own payouts, and nothing else in the inbox', async () => {
+test('BUG-1638 collect accepts the claim’s own payouts and reports failed legs', async () => {
   const signer = await providerFromMnemonic(PHRASE);
   let reads = 0;
   const accepted: string[] = [];
@@ -1619,7 +1664,6 @@ test('collect accepts exactly the claim’s own payouts, and nothing else in the
       if (++reads === 1) return json([{ id: 'c1', status: 'settling', payouts: [{ id: 'p2', tokenId: 'USDCx', settlementStatus: 'expired_reclaimed', transferInstructionCid: null }] }]);
       return json([{ id: 'c1', status: 'settling', payouts: [
         { id: 'p3', tokenId: 'CC', settlementStatus: 'failed', transferInstructionCid: null },
-
         { id: 'p1', tokenId: 'CC', settlementStatus: 'accepted', transferInstructionCid: null },
         { id: 'p2', tokenId: 'USDCx', settlementStatus: 'pending', transferInstructionCid: hexCid('ti-cashback') },
       ] }]);
@@ -1633,9 +1677,11 @@ test('collect accepts exactly the claim’s own payouts, and nothing else in the
     return json({ ok: true });
   };
   const acct = createSelfCustody({ baseUrl, signer, fetchImpl, ...fast });
-  const { pending } = await acct.cashback.collect();
+  const result = await acct.cashback.collect();
   expect(accepted).toEqual([hexCid('ti-cashback')]);
-  expect(pending).toBe(0);
+  expect(result.pending).toBe(0);
+  expect(result.claim.payouts?.map((payout) => payout.id)).toEqual(['p3', 'p1', 'p2']);
+  expect(result.failed).toEqual([expect.objectContaining({ id: 'p3', settlementStatus: 'failed' })]);
 });
 
 test('acceptTerms signs the exact text the API verifies', async () => {

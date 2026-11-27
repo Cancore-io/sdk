@@ -629,9 +629,10 @@ export interface SelfCustodyAccount {
     /**
      * Claim, then accept the claim's payouts as they arrive. A CC payout lands
      * directly; a registry-token payout is a transfer only this key can accept.
-     * Resolves when every payout is in, or with `pending` > 0 when `waitMs` ran out.
+     * Returns the latest claim, incoming transfers accepted locally, and terminal
+     * failed payouts. `pending` counts payouts still waiting if `waitMs` ran out.
      */
-    collect(options?: { waitMs?: number }): Promise<{ claim: CashbackClaim; accepted: IncomingTransfer[]; pending: number }>;
+    collect(options?: { waitMs?: number }): Promise<{ claim: CashbackClaim; accepted: IncomingTransfer[]; failed: CashbackPayout[]; pending: number }>;
   };
 }
 
@@ -1584,12 +1585,13 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
   const cashbackClaims = () => http.get<CashbackClaim[]>('/partner/cashback/claims');
 
   async function collect({ waitMs = DEFAULT_DELIVERY_WAIT_MS }: { waitMs?: number } = {}) {
-    const claim = await http.post<CashbackClaim>('/partner/cashback/claim');
+    let claim = await http.post<CashbackClaim>('/partner/cashback/claim');
     const until = now() + waitMs;
     const accepted: IncomingTransfer[] = [];
     const acceptedCids = new Set<string>();
     for (;;) {
-      const payouts = (await cashbackClaims()).find((c) => c.id === claim.id)?.payouts ?? [];
+      claim = (await cashbackClaims()).find((c) => c.id === claim.id) ?? claim;
+      const payouts = claim.payouts ?? [];
       // A payout is in when the venue says so (a CC payout lands directly) or
       // when this account has accepted its transfer — the venue's own view of a
       // self-custody accept can lag, so ours counts.
@@ -1605,7 +1607,9 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
       }
       const pending = payouts.filter((p) => p.settlementStatus === 'expired_reclaimed' || p.settlementStatus === 'pending' && !acceptedCids.has(p.transferInstructionCid ?? '')).length;
       // Payout legs are written with the claim itself, so an empty list is a claim with nothing in it.
-      if (pending === 0 || now() >= until) return { claim, accepted, pending };
+      if (pending === 0 || now() >= until) {
+        return { claim, accepted, failed: payouts.filter((p) => p.settlementStatus === 'failed'), pending };
+      }
       await sleep(pollMs);
     }
   }
