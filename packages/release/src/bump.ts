@@ -5,7 +5,8 @@ export type BumpLevel = 'major' | 'minor' | 'patch';
 export type BumpSignal = { level: BumpLevel; rationale: string; defaulted: boolean };
 
 const TRAILER_RE = /^(?:release|ring)-bump:\s*(major|minor|patch)\s*$/im;
-const TRAILER_LINE_RE = /^[a-z][\w-]*:\s+\S.*$/i;
+const TRAILER_LINE_RE = /^[a-z][\w-]*:[ \t]+\S.*$/i;
+const AUTHOR_TRAILER_RE = /^(?:co-authored-by|signed-off-by):[ \t]+\S/i;
 const BREAKING_FOOTER_RE = /^breaking[ -]change:\s+\S/im;
 // One deviation from CAEF: a `!` typed inside the scope (`feat(api!):`) is read as breaking too, not as a scope name.
 const CONVENTIONAL_SUBJECT_RE = /^([a-z]+)(!)?(?:\([^)!\r\n]+(!)?\))?(!)?:\s+\S/i;
@@ -16,11 +17,50 @@ const LEVEL_WEIGHT: Record<BumpLevel, number> = { major: 3, minor: 2, patch: 1 }
 type Candidate = { level: BumpLevel; rationale: string };
 
 const normalize = (text: string) => text.replace(/\r\n/g, '\n');
+// Each message GitHub lists in a squash commit starts `* <release type>: …`; a plain Markdown bullet, even `* Note: …`, does not.
+// shortcut: a squashed commit whose subject has no release type folds into the previous message and hides its trailer (RX-4), redo once sdk lints commit subjects.
+const isSquashedMessage = (paragraph: string) => {
+  const kind = paragraph.startsWith('* ') ? CONVENTIONAL_SUBJECT_RE.exec(paragraph.slice(2))?.[1]?.toLowerCase() : undefined;
+  return kind === 'feat' || PATCH_TYPES.has(kind ?? '');
+};
 const subjectOf = (message: string) => (normalize(message).split('\n')[0] ?? '').trim();
 
+function trailingOverride(paragraphs: string[]): BumpLevel | null {
+  for (const paragraph of paragraphs.slice(1).reverse()) {
+    const lines = paragraph.split('\n');
+    if (lines.every((line) => AUTHOR_TRAILER_RE.test(line))) continue;
+    if (!lines.every((line, index) =>
+      TRAILER_RE.test(line) || TRAILER_LINE_RE.test(line) || (index > 0 && /^[ \t]/.test(line)),
+    )) return null;
+    const match = lines.reverse().map((line) => TRAILER_RE.exec(line)).find(Boolean);
+    return match?.[1] ? (match[1].toLowerCase() as BumpLevel) : null;
+  }
+  return null;
+}
+
+function squashedMessages(paragraphs: string[]): string[][] {
+  const footer = paragraphs.at(-1);
+  const generatedFooter = paragraphs.at(-2) === '---------' && footer?.split('\n').every((line) => AUTHOR_TRAILER_RE.test(line));
+  const messages: string[][] = [];
+  for (const paragraph of paragraphs.slice(1, generatedFooter ? -2 : undefined)) {
+    if (isSquashedMessage(paragraph)) messages.push([paragraph]);
+    else messages.at(-1)?.push(paragraph);
+  }
+  return messages;
+}
+
 export function parseBumpLevel(text: string): BumpLevel | null {
-  const m = TRAILER_RE.exec(text);
-  return m?.[1] ? (m[1].toLowerCase() as BumpLevel) : null;
+  const paragraphs = normalize(text).trimEnd().split(/\n(?:[ \t]*\n)+/);
+  // GitHub squash commits can carry several commit messages and a generated co-author footer.
+  if (!/ \(#\d+\)$/.test(paragraphs[0] ?? '') || !isSquashedMessage(paragraphs[1] ?? '')) {
+    return trailingOverride(paragraphs);
+  }
+  let best: BumpLevel | null = null;
+  for (const message of squashedMessages(paragraphs)) {
+    const level = trailingOverride(message);
+    if (level && (!best || LEVEL_WEIGHT[level] > LEVEL_WEIGHT[best])) best = level;
+  }
+  return best;
 }
 
 function stripLeadingEmoji(subject: string): string {
@@ -47,7 +87,7 @@ export function extractRationale(commitMessage: string): string {
   let start = 1;
   while (start < lines.length && blank(start)) start++;
   let end = lines.length;
-  while (end > start && (blank(end - 1) || TRAILER_LINE_RE.test(lines[end - 1] ?? ''))) end--;
+  while (end > start && (blank(end - 1) || (TRAILER_LINE_RE.test(lines[end - 1] ?? '') || TRAILER_RE.test(lines[end - 1] ?? '')))) end--;
   return lines.slice(start, end).join('\n').trim();
 }
 
