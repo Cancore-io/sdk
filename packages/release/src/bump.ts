@@ -5,7 +5,8 @@ export type BumpLevel = 'major' | 'minor' | 'patch';
 export type BumpSignal = { level: BumpLevel; rationale: string; defaulted: boolean };
 
 const TRAILER_RE = /^(?:release|ring)-bump:\s*(major|minor|patch)\s*$/im;
-const TRAILER_LINE_RE = /^[a-z][\w-]*:\s*\S.*$/i;
+const TRAILER_LINE_RE = /^[a-z][\w-]*:[ \t]+\S.*$/i;
+const AUTHOR_TRAILER_RE = /^(?:co-authored-by|signed-off-by):[ \t]+\S/i;
 const BREAKING_FOOTER_RE = /^breaking[ -]change:\s+\S/im;
 // One deviation from CAEF: a `!` typed inside the scope (`feat(api!):`) is read as breaking too, not as a scope name.
 const CONVENTIONAL_SUBJECT_RE = /^([a-z]+)(!)?(?:\([^)!\r\n]+(!)?\))?(!)?:\s+\S/i;
@@ -18,14 +19,36 @@ type Candidate = { level: BumpLevel; rationale: string };
 const normalize = (text: string) => text.replace(/\r\n/g, '\n');
 const subjectOf = (message: string) => (normalize(message).split('\n')[0] ?? '').trim();
 
+function trailingOverride(paragraphs: string[]): BumpLevel | null {
+  for (const paragraph of paragraphs.slice(1).reverse()) {
+    const lines = paragraph.split('\n');
+    if (lines.every((line) => AUTHOR_TRAILER_RE.test(line))) continue;
+    if (!lines.every((line, index) =>
+      TRAILER_RE.test(line) || TRAILER_LINE_RE.test(line) || (index > 0 && /^[ \t]/.test(line)),
+    )) return null;
+    const match = lines.reverse().map((line) => TRAILER_RE.exec(line)).find(Boolean);
+    return match?.[1] ? (match[1].toLowerCase() as BumpLevel) : null;
+  }
+  return null;
+}
+
 export function parseBumpLevel(text: string): BumpLevel | null {
   const paragraphs = normalize(text).trimEnd().split(/\n[ \t]*\n/);
-  const trailer = paragraphs.at(-1);
-  if (paragraphs.length < 2 || !trailer) return null;
-  const lines = trailer.split('\n');
-  if (!lines.every((line) => TRAILER_LINE_RE.test(line) || /^[ \t]/.test(line))) return null;
-  const m = lines.reverse().map((line) => TRAILER_RE.exec(line)).find(Boolean);
-  return m?.[1] ? (m[1].toLowerCase() as BumpLevel) : null;
+  // GitHub squash commits can carry several commit messages and a generated co-author footer.
+  if (!/ \(#\d+\)$/.test(paragraphs[0] ?? '') || !paragraphs[1]?.startsWith('* ')) {
+    return trailingOverride(paragraphs);
+  }
+  const footer = paragraphs.at(-1);
+  if (paragraphs.at(-2) === '---------' && footer?.split('\n').every((line) => AUTHOR_TRAILER_RE.test(line))) {
+    paragraphs.splice(-2);
+  }
+  const commits = paragraphs.slice(1).join('\n\n').split(/\n\n(?=\* )/);
+  let best: BumpLevel | null = null;
+  for (const commit of commits) {
+    const level = trailingOverride(commit.split('\n\n'));
+    if (level && (!best || LEVEL_WEIGHT[level] > LEVEL_WEIGHT[best])) best = level;
+  }
+  return best;
 }
 
 function stripLeadingEmoji(subject: string): string {
@@ -52,7 +75,7 @@ export function extractRationale(commitMessage: string): string {
   let start = 1;
   while (start < lines.length && blank(start)) start++;
   let end = lines.length;
-  while (end > start && (blank(end - 1) || TRAILER_LINE_RE.test(lines[end - 1] ?? ''))) end--;
+  while (end > start && (blank(end - 1) || (TRAILER_LINE_RE.test(lines[end - 1] ?? '') || TRAILER_RE.test(lines[end - 1] ?? '')))) end--;
   return lines.slice(start, end).join('\n').trim();
 }
 

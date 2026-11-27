@@ -1,4 +1,4 @@
-import { bumpVersion, parseBumpLevel, parseConventionalBump, resolveBumpSignal } from './bump';
+import { bumpVersion, extractRationale, parseBumpLevel, parseConventionalBump, resolveBumpSignal } from './bump';
 import type { BumpLevel } from './bump';
 
 // Parity table: the same cases CAEF's scripts/agent-session/lib/ring-bump-signal.test.ts runs, so the rule
@@ -6,6 +6,10 @@ import type { BumpLevel } from './bump';
 // name: `Release-Bump:` here, `Ring-Bump:` still accepted (CAN-3594 D5).
 describe('parseBumpLevel: the trailer', () => {
   it.each<[string, string, BumpLevel]>([
+    ['BUG-1641 keeps the trailer above a separate co-author paragraph',
+      'fix: handle token (#268)\n\nWhy the change.\n\nRelease-Bump: patch\n\nCo-authored-by: Dev <dev@example.test>', 'patch'],
+    ['BUG-1641 reads the highest override from GitHub squash commits',
+      'fix: handle token (#267)\n\n* fix: earlier change\n\nRelease-Bump: major\nCo-Authored-By: Dev <dev@example.test>\n\n* fix: later change\n\nRelease-Bump: patch\n\n---------\n\nCo-authored-by: Dev <dev@example.test>', 'major'],
     ['BUG-1641 accepts a compact trailer', 'fix: example\n\nRelease-Bump:minor', 'minor'],
     ['BUG-1641 uses the footer after a body example', 'fix: cleanup\n\nRelease-Bump: major\n\nRelease-Bump: patch', 'patch'],
     ['Release-Bump minor', 'fix(x): y\n\nbody text\n\nRelease-Bump: minor\n', 'minor'],
@@ -18,11 +22,21 @@ describe('parseBumpLevel: the trailer', () => {
 
   it.each([
     ['BUG-1641 ignores an example in the commit body', 'fix: cleanup\n\nRelease-Bump: major\n\nExample above.\n'],
+    ['BUG-1641 ignores an indented example block', 'fix: example\n\n  example block:\nRelease-Bump: major'],
+    ['BUG-1641 ignores a body example before prose and a separate co-author',
+      'fix: example\n\nRelease-Bump: major\n\nExample above.\n\nCo-authored-by: Dev <dev@example.test>'],
     ['no trailer', 'fix(x): y\n\nno trailer here\n'],
     ['an invalid level is rejected, not guessed', 'fix(x): y\n\nRelease-Bump: huge\n'],
     ['a look-alike key does not match', 'fix(x): y\n\nRelease-Bumpy: minor\n'],
   ])('null: %s', (_name, message) => {
     expect(parseBumpLevel(message)).toBeNull();
+  });
+});
+
+describe('extractRationale', () => {
+  it('keeps a bare URL at the end of the explanation', () => {
+    expect(extractRationale('fix: cleanup\n\nSee the failing run:\nhttps://example.test/runs/1'))
+      .toBe('See the failing run:\nhttps://example.test/runs/1');
   });
 });
 
