@@ -180,7 +180,7 @@ describe('topology multihash and base64', () => {
       expect(fromBase64(b64)).toEqual(bytes);
       expect(fromBase64(b64.replace(/=+$/, ''))).toEqual(bytes);
     }
-    for (const bad of ['a', 'ab$c', 'a-b_', 'AAAA===', 'AA=A']) expect(() => fromBase64(bad)).toThrow(/not base64/);
+    for (const bad of ['a', 'ab$c', 'a-b_', 'AAAA===', 'AA=A', 'AA=', 'AAA==', 'AAAA=', 'AAAA==']) expect(() => fromBase64(bad)).toThrow(/not base64/);
   });
 
   // CodeQL on sdk#276: `/=+$/` backtracks quadratically on a run of `=` that does not end the string, and the

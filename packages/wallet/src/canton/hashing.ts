@@ -252,6 +252,7 @@ export function fromBase64(b64: string): Uint8Array {
   // At most two `=` of padding, trimmed without a regex: `/=+$/` is quadratic on a long run of `=` (CodeQL).
   let end = b64.length;
   while (end > 0 && end > b64.length - 2 && b64[end - 1] === '=') end--;
+  if (end !== b64.length && b64.length % 4 !== 0) throw new TypeError('not base64');
   const clean = b64.slice(0, end);
   if (clean.length % 4 === 1 || /[^A-Za-z0-9+/]/.test(clean)) throw new TypeError('not base64');
   const out = new Uint8Array(Math.floor((clean.length * 3) / 4));

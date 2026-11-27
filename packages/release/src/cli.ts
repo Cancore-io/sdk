@@ -43,9 +43,10 @@ function resolveCutBranch(cut: boolean, cutBranch: string | undefined): string {
   return cutBranch;
 }
 
+// Only the trailing newline is cut: String.prototype.trim would also strip Unicode spaces git allows in ref names (sdk#327 r3 RX-1).
 const gitAt = (cwd: string): Git => (...args) => {
   const r = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
-  return { ok: r.status === 0, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim() };
+  return { ok: r.status === 0, out: (r.stdout ?? '').replace(/\r?\n$/, ''), err: (r.stderr ?? '').trim() };
 };
 
 const releaseTags = (listing: string) => listing.split('\n').map((t) => t.trim()).filter((t) => RELEASE_TAG_RE.test(t));
@@ -57,12 +58,12 @@ function lastReleaseTag(git: Git): string {
 }
 
 // I1: a release tag is cut on the cut branch only (main unless --cut-branch names another). A CI checkout may be
-// detached, so the cut branch is also recognised by the ref the run was started for, or by origin/<cut branch>
-// already containing HEAD.
+// detached, so the cut branch is also recognised by the ref the run was started for; a set GITHUB_REF decides alone,
+// and origin/<cut branch> already containing HEAD counts only for a run without GITHUB_REF (local, detached).
 function onCutBranch(git: Git, env: CliContext['env'], cutBranch: string): boolean {
   const branch = git('symbolic-ref', '-q', '--short', 'HEAD');
   if (branch.ok) return branch.out === cutBranch;
-  if (env.GITHUB_REF === `refs/heads/${cutBranch}`) return true;
+  if (env.GITHUB_REF !== undefined) return env.GITHUB_REF === `refs/heads/${cutBranch}`;
   return git('branch', '-r', '--contains', 'HEAD', '--format=%(refname:short)').out.split('\n').includes(`origin/${cutBranch}`);
 }
 

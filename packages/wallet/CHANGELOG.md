@@ -18,7 +18,7 @@ The versioned topology envelope rejects overlong and out-of-range length and ver
 ### Fixed — `fromBase64` trims padding in linear time
 
 - At most two `=` of padding are accepted, trimmed without a regex: `/=+$/` took seconds on a long run of `=`, and the
-  topology check decodes what the server sends. Three or more `=` are refused as not base64.
+  topology check decodes what the server sends. If padding is present, it must complete a four-character group.
 
 ## 0.4.12
 

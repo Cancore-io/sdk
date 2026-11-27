@@ -153,9 +153,33 @@ describe('a topology leg is refused, never signed, when', () => {
     await refusedWith(verifyTopologyLeg(topologyLeg([ns!, keys!, again]), expect_), /serial 2, not 1/);
   });
 
-  test('a mapping is missing, repeated, removed or of another kind', async () => {
+  test.each([
+    [0, /no namespaceDelegation/],
+    [1, /no partyToKeyMapping/],
+    [2, /no partyToParticipant/],
+  ] as const)('refuses incomplete legacy allocation without mapping %i (CAN-2414)', async (missing, detail) => {
+    const txs = allocation().filter((_tx, index) => index !== missing);
+    await refusedWith(verifyTopologyLeg(topologyLeg(txs), expect_), detail);
+  });
+
+  test('refuses a three-part party ID (CAN-2414)', async () => {
+    const partyId = `${expect_.partyId}::extra`;
+    const txs = allocation({ keys: { party: partyId }, hosting: { party: partyId } });
+    await refusedWith(verifyTopologyLeg(topologyLeg(txs), { ...expect_, partyId }), /namespace of the signing key/);
+  });
+
+  test('refuses a non-Ed25519 SPKI key in namespace delegation (CAN-2414)', async () => {
+    const [ns, ...rest] = allocation();
+    const decoded = TopologyTransaction.fromBinary(ns!);
+    const mapping = decoded.mapping!.mapping;
+    if (mapping.oneofKind !== 'namespaceDelegation') throw new Error('fixture has no namespace delegation');
+    const key = mapping.namespaceDelegation.targetKey!;
+    key.publicKey = hexToBytes(`302a300506032b656e032100${NODE_KEY}`); // X25519 SPKI
+    await refusedWith(verifyTopologyLeg(topologyLeg([TopologyTransaction.toBinary(decoded), ...rest]), expect_), /delegates to another key/);
+  });
+
+  test('a mapping is repeated, removed or of another kind', async () => {
     const [ns, keys, hosting] = allocation();
-    await refusedWith(verifyTopologyLeg(topologyLeg([ns!, keys!]), expect_), /no partyToParticipant/);
     await refusedWith(verifyTopologyLeg(topologyLeg([ns!, keys!, hosting!, keys!]), expect_), /two partyToKeyMapping/);
     const removed = tx(TopologyTransaction.fromBinary(keys!).mapping!.mapping, Enums_TopologyChangeOp.REMOVE);
     await refusedWith(verifyTopologyLeg(topologyLeg([ns!, removed, hosting!]), expect_), /not ADD_REPLACE/);
