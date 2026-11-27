@@ -44,7 +44,7 @@ export function redact(v: unknown): unknown {
 }
 
 /** The last `n` complete lines, reading backwards in chunks; `torn` is a trailing fragment with no newline. */
-async function readTail(path: string, n: number): Promise<{ lines: string[]; torn: string; tornAt: number }> {
+async function readTail(path: string, n: number): Promise<{ lines: string[]; torn: Buffer; tornAt: number }> {
   const fh = await open(path, 'r');
   try {
     const size = (await fh.stat()).size;
@@ -59,10 +59,12 @@ async function readTail(path: string, n: number): Promise<{ lines: string[]; tor
       for (const b of chunk) if (b === 10) newlines += 1;
       buf = Buffer.concat([chunk, buf]);
     }
-    const parts = buf.toString('utf8').split('\n');
-    const torn = parts.pop()!;
+    const boundary = buf.lastIndexOf(10) + 1;
+    const torn = buf.subarray(boundary);
+    const parts = buf.toString('utf8', 0, boundary).split('\n');
+    parts.pop();
     if (pos > 0) parts.shift(); // the first part may be a partial line
-    return { lines: parts.slice(-n).filter((l) => l !== ''), torn, tornAt: size - Buffer.byteLength(torn) };
+    return { lines: parts.slice(-n).filter((l) => l !== ''), torn, tornAt: pos + boundary };
   } finally {
     await fh.close();
   }
@@ -75,12 +77,12 @@ export async function openAuditLog(path: string): Promise<OpenedAuditLog> {
 
   let tornTail: OpenedAuditLog['tornTail'] = null;
   const tail = await readTail(path, 1);
-  if (tail.torn !== '') {
+  if (tail.torn.length > 0) {
     // A crash mid-append; keep the fragment as evidence, then cut it so new entries chain cleanly.
     const savedTo = `${path}.torn-${Date.now()}`;
     await writeFile(savedTo, tail.torn, { mode: 0o600 });
     await truncate(path, tail.tornAt);
-    tornTail = { bytes: Buffer.byteLength(tail.torn), savedTo };
+    tornTail = { bytes: tail.torn.length, savedTo };
   }
   let seq = 0;
   let prev = GENESIS;
