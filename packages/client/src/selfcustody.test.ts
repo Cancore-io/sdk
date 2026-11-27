@@ -821,6 +821,15 @@ describe('the paths where a mistake costs money', () => {
     expect(api.order.swapId).toBeNull();
   });
 
+  test('BUG-1636 submits a DvP proposal even when the informational DTO rounds the stored order amount', async () => {
+    const api = venue({ feeHoldingRequired: true });
+    const { maker, taker } = await tradingPair(api, [52, 53]);
+    await taker.swap.accept('o1');
+    api.order.sourceAmount = '12345678.0000000001';
+    await expect(maker.make('o1')).rejects.toThrow(/holding of its own/);
+    expect(api.proposals).toEqual([expect.objectContaining({ orderId: 'o1', dvp: true })]);
+  });
+
   test.each([
     ['by the text of the message', false, [52, 53]],
     ['by errorCode alone', true, [54, 55]],
@@ -1660,6 +1669,8 @@ test('grossAmount refuses an amount it cannot hold exactly, instead of truncatin
 });
 
 test('grossAmount covers the net after the fee, in exact 1e-10 units rounded up', () => {
+  expect(() => grossAmount('12345678.0000000001', '0')).toThrow(RangeError);
+  expect(grossAmount('0.0000000001', '0')).toBe(1e-10);
   expect(grossAmount('100', '0.005')).toBe(100.5);
   expect(grossAmount('5000', '0.0050000000')).toBe(5025);
   expect(grossAmount('0.0000000001', '0.01')).toBe(0.0000000002);
@@ -3304,6 +3315,17 @@ describe('self-custody HTLC: Flow B, accept-counter and refund sign only what th
     expect(asked).toEqual([{ type: 'htlc.flow-b-create', params: { tokenId: 'CC', amount: 10, receiver: 'party-taker::1220bb', hashLock: HASH_LOCK, timeoutHours: 2 } }]);
     expect(JSON.stringify(asked)).not.toMatch(/encryptedPreimage/);
     expect(api.hits).toContain('POST /wallet/operations/submit');
+  });
+
+  test.each([
+    ['10000000.0000000001', 'Numeric 10 amount loses precision on the wire'],
+    ['-0.0000000001', 'Invalid Numeric 10 amount'],
+  ])('BUG-1636 openHtlc refuses %p before prepare', async (amount, message) => {
+    const { acct, api, asked } = await account(61, async (party) => [await initRequestLeg(request(party)), await deposit(party)]);
+
+    await expect(acct.openHtlc({ ...open, amount })).rejects.toThrow(message);
+    expect(asked).toEqual([]);
+    expect(api.hits).not.toContain('POST /wallet/operations/submit');
   });
 
   test('openHtlc refuses a request to another receiver, or a deposit to another escrow, before signing', async () => {

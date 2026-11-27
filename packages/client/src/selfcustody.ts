@@ -26,6 +26,7 @@ import { isPartyOfKey } from '@cancore/wallet';
 export { UnexpectedLegError } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
+import { exactNumericAmount } from './numeric-amount';
 import { DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
 import { createHtlcActions, postClaimCounter, randomHex, sha256Hex, type CounterExpectation, type OpenedHtlc, type OpenHtlcInput } from './selfcustody-htlc';
 export { newPreimage, postClaimCounter, sha256Hex, type CounterExpectation, type OpenedHtlc, type OpenHtlcInput } from './selfcustody-htlc';
@@ -1247,8 +1248,7 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         orderId: order.id,
         dvp: true,
         tokenId: order.sourceTokenAddress,
-        // A number because the request DTO takes one. Not a precision risk: the backend builds
-        // every leg of the trade from the order's own decimal strings, never from this field.
+        // The DvP backend builds the legs from the stored order; this DTO field is informational.
         amount: Number(order.sourceAmount),
         receiver,
         // Required by the request's validation and unused by DvP: no hash lock exists in a DvP trade.
@@ -1657,8 +1657,7 @@ export function grossAmount(net: string, feeRate: string): number {
   const ONE = 10n ** 10n;
   const product = n * (ONE + r);
   const gross = product / ONE + (product % ONE === 0n ? 0n : 1n);
-  const fraction = (gross % ONE).toString().padStart(10, '0').replace(/0+$/, '');
-  return Number(`${gross / ONE}${fraction ? `.${fraction}` : ''}`);
+  return exactNumericAmount(decimalOf(gross));
 }
 
 /** The exact text the API verifies a signed acceptance against (`buildLegalConsentMessage`). */
