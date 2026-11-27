@@ -53,13 +53,17 @@ export function messageExamples({ order, orderHash, ticket, ticketHash, quoteHas
     'quote.reconfirm.reply': [
       { type: 'quote.reconfirm.reply', ...F('r-1', 1790000014000), orderHash, accept: true, validUntil: '1790000400', nonce: '2', sig: PLACEHOLDER_SIG },
       { type: 'quote.reconfirm.reply', ...F('r-2', 1790000014000), orderHash, accept: false },
+      { type: 'quote.reconfirm.reply', ...F('r-3', 1790000014000), orderHash, accept: false, reason: 'PRICE_MOVED', midE18: '998500000000000000', shiftBps: 12 },
     ],
     'ticket.offer': [offerBody],
     'ticket.intent': [
       { type: 'ticket.intent', ...F('i-1', 1790000021000), ...t, validFrom: ticket.validFrom, validUntil: ticket.validUntil, deliveryKey: ticket.deliveryKey, repayTo: ticket.repayTo, sig: PLACEHOLDER_SIG },
       { type: 'ticket.intent', ...F('i-4', 1790000021000), ...t, attempt: 2, validFrom: ticket.validFrom, validUntil: ticket.validUntil, deliveryKey: `0x${'00'.repeat(20)}`, repayTo: ticket.repayTo, sig: PLACEHOLDER_SIG },
     ],
-    'ticket.decline': [{ type: 'ticket.decline', ...F('d-1', 1790000027001), ...t, reason: 'TICKET_ISSUED_LATE', detail: 'ticket.issued 3001 ms after acceptBy' }],
+    'ticket.decline': [
+      { type: 'ticket.decline', ...F('d-1', 1790000027001), ...t, reason: 'TICKET_ISSUED_LATE', detail: 'ticket.issued 3001 ms after acceptBy' },
+      { type: 'ticket.decline', ...F('d-2', 1790000020500), ...t, reason: 'PRICE_MOVED', detail: 'amountOut above the order payout at the current mid', midE18: '998500000000000000', shiftBps: 12 },
+    ],
     'ticket.intent.ack': [{ type: 'ticket.intent.ack', id: 'g-11', ...S, sentAt: 1790000021001, re: 'i-1', ...t, intentHash, receivedAt: 1790000021000 }],
     'ticket.issued': [
       { type: 'ticket.issued', id: 'g-12', ...S, sentAt: 1790000024000, form: 'evm', ...t, ticket, ticketSig: PLACEHOLDER_SIG },
