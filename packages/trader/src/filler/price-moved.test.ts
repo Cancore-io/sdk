@@ -1,7 +1,25 @@
-import { claimOfDecline, priceShiftBps, reconfirmOutcome, wirePriceClaim } from './price-moved';
+import { claimOfDecline, priceShiftBps, reconfirmOutcome, wirePriceClaim, type ReconfirmDecision } from './price-moved';
 
 describe('CAN-3797 price claim', () => {
   const base = { payout: 10n ** 18n, midE18: 998_500_000_000_000_000n, fromDecimals: 18, toDecimals: 10 };
+
+  test('CAN-3797 RX-1: wire claims enforce the lower int32 boundary', () => {
+    expect(wirePriceClaim({ midE18: 1n, shiftBps: -2147483648 })).toEqual({ midE18: '1', shiftBps: -2147483648 });
+    expect(wirePriceClaim({ midE18: 1n, shiftBps: -2147483649 })).toBeUndefined();
+  });
+
+  test('CAN-3797 RX-2: the decimals upper boundary applies to either input', () => {
+    const value = { payout: 10n ** 78n, midE18: 10n ** 18n, amountOut: 1n, fromDecimals: 0, toDecimals: 0 };
+    expect(priceShiftBps({ ...value, fromDecimals: 77 })).toBe(-9000);
+    expect(priceShiftBps({ ...value, fromDecimals: 78 })).toBeUndefined();
+    expect(priceShiftBps({ ...value, toDecimals: 78 })).toBeUndefined();
+  });
+
+  test('CAN-3797 RX-3: only literal true accepts a runtime hook answer', () => {
+    for (const value of ['decline', 1, {}, { decline: 'OTHER' }]) {
+      expect(reconfirmOutcome(value as ReconfirmDecision, () => {})).toEqual({ reason: 'declined' });
+    }
+  });
 
   test('TC-SDK-3797-U-01: shiftBps truncates toward zero on both sides of the mid', () => {
     expect(priceShiftBps({ ...base, amountOut: 10_000_000_000n })).toBe(15);
