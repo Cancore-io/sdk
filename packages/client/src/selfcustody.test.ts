@@ -3317,6 +3317,15 @@ describe('self-custody HTLC: Flow B, accept-counter and refund sign only what th
     expect(api.hits).toContain('POST /wallet/operations/submit');
   });
 
+  test('BUG-1636 openHtlc refuses an amount that would lose a ledger unit before prepare', async () => {
+    const { acct, api, asked } = await account(61, async (party) => [await initRequestLeg(request(party)), await deposit(party)]);
+
+    await expect(acct.openHtlc({ ...open, amount: '10000000.0000000001' }))
+      .rejects.toThrow('Numeric 10 amount loses precision on the wire');
+    expect(asked).toEqual([]);
+    expect(api.hits).not.toContain('POST /wallet/operations/submit');
+  });
+
   test('openHtlc refuses a request to another receiver, or a deposit to another escrow, before signing', async () => {
     for (const legs of [
       async (party: string) => [await initRequestLeg(request(party, { receiver: MALLORY })), await deposit(party)],

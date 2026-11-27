@@ -1,4 +1,3 @@
-import { exactNumericAmount } from './numeric-amount';
 /**
  * `@cancore/client/selfcustody` — a self-custody Canton account, run entirely
  * by a program.
@@ -27,6 +26,7 @@ import { isPartyOfKey } from '@cancore/wallet';
 export { UnexpectedLegError } from '@cancore/wallet/operations';
 import { CancoreApiError, createHttp, type Http } from './http';
 import { refusalOf } from './refusal';
+import { exactNumericAmount } from './numeric-amount';
 import { DEFAULT_FEE_RECIPIENTS, DEFAULT_INSTRUMENT_ADMINS, DEFAULT_NETWORK_FEE_RECIPIENTS, DEFAULT_VENUES, instrumentKey, mergeLists, networkOf, type DvpNetwork } from './dvp-admins';
 import { createHtlcActions, postClaimCounter, randomHex, sha256Hex, type CounterExpectation, type OpenedHtlc, type OpenHtlcInput } from './selfcustody-htlc';
 export { newPreimage, postClaimCounter, sha256Hex, type CounterExpectation, type OpenedHtlc, type OpenHtlcInput } from './selfcustody-htlc';
@@ -1248,8 +1248,6 @@ export function createSelfCustody(options: SelfCustodyOptions): SelfCustodyAccou
         orderId: order.id,
         dvp: true,
         tokenId: order.sourceTokenAddress,
-        // A number because the request DTO takes one. Not a precision risk: the backend builds
-        // every leg of the trade from the order's own decimal strings, never from this field.
         // The DvP backend builds the legs from the stored order; this DTO field is informational.
         amount: Number(order.sourceAmount),
         receiver,
