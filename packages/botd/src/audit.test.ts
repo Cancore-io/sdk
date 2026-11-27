@@ -102,15 +102,22 @@ describe('audit log', () => {
     expect(await (await openAuditLog(file)).verify()).toEqual({ ok: false, brokenAt: 1 });
   });
 
-  test('a torn final line is reported, preserved, and the chain continues', async () => {
-    await seed(3);
-    const before = fs.readFileSync(file, 'utf8');
-    const fragment = Buffer.from('unfinished €').subarray(0, -1);
+  test.each([
+    ['a small log', 0, Buffer.from('unfinished €').subarray(0, -1)],
+    ['a log spanning multiple read chunks', 72 * 1024, Buffer.from('unfinished €').subarray(0, -1)],
+    ['a single-byte fragment', 0, Buffer.of(0xe2)],
+  ] as const)('BUG-1622 preserves a torn tail in %s and continues the chain', async (_name, padding, fragment) => {
+    const writer = await openAuditLog(file);
+    await writer.append(entry(0, { pad: 'x'.repeat(padding) }));
+    await writer.append(entry(1));
+    await writer.append(entry(2));
+    const before = fs.readFileSync(file);
     fs.appendFileSync(file, fragment);
+
     const log = await openAuditLog(file);
     expect(log.tornTail).toEqual({ bytes: fragment.length, savedTo: expect.stringContaining('audit.jsonl.torn-') });
     expect(fs.readFileSync(log.tornTail!.savedTo)).toEqual(fragment);
-    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    expect(fs.readFileSync(file)).toEqual(before);
     expect((await log.append(entry(3))).seq).toBe(3);
     expect(await log.verify()).toEqual({ ok: true, entries: 4 });
   });
