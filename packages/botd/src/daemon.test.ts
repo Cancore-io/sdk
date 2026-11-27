@@ -84,6 +84,20 @@ it('BUG-1620 a sell take receives the source quote amount and gives the target b
   });
 });
 
+it('BUG-1620 a buy take gives the exact target quote amount, not one rebuilt from the floored price', () => {
+  expect(takeView({
+    orderId: 'buy',
+    status: 'open',
+    dvp: true,
+    source: 'CC',
+    sourceAmount: '100',
+    target: 'USDCx',
+    targetAmount: '15.0000000001',
+  }, ['CC/USDCx'])).toEqual({
+    base: 'CC', quote: 'USDCx', side: 'buy', amount: '100', quoteAmount: '15.0000000001', price: '0.15',
+  });
+});
+
 describe('dispatcher', () => {
   it('audits, then gates, then calls the engine', async () => {
     const log: string[] = [];

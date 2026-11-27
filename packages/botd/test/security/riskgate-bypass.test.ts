@@ -186,6 +186,16 @@ describe('security: through the dispatcher', () => {
     expect(r.engine.taken).toEqual([]);
   });
 
+  it('BUG-1620 a buy take one quote unit over the notional cap is refused on the order.take path', async () => {
+    await r.cleanup();
+    r = await rig({ ...LIMITS, maxOrderNotional: { USDCx: '15' } });
+    await r.unlock();
+    r.engine.orders.set('thin', { orderId: 'thin', status: 'open', dvp: true, source: 'CC', sourceAmount: '100', target: 'USDCx', targetAmount: '15.0000000001' });
+    r.engine.orders.set('exact', { orderId: 'exact', status: 'open', dvp: true, source: 'CC', sourceAmount: '100', target: 'USDCx', targetAmount: '15' });
+    expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'thin', amount: '100' }), agent))).toBe('notional_exceeded');
+    expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'exact', amount: '100' }), agent))).toBe('ok');
+  });
+
   it('a take of an order that does not settle through DvP is refused before it is booked', async () => {
     r.engine.orders.set('htlc', { orderId: 'htlc', status: 'open', dvp: false, source: 'CC', sourceAmount: '10', target: 'USDCx', targetAmount: '1.5' });
     expect(await outcome(r.dispatcher.handle(req('order.take', { orderId: 'htlc', amount: '10' }), agent))).toBe('no_rule');
