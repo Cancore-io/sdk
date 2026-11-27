@@ -94,18 +94,31 @@ describe('reorgs never produce a false or a duplicate event', () => {
     expect(seen()).toEqual([]);
   });
 
-  test('BUG-1626 removes a log when the fork changes between chunks', async () => {
+  test('BUG-1626 rewinds across chunks before reporting logs on the replacement fork', async () => {
     const { chain, watcher, seen } = setup(0, 100n, 5n);
     chain.emit(ROUTER, 'Filled', filled(A), 92n);
     const original = chain.request.bind(chain);
     let reads = 0;
     chain.request = (async (request) => {
-      if (request.method === 'eth_getLogs' && ++reads === 2) chain.reorg(92n);
+      if (request.method === 'eth_getLogs' && ++reads === 2) {
+        chain.reorg(92n);
+        chain.emit(ROUTER, 'Filled', filled(A), 93n);
+        chain.emit(ROUTER, 'Filled', filled(B), 96n);
+      }
       return original(request);
     }) as typeof chain.request;
-    await watcher.poll();
+
     await watcher.poll();
     expect(seen()).toEqual(['added Filled 0xaa @92', 'removed Filled 0xaa @92']);
+
+    await watcher.poll();
+    await watcher.poll();
+    expect(seen()).toEqual([
+      'added Filled 0xaa @92',
+      'removed Filled 0xaa @92',
+      'added Filled 0xaa @93',
+      'added Filled 0xbb @96',
+    ]);
   });
 
   test('a deeper reorg: the reported Filled is removed, its re-inclusion reported once', async () => {
