@@ -378,7 +378,7 @@ rate. What cannot — that the intent and its allocation are live, `committed`, 
 | V-C1 | a live `SwapIntent` with `ticket.orderHash` names this filler: its party and `fillerId` | `ESCROW_NOT_OPEN` (none), `ESCROW_MISMATCH` |
 | V-C2 | the EVM-form order built from the intent's own terms (protocol §3.7) is `offer.order`, field by field | `ESCROW_MISMATCH` |
 | V-C3 | that order's hash in the Canton source domain is `ticket.orderHash` | `ESCROW_MISMATCH` |
-| V-C4 | the allocation `allocationCid` is live, a pinned registry template (`CANTON_ALLOCATION_TEMPLATES`), `committed`, the owner's, executors exactly operator and owner, `settlementDeadline == refundAfter`, legs exactly `payout` (`amount` less the fee, Numeric 10 half to even) to this party and `fee` to the operator | `ESCROW_NOT_OPEN` (not live), `ESCROW_MISMATCH` |
+| V-C4 | the allocation `allocationCid` is live, a pinned registry template (`CANTON_ALLOCATION_TEMPLATES`), `committed`, the owner's, executors exactly operator and owner, `settlementDeadline == refundAfter`, legs exactly `payout` (`amount` less the fee, Numeric 10 half to even) to this party and `fee` to the operator; of a CNRX registry, the gateway's `lockedHoldingGuardian` is the pinned guardian (absent is a refusal) | `ESCROW_NOT_OPEN` (not live), `ESCROW_MISMATCH` |
 | V-C5 | `ticket.repayTo == keccak256(utf8(party))`; the `FillerRegistryEntry` of the party is `ACTIVE`; the instrument's pinned registry pays any party through a receipt-only allocation (`openReceipt`, T-9) | `TICKET_MISMATCH`, `OTHER` (`payout-not-ready`) |
 | V-C6 | `refundAfter − fillDeadline ≥ requiredProofWindowSec` of the destination | `PROOF_WINDOW_TOO_SHORT` |
 | V-C7 | the settlement factory the owner approved into the intent is still the registry's (`settlementFactory.live`); a filler-gateway that does not say is a refusal too | `OTHER` (`payout-not-ready`), logged as a warning |
@@ -496,8 +496,8 @@ published registries, unless `CantonConfig.registries` (or `CantonClientConfig.r
 others — only for a network with its own registrar, such as a test stand; `registriesProblem`
 checks such a pin before it is used. filler-gateway never supplies it. A cnrx-registry entry (its
 holding is `Cnrx.Holding:CnrxHolding`) must name `guardian`, the guardian G of the registrar's
-`CnrxSupply` (CAN-3132): `intent.settle` credits only holdings marked `cnrx/guardian = G` and runs
-receipt allocations only on factories G co-signs. V-C4 requires the gateway's `lockedHoldingGuardian`
+`CnrxSupply` (CAN-3132): `intent.settle` credits only holdings marked `cnrx/guardian = G` and signed by G,
+and runs its settlement batch and receipt allocations only on factories the admin and G co-sign (BUG-1613). V-C4 requires the gateway's `lockedHoldingGuardian`
 to identify G on every input holding locked by the allocation. Guardian-aware transfers require the
 pinned guardian on the factory and on every spent and created holding. An existing transfer through
 the original 0.2.3 factory follows its legacy rules.

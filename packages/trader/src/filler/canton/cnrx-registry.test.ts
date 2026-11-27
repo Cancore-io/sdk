@@ -123,6 +123,13 @@ describe('holdings.transfer of CNRX under cnrx-registry 0.2.6: the first input s
   });
 
   test.each([
+    ['a different guardian mark', { ...input('h2', '10'), argument: v.record({ holding: view(ME, '10', RECEIVER) }) }],
+    ['no guardian signature', { ...input('h2', '10'), signatories: [ADMIN, ME] }],
+  ])('BUG-1613 refuses a later stated input with %s while the first is honest', (_name, h2) => {
+    refused(() => check()(prepared, [transfer({ inputs: [input('h1', '20'), h2] })]), /pinned guardian mark or signature/);
+  });
+
+  test.each([
     ['BUG-1613: input lacks its pinned guardian signature', () => check()(prepared, [transfer({ inputs: [{ ...input('h1', '20'), signatories: [ADMIN, ME] }, input('h2', '10')] })]), /guardian/],
     ['TC-SDK-3304-02: the 0.2.6 transfer with 0.2.3 pinned alone', () => check(only(CNRX_0_2_3))(prepared, [transfer()]), /not a pinned factory/],
     ['TC-SDK-3304-03: a 0.2.6 transfer spending holdings of 0.2.3', () => check()(prepared, [transfer({ inputs: [input('h1', '20', CNRX_0_2_3), input('h2', '10', CNRX_0_2_3)] })]), /not a holding of the pinned registry/],
