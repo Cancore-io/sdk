@@ -167,6 +167,7 @@ export class TransactionDriver {
   readonly chain: EvmChainId;
   readonly address: Hex;
   private readonly chainId: bigint;
+  private readonly nonceWork = new Map<bigint, Promise<void>>();
   private lastTurn: Promise<void> = Promise.resolve();
   private turn: NonceTurn | undefined;
 
@@ -270,6 +271,18 @@ export class TransactionDriver {
     });
     this.options.onSuspectNonce?.(suspect);
     return bound;
+  }
+
+  /** Serializes reads and writes of an open nonce with its tracker. The lease still fences other replicas. */
+  async withNonceWork<T>({ nonce }: NonceLease, work: () => Promise<T>): Promise<T> {
+    const result = (this.nonceWork.get(nonce) ?? Promise.resolve()).then(work);
+    const barrier = result.then(() => undefined, () => undefined);
+    this.nonceWork.set(nonce, barrier);
+    try {
+      return await result;
+    } finally {
+      if (this.nonceWork.get(nonce) === barrier) this.nonceWork.delete(nonce);
+    }
   }
 
   /** Extends a held lease; null when it is no longer held. */

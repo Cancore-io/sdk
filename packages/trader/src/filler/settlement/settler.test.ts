@@ -630,6 +630,7 @@ describe('write-ahead settlement recovery (CAN-1856 R2)', () => {
     expect(w.signer.signTransaction).toHaveBeenCalledTimes(rotate ? 2 : 1);
     expect(open[0]).toMatchObject({ nonce: old!.nonce, owner: 'r2' });
     expect(open[0]!.transactions.at(-1)!.hash).toBe(txHash);
+    await flush(); // Let the waiting tracker finish its tick and schedule the next one.
     w.src.mine();
     await w.tick(1_000);
     expect(await w.settlement()).toMatchObject({ state: 'confirmed', txHash });

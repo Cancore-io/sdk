@@ -44,7 +44,7 @@ import {
   type TicketIssuedEvm,
 } from '@cancore/contracts';
 import { decodeEventLog, decodeParams, encodeFunctionCall, entryOf, topicOf, type AbiEntry } from '../chain/abi';
-import { recoverSettleCall } from '../settlement/send-settle';
+import { recoverRecordedSettle } from '../settlement/send-settle';
 import { ChainReadError, toQuantity } from '../chain/client';
 import { erc20Allowance } from '../chain/erc20';
 import { fillDepth, type ChainReaders, type FillerChains } from '../chain';
@@ -189,7 +189,6 @@ export class Executor {
   private readonly delivery: Required<Omit<DeliveryOptions, 'approvals' | 'fillAmount'>> & Pick<DeliveryOptions, 'approvals' | 'fillAmount'>;
   private readonly drivers = new Map<EvmChainId, TransactionDriver>();
   private readonly trackers = new Map<string, Tracker>();
-  private readonly nonceWork = new Map<string, Promise<void>>();
   private readonly busy = new Map<string, Promise<DeliveryResult>>();
   private readonly approving = new Map<string, Promise<void>>();
   private sweep: Cancel | undefined;
@@ -390,21 +389,11 @@ export class Executor {
 
   /** Recovers an unlinked settle before a new nonce can be allocated, fenced by the current nonce lease. */
   async recoverSettlement(driver: TransactionDriver, orderHash: Hex, attempt: number, call: TransactionCall): Promise<{ lease: NonceLease; tx: InFlightTransaction } | undefined> {
-    const { store, instanceId } = this.options;
+    const { store } = this.options;
     await this.claimChain(driver);
     for (const record of await store.nonces.listOpen(driver.chain, driver.address)) {
       if (!record.transactions.some((tx) => tx.kind === 'settle' && tx.orderHash === orderHash && tx.attempt === attempt)) continue;
-      return this.withNonceWork(record, async () => {
-        const current = await driver.record(record);
-        if (!current || current.owner !== instanceId) throw new LeaseLostError(record);
-        const lease = await driver.renew(current);
-        if (!lease) throw new LeaseLostError(current);
-        const tx = current.transactions.at(-1);
-        if (tx?.kind !== 'settle' || tx.orderHash !== orderHash || tx.attempt !== attempt || tx.to !== call.to.toLowerCase() || tx.value !== call.value) {
-          throw new Error('settle: the recorded transaction belongs to another operation');
-        }
-        return { lease, tx: await recoverSettleCall(this.options, driver, lease, tx, call) };
-      });
+      return driver.withNonceWork(record, () => recoverRecordedSettle(this.options, driver, record, orderHash, attempt, call));
     }
     return undefined;
   }
@@ -691,19 +680,6 @@ export class Executor {
     this.track(driver, lease);
   }
 
-  /** Read and update an open nonce in order with its background tracker. The lease still fences other replicas. */
-  private async withNonceWork<T>(lease: NonceLease, work: () => Promise<T>): Promise<T> {
-    const key = `${lease.chain}:${lease.nonce}`;
-    const result = (this.nonceWork.get(key) ?? Promise.resolve()).then(work);
-    const barrier = result.then(() => undefined, () => undefined);
-    this.nonceWork.set(key, barrier);
-    try {
-      return await result;
-    } finally {
-      if (this.nonceWork.get(key) === barrier) this.nonceWork.delete(key);
-    }
-  }
-
   // -- tracking -----------------------------------------------------------------------
 
   /** Drives the nonce of `lease` until it is done: confirmed, reverted, cancelled — or the lease is lost. */
@@ -719,7 +695,7 @@ export class Executor {
     const next = () => {
       if (this.stopped || this.trackers.get(k) !== tracker) return;
       tracker.cancel = this.options.clock.schedule(this.delivery.pollIntervalMs, () => {
-        void this.withNonceWork(tracker.lease, async () => this.stopped || this.tick(tracker))
+        void driver.withNonceWork(tracker.lease, async () => this.stopped || this.tick(tracker))
           .catch((error: unknown) => {
             this.options.logger.warn('delivery: tick failed, retrying', { chain: driver.chain, nonce: tracker.lease.nonce.toString(), error: reasonOf(error) });
             return false;

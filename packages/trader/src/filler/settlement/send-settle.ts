@@ -26,6 +26,19 @@ export async function sendSettle(ctx: SendSettleContext, driver: TransactionDriv
   }
 }
 
+/** Re-read the bid after entering its nonce turn; a completed or transferred lease cannot be recovered. */
+export async function recoverRecordedSettle(ctx: SendSettleContext, driver: TransactionDriver, record: NonceLease, orderHash: Hex, attempt: number, call: TransactionCall): Promise<{ lease: NonceLease; tx: InFlightTransaction }> {
+  const current = await driver.record(record);
+  if (!current || current.owner !== ctx.instanceId) throw new LeaseLostError(record);
+  const lease = await driver.renew(current);
+  if (!lease) throw new LeaseLostError(current);
+  const tx = current.transactions.at(-1);
+  if (tx?.kind !== 'settle' || tx.orderHash !== orderHash || tx.attempt !== attempt || tx.to !== call.to.toLowerCase() || tx.value !== call.value) {
+    throw new Error('settle: the recorded transaction belongs to another operation');
+  }
+  return { lease, tx: await recoverSettleCall(ctx, driver, lease, tx, call) };
+}
+
 const SETTLE = entryOf(CANCORE_ROUTER_ABI as unknown as readonly AbiEntry[], 'function', 'settle');
 
 /** Only the signatures may change on recovery. Keep a still-valid bid, or replace it on the same nonce. */
