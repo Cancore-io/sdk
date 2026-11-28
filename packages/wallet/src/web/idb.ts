@@ -75,53 +75,54 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
+async function withDb<T>(use: (db: IDBDatabase) => Promise<T>): Promise<T> {
+  const db = await openDb();
+  try {
+    return await use(db);
+  } finally {
+    db.close();
+  }
+}
+
 // The single wallet slot holds ONE wrapped-seed record — since v2, only the
 // passkey/PRF record (pbkdf2 records live in the accounts store below).
 export async function putPersistedWallet<T = PersistedPasskeyWalletRecord>(record: T): Promise<void> {
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
+  return withDb((db) => new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
     tx.objectStore(STORE_NAME).put(record, RECORD_KEY);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('Failed to persist wallet record'));
-  });
-  db.close();
+    tx.onabort = tx.onerror = () => reject(tx.error ?? new Error('Failed to persist wallet record'));
+  }));
 }
 
 export async function getPersistedWallet<T = PersistedPasskeyWalletRecord>(): Promise<T | null> {
-  const db = await openDb();
-  const record = await new Promise<T | null>((resolve, reject) => {
+  return withDb((db) => new Promise<T | null>((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readonly');
+    tx.onabort = () => reject(tx.error ?? new Error('Wallet read transaction aborted'));
     const request = tx.objectStore(STORE_NAME).get(RECORD_KEY);
     request.onsuccess = () => resolve((request.result as T | undefined) ?? null);
     request.onerror = () => reject(request.error ?? new Error('Failed to read wallet record'));
-  });
-  db.close();
-  return record;
+  }));
 }
 
 export async function clearPersistedWallet(): Promise<void> {
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
+  return withDb((db) => new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
     tx.objectStore(STORE_NAME).delete(RECORD_KEY);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('Failed to clear wallet record'));
-  });
-  db.close();
+    tx.onabort = tx.onerror = () => reject(tx.error ?? new Error('Failed to clear wallet record'));
+  }));
 }
 
 /** All saved key+password wallet accounts on this device (unsorted). */
 export async function listWalletAccounts<T>(): Promise<Array<StoredWalletAccount<T>>> {
-  const db = await openDb();
-  const accounts = await new Promise<Array<StoredWalletAccount<T>>>((resolve, reject) => {
+  return withDb((db) => new Promise<Array<StoredWalletAccount<T>>>((resolve, reject) => {
     const tx = db.transaction(ACCOUNTS_STORE_NAME, 'readonly');
+    tx.onabort = () => reject(tx.error ?? new Error('Wallet read transaction aborted'));
     const request = tx.objectStore(ACCOUNTS_STORE_NAME).getAll();
     request.onsuccess = () => resolve((request.result as Array<StoredWalletAccount<T>>) ?? []);
     request.onerror = () => reject(request.error ?? new Error('Failed to list wallet accounts'));
-  });
-  db.close();
-  return accounts;
+  }));
 }
 
 /** Create or replace the saved account keyed by its wallet public key. */
@@ -129,24 +130,20 @@ export async function putWalletAccount<T>(
   publicKeyHex: string,
   account: StoredWalletAccount<T>,
 ): Promise<void> {
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
+  return withDb((db) => new Promise<void>((resolve, reject) => {
     const tx = db.transaction(ACCOUNTS_STORE_NAME, 'readwrite');
     tx.objectStore(ACCOUNTS_STORE_NAME).put(account, publicKeyHex);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('Failed to persist wallet account'));
-  });
-  db.close();
+    tx.onabort = tx.onerror = () => reject(tx.error ?? new Error('Failed to persist wallet account'));
+  }));
 }
 
 /** Remove one saved account from this device (its key stays recoverable via the phrase). */
 export async function deleteWalletAccount(publicKeyHex: string): Promise<void> {
-  const db = await openDb();
-  await new Promise<void>((resolve, reject) => {
+  return withDb((db) => new Promise<void>((resolve, reject) => {
     const tx = db.transaction(ACCOUNTS_STORE_NAME, 'readwrite');
     tx.objectStore(ACCOUNTS_STORE_NAME).delete(publicKeyHex);
     tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error ?? new Error('Failed to delete wallet account'));
-  });
-  db.close();
+    tx.onabort = tx.onerror = () => reject(tx.error ?? new Error('Failed to delete wallet account'));
+  }));
 }
