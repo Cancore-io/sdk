@@ -147,7 +147,7 @@ function world(limits: Limits = LIMITS, ordersPerHour = 60) {
           return { orderId: id, status: statuses[id] ?? 'open', dvp: true, source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '1', ...infos[id], ...(id in takers && { takenBySelf: takers[id] }) };
         },
         balances: jest.fn(),
-        referencePrices: async () => ({ 'CC/USDCx': '0.15' }),
+        referencePrices: async () => ({ 'CC/USDCx': '0.15', 'CC/USDT': '0.15' }),
         usdPrices: async () => {
           if (crash.pricesDown) throw new Error('ECONNRESET');
           await crash.pricesHold;
@@ -456,6 +456,17 @@ describe('a strategy order cancelled by hand', () => {
     expect(w.made).toHaveLength(3);
     expect(strategyOf(w)).toMatchObject({ status: 'running', cancelled: ['1:buy'] });
     expect(await w.call('status')).toMatchObject({ result: { strategies: [{ cancelledByUser: ['1:buy'] }] } });
+  });
+
+  it('nor after orders.cancelAll: every slot it cancelled is the user\'s (BUG-1637)', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('strategy.start', grid, false);
+    for (let i = 0; i < 3; i++) await w.tick();
+    await w.call('orders.cancelAll', {}, false);
+    for (let i = 0; i < 3; i++) await w.tick();
+    expect(w.made).toHaveLength(3);
+    expect([...(strategyOf(w).cancelled ?? [])].sort()).toEqual(['0:buy', '1:buy', '2:buy']);
   });
 
   it('nor when it was cancelled outside the daemon', async () => {
@@ -1153,8 +1164,8 @@ describe('a settle that lands in the lock window (CAN-2834)', () => {
 
 describe('owner release of a booked take (CAN-2836)', () => {
   const someoneElses = { source: 'CC', sourceAmount: '1', target: 'USDCx', targetAmount: '0.15' };
-  const tookA = async () => {
-    const w = world();
+  const tookA = async (limits?: Limits) => {
+    const w = world(limits);
     await w.unlock();
     w.infos.A = someoneElses;
     await w.call('order.take', { orderId: 'A', amount: '1' }, false);
@@ -1304,6 +1315,45 @@ describe('owner release of a booked take (CAN-2836)', () => {
     w.infos.A = { ...someoneElses, ...terms };
     await expect(w.call('order.take', { orderId: 'A', amount }, false)).rejects.toMatchObject({ data: { reason: 'no_rule' } });
     expect(w.state().openOrders).toEqual([expect.objectContaining({ orderId: 'A', amount: '1', taken: true })]);
+  });
+
+  it('BUG-1637 a repeat take whose venue view is another allowed pair on the same side, amount and price is refused', async () => {
+    const w = await tookA({ ...LIMITS, allowedPairs: ['CC/USDCx', 'CC/USDT'], maxOrderNotional: { USDCx: '100', USDT: '100' } });
+    const onTheOtherPair = { source: 'CC', sourceAmount: '1', target: 'USDT', targetAmount: '0.15' };
+    // The other pair passes the limits on its own: only the earlier booking on CC/USDCx refuses the repeat take.
+    w.infos.B = onTheOtherPair;
+    await expect(w.call('order.take', { orderId: 'B', amount: '1' }, false)).resolves.toMatchObject({ result: { orderId: 'B' } });
+    w.infos.A = onTheOtherPair;
+    await expect(w.call('order.take', { orderId: 'A', amount: '1' }, false)).rejects.toMatchObject({ data: { reason: 'no_rule' } });
+    expect(w.state().openOrders).toEqual([
+      expect.objectContaining({ orderId: 'A', pair: 'CC/USDCx', taken: true }),
+      expect.objectContaining({ orderId: 'B', pair: 'CC/USDT', taken: true }),
+    ]);
+  });
+
+  it('BUG-1637 a take of our own resting order is judged by the limits, not as a take booked on other terms', async () => {
+    const w = world();
+    await w.unlock();
+    await w.call('order.make', { base: 'CC', quote: 'USDCx', side: 'buy', amount: '1', price: '0.15' }, false);
+    // The venue shows o1 as a sell of 102 CC: other terms than its resting booking, over maxOrderAmount.
+    w.infos.o1 = { source: 'USDCx', sourceAmount: '15.3', target: 'CC', targetAmount: '102' };
+    await expect(w.call('order.take', { orderId: 'o1', amount: '102' }, false)).rejects.toMatchObject({ data: { reason: 'order_size_exceeded' } });
+  });
+
+  it('BUG-1637 a repeat take that reaches the loop after the owner released its booking is called off and dequeued', async () => {
+    const w = await tookA();
+    let book!: () => void;
+    w.crash.takeHold = new Promise<void>((r) => (book = r));
+    const atTake = new Promise<void>((r) => (w.crash.atTake = r));
+    const outcome = w.call('order.take', { orderId: 'A', amount: '1' }, false).then(() => 'booked', (err: unknown) => err);
+    await atTake;
+    await expect(release(w)).resolves.toMatchObject({ result: { released: true } });
+    // Its state read came before the release: the take lands in the loop's queue only after the release dequeued it.
+    w.crash.queued!.add('A');
+    book();
+    expect(await outcome).toMatchObject({ code: ERROR.INVALID_PARAMS, data: { reason: 'cancelled' } });
+    expect(w.state().openOrders).toEqual([]);
+    expect(w.crash.queued?.has('A')).toBe(false);
   });
 
   it.each([

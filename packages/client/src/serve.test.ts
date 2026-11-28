@@ -511,12 +511,13 @@ test('a refusal after an earlier accept with an unknown outcome keeps the take i
     runs++;
     if (o.beforeAccept && !o.beforeAccept()) throw Object.assign(new Error('called off'), { name: 'TakeCancelledError' });
     // First attempt: the answer is lost. Second: the venue says 400, because the first one already took the order.
-    if (runs > 1) o.onAcceptRefused?.();
+    if (runs > 1) o.onAcceptRefused?.(false);
     throw runs === 1 ? new TypeError('fetch failed') : new Error('400 order is not open');
   };
   const handle = serve(acct, { concurrency: 1, reconcileMs: 5 }, noneLocked);
   handle.take('twice');
-  await until(() => runs >= 2);
+  // BUG-1637: not marked refused either, so the next reconcile sends the accept again.
+  await until(() => runs >= 3);
   await new Promise((r) => setImmediate(r));
   expect(handle.untake('twice')).toBe(false);
   expect(handle.mayBeTrade('twice')).toBe(true);
