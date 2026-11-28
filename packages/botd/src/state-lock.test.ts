@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process';
-import { chmodSync, mkdtempSync, promises as fsp, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, promises as fsp, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type * as SQLite from 'node:sqlite';
@@ -46,6 +46,15 @@ describe('openLockedAudit', () => {
     const close = jest.spyOn(DatabaseSync.prototype, 'close');
     await expect(openLockedAudit(dir, auditPath())).rejects.toThrow(/Cannot lock/);
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  // RX-7 (sdk#318 audit r3): a refused attempt must not mark the inode as held by this process.
+  it('BUG-1623 lets this process retry after an attempt that could not take the lock', async () => {
+    writeFileSync(lockPath(), 'not a database '.repeat(16), { mode: 0o600 });
+    await expect(openLockedAudit(dir, auditPath())).rejects.toThrow(/Cannot lock/);
+    truncateSync(lockPath(), 0);
+    const audit = await openLockedAudit(dir, auditPath());
+    await audit.close();
   });
 
   it('BUG-1623 releases the lock when closing the audit log fails', async () => {
