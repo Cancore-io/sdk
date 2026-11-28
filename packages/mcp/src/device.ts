@@ -15,7 +15,7 @@ export interface DeviceStart {
   interval: number;
 }
 
-export type PollStatus = 'pending' | 'granted' | 'denied';
+export type PollStatus = 'pending' | 'granted' | 'denied' | 'expired';
 
 export interface PollOutcome {
   status: PollStatus;
@@ -32,6 +32,10 @@ export const AGENT_SCOPES = ['agent:propose', 'agent:read', 'balances:read'] as 
 
 type Fetch = typeof globalThis.fetch;
 
+class DeviceHttpError extends Error {
+  constructor(readonly status: number, message: string) { super(message); }
+}
+
 async function postJson<T>(fetchImpl: Fetch, url: string, body: unknown): Promise<T> {
   const res = await fetchImpl(url, {
     method: 'POST',
@@ -40,7 +44,7 @@ async function postJson<T>(fetchImpl: Fetch, url: string, body: unknown): Promis
   });
   const text = await res.text();
   if (!res.ok) {
-    throw new Error(`${url} answered ${res.status}: ${text.slice(0, 200)}`);
+    throw new DeviceHttpError(res.status, `${url} answered ${res.status}: ${text.slice(0, 200)}`);
   }
   return text ? (JSON.parse(text) as T) : ({} as T);
 }
@@ -82,7 +86,12 @@ export async function pollGrant(
   baseUrl: string,
   deviceCode: string,
 ): Promise<PollOutcome> {
-  return postJson<PollOutcome>(fetchImpl, `${baseUrl}/auth/device/token`, { deviceCode });
+  try {
+    return await postJson<PollOutcome>(fetchImpl, `${baseUrl}/auth/device/token`, { deviceCode });
+  } catch (error) {
+    if (error instanceof DeviceHttpError && error.status === 404) return { status: 'expired' };
+    throw error;
+  }
 }
 
 export interface AwaitOptions {

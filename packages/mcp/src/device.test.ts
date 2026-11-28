@@ -1,4 +1,4 @@
-import { awaitGrant, startAuthorization, type DeviceStart } from './device';
+import { awaitGrant, pollGrant, startAuthorization, type DeviceStart } from './device';
 
 const API = 'https://api-dev.cancore.app';
 
@@ -64,4 +64,11 @@ test('approval ends the wait and carries the token', async () => {
 test('a refusal ends the wait too', async () => {
   const outcome = await awaitGrant(jsonFetch([{ status: 'denied' }]), API, START, { budgetMs: 60_000, sleep: async () => {} });
   expect(outcome.status).toBe('denied');
+});
+
+test.each([404, 503])('BUG-1634 maps only a 404 device poll to expiry (%i)', async (status) => {
+  const fetchImpl: typeof fetch = async () => new Response('{}', { status });
+  const result = pollGrant(fetchImpl, API, START.deviceCode);
+  if (status === 404) await expect(result).resolves.toEqual({ status: 'expired' });
+  else await expect(result).rejects.toMatchObject({ status });
 });

@@ -204,6 +204,205 @@ function forcedSession(path: string, fetchImpl: typeof globalThis.fetch): Cancor
   );
 }
 
+test('BUG-1634 clears server-expired consent and opens a fresh request on retry', async () => {
+  const { fetchImpl, calls } = routingFetch({
+    'POST /auth/device/authorize': DEVICE_START,
+    'POST /auth/device/token': { status: 404, body: {} },
+  });
+  const openBrowser = jest.fn(async () => true);
+  const started = new CancoreSession(
+    { apiBaseUrl: API, appBaseUrl: APP, appName: 'Claude', grantPath: tempPath() },
+    { fetchImpl, openBrowser, now: () => 0 },
+  );
+
+  await expect(started.connectWallet()).resolves.toMatchObject({ status: 'expired' });
+  await expect(started.connectWallet()).resolves.toMatchObject({ status: 'expired' });
+
+  expect(calls.filter((call) => call.url.endsWith('/authorize'))).toHaveLength(2);
+  expect(openBrowser).toHaveBeenCalledTimes(2);
+});
+
+test.each(['authorization', 'poll'] as const)('BUG-1634 force supersedes an in-flight %s', async (phase) => {
+  const path = tempPath();
+  let releaseOld!: () => void;
+  let releaseNew!: () => void;
+  let markOldWaiting!: () => void;
+  let markNewWaiting!: () => void;
+  const oldWaiting = new Promise<void>((resolve) => { markOldWaiting = resolve; });
+  const newWaiting = new Promise<void>((resolve) => { markNewWaiting = resolve; });
+  const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+  const newGate = new Promise<void>((resolve) => { releaseNew = resolve; });
+  let authorizations = 0;
+  const polls: string[] = [];
+  const revoked: string[] = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    if (init?.method === 'DELETE') {
+      revoked.push(new Headers(init.headers).get('authorization') ?? '');
+      return Response.json({ revoked: true });
+    }
+    if (String(url).endsWith('/authorize')) {
+      const deviceCode = ++authorizations === 1 ? 'old' : 'new';
+      if (deviceCode === 'old' && phase === 'authorization') {
+        markOldWaiting();
+        await oldGate;
+      }
+      return Response.json({ ...DEVICE_START.body, deviceCode });
+    }
+
+    const { deviceCode } = JSON.parse(String(init?.body));
+    polls.push(deviceCode);
+    if (deviceCode === 'old') {
+      markOldWaiting();
+      await oldGate;
+      return Response.json({ ...GRANTED.body, token: 'superseded-token' });
+    }
+    markNewWaiting();
+    await newGate;
+    return Response.json(GRANTED.body);
+  };
+  const started = forcedSession(path, fetchImpl);
+  const oldRequest = started.connectWallet();
+  await oldWaiting;
+  const newRequest = started.connectWallet({ force: true });
+  await newWaiting;
+  releaseOld();
+
+  await expect(oldRequest).resolves.toMatchObject({ status: 'superseded' });
+  expect(loadGrant(path, API)).toBeUndefined();
+  expect(revoked).toEqual(phase === 'poll' ? ['Bearer superseded-token'] : []);
+  expect(started.connectWallet()).toBe(newRequest);
+
+  releaseNew();
+  await expect(newRequest).resolves.toMatchObject({ status: 'granted' });
+  expect(polls).toEqual(phase === 'authorization' ? ['new'] : ['old', 'new']);
+  expect(revoked).toHaveLength(phase === 'poll' ? 1 : 0);
+});
+
+// RX-1 (sdk#313 audit r2): a superseded poll that collected a token must say so when ending it fails.
+test('BUG-1634 a superseded poll whose token cannot be revoked says the session may be alive', async () => {
+  const path = tempPath();
+  let releaseOld!: () => void;
+  let markOldWaiting!: () => void;
+  let markNewWaiting!: () => void;
+  const oldWaiting = new Promise<void>((resolve) => { markOldWaiting = resolve; });
+  const newWaiting = new Promise<void>((resolve) => { markNewWaiting = resolve; });
+  const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+  let authorizations = 0;
+  const fetchImpl: typeof fetch = async (url, init) => {
+    if (init?.method === 'DELETE') return Response.json({ message: 'boom' }, { status: 500 });
+    if (String(url).endsWith('/authorize')) {
+      return Response.json({ ...DEVICE_START.body, deviceCode: ++authorizations === 1 ? 'old' : 'new' });
+    }
+    const { deviceCode } = JSON.parse(String(init?.body));
+    if (deviceCode === 'old') {
+      markOldWaiting();
+      await oldGate;
+      return Response.json({ ...GRANTED.body, token: 'superseded-token' });
+    }
+    markNewWaiting();
+    return new Promise<Response>(() => {});
+  };
+  const started = forcedSession(path, fetchImpl);
+  const oldRequest = started.connectWallet();
+  await oldWaiting;
+  void started.connectWallet({ force: true });
+  await newWaiting;
+  releaseOld();
+
+  const result = await oldRequest;
+  expect(result.status).toBe('superseded');
+  expect(String(result.warning)).toMatch(/revoke it in the wallet/);
+  expect(loadGrant(path, API)).toBeUndefined();
+});
+
+
+function clockedSession(path: string, fetchImpl: typeof globalThis.fetch, openBrowser = jest.fn(async () => true)): CancoreSession {
+  let clock = 0;
+  return new CancoreSession(
+    { apiBaseUrl: API, appBaseUrl: APP, appName: 'Claude', grantPath: path },
+    { fetchImpl, openBrowser, now: () => clock, sleep: async (ms: number) => { clock += ms; } },
+  );
+}
+
+test('BUG-1634 an ordinary call resumes a forced reconnect that answered pending while the old grant is stored', async () => {
+  const path = tempPath();
+  saveGrant(path, API, { token: 'old', scopes: ['agent:read'], appName: 'Claude' });
+  let approved = false;
+  const { fetchImpl, calls } = routingFetch({
+    'POST /auth/device/authorize': DEVICE_START,
+    'DELETE /auth/sessions/current': { status: 200, body: { revoked: true } },
+  });
+  const routed: typeof fetch = async (url, init) => String(url).endsWith('/auth/device/token')
+    ? Response.json(approved ? GRANTED.body : { status: 'pending' })
+    : fetchImpl(url, init);
+  const openBrowser = jest.fn(async () => true);
+  const started = clockedSession(path, routed, openBrowser);
+
+  await expect(started.connectWallet({ force: true, waitSeconds: 5 })).resolves.toMatchObject({ status: 'pending', opened: true });
+  approved = true;
+  await expect(started.connectWallet({ waitSeconds: 5 })).resolves.toMatchObject({ status: 'granted' });
+
+  expect(calls.filter((call) => call.url.endsWith('/authorize'))).toHaveLength(1);
+  expect(openBrowser).toHaveBeenCalledTimes(1);
+  expect(loadGrant(path, API)?.token).toBe('new');
+  expect(calls.filter((call) => call.method === 'DELETE').map((call) => call.headers.authorization)).toEqual(['Bearer old']);
+});
+
+test('BUG-1634 a forced reconnect that fails to authorize drops the old pending code', async () => {
+  let authorizations = 0;
+  const fetchImpl: typeof fetch = async (url) => {
+    if (String(url).endsWith('/authorize')) {
+      return ++authorizations === 2 ? new Response('busy', { status: 503 }) : Response.json(DEVICE_START.body);
+    }
+    return Response.json({ status: 'pending' });
+  };
+  const openBrowser = jest.fn(async () => true);
+  const started = clockedSession(tempPath(), fetchImpl, openBrowser);
+
+  await expect(started.connectWallet({ waitSeconds: 5 })).resolves.toMatchObject({ status: 'pending' });
+  await expect(started.connectWallet({ waitSeconds: 5, force: true })).rejects.toThrow(/503/);
+  await expect(started.connectWallet({ waitSeconds: 5 })).resolves.toMatchObject({ status: 'pending', resumed: false, opened: true });
+
+  expect(authorizations).toBe(3);
+  expect(openBrowser).toHaveBeenCalledTimes(2);
+});
+
+test('BUG-1634 a call superseded while the browser opens never polls its code', async () => {
+  const path = tempPath();
+  let releaseBrowser!: () => void;
+  let markOpening!: () => void;
+  const browserGate = new Promise<void>((resolve) => { releaseBrowser = resolve; });
+  const opening = new Promise<void>((resolve) => { markOpening = resolve; });
+  let authorizations = 0;
+  const polls: string[] = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    if (String(url).endsWith('/authorize')) return Response.json({ ...DEVICE_START.body, deviceCode: ++authorizations === 1 ? 'old' : 'new' });
+    const { deviceCode } = JSON.parse(String(init?.body));
+    polls.push(deviceCode);
+    return Response.json({ ...GRANTED.body, token: deviceCode + '-token' });
+  };
+  const openBrowser = jest.fn(async () => {
+    if (openBrowser.mock.calls.length === 1) {
+      markOpening();
+      await browserGate;
+    }
+    return true;
+  });
+  const started = new CancoreSession(
+    { apiBaseUrl: API, appBaseUrl: APP, appName: 'Claude', grantPath: path },
+    { fetchImpl, openBrowser, sleep: async () => {} },
+  );
+
+  const oldRequest = started.connectWallet();
+  await opening;
+  await expect(started.connectWallet({ force: true })).resolves.toMatchObject({ status: 'granted' });
+  releaseBrowser();
+
+  await expect(oldRequest).resolves.toMatchObject({ status: 'superseded' });
+  expect(polls).toEqual(['new']);
+  expect(loadGrant(path, API)?.token).toBe('new-token');
+});
+
 // CAN-2087: reconnecting with force used to overwrite the file and leave the
 // old grant alive on the server for up to 30 days.
 test('a forced reconnect revokes the grant it replaces, with that grant, once the new one is stored', async () => {
@@ -324,6 +523,18 @@ describe('the consent link (BUG-1618)', () => {
     );
     return { started, result: started.connectWallet({ waitSeconds: 5 }), opened, calls };
   }
+
+  test('BUG-1634 resumes without reopening and force starts a new request', async () => {
+    const { started, result, opened } = connect('/wallet/authorize');
+    expect(started.connectWallet({ waitSeconds: 1 })).toBe(result);
+    await result;
+    const first = started.connectWallet({ waitSeconds: 1 });
+    expect(started.connectWallet({ waitSeconds: 1 })).toBe(first);
+    await first;
+    expect(await started.connectWallet({ waitSeconds: 1 })).toMatchObject({ resumed: true, opened: false });
+    expect(await started.connectWallet({ waitSeconds: 1, force: true })).toMatchObject({ resumed: false, opened: true });
+    expect(opened).toHaveLength(2);
+  });
 
   test('the path the gateway sends opens on the wallet origin', async () => {
     const { result, opened } = connect('/wallet/authorize?code=ABCD-EFGH');

@@ -76,8 +76,9 @@ mismatched code is normal, which is the one thing the consent page relies on you
 | `waitSeconds` | number, optional | how long to wait in this call, 5–300 (default 45) |
 | `force` | boolean, optional | ask again even if this stand is already authorized; once the new grant is stored, the old one is revoked on the server |
 
-Answers `{ status: 'granted' | 'denied' | 'pending', … }`. A `pending` answer carries
+Answers `{ status: 'granted' | 'denied' | 'pending' | 'expired' | 'superseded', … }`. A `pending` answer carries
 `userCode`, `page`, whether the browser `opened`, and whether the request was `resumed`.
+`expired`: the server forgot the code, call again for a new one. `superseded`: a `force` call replaced this request.
 
 ### `cancore_propose_autotrade`
 
