@@ -2,7 +2,7 @@ import type { Hex } from '@cancore/contracts';
 import type { ChainClient } from '../chain/client';
 import { silentLogger } from '../runtime';
 import type { TransactionSigner } from '../signer';
-import type { FillerStore } from '../store';
+import type { FillerStore, NonceLease } from '../store';
 import { FeeCeilingError, MIN_FEE_BUMP_PERCENT, REPLACEMENT_FEE_CAP_MULTIPLE, ReplacementCapError, TransactionDriver, type FeePolicy, type Fees } from './transactions';
 
 const GWEI = 1_000_000_000n;
@@ -124,5 +124,47 @@ describe(`replacementFees: fill, approve and cancel are held to ${REPLACEMENT_FE
   test('without the first fee or the kind there is no relative cap', async () => {
     await expect(driverAt(quiet).replacementFees(fees(1_000n, 10n), { kind: 'fill' })).resolves.toEqual(fees(1_150n, 12n));
     await expect(driverAt(quiet).replacementFees(fees(1_000n, 10n), { first })).resolves.toEqual(fees(1_150n, 12n));
+  });
+});
+
+describe('withNonceWork: one turn at a time per nonce (BUG-1616)', () => {
+  test('a turn that fails does not fail the turn queued behind it, nor the next one', async () => {
+    const driver = driverAt({ tip: 1n });
+    const lease = { nonce: 7n } as NonceLease;
+    let fail!: (error: Error) => void;
+    const first = driver.withNonceWork(lease, () => new Promise<never>((_resolve, reject) => { fail = reject; }));
+    let secondRan = false;
+    const second = driver.withNonceWork(lease, async () => { secondRan = true; return 'second'; });
+    await Promise.resolve();
+    expect(secondRan).toBe(false);
+    fail(new Error('recovery failed'));
+    await expect(first).rejects.toThrow('recovery failed');
+    await expect(second).resolves.toBe('second');
+    await expect(driver.withNonceWork(lease, async () => 'next')).resolves.toBe('next');
+  });
+
+  test('a third turn waits for the second after the first ends (RX-3)', async () => {
+    const driver = driverAt({ tip: 1n });
+    const lease = { nonce: 7n } as NonceLease;
+    const nextMacrotask = () => new Promise((resolve) => setTimeout(resolve, 0));
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    let secondRunning = false;
+    let thirdOverlapped = false;
+    const first = driver.withNonceWork(lease, () => new Promise<void>((resolve) => { releaseFirst = resolve; }));
+    const second = driver.withNonceWork(lease, async () => {
+      secondRunning = true;
+      await new Promise<void>((resolve) => { releaseSecond = resolve; });
+      secondRunning = false;
+    });
+    await nextMacrotask();
+    releaseFirst();
+    await first;
+    await nextMacrotask();
+    const third = driver.withNonceWork(lease, async () => { thirdOverlapped = secondRunning; });
+    await nextMacrotask();
+    releaseSecond();
+    await Promise.all([second, third]);
+    expect(thirdOverlapped).toBe(false);
   });
 });

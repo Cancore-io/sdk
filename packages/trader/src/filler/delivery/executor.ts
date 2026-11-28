@@ -44,6 +44,7 @@ import {
   type TicketIssuedEvm,
 } from '@cancore/contracts';
 import { decodeEventLog, decodeParams, encodeFunctionCall, entryOf, topicOf, type AbiEntry } from '../chain/abi';
+import { recoverRecordedSettle } from '../settlement/send-settle';
 import { ChainReadError, toQuantity } from '../chain/client';
 import { erc20Allowance } from '../chain/erc20';
 import { fillDepth, type ChainReaders, type FillerChains } from '../chain';
@@ -388,18 +389,11 @@ export class Executor {
 
   /** Recovers an unlinked settle before a new nonce can be allocated, fenced by the current nonce lease. */
   async recoverSettlement(driver: TransactionDriver, orderHash: Hex, attempt: number, call: TransactionCall): Promise<{ lease: NonceLease; tx: InFlightTransaction } | undefined> {
-    const { store, instanceId } = this.options;
+    const { store } = this.options;
     await this.claimChain(driver);
     for (const record of await store.nonces.listOpen(driver.chain, driver.address)) {
       if (!record.transactions.some((tx) => tx.kind === 'settle' && tx.orderHash === orderHash && tx.attempt === attempt)) continue;
-      if (record.owner !== instanceId) throw new LeaseLostError(record);
-      const lease = await driver.renew(record);
-      if (!lease) throw new LeaseLostError(record);
-      const tx = record.transactions.at(-1)!;
-      if (tx.kind !== 'settle' || tx.orderHash !== orderHash || tx.attempt !== attempt || tx.to !== call.to.toLowerCase() || tx.data !== call.data || tx.value !== call.value) {
-        throw new Error('settle: the recorded transaction belongs to another operation');
-      }
-      return { lease, tx };
+      return driver.withNonceWork(record, () => recoverRecordedSettle(this.options, driver, record, orderHash, attempt, call));
     }
     return undefined;
   }
@@ -701,7 +695,7 @@ export class Executor {
     const next = () => {
       if (this.stopped || this.trackers.get(k) !== tracker) return;
       tracker.cancel = this.options.clock.schedule(this.delivery.pollIntervalMs, () => {
-        void this.tick(tracker)
+        void driver.withNonceWork(tracker.lease, async () => this.stopped || this.tick(tracker))
           .catch((error: unknown) => {
             this.options.logger.warn('delivery: tick failed, retrying', { chain: driver.chain, nonce: tracker.lease.nonce.toString(), error: reasonOf(error) });
             return false;
