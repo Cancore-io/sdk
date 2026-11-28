@@ -84,7 +84,7 @@ export interface CantonSourceIntent {
 }
 
 export interface CantonSourceOrder {
-  /** The EVM-form `Order`: wide integers as decimal strings, addresses EIP-55, words lowercase. */
+  /** The EVM-form `Order`: wide integers as decimal strings, addresses and words lowercase. */
   order: Order;
   /** The Canton source domain: `CancoreRouter` v1, `CANTON_ORIGIN_ID`, `CANTON_SOURCE_ANCHOR`. */
   domain: { name: 'CancoreRouter'; version: '1'; chainId: string; verifyingContract: typeof CANTON_SOURCE_ANCHOR };
@@ -209,8 +209,8 @@ function checksumAddress(value: unknown, field: string): Hex {
   return sum;
 }
 
-/** `address(uint160(uint256(keccak256(abi.encode(tag, a, b)))))`, EIP-55 — the owner and instrument labels. */
+/** `address(uint160(uint256(keccak256(abi.encode(tag, a, b)))))`, lowercase — the owner and instrument labels. */
 function label(tag: string, a: string, b: string): Hex {
   const hash = toHex(keccak(abiEncodeStrings([tag, a, b])));
-  return checksumAddress(`0x${hash.slice(-40)}`, 'label');
+  return `0x${hash.slice(-40)}`;
 }

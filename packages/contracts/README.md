@@ -204,8 +204,10 @@ manual key change by Cancore staff; there is no key-rotation type or message.
 
 Golden vectors are generated with ethers by `scripts/gen-protocol-vectors.mjs` from the literal
 inputs in `scripts/protocol-fixtures.mjs`, and checked by this package's own encoder too. The
-`canton` Order vector equals `spec/vectors/canton-order.json`, a byte copy of
+shared `spec/vectors/canton-order.json` fixture is a byte copy of
 `evm-contracts/test/vectors/canton-order.json` at `f936594`, which the router's test pins.
+The fixture stores the two derived address labels in EIP-55. The SDK emits those same address bytes
+in lowercase for the protocol, with the same order digest.
 `spec/protocol/vectors/jcs.json` holds RFC 8785 cases.
 
 ### Schemas, AsyncAPI, examples
