@@ -127,4 +127,29 @@ describe('withNonceWork: one turn at a time per nonce (BUG-1616)', () => {
     await expect(second).resolves.toBe('second');
     await expect(driver.withNonceWork(lease, async () => 'next')).resolves.toBe('next');
   });
+
+  test('a third turn waits for the second after the first ends (RX-3)', async () => {
+    const driver = driverAt({ tip: 1n });
+    const lease = { nonce: 7n } as NonceLease;
+    const nextMacrotask = () => new Promise((resolve) => setTimeout(resolve, 0));
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    let secondRunning = false;
+    let thirdOverlapped = false;
+    const first = driver.withNonceWork(lease, () => new Promise<void>((resolve) => { releaseFirst = resolve; }));
+    const second = driver.withNonceWork(lease, async () => {
+      secondRunning = true;
+      await new Promise<void>((resolve) => { releaseSecond = resolve; });
+      secondRunning = false;
+    });
+    await nextMacrotask();
+    releaseFirst();
+    await first;
+    await nextMacrotask();
+    const third = driver.withNonceWork(lease, async () => { thirdOverlapped = secondRunning; });
+    await nextMacrotask();
+    releaseSecond();
+    await Promise.all([second, third]);
+    expect(thirdOverlapped).toBe(false);
+  });
 });

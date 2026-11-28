@@ -722,6 +722,39 @@ describe('write-ahead settlement recovery (CAN-1856 R2)', () => {
     expect(open!.transactions).toEqual([tx]);
   });
 
+  test('BUG-1616 the replacement carries the gas estimated for the new call, not the recorded limit (RX-1)', async () => {
+    const { record, tx, driver, call, context } = await recordedBid();
+    jest.mocked(driver.estimateGas).mockResolvedValue(tx.gasLimit + 50_000n);
+    const replacement = await recoverSettleCall(context, driver, record, tx, call);
+    expect(replacement.gasLimit).toBe(tx.gasLimit + 50_000n);
+  });
+
+  test('BUG-1616 an unchanged bid is kept without an eth_call (RX-2)', async () => {
+    const { record, tx, driver, context } = await recordedBid();
+    await expect(recoverSettleCall(context, driver, record, tx, { to: tx.to, value: tx.value, data: tx.data })).resolves.toBe(tx);
+    expect(driver.client.call).not.toHaveBeenCalled();
+  });
+
+  test('BUG-1616 a tracker tick queued behind recovery does not run once the executor stops (RX-4)', async () => {
+    const w = await world();
+    await w.push(w.delivery());
+    const [record] = await w.store.nonces.listOpen(SRC, fillSigner.address);
+    const driver = w.executor.driver(SRC)!;
+    let releaseRecovery!: () => void;
+    const recoveryTurn = driver.withNonceWork(record!, () => new Promise<void>((resolve) => { releaseRecovery = resolve; }));
+    await flush();
+    const renew = jest.spyOn(driver, 'renew');
+    w.clock.advance(1_000);
+    await flush();
+    expect(renew).not.toHaveBeenCalled();
+    w.executor.stop();
+    releaseRecovery();
+    await recoveryTurn;
+    await flush();
+    expect(renew).not.toHaveBeenCalled();
+    expect(w.signer.signTransaction).toHaveBeenCalledTimes(1);
+  });
+
   test('an active foreign journal lease cannot be adopted or bypassed with a new nonce', async () => {
     const w = await world();
     const request = w.src.request.bind(w.src);
