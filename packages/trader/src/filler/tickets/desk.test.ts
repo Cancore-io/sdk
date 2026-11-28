@@ -1,4 +1,5 @@
 import {
+  encodeCantonDestination,
   FILL_TICKET_DOMAIN,
   FILL_TICKET_TYPES,
   FILLER_PROTOCOL_DOMAIN,
@@ -16,7 +17,9 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { hashOrder, hashTicket, type FillerChains } from '../chain';
 import type { FillerEvent } from '../events';
-import { createFiller, type Filler, type TicketOfferDecision } from '../filler';
+import { cantonFingerprint } from '../canton/legs';
+import { createFiller, type CantonConfig, type Filler, type FillerConfig, type TicketOfferDecision } from '../filler';
+import type { CantonLedger } from '../ledger';
 import { recoverAddress, type FillSigner } from '../signer';
 import { FillerProtocolClient } from '../protocol/client';
 import { createSealer } from '../protocol/envelope';
@@ -97,6 +100,7 @@ interface Options {
   store?: InMemoryFillerStore;
   hook?: (offer: TicketOffer) => Promise<TicketOfferDecision>;
   chains?: ReturnType<typeof world>;
+  config?: Partial<FillerConfig>;
 }
 
 async function harness(options: Options = {}) {
@@ -137,6 +141,7 @@ async function harness(options: Options = {}) {
     events,
     logger,
     instanceId: 'replica-1',
+    ...options.config,
   });
   filler.onQuoteRequest(async () => null);
   filler.onReconfirm(async () => false);
@@ -205,6 +210,42 @@ async function consent(h: Harness, over: Record<string, unknown> = {}) {
   await settle();
   return { offer, intent: h.sent('ticket.intent').at(-1) };
 }
+
+test('BUG-1625 createFiller declines Canton consent without Canton operations', async () => {
+  const h = await harness();
+  try {
+    const order = { ...h.w.order, originChainId: '1', destination: encodeCantonDestination('devnet') };
+    await consent(h, { order });
+    expect(h.hookCalls).toEqual([]);
+    expect(h.sent('ticket.intent')).toEqual([]);
+    expect(h.sent('ticket.decline')).toEqual([expect.objectContaining({ detail: 'no fill key or payee of this filler for the order' })]);
+  } finally {
+    await h.filler.stop();
+  }
+});
+
+const CANTON_KEY = `0x${'11'.repeat(32)}` as Hex;
+const CANTON: CantonConfig = {
+  party: `acme-1::${cantonFingerprint(CANTON_KEY)}`,
+  partySigner: { publicKey: CANTON_KEY, signHash: async () => `0x${'00'.repeat(64)}` as Hex },
+  participantUid: 'PAR::cancore::1220aa',
+  destination: { minTicketTtlSec: 60, requiredProofWindowSec: 2_700, sendGuardSec: 20 },
+};
+const LEDGER = { party: 'ledger-party::1220aa', activeContracts: async () => [], exercise: async () => Promise.reject(new Error('unused')) } as unknown as CantonLedger;
+
+test.each([
+  ['Canton operations', 1, { canton: CANTON }],
+  ['a ledger party alone', 0, { ledger: LEDGER }],
+] as const)('BUG-1625 createFiller with %s: a Canton consent reaches the hook %s time(s)', async (_name, calls, config) => {
+  const h = await harness({ config });
+  try {
+    const order = { ...h.w.order, originChainId: '1', destination: encodeCantonDestination('devnet') };
+    await consent(h, { order });
+    expect(h.hookCalls).toHaveLength(calls);
+  } finally {
+    await h.filler.stop();
+  }
+});
 
 describe('the full path: offer → intent → ack → issued → checks → receipt', () => {
   test('the intent repeats the offer, names the delivery key and repayTo and is signed by the message key; the receipt signs hashTicket and keccak256(ticketSig)', async () => {

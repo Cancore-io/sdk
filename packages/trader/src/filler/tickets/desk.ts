@@ -79,6 +79,7 @@ export interface TicketDeskOptions {
   fillerId: string;
   /** The filler's Canton party, the payee of a Canton source. */
   cantonParty?: string;
+  cantonEnabled?: boolean;
   /** `sendGuardSec` of a Canton destination (`FillerConfig.canton.destination`); without it a Canton-form ticket gets no receipt. */
   cantonSendGuardSec?: number;
   /** The message key: signs the consent and the receipt (protocol T-3). */

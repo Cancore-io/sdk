@@ -26,6 +26,7 @@
  * the firm price until its `validUntil` (T-4).
  */
 import {
+  cantonNetworkOfDestination,
   FILLER_PROTOCOL_DOMAIN,
   FILLER_QUOTE_TYPES,
   hashTypedData,
@@ -42,6 +43,7 @@ import {
 } from '@cancore/contracts';
 import { isEvmChainId, type EvmChainId } from './chains';
 import type { EventSink, FillerStage } from './events';
+import { cantonFillerPayout, evmFillerPayout } from './payout';
 import { reconfirmOutcome, type ReconfirmDecision } from './price-moved';
 import type { Delivery, FillerProtocolClient } from './protocol/client';
 import type { Unsealed } from './protocol/envelope';
@@ -50,46 +52,10 @@ import type { Clock, Logger } from './runtime';
 import { signTypedDataChecked, type FillSigner, type QuoteSigner } from './signer';
 import type { FillerStore, StoredQuote } from './store';
 
-// ---------------------------------------------------------------------------
-// The payout
-// ---------------------------------------------------------------------------
+export { cantonFillerPayout, evmFillerPayout };
 
-const BPS = 10_000n;
 const UINT64 = 1n << 64n;
 const UINT256 = 1n << 256n;
-
-function checkPayoutInput(fn: string, total: bigint, feeBps: number): void {
-  if (total < 0n) throw new RangeError(`${fn}: total must be non-negative`);
-  if (!Number.isSafeInteger(feeBps) || feeBps < 0 || feeBps > 0xffff) throw new RangeError(`${fn}: feeBps must be a uint16`);
-}
-
-/**
- * What an EVM source router pays the filler for a deposited total `T`
- * (protocol §3.11, `CancoreRouter.sol:664-665`): `⌊T × 10 000 / (10 000 + feeBps)⌋`.
- * Rounding dust goes to the fee. `T = 105`, `feeBps = 500` → 100.
- */
-export function evmFillerPayout(total: bigint, feeBps: number): bigint {
-  checkPayoutInput('evmFillerPayout', total, feeBps);
-  return (total * BPS) / (BPS + BigInt(feeBps));
-}
-
-/**
- * What a Canton-source `SwapIntent_Settle` pays the filler (protocol §3.11,
- * T-12; `SwapIntent.daml:207-208`, `:598-601`). The ledger computes
- * `amount − (amount − amount / (1.0 + feeRate))` in Daml `Numeric 10`, where
- * only the division rounds — to nearest, ties to even. In the EVM-form units
- * of §3.7 (`T = amount × 10¹⁰`, `feeBps = feeRate × 10 000`) that is
- * `roundHalfEven(T × 10 000 / (10 000 + feeBps))`. It equals the EVM formula
- * or exceeds it by one unit. `T = 1000.0`, `feeRate 0.003` → `997.0089730808`.
- */
-export function cantonFillerPayout(total: bigint, feeBps: number): bigint {
-  checkPayoutInput('cantonFillerPayout', total, feeBps);
-  const divisor = BPS + BigInt(feeBps);
-  const numerator = total * BPS;
-  const quotient = numerator / divisor;
-  const twiceRemainder = 2n * (numerator % divisor);
-  return twiceRemainder > divisor || (twiceRemainder === divisor && quotient % 2n === 1n) ? quotient + 1n : quotient;
-}
 
 // ---------------------------------------------------------------------------
 // What the hooks see
@@ -165,6 +131,8 @@ export interface QuoteDecisionInput {
 export type MinInputSource = (chain: string, token: unknown) => Promise<bigint | undefined>;
 
 export interface QuoteDeskOptions {
+  /** Whether `FillerConfig.canton` is configured: without it no Canton route is quoted or reconfirmed (BUG-1625). */
+  cantonEnabled: boolean;
   /** The filler's id: the `fillerId` every `FillerQuote` names. */
   fillerId: string;
   quoteSigner: QuoteSigner;
@@ -346,9 +314,9 @@ export class QuoteDesk {
     const minReceived = decimal(order?.minReceived);
     const amountOut = decimal(reconfirm.amountOut);
     const total = decimal(order?.inputAmount);
-    const feeBps = Number(order?.feeBps);
+    const feeBps = uintOf(order?.feeBps, 65536n);
     const origin = decimal(order?.originChainId);
-    if (!order || minReceived === undefined || amountOut === undefined || total === undefined || origin === undefined || !Number.isSafeInteger(feeBps)) {
+    if (!order || minReceived === undefined || amountOut === undefined || total === undefined || origin === undefined || feeBps === undefined) {
       return decline('malformed');
     }
     // FS-14: only the filler the user picked is asked; another filler's order gets no answer at all.
@@ -362,7 +330,7 @@ export class QuoteDesk {
     if (!this.fillerForOrder(origin, order.destination)) return decline('no-fill-key');
     if ((await this.options.store.getOverrides()).paused) return decline('paused');
 
-    const answer = await this.askHook(reconfirm, orderHash, payoutOf(total, feeBps), total);
+    const answer = await this.askHook(reconfirm, orderHash, payoutOf(total, Number(feeBps)), total);
     if (answer !== true) return decline(answer.reason, answer.priceMoved);
     if (this.options.clock.now() >= replyBy) return { skipped: 'late' };
 
@@ -452,6 +420,7 @@ export class QuoteDesk {
     // No quote without a key to act on the order: the fill key of an EVM
     // destination; for a Canton destination, the one of the (EVM) source, which settles.
     const chain = isEvmChainId(route.dst) ? route.dst : isEvmChainId(route.src) ? route.src : undefined;
+    if (!this.options.cantonEnabled && (cantonSource || route.dst.startsWith('canton:'))) return 'no-fill-key';
     if (!chain || !this.options.fillSigners[chain]) return 'no-fill-key';
     // T-12: a Canton source pays by the ledger formula, never the EVM one.
     const payoutOf = cantonSource ? cantonFillerPayout : evmFillerPayout;
@@ -460,8 +429,10 @@ export class QuoteDesk {
 
   /** The fill key's address for an opened EVM-source order: by `destination` (`bytes32(chainId)` for EVM, §3.7). */
   private fillerForOrder(origin: bigint, destination: unknown): Hex | undefined {
+    const canton = typeof destination === 'string' && cantonNetworkOfDestination(destination as Hex);
+    if (!this.options.cantonEnabled && (origin >= CANTON_ORIGIN_FLOOR || canton)) return undefined;
     const dst = typeof destination === 'string' && /^0x[0-9a-fA-F]{64}$/.test(destination) ? BigInt(destination) : undefined;
-    const chain: EvmChainId = dst !== undefined && dst > 0n && dst < CANTON_ORIGIN_FLOOR ? `eip155:${dst}` : `eip155:${origin}`;
+    const chain: EvmChainId = !canton && dst !== undefined && dst > 0n && dst < CANTON_ORIGIN_FLOOR ? `eip155:${dst}` : `eip155:${origin}`;
     return this.options.fillSigners[chain]?.address.toLowerCase() as Hex | undefined;
   }
 

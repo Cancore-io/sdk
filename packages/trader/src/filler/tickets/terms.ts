@@ -81,6 +81,8 @@ export const orderOf = (order: OrderJson): Order => ({ ...order });
 
 /** What the SDK derives a ticket identity from. */
 export interface TicketKeys {
+  /** Whether Canton operations are configured (BUG-1625); undefined is enabled, so direct callers keep consenting to Canton legs. */
+  cantonEnabled?: boolean;
   fillerId: string;
   fillSigners: { readonly [chain: EvmChainId]: FillSigner };
   /** The filler's Canton party (`CantonLedger.party`): the payee on a Canton source. */
@@ -102,6 +104,11 @@ export interface TicketIdentity {
 
 const ZERO_ADDRESS: Hex = `0x${'00'.repeat(20)}`;
 
+/** Whether `keys` let the filler act on `chains`: a Canton leg needs Canton operations (BUG-1625). */
+function configured(chains: OrderChains | undefined, keys: TicketKeys): chains is OrderChains {
+  return !!chains && (keys.cantonEnabled !== false || (!chains.canton && chains.origin < CANTON_ORIGIN_FLOOR));
+}
+
 /**
  * The filler's identity for `order`, from its own keys; undefined when it
  * holds no fill key for the destination (or, for a Canton destination, the
@@ -109,7 +116,7 @@ const ZERO_ADDRESS: Hex = `0x${'00'.repeat(20)}`;
  */
 export function identityFor(order: OrderJson, keys: TicketKeys): TicketIdentity | undefined {
   const chains = chainsOf(order);
-  if (!chains) return undefined;
+  if (!configured(chains, keys)) return undefined;
   const chain = chains.destination ?? chains.source;
   const signer = chain ? keys.fillSigners[chain] : undefined;
   if (!chain || !signer) return undefined;

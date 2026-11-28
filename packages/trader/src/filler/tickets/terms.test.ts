@@ -70,6 +70,20 @@ describe('identityFor: who the filler is in a ticket', () => {
   });
 
   test.each([
+    order(1n, encodeCantonDestination('devnet')),
+    order(CANTON_ORIGIN_ID.devnet, word(10n)),
+  ])('BUG-1625 consent is disabled for either Canton leg', (candidate) => {
+    expect(identityFor(candidate, { ...KEYS, cantonEnabled: true })).toBeDefined();
+    expect(identityFor(candidate, { ...KEYS, cantonEnabled: false })).toBeUndefined();
+  });
+
+  test('BUG-1625 origin 2^63 is the first Canton origin: no consent without Canton operations', () => {
+    const candidate = order(CANTON_ORIGIN_FLOOR, word(10n));
+    expect(identityFor(candidate, { ...KEYS, cantonEnabled: true })).toBeDefined();
+    expect(identityFor(candidate, { ...KEYS, cantonEnabled: false })).toBeUndefined();
+  });
+
+  test.each([
     ['no fill key for the destination', order(1n, word(56n)), KEYS],
     ['no party on a Canton source', order(CANTON_ORIGIN_ID.devnet, word(10n)), { ...KEYS, cantonParty: undefined }],
     ['no EVM chain on either side', order(CANTON_ORIGIN_ID.devnet, encodeCantonDestination('devnet')), KEYS],
