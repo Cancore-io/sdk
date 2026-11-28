@@ -20,9 +20,11 @@ import {
   FILLER_PROTOCOL_DOMAIN,
   GATEWAY_MESSAGE_TYPES,
   gatewayBodyHash,
+  hashTicketIntent,
   hashTypedData,
   type Hex,
   type S2FBase,
+  type TicketIntentMessage,
 } from '@cancore/contracts';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -143,4 +145,12 @@ export function gatewayErrorOf(body: Readonly<Record<string, unknown>>, httpStat
   const retryAfterMs = retryAfterOf(body.retryAfterMs) ?? fallbackRetryAfterMs;
   if (code === 'UNSUPPORTED_VERSION') return new UnsupportedVersionError(code, true, message, re, httpStatus, retryAfterMs);
   return new GatewayError(code, KNOWN_CODES.has(code), message, re, httpStatus, retryAfterMs);
+}
+
+export const DEFAULT_MAX_MESSAGE_AGE_MS = 30_000;
+
+/** A signed acknowledgement of this intent, inside the configured arrival window. */
+export function isCurrentIntentAck(ack: GatewayFrame, intent: TicketIntentMessage, now: number, maxAge: number): boolean {
+  return ack.type === 'ticket.intent.ack' && typeof ack.orderHash === 'string' && ack.orderHash.toLowerCase() === intent.orderHash.toLowerCase() &&
+    ack.attempt === intent.attempt && (ack.re === undefined ? ack.intentHash === hashTicketIntent(intent) : ack.re === intent.id) && Math.abs(now - ack.sentAt) <= maxAge;
 }

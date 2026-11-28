@@ -52,10 +52,11 @@ import { GatewayError } from '../errors';
 import type { Cancel, Clock, HttpFetch, Logger } from '../runtime';
 import { signTypedDataChecked, type QuoteSigner } from '../signer';
 import type { Sealer } from './envelope';
-import { frameBytes, gatewayErrorOf, retryAfterOf, utf8, verifyGatewayObject, type FrameExpectations, type VerifiedFrame } from './frames';
+import { DEFAULT_MAX_MESSAGE_AGE_MS, isCurrentIntentAck, frameBytes, gatewayErrorOf, retryAfterOf, utf8, verifyGatewayObject, type FrameExpectations, type VerifiedFrame } from './frames';
 import { DEFAULT_RETRY_AFTER_MS, parseRetryAfter, RateLimits, type RateClass } from './limits';
 
 export interface RestOptions {
+  maxMessageAgeMs?: number;
   /** `wss://host/v1` → `https://host`; `ws://` → `http://` (local stand). */
   gatewayUrl: string;
   fillerId: string;
@@ -146,8 +147,9 @@ export class GatewayRest {
     const { text } = await this.authed('POST', path, 'ticket', JSON.stringify(request.message), TICKET_POST_TIMEOUT_MS);
     if (request.action !== 'intent') return undefined;
     const check = verifyGatewayObject(parseJson(text, path), utf8(text), this.expect);
-    if (!check.ok || check.verified.frame.type !== 'ticket.intent.ack') {
-      throw new GatewayError('UNVERIFIED_RESPONSE', false, `${path}: the ack failed verification (${check.ok ? check.verified.frame.type : check.reason})`);
+    const now = this.options.clock.now();
+    if (!check.ok || !isCurrentIntentAck(check.verified.frame, request.message, now, this.options.maxMessageAgeMs ?? DEFAULT_MAX_MESSAGE_AGE_MS)) {
+      throw new GatewayError('UNVERIFIED_RESPONSE', false, `${path}: ${check.ok ? `stale or unrelated ticket intent acknowledgement (skewMs=${now - check.verified.frame.sentAt}, type=${check.verified.frame.type})` : `the ack failed verification (${check.reason})`}`);
     }
     return check.verified;
   }

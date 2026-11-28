@@ -508,6 +508,7 @@ export function createFiller(config: FillerConfig): Filler {
     seal,
   });
   const rest = new GatewayRest({
+    maxMessageAgeMs: transport.maxMessageAgeMs ?? DEFAULT_MAX_MESSAGE_AGE_MS,
     gatewayUrl: config.gatewayUrl,
     fillerId: config.fillerId,
     gatewaySigner: config.gatewaySigner,
