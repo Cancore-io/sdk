@@ -1,4 +1,4 @@
-import { promises as fs } from 'fs';
+import { promises as fs, writeFileSync, renameSync } from 'fs';
 import { z } from 'zod';
 import { dec } from './decimal';
 import type { Limits } from './types';
@@ -51,4 +51,22 @@ export async function loadLimits(path: string): Promise<Limits> {
   if (st.uid !== 0 && st.uid !== uid) throw new Error(`${path}: owned by uid ${st.uid}, expected root or ${uid}`);
   if (st.mode & 0o022) throw new Error(`${path}: writable by group or others (mode ${(st.mode & 0o777).toString(8)})`);
   return parseLimits(JSON.parse(await fs.readFile(path, 'utf8')));
+}
+
+export function fileLimits(path: string) {
+  return {
+    async load() {
+      try {
+        // Ownership and mode checked on every read: a limits file someone else can write is refused.
+        return await loadLimits(path);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return emptyLimits();
+        throw err;
+      }
+    },
+    async save(limits: Limits) {
+      writeFileSync(`${path}.tmp`, JSON.stringify(limits, null, 2), { mode: 0o600 });
+      renameSync(`${path}.tmp`, path);
+    },
+  };
 }

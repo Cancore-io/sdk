@@ -1,5 +1,5 @@
-import { chmodSync, chownSync, readFileSync, rmSync, statSync } from 'fs';
-import { createServer, type Socket } from 'net';
+import { chmodSync, chownSync, lstatSync, readFileSync, rmSync, statSync } from 'fs';
+import { createConnection, createServer, type Socket } from 'net';
 import { ERROR, JSONRPC_VERSION, parseRequest, RISK_CLASS, type RpcError, type RpcRequest, type RpcResponse } from '../protocol/index';
 
 export type Handler = (request: RpcRequest) => Promise<RpcResponse>;
@@ -64,6 +64,33 @@ async function run(handler: Handler, request: RpcRequest, timeoutMs: number): Pr
   }
 }
 
+/** Only a refused connection to the same socket inode is evidence of a stale listener. */
+async function removeStaleSocket(path: string): Promise<void> {
+  const existing = lstatSync(path, { throwIfNoEntry: false });
+  if (!existing) return;
+  if (!existing.isSocket()) throw new Error(`IPC path is not a socket: ${path}`);
+
+  await new Promise<void>((resolve, reject) => {
+    const probe = createConnection(path);
+    const occupied = () => {
+      probe.destroy();
+      reject(new Error(`IPC socket already in use: ${path}`));
+    };
+    probe.once('connect', occupied);
+    probe.setTimeout(500, occupied);
+    probe.once('error', (error: NodeJS.ErrnoException) => {
+      probe.destroy();
+      if (error.code === 'ECONNREFUSED' || error.code === 'ENOENT') resolve();
+      else reject(error);
+    });
+  });
+
+  const current = lstatSync(path, { throwIfNoEntry: false });
+  if (!current) return;
+  if (current.dev !== existing.dev || current.ino !== existing.ino) throw new Error(`IPC socket changed while checking: ${path}`);
+  rmSync(path, { force: true });
+}
+
 /** Unix socket JSON-RPC 2.0, newline-delimited. Removes a stale socket, then verifies the mode it ends up with. */
 export async function listen(socketPath: string, handler: Handler, options: ListenOptions = {}): Promise<IpcServer> {
   const mode = options.mode ?? 0o600;
@@ -121,7 +148,7 @@ export async function listen(socketPath: string, handler: Handler, options: List
 
   if (options.maxConnections !== undefined) server.maxConnections = options.maxConnections;
 
-  rmSync(socketPath, { force: true });
+  await removeStaleSocket(socketPath);
   // The socket is created 0600 so it is never briefly wider than intended.
   const previous = process.umask(0o177);
   try {
@@ -132,19 +159,21 @@ export async function listen(socketPath: string, handler: Handler, options: List
   } finally {
     process.umask(previous);
   }
-  if (options.group) chownSync(socketPath, -1, gid(options.group));
-  chmodSync(socketPath, mode);
-  const actual = statSync(socketPath).mode & 0o777;
-  if (actual !== mode) {
-    server.close();
-    throw new Error(`socket ${socketPath} has mode ${actual.toString(8)}, expected ${mode.toString(8)}`);
+  const close = () =>
+    new Promise<void>((resolve) => {
+      for (const s of sockets) s.destroy();
+      server.close(() => resolve());
+    });
+  try {
+    if (options.group) chownSync(socketPath, -1, gid(options.group));
+    chmodSync(socketPath, mode);
+    const actual = statSync(socketPath).mode & 0o777;
+    if (actual !== mode) {
+      throw new Error(`socket ${socketPath} has mode ${actual.toString(8)}, expected ${mode.toString(8)}`);
+    }
+  } catch (error) {
+    await close();
+    throw error;
   }
-
-  return {
-    close: () =>
-      new Promise<void>((resolve) => {
-        for (const s of sockets) s.destroy();
-        server.close(() => resolve());
-      }),
-  };
+  return { close };
 }

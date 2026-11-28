@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, statSync, writeFileSync } from 'fs';
+import { EventEmitter } from 'events';
+import { lstatSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { createConnection, createServer } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -10,6 +11,7 @@ let dir: string;
 let server: IpcServer | undefined;
 beforeEach(() => (dir = mkdtempSync(join(tmpdir(), 'botd-ipc-'))));
 afterEach(async () => {
+  jest.restoreAllMocks();
   await server?.close();
   server = undefined;
   rmSync(dir, { recursive: true, force: true });
@@ -31,6 +33,35 @@ function raw(path: string, payload: string | Buffer, count = 1): Promise<Record<
 }
 
 const status = { locked: true, paused: false, strategies: [], version: 't' };
+
+/** Leaves a socket file at `path` whose listener is gone, as a crashed daemon does. */
+async function staleSocket(path: string): Promise<void> {
+  const previousPath = `${path}.previous`;
+  const previous = await listen(previousPath, jest.fn());
+  try {
+    renameSync(previousPath, path);
+  } finally {
+    await previous.close();
+  }
+}
+
+/** Replaces the next stale-socket probe with one that runs `act` instead of connecting. */
+function fakeProbe(act: (probe: EventEmitter) => void): void {
+  const net = jest.requireActual<typeof import('net')>('net');
+  jest.spyOn(net, 'createConnection').mockImplementationOnce(() => {
+    let timer: NodeJS.Timeout | undefined;
+    const probe = Object.assign(new EventEmitter(), {
+      destroy: () => clearTimeout(timer),
+      setTimeout: (ms: number, onTimeout: () => void) => (timer = setTimeout(onTimeout, ms)),
+    });
+    setImmediate(() => act(probe));
+    return probe as never;
+  });
+}
+
+const probeError = (code: string) => Object.assign(new Error(code), { code });
+/** A listen that should have been refused still gets closed by afterEach, so the run cannot hang on it. */
+const keepServer = (bound: IpcServer) => (server = bound);
 
 describe('ipc server', () => {
   it('a call after the daemon closed the connection rejects at once and marks the client closed', async () => {
@@ -55,12 +86,108 @@ describe('ipc server', () => {
     client.close();
   });
 
-  it('applies the requested socket mode and replaces a stale socket file', async () => {
+  it('BUG-1623 releases the bound socket if its group cannot be configured', async () => {
     const path = join(dir, 's.sock');
-    writeFileSync(path, 'stale');
+    await expect(listen(path, jest.fn(), { group: 'missing-bug-1623-test-group' })).rejects.toThrow();
+    expect(() => statSync(path)).toThrow(/ENOENT/);
+  });
+  it('BUG-1623 replaces a stale socket and applies the requested mode', async () => {
+    const path = join(dir, 's.sock');
+    const previousPath = join(dir, 'previous.sock');
+    const previous = await listen(previousPath, jest.fn());
+    try {
+      renameSync(previousPath, path);
+    } finally {
+      await previous.close();
+    }
     server = await listen(path, async () => ({ jsonrpc: JSONRPC_VERSION, id: 1, result: status as never }), { mode: 0o660 });
     expect(statSync(path).mode & 0o777).toBe(0o660);
     expect(statSync(path).isSocket()).toBe(true);
+  });
+
+  it('BUG-1623 refuses a symlink to a stale socket and keeps both', async () => {
+    const path = join(dir, 's.sock');
+    const target = join(dir, 'target.sock');
+    await staleSocket(target);
+    symlinkSync(target, path);
+    await expect(listen(path, jest.fn()).then(keepServer)).rejects.toThrow(/not a socket/);
+    expect(lstatSync(path).isSymbolicLink()).toBe(true);
+    expect(lstatSync(target).isSocket()).toBe(true);
+  });
+
+  it('BUG-1623 treats a probe that never answers as a live socket', async () => {
+    const path = join(dir, 's.sock');
+    await staleSocket(path);
+    fakeProbe(() => undefined);
+    await expect(listen(path, jest.fn()).then(keepServer)).rejects.toThrow(/already in use/);
+    expect(lstatSync(path).isSocket()).toBe(true);
+  }, 2_000);
+
+  it('BUG-1623 binds when the stale socket disappears during the probe', async () => {
+    const path = join(dir, 's.sock');
+    await staleSocket(path);
+    fakeProbe((probe) => {
+      rmSync(path);
+      probe.emit('error', probeError('ENOENT'));
+    });
+    server = await listen(path, jest.fn());
+    expect(statSync(path).isSocket()).toBe(true);
+  });
+
+  it('BUG-1623 keeps a socket whose probe fails for another reason', async () => {
+    const path = join(dir, 's.sock');
+    await staleSocket(path);
+    fakeProbe((probe) => probe.emit('error', probeError('EACCES')));
+    await expect(listen(path, jest.fn()).then(keepServer)).rejects.toMatchObject({ code: 'EACCES' });
+    expect(lstatSync(path).isSocket()).toBe(true);
+  });
+
+  it.each<[string, (path: string) => void]>([
+    ['a new file', (path) => {
+      writeFileSync(`${path}.new`, 'replacement');
+      renameSync(`${path}.new`, path);
+    }],
+    ['a symlink to the moved socket', (path) => {
+      renameSync(path, `${path}.moved`);
+      symlinkSync(`${path}.moved`, path);
+    }],
+  ])('BUG-1623 keeps %s that replaced the socket during the probe', async (_name, replace) => {
+    const path = join(dir, 's.sock');
+    await staleSocket(path);
+    fakeProbe((probe) => {
+      replace(path);
+      probe.emit('error', probeError('ECONNREFUSED'));
+    });
+    await expect(listen(path, jest.fn()).then(keepServer)).rejects.toThrow(/changed while checking/);
+    expect(lstatSync(path).isSocket()).toBe(false);
+  });
+
+  it.each(['dev', 'ino'] as const)('BUG-1623 refuses to remove a socket whose %s changed during the probe', async (field) => {
+    const path = join(dir, 's.sock');
+    await staleSocket(path);
+    const fs = jest.requireActual<typeof import('fs')>('fs');
+    const realLstat = fs.lstatSync;
+    let calls = 0;
+    jest.spyOn(fs, 'lstatSync').mockImplementation(((target: string, options?: object) => {
+      const stats = realLstat(target, options as never);
+      calls += 1;
+      return stats && calls === 2 ? Object.assign(stats, { [field]: Number(stats[field]) + 1 }) : stats;
+    }) as never);
+    await expect(listen(path, jest.fn()).then(keepServer)).rejects.toThrow(/changed while checking/);
+    jest.restoreAllMocks();
+    expect(lstatSync(path).isSocket()).toBe(true);
+  });
+
+  it('BUG-1623 preserves a live socket and its listener', async () => {
+    const path = join(dir, 's.sock');
+    server = await listen(path, async (r) => ({ jsonrpc: JSONRPC_VERSION, id: r.id, result: status as never }));
+    await expect(listen(path, jest.fn())).rejects.toThrow(/already in use/);
+    const client = await connect(path);
+    try {
+      await expect(client.call('status', {})).resolves.toEqual(status);
+    } finally {
+      client.close();
+    }
   });
 
   it('defaults to 0600', async () => {

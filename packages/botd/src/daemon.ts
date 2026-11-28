@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import './install-http1-dispatcher';
-import { statSync, writeFileSync, renameSync } from 'fs';
+import { statSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { userInfo } from 'os';
 import { createKeystore } from './keystore';
-import { openAuditLog } from './audit';
+import { openLockedAudit } from './state-lock';
 import { applyFill, auditIntact, createStateStore, rollDaily, type StateStore } from './state';
-import { emptyLimits, loadLimits, parseLimits } from './limits';
+import { fileLimits, parseLimits } from './limits';
 import { check, checkTake, dcaConfig, DEFAULT_ORDERS_PER_HOUR, gridConfig, ordersLastHour } from './riskgate';
 import { dcaNext } from './engine/dca';
 import { gridNext, gridRefill, gridSlots } from './engine/grid';
@@ -908,24 +908,6 @@ export function createDispatcher(deps: Deps): Dispatcher {
   return { handle: (request, from) => run(request, from), lock };
 }
 
-function fileLimits(path: string): Deps['limits'] {
-  return {
-    async load() {
-      try {
-        // Ownership and mode checked on every read: a limits file someone else can write is refused.
-        return await loadLimits(path);
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return emptyLimits();
-        throw err;
-      }
-    },
-    async save(limits) {
-      writeFileSync(`${path}.tmp`, JSON.stringify(limits, null, 2), { mode: 0o600 });
-      renameSync(`${path}.tmp`, path);
-    },
-  };
-}
-
 /** The real modules. `engine` carries test-only overrides (a fake API's fetch, short poll intervals). */
 export async function defaultDeps(config: BotConfig, engine: Partial<Pick<EngineOptions, 'fetchImpl' | 'pollMs' | 'reconcileMs'>> = {}): Promise<Deps> {
   tradingNetwork(config);
@@ -939,7 +921,7 @@ export async function defaultDeps(config: BotConfig, engine: Partial<Pick<Engine
   if (!pinnedVenue(config)) throw new Error(`no venue is pinned for ${config.baseUrl}: set venuePartyId, with network, in the config`);
   return {
     keystore: createKeystore(p.keystore),
-    audit: await openAuditLog(p.audit),
+    audit: await openLockedAudit(config.stateDir, p.audit),
     state: createStateStore(p.state),
     limits: fileLimits(p.limits),
     riskgate: check,
@@ -965,17 +947,22 @@ export async function defaultDeps(config: BotConfig, engine: Partial<Pick<Engine
 /** Opens both sockets; resolves with a stop function that locks and closes them. */
 export async function start(config: BotConfig, deps: Deps): Promise<() => Promise<void>> {
   const dispatcher = createDispatcher(deps);
-  await deps.limits.load();
-  // The key is never in memory at start. A log that lost entries the state saw: paused until the owner resumes.
-  const state = await deps.state.load();
-  const intact = await auditIntact(state, deps.audit);
-  if (!intact) process.stderr.write('cancore-botd: the audit log is truncated or its chain is broken; starting locked and paused\n');
-  const { lastAuditSeq: _seq, lastAuditHash: _hash, ...rest } = state;
-  await deps.state.save(intact ? { ...state, locked: true } : { ...rest, locked: true, paused: true, pauseReason: 'audit log truncated or broken' });
-  const servers: IpcServer[] = [
-    await listen(config.ownerSocket, (r) => dispatcher.handle(r, { owner: true }), { mode: 0o600 }),
-    await listen(config.agentSocket, (r) => dispatcher.handle(r, { owner: false }), { mode: 0o660, group: config.clientsGroup, maxConnections: 32 }),
-  ];
+  const servers: IpcServer[] = [];
+  try {
+    await deps.limits.load();
+    // The key is never in memory at start. A log that lost entries the state saw: paused until the owner resumes.
+    const state = await deps.state.load();
+    const intact = await auditIntact(state, deps.audit);
+    if (!intact) process.stderr.write('cancore-botd: the audit log is truncated or its chain is broken; starting locked and paused\n');
+    const { lastAuditSeq: _seq, lastAuditHash: _hash, ...rest } = state;
+    await deps.state.save(intact ? { ...state, locked: true } : { ...rest, locked: true, paused: true, pauseReason: 'audit log truncated or broken' });
+    servers.push(await listen(config.ownerSocket, (r) => dispatcher.handle(r, { owner: true }), { mode: 0o600 }));
+    servers.push(await listen(config.agentSocket, (r) => dispatcher.handle(r, { owner: false }), { mode: 0o660, group: config.clientsGroup, maxConnections: 32 }));
+  } catch (error) {
+    try { await Promise.all(servers.map((server) => server.close())); }
+    finally { await deps.audit.close(); }
+    throw error;
+  }
   return async () => {
     await dispatcher.lock().catch(() => undefined);
     await Promise.all(servers.map((s) => s.close()));

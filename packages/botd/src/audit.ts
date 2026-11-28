@@ -116,31 +116,37 @@ export async function openAuditLog(path: string): Promise<OpenedAuditLog> {
         prev = entry.hash;
         return entry;
       }),
-    verify: () =>
-      serial(async () => {
-        if ((await stat(path)).size === 0) return { ok: true as const, entries: 0 };
-        let expectSeq = 0;
-        let expectPrev = GENESIS;
-        const rl = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
-        for await (const line of rl) {
-          let e: AuditEntry;
-          try {
-            e = JSON.parse(line) as AuditEntry;
-          } catch {
-            rl.close();
-            return { ok: false as const, brokenAt: expectSeq };
-          }
-          if (e.seq !== expectSeq || e.prev !== expectPrev || e.hash !== hashEntry(e)) {
-            rl.close();
-            return { ok: false as const, brokenAt: expectSeq };
-          }
-          expectSeq += 1;
-          expectPrev = e.hash;
-        }
-        return { ok: true as const, entries: expectSeq };
-      }),
+    verify: () => serial(() => verifyAuditFile(path)),
     tail: (n) =>
       serial(async () => (n <= 0 ? [] : (await readTail(path, n)).lines.map((l) => JSON.parse(l) as AuditEntry))),
     close: () => serial(() => fh.close()),
   };
+}
+
+/** Verify without opening a writer or recovering a torn tail. */
+export async function verifyAuditFile(path: string) {
+  const info = await stat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (!info?.size) return { ok: true as const, entries: 0 };
+  let expectSeq = 0;
+  let expectPrev = GENESIS;
+  const rl = createInterface({ input: createReadStream(path), crlfDelay: Infinity });
+  for await (const line of rl) {
+    let e: AuditEntry;
+    try {
+      e = JSON.parse(line) as AuditEntry;
+    } catch {
+      rl.close();
+      return { ok: false as const, brokenAt: expectSeq };
+    }
+    if (e.seq !== expectSeq || e.prev !== expectPrev || e.hash !== hashEntry(e)) {
+      rl.close();
+      return { ok: false as const, brokenAt: expectSeq };
+    }
+    expectSeq += 1;
+    expectPrev = e.hash;
+  }
+  return { ok: true as const, entries: expectSeq };
 }
