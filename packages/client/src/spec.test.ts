@@ -54,6 +54,7 @@ const SELF_CUSTODY_REPLIES: Record<string, unknown> = {
   // The party of the key the account below signs with: onboard() holds one to the other.
   '/auth/me': { id: 'u', partyId: `p::${cantonFingerprint(KEY)}` },
   '/wallet/operations/prepare': { operationId: 'op', legs: [], meta: {} },
+  '/partner/cashback/claim': { claimId: 'c1', status: 'settling', requestedAt: '2026-01-01T00:00:00Z' },
   '/partner/cashback/claims': [],
   '/tokens/transfer-requests/incoming': [],
   '/tokens/balance/{partyId}/{instrumentId}': { balance: 0 },
