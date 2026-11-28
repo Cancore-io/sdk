@@ -1,5 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 
 /**
  * The CI definition is the artifact this repository ships to itself.
@@ -141,5 +143,197 @@ describe('group 4: every job has a timeout', () => {
     expect(jobs.length).toBeGreaterThan(0);
     const untimed = jobs.filter((j) => !/^\s*timeout-minutes:\s*\d+/m.test(j.body)).map((j) => j.name);
     expect(untimed).toEqual([]);
+  });
+});
+
+describe('BUG-1639 npm publication plan', () => {
+  const { releaseOrder, checkDependencies, publishPackages } = require('../scripts/publish-plan.cjs');
+  const wallet = { name: '@cancore/wallet', dir: 'wallet', version: '1.2.0', distTag: 'latest' };
+  const client = { name: '@cancore/client', dir: 'client', version: '1.0.0-rc.1', distTag: 'rc' };
+
+  test.each([
+    ['dependencies', 'workspace:*', '1.2.0'],
+    ['optionalDependencies', 'workspace:~', '~1.2.0'],
+    ['peerDependencies', 'workspace:^', '^1.2.0'],
+    ['dependencies', 'workspace:>=1.1.0 <2', '>=1.1.0 <2'],
+    ['dependencies', '^1.2.0', '^1.2.0'],
+  ])('orders an internal dependency in %s with %s', (field, spec, range) => {
+    const consumer = { [field]: { [wallet.name]: spec, 'external-library': '^2' } };
+    const manifests = new Map<string, object>([[wallet.name, wallet], [client.name, consumer]]);
+    expect(releaseOrder([client, wallet], manifests)).toEqual([wallet, client]);
+    const registry = jest.fn(() => wallet.version);
+    expect(() => checkDependencies(consumer, manifests, registry)).not.toThrow();
+    expect(registry.mock.calls).toEqual([[wallet.name + '@' + range]]);
+  });
+
+  test('accepts a registry version array and rejects empty results and E404', () => {
+    const consumer = { dependencies: { [wallet.name]: '^1.2.0' } };
+    const manifests = new Map([[wallet.name, wallet]]);
+    expect(() => checkDependencies(consumer, manifests, () => ['1.2.0', '1.3.0'])).not.toThrow();
+    expect(() => checkDependencies(consumer, manifests, () => [])).toThrow(/No published version/);
+    expect(() => checkDependencies(consumer, manifests, () => '')).toThrow(/No published version/);
+    const missing = new Error('npm E404');
+    expect(() => checkDependencies(consumer, manifests, () => { throw missing; })).toThrow(missing);
+  });
+
+  test('refuses a cycle in the selected publish plan', () => {
+    const manifests = new Map<string, object>([
+      [wallet.name, { ...wallet, dependencies: { [client.name]: 'workspace:*' } }],
+      [client.name, { ...client, peerDependencies: { [wallet.name]: 'workspace:^' } }],
+    ]);
+    expect(() => releaseOrder([client, wallet], manifests)).toThrow(/Circular workspace release dependencies/);
+  });
+
+  const mcp = { name: '@cancore/mcp', dir: 'mcp', version: '0.3.0', distTag: 'latest' };
+  type Item = typeof wallet;
+  const npmError = (code: string) => Object.assign(new Error('npm view failed'), { stderr: 'npm error code ' + code });
+  const withSummary = (check: (env: Record<string, string>, summary: string) => void) => {
+    const temp = fs.mkdtempSync(path.join(tmpdir(), 'sdk-publish-'));
+    const summary = path.join(temp, 'summary');
+    try {
+      check({ GITHUB_STEP_SUMMARY: summary, GITHUB_SHA: 'head', GITHUB_REF_TYPE: 'branch' }, summary);
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  };
+  // A registry that knows only what this run published, plus scripted answers per `npm view` spec.
+  const fakeRun = (items: Item[], answers: Record<string, string | Error> = {}, failPublish: Record<string, Error> = {}, remoteTags = '') => {
+    const published = new Set<string>();
+    return jest.fn((command: string, args: string[], options?: { cwd?: string }) => {
+      if (command === 'npm') {
+        const answer = answers[args[1]];
+        if (answer instanceof Error) throw answer;
+        if (answer !== undefined) return answer;
+        if (published.has(args[1])) return JSON.stringify(args[1].slice(args[1].lastIndexOf('@') + 1));
+        throw npmError('E404');
+      }
+      if (command === 'pnpm') {
+        const item = items.find(({ dir }) => options?.cwd === path.join('packages', dir));
+        if (!item) throw new Error('pnpm publish outside a package directory: ' + options?.cwd);
+        if (failPublish[item.name]) throw failPublish[item.name];
+        published.add(item.name + '@' + item.version);
+      }
+      return command === 'git' && args[0] === 'ls-remote' ? remoteTags : '';
+    });
+  };
+  const gitCalls = (run: jest.Mock) => run.mock.calls.filter(([bin]) => bin === 'git').map(([, args]) => args);
+  const tagged = (tag: string) => [['ls-remote', '--tags', 'origin', 'refs/tags/' + tag], ['tag', tag, 'head'], ['push', 'origin', 'refs/tags/' + tag]];
+
+  test.each(['branch', 'tag', 'existing tag'])('publishes with the requested dist-tag and handles %s refs', (mode) => {
+    withSummary((branchEnv, summary) => {
+      const refType = mode === 'tag' ? 'tag' : 'branch';
+      const env = { ...branchEnv, GITHUB_REF_TYPE: refType };
+      const manifests = new Map<string, object>([
+        [wallet.name, wallet],
+        [client.name, { ...client, dependencies: { [wallet.name]: 'workspace:*' } }],
+      ]);
+      const run = fakeRun([wallet, client], {}, {}, mode === 'existing tag' ? 'head refs/tags/wallet-v1.2.0' : '');
+      expect(publishPackages([client, wallet], manifests, env, run)).toBe(0);
+      const commands = run.mock.calls;
+      const view = (spec: string) => ['npm', 'view', spec, 'version', '--json'];
+      expect(commands.filter(([bin]) => bin !== 'git').map(([bin, args]) => [bin, ...args])).toEqual([
+        view(wallet.name + '@' + wallet.version),
+        ['pnpm', 'publish', '--access', 'public', '--tag', 'latest', '--no-git-checks'],
+        view(client.name + '@' + client.version),
+        view(wallet.name + '@' + wallet.version),
+        ['pnpm', 'publish', '--access', 'public', '--tag', 'rc', '--no-git-checks'],
+      ]);
+      expect(commands.filter(([bin]) => bin === 'pnpm').map(([, , options]) => options)).toEqual([
+        { cwd: path.join('packages', 'wallet'), stdio: 'inherit' },
+        { cwd: path.join('packages', 'client'), stdio: 'inherit' },
+      ]);
+      const refs = ['wallet-v1.2.0', 'client-v1.0.0-rc.1'];
+      expect(gitCalls(run)).toEqual(refType === 'tag' ? [] : refs.flatMap((tag) =>
+        mode === 'existing tag' ? [['ls-remote', '--tags', 'origin', 'refs/tags/' + tag]] : tagged(tag)));
+      expect(fs.readFileSync(summary, 'utf8')).toBe('- Published @cancore/wallet@1.2.0\n- Published @cancore/client@1.0.0-rc.1\n');
+    });
+  });
+
+  test.each([
+    ['fails to publish', { [wallet.name + '@' + wallet.version]: JSON.stringify(wallet.version) },
+      { [client.name]: new Error('registry unavailable') }, '@cancore/client: registry unavailable'],
+    ['finds no published version of its dependency', { [wallet.name + '@' + wallet.version]: '[]' }, {},
+      '@cancore/client: No published version satisfies @cancore/wallet@1.2.0'],
+  ])('keeps releasing independent packages when one package %s', (_case, answers, failPublish, message) => {
+    withSummary((env, summary) => {
+      const report = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const manifests = new Map<string, object>([
+          [wallet.name, wallet],
+          [client.name, { ...client, dependencies: { [wallet.name]: 'workspace:*' } }],
+          [mcp.name, mcp],
+        ]);
+        const run = fakeRun([client, mcp], answers, failPublish);
+        expect(publishPackages([client, mcp], manifests, env, run)).toBe(1);
+        expect(report).toHaveBeenCalledWith(message);
+        const publishedDirs = run.mock.calls.filter(([bin]) => bin === 'pnpm').map(([, , options]) => options?.cwd);
+        const attempted = Object.keys(failPublish).length ? [path.join('packages', 'client')] : [];
+        expect(publishedDirs).toEqual([...attempted, path.join('packages', 'mcp')]);
+        expect(gitCalls(run)).toEqual(tagged('mcp-v0.3.0'));
+        expect(fs.readFileSync(summary, 'utf8')).toBe('- Published @cancore/mcp@0.3.0\n');
+      } finally {
+        report.mockRestore();
+      }
+    });
+  });
+
+  test('a re-run skips a version already on npm and still restores its missing tag', () => {
+    withSummary((env, summary) => {
+      const run = fakeRun([wallet], { [wallet.name + '@' + wallet.version]: JSON.stringify(wallet.version) });
+      expect(publishPackages([wallet], new Map([[wallet.name, wallet]]), env, run)).toBe(0);
+      expect(run.mock.calls.filter(([bin]) => bin === 'pnpm')).toEqual([]);
+      expect(gitCalls(run)).toEqual(tagged('wallet-v1.2.0'));
+      expect(fs.readFileSync(summary, 'utf8')).toBe('- Already on npm @cancore/wallet@1.2.0\n');
+    });
+  });
+
+  test('does not publish when npm cannot say whether the version exists', () => {
+    withSummary((env, summary) => {
+      const report = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const run = fakeRun([wallet], { [wallet.name + '@' + wallet.version]: npmError('ETIMEDOUT') });
+        expect(publishPackages([wallet], new Map([[wallet.name, wallet]]), env, run)).toBe(1);
+        expect(run.mock.calls.filter(([bin]) => bin !== 'npm')).toEqual([]);
+        expect(fs.existsSync(summary)).toBe(false);
+      } finally {
+        report.mockRestore();
+      }
+    });
+  });
+
+  test('reports a failed publish and skips tagging and the success summary', () => {
+    withSummary((env, summary) => {
+      const report = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        const run = fakeRun([wallet], {}, { [wallet.name]: new Error('registry unavailable') });
+        expect(publishPackages([wallet], new Map([[wallet.name, wallet]]), env, run)).toBe(1);
+        expect(report).toHaveBeenCalledWith('@cancore/wallet: registry unavailable');
+        expect(gitCalls(run)).toEqual([]);
+        expect(fs.existsSync(summary)).toBe(false);
+      } finally {
+        report.mockRestore();
+      }
+    });
+  });
+  // The CLI entry is what publish.yml runs: a failed package must turn the job red, not only the return value.
+  test('the publish job exits 1 when npm fails for a package', () => {
+    withSummary((env, summary) => {
+      const temp = path.dirname(summary);
+      fs.mkdirSync(path.join(temp, 'packages', wallet.dir), { recursive: true });
+      fs.writeFileSync(path.join(temp, 'packages', wallet.dir, 'package.json'), JSON.stringify(wallet));
+      const bin = path.join(temp, 'bin');
+      fs.mkdirSync(bin);
+      for (const tool of ['npm', 'pnpm']) {
+        fs.writeFileSync(path.join(bin, tool), '#!/bin/sh\necho "npm error code ETIMEDOUT" >&2\nexit 1\n', { mode: 0o755 });
+      }
+      const job = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'publish-plan.cjs')], {
+        cwd: temp,
+        encoding: 'utf8',
+        env: { ...process.env, ...env, PATH: bin + path.delimiter + process.env.PATH, PUBLISH_PLAN: JSON.stringify([wallet]) },
+      });
+      expect(job.stderr).toContain('@cancore/wallet: Command failed: npm view @cancore/wallet@1.2.0 version --json');
+      expect(job.status).toBe(1);
+      expect(fs.existsSync(summary)).toBe(false);
+    });
   });
 });

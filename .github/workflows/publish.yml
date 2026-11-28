@@ -108,11 +108,6 @@ jobs:
     if: needs.plan.outputs.count != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    strategy:
-      # One package failing must not stop the others: each is its own release.
-      fail-fast: false
-      matrix:
-        package: ${{ fromJSON(needs.plan.outputs.packages) }}
     permissions:
       # Tags the released commit `<package>-v<version>` after a publish from main.
       # A tag pushed with GITHUB_TOKEN does not start another workflow run, so
@@ -144,36 +139,11 @@ jobs:
       - run: npm run build
       - run: npm test
 
-      - name: Publish ${{ matrix.package.name }}@${{ matrix.package.version }}
-        working-directory: packages/${{ matrix.package.dir }}
-        # No token and no `--provenance`: with trusted publishing npm mints the
-        # credential from the OIDC token and attaches provenance by itself.
-        # pnpm, not npm: only `pnpm publish` turns the `workspace:` ranges of
-        # sibling packages into the plain ranges consumers install.
-        # `--no-git-checks`: a tag run checks out a detached HEAD, which pnpm's
-        # branch check refuses.
+      # Dependencies before their consumers, one package failing does not stop the
+      # independent ones; the flags of `pnpm publish` are explained in the script.
+      - name: Publish in workspace dependency order
         env:
-          DIST_TAG: ${{ matrix.package.distTag }}
+          PUBLISH_PLAN: ${{ needs.plan.outputs.packages }}
         run: |
           echo "pnpm $(pnpm --version), npm $(npm --version), node $(node --version)"
-          pnpm publish --access public --tag "$DIST_TAG" --no-git-checks
-
-      - name: Tag the released commit
-        if: github.ref_type == 'branch'
-        env:
-          TAG: ${{ matrix.package.dir }}-v${{ matrix.package.version }}
-        run: |
-          set -euo pipefail
-          # An earlier failed tag run may already have pushed this tag; the
-          # version is on npm now either way, which is what the tag records.
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
-            echo "tag $TAG already exists, left as is"
-            exit 0
-          fi
-          git tag "$TAG" "$GITHUB_SHA"
-          git push origin "refs/tags/$TAG"
-
-      - name: Say what shipped
-        run: |
-          echo "### Published \`${{ matrix.package.name }}@${{ matrix.package.version }}\` under \`${{ matrix.package.distTag }}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "https://www.npmjs.com/package/${{ matrix.package.name }}/v/${{ matrix.package.version }}" >> "$GITHUB_STEP_SUMMARY"
+          node scripts/publish-plan.cjs
