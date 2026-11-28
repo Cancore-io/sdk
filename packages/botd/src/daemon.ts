@@ -137,7 +137,7 @@ type Entry = { method: Method; riskClass: RiskClass; params: unknown };
 type Tag = { id: string; slot: string };
 const strategyStopped = (s: BotState, tag?: Tag) => tag !== undefined && s.strategies?.find((r) => r.strategyId === tag.id)?.status === 'stopped';
 
-type Taken = { base: string; quote: string; side: 'buy' | 'sell'; amount: string; price: string };
+type Taken = { quoteAmount: string; base: string; quote: string; side: 'buy' | 'sell'; amount: string; price: string };
 
 /**
  * Someone else's order as a trade of ours on an allowed pair: the taker receives the order's source
@@ -146,8 +146,8 @@ type Taken = { base: string; quote: string; side: 'buy' | 'sell'; amount: string
  */
 export function takeView(order: OrderInfo, allowedPairs: string[]): Taken | undefined {
   if (!order.dvp) return undefined;
-  if (allowedPairs.includes(`${order.source}/${order.target}`)) return { base: order.source, quote: order.target, side: 'buy', amount: order.sourceAmount, price: ratio(order.targetAmount, order.sourceAmount) };
-  if (allowedPairs.includes(`${order.target}/${order.source}`)) return { base: order.target, quote: order.source, side: 'sell', amount: order.targetAmount, price: ratio(order.sourceAmount, order.targetAmount) };
+  if (allowedPairs.includes(`${order.source}/${order.target}`)) return { base: order.source, quote: order.target, side: 'buy', quoteAmount: order.targetAmount, amount: order.sourceAmount, price: ratio(order.targetAmount, order.sourceAmount) };
+  if (allowedPairs.includes(`${order.target}/${order.source}`)) return { base: order.target, quote: order.source, side: 'sell', quoteAmount: order.sourceAmount, amount: order.targetAmount, price: ratio(order.sourceAmount, order.targetAmount) };
   return undefined;
 }
 

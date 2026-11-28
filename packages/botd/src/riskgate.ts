@@ -22,8 +22,10 @@ interface Leg {
   /** 1e-10 units. */
   amount: bigint;
   price: bigint;
+  quoteAmount?: bigint;
 }
 
+const exactNotional = (leg: Leg) => leg.quoteAmount === undefined ? leg.amount * leg.price : leg.quoteAmount * SCALE;
 const abs = (v: bigint) => (v < 0n ? -v : v);
 const capOf = (m: Record<string, string>, k: string) => (Object.hasOwn(m, k) ? dec(m[k]!) : undefined);
 
@@ -49,12 +51,13 @@ function checkLegs(legs: Leg[], state: BotState, limits: Limits, now: number): D
   let buys = 0n;
   let sells = 0n;
   for (const leg of legs) {
-    if (leg.amount <= 0n || leg.price <= 0n) return deny('no_rule');
+    const notional = exactNotional(leg);
+    if (leg.amount <= 0n || notional <= 0n) return deny('no_rule');
     // |price - ref| / ref <= bps / 10000
-    if (abs(leg.price - ref) * 10_000n > BigInt(limits.maxPriceDeviationBps) * ref) return deny('price_deviation_exceeded');
+    if (abs(notional - ref * leg.amount) * 10_000n > BigInt(limits.maxPriceDeviationBps) * ref * leg.amount) return deny('price_deviation_exceeded');
     if (maxAmount === undefined || leg.amount > maxAmount) return deny('order_size_exceeded');
     // amount * price carries 20 decimals; the cap is lifted to the same scale.
-    if (maxNotional === undefined || leg.amount * leg.price > maxNotional * SCALE) return deny('notional_exceeded');
+    if (maxNotional === undefined || notional > maxNotional * SCALE) return deny('notional_exceeded');
     total += leg.amount;
     if (leg.side === 'buy') buys += leg.amount;
     else sells += leg.amount;
@@ -176,13 +179,13 @@ function strategyLegs(p: Params<'strategy.start'>, ref: bigint): Leg[] | undefin
  */
 export function checkTake(
   take: Params<'order.take'>,
-  order: { base: string; quote: string; side: 'buy' | 'sell'; price: string },
+  order: { base: string; quote: string; side: 'buy' | 'sell'; price: string; quoteAmount?: string },
   state: BotState,
   limits: Limits,
   now: number,
 ): Decision {
   try {
-    return checkLegs([{ base: order.base, quote: order.quote, side: order.side, amount: dec(take.amount), price: dec(order.price) }], state, limits, now);
+    return checkLegs([{ base: order.base, quote: order.quote, side: order.side, amount: dec(take.amount), price: dec(order.price), ...(order.quoteAmount !== undefined && { quoteAmount: dec(order.quoteAmount) }) }], state, limits, now);
   } catch {
     return deny('no_rule');
   }
