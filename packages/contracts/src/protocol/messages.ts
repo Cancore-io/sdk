@@ -397,6 +397,8 @@ export interface CantonHolding { contractId: string; asset: CantonAsset; amount:
 export type CantonHoldingList = Page<CantonHolding>;
 export interface CantonDeliveryOrder {
   deliveryOrderCid: string; orderHash: Hex; attempt: number; asset: CantonAsset; amount: string; recipient: string; repayTo: Hex; validUntil: DecString;
+  /** Unix seconds; null on legacy ledger orders, absent on older gateways. */
+  validFrom?: DecString | null;
 }
 /** `GET /v1/filler/canton/delivery-orders`. */
 export type CantonDeliveryOrderList = Page<CantonDeliveryOrder>;

@@ -393,9 +393,11 @@ operator to see. A rotation after the delivery is not caught here; it stays a kn
 A node without `cantonParty` and `cantonSource` declines a Canton source `OTHER` at `form`.
 
 **Canton destination** (a Canton-form ticket, CAN-1867). The ticket is the `DeliveryOrder` the party observes,
-read through filler-gateway: it must be live under `deliveryOrderCid` with this order, attempt, `validUntil` and
-the `repayTo` of the node's own `ticket.intent`, the order's `recipient` and `outputAsset` (the encodings of
-`@cancore/contracts`) and an amount in `[minReceived, amountOut]`. V-T3 runs on `canton.destination`
+read through filler-gateway: V-T2 requires a live `deliveryOrderCid` for this order and attempt, a `validFrom`
+matching the offered opening time, the ticket's `validUntil`, and the `repayTo` of the node's own
+`ticket.intent`. It also checks the order's `recipient` and `outputAsset` (the encodings of `@cancore/contracts`)
+and an amount in `[minReceived, amountOut]`. A null opening time (a legacy ledger order)
+fails V-T2; a gateway that predates the field omits it, and V-T2 then checks the order as before BUG-1645. V-T3 runs on `canton.destination`
 (`minTicketTtlSec`, `sendGuardSec`), V-E1…V-E4 on the EVM source as for any EVM source, V-E3 against
 `canton.destination.requiredProofWindowSec`, and V-E5 is the party's unlocked holdings of the instrument
 (`NO_INVENTORY`). Delivery is `delivery.fill` (`filler.canton.fill`): before the party key signs, the decoded

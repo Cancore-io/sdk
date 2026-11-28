@@ -461,6 +461,12 @@ describe('Canton operations of the filler party (§3.19)', () => {
       repayTo: `0x${'cd'.repeat(32)}`, validUntil: '1790000400',
     };
     expect(rest('cantonDeliveryOrderList', { items: [order], nextCursor: 'c-2' })).toBe(true);
+    for (const validFrom of [null, '1790000000']) {
+      expect(rest('cantonDeliveryOrderList', { items: [{ ...order, validFrom }], nextCursor: null })).toBe(true);
+    }
+    for (const validFrom of [1790000000, '-1', '1.5']) {
+      expect(rest('cantonDeliveryOrderList', { items: [{ ...order, validFrom }], nextCursor: null })).toBe(false);
+    }
     expect(rest('cantonDeliveryOrderList', { items: [{ ...order, validUntil: 1790000400 }], nextCursor: null })).toBe(false);
   });
 
